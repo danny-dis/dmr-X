@@ -1,0 +1,34 @@
+{
+  "name": "dmr-x",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Universal AI routing and orchestration platform",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "turbo lint",
+    "clean": "turbo clean",
+    "db:migrate": "turbo db:migrate --filter=@dmr-x/db"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.9",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "npm@10.0.0",
+  "dependencies": {
+    "@fastify/cors": "^8.5.0",
+    "pino-pretty": "^13.1.3"
+  }
+}

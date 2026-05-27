@@ -1,0 +1,1 @@
+{"version":3,"file":"modality-detector.js","sourceRoot":"","sources":["modality-detector.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,kBAAkB,EAAE,MAAM,aAAa,CAAC;AAEjD,MAAM,UAAU,cAAc,CAAC,IAAY;IACzC,MAAM,QAAQ,GAAG,kBAAkB,CAAC,IAAI,CAAC,CAAC;IAC1C,IAAI,CAAC,QAAQ,EAAE,CAAC;QACd,MAAM,IAAI,KAAK,CAAC,qBAAqB,IAAI,EAAE,CAAC,CAAC;IAC/C,CAAC;IACD,OAAO,QAAQ,CAAC;AAClB,CAAC"}

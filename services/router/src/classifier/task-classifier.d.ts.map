@@ -1,0 +1,1 @@
+{"version":3,"file":"task-classifier.d.ts","sourceRoot":"","sources":["task-classifier.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,WAAW,EAAE,MAAM,aAAa,CAAC;AAI/D,MAAM,WAAW,eAAe;IAC9B,IAAI,EAAE,MAAM,CAAC;IACb,aAAa,CAAC,EAAE,UAAU,GAAG,UAAU,GAAG,SAAS,CAAC;IACpD,QAAQ,CAAC,EAAE,MAAM,CAAC;CACnB;AAED,wBAAgB,YAAY,CAAC,OAAO,EAAE,cAAc,EAAE,OAAO,EAAE,eAAe,GAAG,WAAW,CAc3F"}
