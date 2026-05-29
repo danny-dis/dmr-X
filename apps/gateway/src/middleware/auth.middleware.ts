@@ -1,10 +1,12 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { getPool } from '@dmr-x/db';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { getDb } from '@dmr-x/db';
 import { hashApiKey } from '@dmr-x/utils';
 import { AuthenticationError } from '@dmr-x/core';
 
 // Routes that don't require auth
 const PUBLIC_ROUTES = new Set(['/health', '/healthz', '/livez', '/ready', '/v1/models']);
+
+const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 
 function extractApiKey(request: FastifyRequest): string | undefined {
   const authHeader = request.headers.authorization;
@@ -20,9 +22,21 @@ function extractApiKey(request: FastifyRequest): string | undefined {
 export async function authMiddleware(server: FastifyInstance): Promise<void> {
   const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
 
-  server.addHook('onRequest', async (request, reply) => {
+  server.addHook('onRequest', async (request) => {
     // Skip auth for public routes
     if (PUBLIC_ROUTES.has(request.url)) {
+      return;
+    }
+
+    // Local mode: skip auth entirely, set default tenant
+    if (LOCAL_MODE) {
+      const db = getDb();
+      const tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined;
+      (request as any).tenant = {
+        id: tenant?.id ?? 'local',
+        name: tenant?.name ?? 'local',
+        apiKeyId: 'local',
+      };
       return;
     }
 
@@ -45,30 +59,28 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     }
     const keyHash = hashApiKey(apiKey);
 
-    const pool = getPool();
-    const result = await pool.query(
+    const db = getDb();
+    const row = db.prepare(
       `SELECT ak.id, ak.tenant_id, t.name as tenant_name
        FROM api_keys ak
        JOIN tenants t ON t.id = ak.tenant_id
-       WHERE ak.key_hash = $1 AND ak.is_active = true`,
-      [keyHash]
-    );
+       WHERE ak.key_hash = ? AND ak.is_active = 1`
+    ).get(keyHash) as { id: string; tenant_id: string; tenant_name: string } | undefined;
 
-    if (result.rows.length === 0) {
+    if (!row) {
       throw new AuthenticationError('Invalid API key');
     }
 
     // Attach tenant info to request
     (request as any).tenant = {
-      id: result.rows[0].tenant_id,
-      name: result.rows[0].tenant_name,
-      apiKeyId: result.rows[0].id,
+      id: row.tenant_id,
+      name: row.tenant_name,
+      apiKeyId: row.id,
     };
 
     // Update last_used_at
-    await pool.query(
-      'UPDATE api_keys SET last_used_at = NOW() WHERE id = $1',
-      [result.rows[0].id]
-    );
+    db.prepare(
+      "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
+    ).run(row.id);
   });
 }

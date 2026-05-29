@@ -1,30 +1,61 @@
 import type { CandidateSet } from '@dmr-x/core';
 import type { RateLimitService } from '@dmr-x/quota';
 
+export interface RateLimitFilterResult {
+  allowed: CandidateSet;
+  rateLimited: Array<{
+    providerId: string;
+    modelId: string;
+    retryAfterMs: number;
+    reason: string;
+  }>;
+  earliestResetMs: number;
+}
+
 /**
  * Filter candidates that would exceed their rate limits.
- *
- * This is the core enabler for free-tier aggregation —
- * without it, tight limits (e.g., 3 RPM) burn out instantly.
+ * Runs checks in parallel for performance.
+ * Returns both allowed candidates and rate-limited info for smart retry.
  */
 export async function rateLimitFilter(
   candidates: CandidateSet,
   rateLimitService: RateLimitService,
   estimatedTokens: number = 0
-): Promise<CandidateSet> {
-  const filtered: CandidateSet = [];
+): Promise<RateLimitFilterResult> {
+  const results = await Promise.all(
+    candidates.map(async (candidate) => {
+      const result = rateLimitService.checkLimit(
+        candidate.providerId,
+        candidate.modelId,
+        estimatedTokens
+      );
+      return { candidate, result };
+    })
+  );
 
-  for (const candidate of candidates) {
-    const result = await rateLimitService.checkLimit(
-      candidate.providerId,
-      candidate.modelId,
-      estimatedTokens
-    );
+  const allowed: CandidateSet = [];
+  const rateLimited: RateLimitFilterResult['rateLimited'] = [];
+  let earliestResetMs = Infinity;
 
+  for (const { candidate, result } of results) {
     if (result.allowed) {
-      filtered.push(candidate);
+      allowed.push(candidate);
+    } else {
+      rateLimited.push({
+        providerId: candidate.providerId,
+        modelId: candidate.modelId,
+        retryAfterMs: result.retryAfterMs ?? 60000,
+        reason: result.reason ?? 'Rate limit exceeded',
+      });
+      if (result.retryAfterMs && result.retryAfterMs < earliestResetMs) {
+        earliestResetMs = result.retryAfterMs;
+      }
     }
   }
 
-  return filtered;
+  return {
+    allowed,
+    rateLimited,
+    earliestResetMs: earliestResetMs === Infinity ? 0 : earliestResetMs,
+  };
 }

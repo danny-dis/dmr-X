@@ -13,7 +13,7 @@ const EmbeddingRequestSchema = z.object({
 });
 
 export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/embeddings', async (request, reply) => {
+  server.post('/embeddings', async (request) => {
     const parsed = EmbeddingRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
@@ -43,10 +43,9 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
         qualityTarget: 'balanced',
       });
 
-      const inputArray = Array.isArray(body.input) ? body.input : [body.input];
       return {
         object: 'list',
-        data: (response.embeddings || []).map((embedding, i) => ({
+        data: (response.embeddings || []).map((embedding: number[], i: number) => ({
           object: 'embedding',
           embedding,
           index: i,

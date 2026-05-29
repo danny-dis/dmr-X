@@ -1,4 +1,4 @@
-import { getPool } from '@dmr-x/db';
+import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { AdapterRegistry, ProviderAdapter } from '@dmr-x/adapters';
 import type { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
@@ -176,7 +176,7 @@ export class BenchmarkService {
     let score = 0.5; // Base score for completing
 
     if (prompt.modality === 'llm') {
-      const content = response.message?.content || '';
+      const content = typeof response.message?.content === 'string' ? response.message.content : '';
 
       // Length check - too short or too long is bad
       if (content.length > 10 && content.length < 2000) {
@@ -210,42 +210,39 @@ export class BenchmarkService {
   }
 
   private async storeResults(results: BenchmarkResult[]): Promise<void> {
-    const pool = getPool();
+    const db = getDb();
 
     for (const result of results) {
       try {
         // Get model profile ID
-        const modelResult = await pool.query(
+        const modelRow = db.prepare(
           `SELECT mp.id FROM model_profiles mp
            JOIN providers p ON p.id = mp.provider_id
-           WHERE p.name = $1 AND mp.model_id = $2`,
-          [result.providerId, result.modelId]
-        );
+           WHERE p.name = ? AND mp.model_id = ?`
+        ).get(result.providerId, result.modelId) as any;
 
-        if (modelResult.rows.length > 0) {
-          await pool.query(
+        if (modelRow) {
+          db.prepare(
             `INSERT INTO benchmark_results (model_id, benchmark_type, score, details)
-             VALUES ($1, $2, $3, $4)`,
-            [
-              modelResult.rows[0].id,
-              result.benchmarkType,
-              result.score,
-              JSON.stringify(result.details),
-            ]
+             VALUES (?, ?, ?, ?)`
+          ).run(
+            modelRow.id,
+            result.benchmarkType,
+            result.score,
+            JSON.stringify(result.details)
           );
 
           // Update model quality score (weighted average)
-          await pool.query(
+          db.prepare(
             `UPDATE model_profiles SET
               quality_score = (
                 SELECT AVG(score) FROM benchmark_results
-                WHERE model_id = $1 AND run_at > NOW() - INTERVAL '7 days'
+                WHERE model_id = ? AND run_at > datetime('now', '-7 days')
               ),
-              avg_latency_ms = $2,
-              updated_at = NOW()
-            WHERE id = $1`,
-            [modelResult.rows[0].id, result.latencyMs]
-          );
+              avg_latency_ms = ?,
+              updated_at = datetime('now')
+            WHERE id = ?`
+          ).run(modelRow.id, result.latencyMs, modelRow.id);
         }
       } catch (error) {
         logger.error({ err: error }, 'Failed to store benchmark result');

@@ -120,9 +120,9 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     id: 'google',
     name: 'Google Gemini',
     category: 'cloud_llm',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    authMethod: 'api-key-param',
-    apiFormat: 'google',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
     modalities: ['llm', 'embedding', 'audio_stt', 'diffusion'],
     models: [
       { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
@@ -136,7 +136,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     streaming: true,
     toolCalling: true,
     envKey: 'GOOGLE_API_KEY',
-    description: 'Gemini models. 1M+ context, fast, cheap.',
+    description: 'Gemini models. 1M+ context, fast, cheap. (Using OpenAI-compatible endpoint)',
     region: 'us',
     signupUrl: 'https://aistudio.google.com/',
   },
@@ -1335,15 +1335,37 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://api.together.xyz/v1',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm'],
+    modalities: ['llm', 'embedding', 'audio_stt'],
     models: [
+      // Llama 4
+      { id: 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-Turbo', modalities: ['llm'], contextWindow: 131072, maxOutputTokens: 16384, inputCostPer1M: 0.27, outputCostPer1M: 0.85, capabilities: ['tool_use', 'streaming', 'vision'], specializations: ['general'] },
+      { id: 'meta-llama/Llama-4-Scout-17B-16E-Instruct', modalities: ['llm'], contextWindow: 131072, maxOutputTokens: 16384, inputCostPer1M: 0.18, outputCostPer1M: 0.59, capabilities: ['tool_use', 'streaming', 'vision'], specializations: ['general'] },
+      // Llama 3.3
       { id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.88, outputCostPer1M: 0.88, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      // Llama 3.1
+      { id: 'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 3.5, outputCostPer1M: 3.5, capabilities: ['tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
+      { id: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.88, outputCostPer1M: 0.88, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
       { id: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.18, outputCostPer1M: 0.18, capabilities: ['streaming'], specializations: ['fast', 'cheap'] },
+      // DeepSeek
+      { id: 'deepseek-ai/DeepSeek-R1', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 3, outputCostPer1M: 7, capabilities: ['reasoning', 'streaming'], specializations: ['reasoning'] },
+      { id: 'deepseek-ai/DeepSeek-V3', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 1.25, outputCostPer1M: 1.25, capabilities: ['tool_use', 'streaming'], specializations: ['general', 'coding'] },
+      // Qwen
+      { id: 'Qwen/Qwen2.5-72B-Instruct-Turbo', modalities: ['llm'], contextWindow: 32768, inputCostPer1M: 1.2, outputCostPer1M: 1.2, capabilities: ['tool_use', 'streaming'], specializations: ['general', 'coding'] },
+      { id: 'Qwen/Qwen2.5-7B-Instruct-Turbo', modalities: ['llm'], contextWindow: 32768, inputCostPer1M: 0.3, outputCostPer1M: 0.3, capabilities: ['streaming'], specializations: ['fast', 'cheap'] },
+      // Mixtral
+      { id: 'mistralai/Mixtral-8x22B-Instruct-v0.1', modalities: ['llm'], contextWindow: 65536, inputCostPer1M: 1.2, outputCostPer1M: 1.2, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      { id: 'mistralai/Mixtral-8x7B-Instruct-v0.1', modalities: ['llm'], contextWindow: 32768, inputCostPer1M: 0.6, outputCostPer1M: 0.6, capabilities: ['streaming'], specializations: ['fast'] },
+      // Gemma
+      { id: 'google/gemma-2-27b-it', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0.3, outputCostPer1M: 0.3, capabilities: ['streaming'], specializations: ['fast', 'cheap'] },
+      // Embeddings
+      { id: 'togethercomputer/m2-bert-80M-32k-retrieval', modalities: ['embedding'], contextWindow: 32768, inputCostPer1M: 0.008, outputCostPer1M: 0, capabilities: [], specializations: ['embedding'] },
+      // Whisper
+      { id: 'openai/whisper-large-v3', modalities: ['audio_stt'], capabilities: ['stt'], specializations: ['audio'] },
     ],
     streaming: true,
     toolCalling: true,
     envKey: 'TOGETHER_API_KEY',
-    description: 'Together AI. $1 free credits. Fast open-source inference.',
+    description: 'Together AI. $1 free credits. Fast open-source inference. 200+ models.',
     region: 'us',
     signupUrl: 'https://api.together.xyz/',
   },
@@ -1622,7 +1644,9 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 
   // ═══════════════════════════════════════════════════════════
-  // COMMUNITY / GREY-AREA APIs
+  // FREE LLM APIs (Community / No Key Required / Grey-Area)
+  // These offer free access to GPT-4o, Claude, etc. via shared keys.
+  // Reliability varies — use as fallback, not primary.
   // ═══════════════════════════════════════════════════════════
 
   {

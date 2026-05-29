@@ -1,17 +1,16 @@
 import { createServer } from './server.js';
 import { logger } from '@dmr-x/utils';
-import { getPool, closePool, connectRedis, closeRedis } from '@dmr-x/db';
+import { initDb, closeDb } from '@dmr-x/db';
 
 async function main(): Promise<void> {
   const port = parseInt(process.env.PORT || '3000', 10);
 
-  // Connect to databases
+  // Initialize SQLite database (async — loads WASM, runs migrations)
   try {
-    getPool();
-    logger.info('Connected to PostgreSQL');
-    await connectRedis();
+    await initDb();
+    logger.info('SQLite database ready');
   } catch (err) {
-    logger.error({ err }, 'Failed to connect to databases');
+    logger.error({ err }, 'Failed to initialize database');
     process.exit(1);
   }
 
@@ -30,8 +29,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     logger.info('Shutting down...');
     await server.close();
-    await closePool();
-    await closeRedis();
+    closeDb();
     process.exit(0);
   };
 

@@ -1,5 +1,4 @@
 import { logger } from '@dmr-x/utils';
-import { getRedis } from '@dmr-x/db';
 
 export interface KeyInfo {
   providerId: string;

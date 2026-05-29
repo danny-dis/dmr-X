@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { getRedis } from '@dmr-x/db';
+import { cache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
+import type { RateLimitService } from '@dmr-x/quota';
 
 /**
  * Sticky session service for multi-turn conversations.
@@ -34,33 +35,76 @@ export function hashConversation(messages: Array<{ role: string; content: string
 
 /**
  * Get the sticky provider for a conversation hash.
+ * Optionally checks if the sticky provider is still available (not rate-limited).
+ * Optionally checks free-tier compatibility when freeTierStrategy is 'prioritize'.
  */
-export async function getStickyProvider(conversationHash: string): Promise<StickySession | null> {
-  const redis = getRedis();
+export async function getStickyProvider(
+  conversationHash: string,
+  rateLimitService?: RateLimitService,
+  freeTierStrategy?: string,
+  isFreeModel?: (providerId: string, modelId: string) => boolean
+): Promise<StickySession | null> {
   const key = `sticky:${conversationHash}`;
 
-  const value = await redis.get(key);
+  const value = cache.get(key);
   if (!value) return null;
 
   const [providerId, modelId] = value.split(':');
   if (!providerId || !modelId) return null;
 
+  // Check if sticky provider is free-tier compatible when strategy is 'prioritize'
+  if (freeTierStrategy === 'prioritize' && isFreeModel) {
+    if (!isFreeModel(providerId, modelId)) {
+      cache.del(key);
+      logger.info({ providerId, modelId }, 'Sticky session broken - provider not free-tier');
+      return null;
+    }
+  }
+
+  // Check if the sticky provider is still available (not rate-limited)
+  if (rateLimitService) {
+    const check = rateLimitService.checkLimit(providerId, modelId, 0);
+    if (!check.allowed) {
+      cache.del(key);
+      logger.info({ providerId, modelId, reason: check.reason }, 'Sticky session broken - provider rate-limited');
+      return null;
+    }
+  }
+
   return { providerId, modelId };
 }
 
 /**
+ * Break a sticky session for a conversation hash.
+ */
+export async function breakStickySession(conversationHash: string, reason: string): Promise<void> {
+  const key = `sticky:${conversationHash}`;
+  cache.del(key);
+  logger.info({ conversationHash, reason }, 'Sticky session broken');
+}
+
+/**
  * Set a sticky provider for a conversation hash.
+ * TTL can be adjusted based on provider rate limits.
  */
 export async function setStickyProvider(
   conversationHash: string,
   providerId: string,
   modelId: string,
-  ttlSeconds: number = DEFAULT_TTL_SECONDS
+  ttlSeconds: number = DEFAULT_TTL_SECONDS,
+  rateLimitRpm?: number
 ): Promise<void> {
-  const redis = getRedis();
+  // Adjust TTL based on rate limits - providers with tight limits get shorter sticky sessions
+  if (rateLimitRpm && rateLimitRpm > 0) {
+    // For a 3 RPM provider, sticky TTL should be ~20 seconds (1 request buffer)
+    // For a 30 RPM provider, sticky TTL can be the full 30 minutes
+    const adjustedTtl = Math.min(ttlSeconds, Math.max(20, Math.floor(60 / rateLimitRpm) * 10));
+    ttlSeconds = adjustedTtl;
+  }
+
   const key = `sticky:${conversationHash}`;
 
-  await redis.set(key, `${providerId}:${modelId}`, { EX: ttlSeconds });
+  cache.set(key, `${providerId}:${modelId}`, ttlSeconds);
 
   logger.debug(
     { conversationHash, providerId, modelId, ttlSeconds },

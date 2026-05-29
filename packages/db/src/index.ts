@@ -1,2 +1,2 @@
-export { getPool, closePool } from './client.js';
-export { getRedis, connectRedis, closeRedis } from './redis.js';
+export { initDb, getDb, closeDb } from './client.js';
+export { cache, MemoryCache } from './cache.js';

@@ -1,4 +1,4 @@
-import type { Specialization, SpecializationProfile } from '@dmr-x/core';
+import type { Specialization } from '@dmr-x/core';
 import type { UnifiedRequest } from '@dmr-x/core';
 
 /**

@@ -1,12 +1,12 @@
-import { getPool, getRedis } from '@dmr-x/db';
+import { getDb, cache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { ProviderModel, CandidateSet } from '@dmr-x/core';
 
 export class RegistryService {
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
 
-  async getCandidates(modality?: string): Promise<CandidateSet> {
-    const pool = getPool();
+  getCandidates(modality?: string): CandidateSet {
+    const db = getDb();
     const query = `
       SELECT
         p.id as "providerId",
@@ -26,16 +26,16 @@ export class RegistryService {
         mp.supports_json_mode
       FROM model_profiles mp
       JOIN providers p ON p.id = mp.provider_id
-      WHERE mp.is_active = true AND p.is_healthy = true
-      ${modality ? 'AND mp.modality = $1' : ''}
+      WHERE mp.is_active = 1 AND p.is_healthy = 1
+      ${modality ? 'AND mp.modality = ?' : ''}
       ORDER BY mp.quality_score DESC
     `;
 
-    const result = modality
-      ? await pool.query(query, [modality])
-      : await pool.query(query);
+    const rows = modality
+      ? db.prepare(query).all(modality)
+      : db.prepare(query).all();
 
-    return result.rows.map((row) => ({
+    return rows.map((row: any) => ({
       providerId: row.providerId,
       providerName: row.providerName,
       modelId: row.modelId,
@@ -60,67 +60,57 @@ export class RegistryService {
     return caps;
   }
 
-  async getProvider(providerId: string): Promise<any> {
-    const pool = getPool();
-    const result = await pool.query(
-      'SELECT * FROM providers WHERE id = $1',
-      [providerId]
-    );
-    return result.rows[0] || null;
+  getProvider(providerId: string): any {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(providerId);
+    return row || null;
   }
 
-  async updateHealth(providerId: string, healthy: boolean, latencyMs?: number): Promise<void> {
-    const pool = getPool();
+  updateHealth(providerId: string, healthy: boolean, latencyMs?: number): void {
+    const db = getDb();
 
     if (healthy) {
-      await pool.query(
+      db.prepare(
         `UPDATE providers SET
-          is_healthy = true,
+          is_healthy = 1,
           consecutive_failures = 0,
-          last_health_check = NOW(),
-          updated_at = NOW()
-        WHERE id = $1`,
-        [providerId]
-      );
+          last_health_check = datetime('now'),
+          updated_at = datetime('now')
+        WHERE id = ?`
+      ).run(providerId);
     } else {
-      await pool.query(
+      db.prepare(
         `UPDATE providers SET
           consecutive_failures = consecutive_failures + 1,
-          is_healthy = CASE WHEN consecutive_failures >= 2 THEN false ELSE true END,
-          last_health_check = NOW(),
-          updated_at = NOW()
-        WHERE id = $1`,
-        [providerId]
-      );
+          is_healthy = CASE WHEN consecutive_failures >= 2 THEN 0 ELSE 1 END,
+          last_health_check = datetime('now'),
+          updated_at = datetime('now')
+        WHERE id = ?`
+      ).run(providerId);
     }
 
     // Record health check
-    await pool.query(
-      'INSERT INTO health_checks (provider_id, is_healthy, latency_ms) VALUES ($1, $2, $3)',
-      [providerId, healthy, latencyMs]
-    );
+    db.prepare(
+      'INSERT INTO health_checks (provider_id, is_healthy, latency_ms) VALUES (?, ?, ?)'
+    ).run(providerId, healthy ? 1 : 0, latencyMs);
   }
 
-  async getProviderConfig(providerId: string): Promise<any> {
-    const redis = getRedis();
+  getProviderConfig(providerId: string): any {
     const cacheKey = `provider:config:${providerId}`;
 
-    const cached = await redis.get(cacheKey);
+    const cached = cache.get(cacheKey) as string | undefined;
     if (cached) {
       return JSON.parse(cached);
     }
 
-    const pool = getPool();
-    const result = await pool.query(
-      'SELECT * FROM providers WHERE id = $1',
-      [providerId]
-    );
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(providerId);
 
-    if (result.rows[0]) {
-      await redis.setEx(cacheKey, 300, JSON.stringify(result.rows[0]));
+    if (row) {
+      cache.set(cacheKey, JSON.stringify(row), 300);
     }
 
-    return result.rows[0] || null;
+    return row || null;
   }
 }
 

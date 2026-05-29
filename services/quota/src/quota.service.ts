@@ -1,8 +1,9 @@
-import { getPool, getRedis } from '@dmr-x/db';
+import { getDb, cache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import { QuotaExhaustedError } from '@dmr-x/core';
 import type { CandidateSet } from '@dmr-x/core';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
+import crypto from 'node:crypto';
 
 export interface QuotaAllocation {
   id: string;
@@ -81,9 +82,8 @@ export class QuotaService {
    * Get accumulated token usage for a provider's free-tier budget
    */
   async getProviderBudgetUsage(tenantId: string, providerId: string): Promise<number> {
-    const redis = getRedis();
     const key = `freebudget:${tenantId}:${providerId}`;
-    const usage = await redis.get(key);
+    const usage = cache.get(key);
     return parseInt(usage || '0');
   }
 
@@ -95,11 +95,10 @@ export class QuotaService {
     providerId: string,
     tokens: number
   ): Promise<void> {
-    const redis = getRedis();
     const key = `freebudget:${tenantId}:${providerId}`;
-    await redis.incrBy(key, tokens);
+    cache.incrBy(key, tokens);
     // Expire at end of month (30 days)
-    await redis.expire(key, 30 * 24 * 60 * 60);
+    cache.expire(key, 30 * 24 * 60 * 60);
   }
 
   /**
@@ -111,24 +110,21 @@ export class QuotaService {
     tokens: number,
     cost: number
   ): Promise<void> {
-    const redis = getRedis();
-
-    // Increment counters in Redis (fast path)
+    // Increment counters in cache (fast path)
     const key = `quota:${tenantId}:${providerId}`;
-    await redis.hIncrBy(key, 'requests', 1);
-    await redis.hIncrBy(key, 'tokens', tokens);
-    await redis.hIncrByFloat(key, 'cost', cost);
+    cache.hIncrBy(key, 'requests', 1);
+    cache.hIncrBy(key, 'tokens', tokens);
+    cache.hIncrBy(key, 'cost', Math.round(cost));
 
     // Set expiry based on period (default: 30 days)
-    await redis.expire(key, 30 * 24 * 60 * 60);
+    cache.expire(key, 30 * 24 * 60 * 60);
 
-    // Also record in PostgreSQL for persistence
-    const pool = getPool();
-    await pool.query(
+    // Also record in database for persistence
+    const db = getDb();
+    db.prepare(
       `INSERT INTO billing_records (tenant_id, amount, description)
-       VALUES ($1, $2, $3)`,
-      [tenantId, cost, `Usage: ${tokens} tokens via ${providerId}`]
-    );
+       VALUES (?, ?, ?)`
+    ).run(tenantId, cost, `Usage: ${tokens} tokens via ${providerId}`);
   }
 
   /**
@@ -162,15 +158,14 @@ export class QuotaService {
   }
 
   private async getAllocations(tenantId: string): Promise<QuotaAllocation[]> {
-    const pool = getPool();
-    const result = await pool.query(
+    const db = getDb();
+    const rows = db.prepare(
       `SELECT id, tenant_id, provider_id, max_requests, max_tokens, max_cost, period
        FROM quota_allocations
-       WHERE tenant_id = $1`,
-      [tenantId]
-    );
+       WHERE tenant_id = ?`
+    ).all(tenantId) as any[];
 
-    return result.rows.map((row) => ({
+    return rows.map((row) => ({
       id: row.id,
       tenantId: row.tenant_id,
       providerId: row.provider_id,
@@ -182,14 +177,11 @@ export class QuotaService {
   }
 
   private async getUsage(tenantId: string, allocation: QuotaAllocation): Promise<QuotaUsage> {
-    const redis = getRedis();
     const key = `quota:${tenantId}:${allocation.providerId || 'global'}`;
 
-    const [requests, tokens, cost] = await Promise.all([
-      redis.hGet(key, 'requests').then((v) => parseInt(v || '0')),
-      redis.hGet(key, 'tokens').then((v) => parseInt(v || '0')),
-      redis.hGet(key, 'cost').then((v) => parseFloat(v || '0')),
-    ]);
+    const requests = parseInt(cache.hGet(key, 'requests') || '0');
+    const tokens = parseInt(cache.hGet(key, 'tokens') || '0');
+    const cost = parseFloat(cache.hGet(key, 'cost') || '0');
 
     return { requests, tokens, cost };
   }
@@ -198,20 +190,16 @@ export class QuotaService {
    * Reset quotas for a new period
    */
   async resetQuotas(tenantId?: string): Promise<void> {
-    const redis = getRedis();
-    const pool = getPool();
+    const db = getDb();
 
     // Get all allocations
-    const query = tenantId
-      ? 'SELECT * FROM quota_allocations WHERE tenant_id = $1'
-      : 'SELECT * FROM quota_allocations';
-    const result = tenantId
-      ? await pool.query(query, [tenantId])
-      : await pool.query(query);
+    const rows = tenantId
+      ? db.prepare('SELECT * FROM quota_allocations WHERE tenant_id = ?').all(tenantId) as any[]
+      : db.prepare('SELECT * FROM quota_allocations').all() as any[];
 
-    for (const allocation of result.rows) {
+    for (const allocation of rows) {
       const key = `quota:${allocation.tenant_id}:${allocation.provider_id || 'global'}`;
-      await redis.del(key);
+      cache.del(key);
     }
 
     logger.info({ tenantId }, 'Reset quotas');
@@ -228,15 +216,14 @@ export class QuotaService {
     maxCost: number | null,
     period: string = 'monthly'
   ): Promise<QuotaAllocation> {
-    const pool = getPool();
-    const result = await pool.query(
-      `INSERT INTO quota_allocations (tenant_id, provider_id, max_requests, max_tokens, max_cost, period)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [tenantId, providerId, maxRequests, maxTokens, maxCost, period]
-    );
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO quota_allocations (id, tenant_id, provider_id, max_requests, max_tokens, max_cost, period)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, tenantId, providerId, maxRequests, maxTokens, maxCost, period);
 
-    const row = result.rows[0];
+    const row = db.prepare('SELECT * FROM quota_allocations WHERE id = ?').get(id) as any;
     return {
       id: row.id,
       tenantId: row.tenant_id,

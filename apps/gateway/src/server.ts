@@ -1,11 +1,15 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { logger } from '@dmr-x/utils';
 import { Router } from '@dmr-x/router';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter } from '@dmr-x/adapters';
-import { registryService, HealthChecker, PROVIDER_CATALOG } from '@dmr-x/registry';
-import { getPool, getRedis } from '@dmr-x/db';
+import type { UnifiedRequest } from '@dmr-x/core';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
+import { getDb } from '@dmr-x/db';
 import { quotaService, keyRotationService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import { chatRoutes } from './routes/chat.routes.js';
@@ -15,21 +19,38 @@ import { embeddingsRoutes } from './routes/embeddings.routes.js';
 import { audioRoutes } from './routes/audio.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
 import { adminRoutes } from './routes/admin.routes.js';
+import { toolsRoutes, registerToolHandler } from './routes/tools.routes.js';
+import { agenticRoutes } from './routes/agentic.routes.js';
 import { authMiddleware } from './middleware/auth.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
+
+const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
+declare const Bun: unknown | undefined;
+const isBun = typeof Bun !== 'undefined';
 
 export async function createServer() {
   const server = Fastify({
     logger: {
       level: process.env.LOG_LEVEL || 'info',
       transport:
-        process.env.NODE_ENV !== 'production'
+        !isBun && process.env.NODE_ENV !== 'production'
           ? { target: 'pino-pretty', options: { colorize: true } }
           : undefined,
     },
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
   });
+
+  // Local mode: ensure a default tenant exists
+  if (LOCAL_MODE) {
+    logger.info('Running in local mode -- skipping strict auth, creating default tenant');
+    const db = getDb();
+    const existing = db.prepare("SELECT id FROM tenants WHERE name = 'local'").get() as { id: string } | undefined;
+    if (!existing) {
+      db.prepare("INSERT INTO tenants (id, name) VALUES (?, 'local')").run(crypto.randomUUID());
+      logger.info('Created default local tenant');
+    }
+  }
 
   // Initialize adapters
   const adapterRegistry = new AdapterRegistry();
@@ -46,13 +67,13 @@ export async function createServer() {
   // Initialize adapters with config from env
   if (process.env.OPENAI_API_KEY) {
     await adapterRegistry.initialize('openai', {
-      baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com',
+      baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
       apiKey: process.env.OPENAI_API_KEY,
     });
   }
   if (process.env.ANTHROPIC_API_KEY) {
     await adapterRegistry.initialize('anthropic', {
-      baseUrl: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
+      baseUrl: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
   }
@@ -63,79 +84,84 @@ export async function createServer() {
   }
   if (process.env.REPLICATE_API_TOKEN) {
     await adapterRegistry.initialize('replicate', {
-      baseUrl: 'https://api.replicate.com',
+      baseUrl: 'https://api.replicate.com/v1',
       apiKey: process.env.REPLICATE_API_TOKEN,
     });
   }
   if (process.env.STABILITY_API_KEY) {
     await adapterRegistry.initialize('stability', {
-      baseUrl: process.env.STABILITY_BASE_URL || 'https://api.stability.ai',
+      baseUrl: process.env.STABILITY_BASE_URL || 'https://api.stability.ai/v1',
       apiKey: process.env.STABILITY_API_KEY,
     });
   }
   if (process.env.ELEVENLABS_API_KEY) {
     await adapterRegistry.initialize('elevenlabs', {
-      baseUrl: 'https://api.elevenlabs.io',
+      baseUrl: 'https://api.elevenlabs.io/v1',
       apiKey: process.env.ELEVENLABS_API_KEY,
     });
   }
   if (process.env.DEEPGRAM_API_KEY) {
     await adapterRegistry.initialize('deepgram', {
-      baseUrl: 'https://api.deepgram.com',
+      baseUrl: 'https://api.deepgram.com/v1',
       apiKey: process.env.DEEPGRAM_API_KEY,
     });
   }
   if (process.env.COHERE_API_KEY) {
     await adapterRegistry.initialize('cohere', {
-      baseUrl: 'https://api.cohere.ai',
+      baseUrl: 'https://api.cohere.com/v2',
       apiKey: process.env.COHERE_API_KEY,
     });
   }
   if (process.env.JINA_API_KEY) {
     await adapterRegistry.initialize('jina', {
-      baseUrl: 'https://api.jina.ai',
+      baseUrl: 'https://api.jina.ai/v1',
       apiKey: process.env.JINA_API_KEY,
     });
   }
 
-  // Register GenericOpenAIAdapter for free-tier providers with key rotation
-  const freeProviders = PROVIDER_CATALOG.filter(p =>
-    p.models.some(m => m.inputCostPer1M === 0 && m.outputCostPer1M === 0)
-  );
-  for (const provider of freeProviders) {
-    // Skip providers with template URLs (e.g., Cloudflare needs {ACCOUNT_ID})
-    if (provider.baseUrl.includes('{')) continue;
+  // Load all registered providers from DB and initialize adapters
+  const db = getDb();
+  const registeredProviders = db.prepare('SELECT * FROM providers').all() as any[];
+  for (const row of registeredProviders) {
+    const template = PROVIDER_CATALOG.find(t => t.id === row.name);
+    const config = JSON.parse(row.config || '{}');
+    const apiKey = config.apiKey || (row.api_key_ref ? process.env[row.api_key_ref] : undefined);
 
-    // Load keys (supports multiple via GROQ_API_KEYS or GROQ_API_KEY_1, _2, etc.)
-    const keys = keyRotationService.loadKeys(provider.id);
-    if (keys.length === 0 && provider.envKey) continue; // No keys available
-    if (keys.length === 0 && !provider.envKey) {
-      // Provider doesn't need a key (e.g., Pollinations)
-      const adapter = new GenericOpenAIAdapter(provider.id);
-      await adapter.initialize({ baseUrl: provider.baseUrl, apiKey: '' });
+    // If adapter not yet registered, register GenericOpenAIAdapter if it's OpenAI-compatible
+    if (!adapterRegistry.get(row.name) && template?.apiFormat === 'openai') {
+      const adapter = new GenericOpenAIAdapter(row.name);
       adapterRegistry.register(adapter);
-      logger.info({ providerId: provider.id }, 'Registered free-tier adapter (no key)');
-      continue;
     }
 
-    // Register adapter with key rotation support
-    const adapter = new GenericOpenAIAdapter(provider.id);
-    await adapter.initialize({
-      baseUrl: provider.baseUrl,
-      apiKey: keys[0],
-    });
-    if (keys.length > 1) {
-      adapter.setKeys(keys);
+    const adapter = adapterRegistry.get(row.name);
+    if (adapter && (apiKey || !template?.envKey)) {
+      try {
+        await adapterRegistry.initialize(row.name, {
+          baseUrl: row.base_url || template?.baseUrl || '',
+          apiKey: apiKey || '',
+        });
+        logger.info({ providerId: row.name }, 'Initialized adapter from DB/Env');
+      } catch (err) {
+        logger.warn({ providerId: row.name, err }, 'Failed to initialize adapter on startup');
+      }
     }
-    adapterRegistry.register(adapter);
-    logger.info({ providerId: provider.id, keyCount: keys.length }, 'Registered free-tier adapter');
+  }
+
+  // Auto-register any new catalog items (first-run or updates)
+  try {
+    const newlyRegistered = await autoRegisterProviders();
+    if (newlyRegistered.length > 0) {
+      logger.info({ count: newlyRegistered.length }, 'Auto-registered new catalog providers');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to auto-register providers');
   }
 
   // Initialize router
   const freeTierStrategy = (process.env.DMRX_FREE_TIER_STRATEGY as any) || 'none';
   const router = new Router({ epsilon: 0.05, quotaService, policyService, freeTierStrategy });
   router.setAdapterExecutor({
-    execute: async (providerId, modelId, request) => {
+    execute: async (providerId: string, _modelId: string, request: UnifiedRequest) => {
       const adapter = adapterRegistry.get(providerId);
       if (!adapter) throw new Error(`Adapter not found: ${providerId}`);
       return adapter.execute(request);
@@ -158,6 +184,7 @@ export async function createServer() {
   // Make router available to routes
   server.decorate('router', router);
   server.decorate('adapterRegistry', adapterRegistry);
+  server.decorate('registerToolHandler', registerToolHandler);
 
   // CORS
   await server.register(cors, {
@@ -172,6 +199,21 @@ export async function createServer() {
     timeWindow: process.env.DMRX_RATE_LIMIT_WINDOW || '1 minute',
   });
 
+  // Serve UI static files
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const uiDir = process.env.DMRX_UI_DIR || path.join(__dirname, '..', 'public');
+  try {
+    await server.register(fastifyStatic, {
+      root: uiDir,
+      prefix: '/',
+      wildcard: false,
+      decorateReply: false,
+    });
+    logger.info({ dir: uiDir }, 'Serving UI from static directory');
+  } catch (err) {
+    logger.warn({ err, dir: uiDir }, 'Could not serve UI static files');
+  }
+
   // Middleware
   await server.register(requestIdMiddleware);
   await server.register(authMiddleware);
@@ -179,27 +221,17 @@ export async function createServer() {
   // Health checks
   server.get('/health', async () => ({ status: 'ok' }));
 
-  server.get('/healthz', async (request, reply) => {
+  server.get('/healthz', async (_request, reply) => {
     const checks: Record<string, string> = {};
     let healthy = true;
 
-    // Check PostgreSQL
+    // Check SQLite
     try {
-      const pool = getPool();
-      await pool.query('SELECT 1');
-      checks.postgres = 'ok';
+      const db = getDb();
+      db.prepare('SELECT 1').get();
+      checks.sqlite = 'ok';
     } catch {
-      checks.postgres = 'fail';
-      healthy = false;
-    }
-
-    // Check Redis
-    try {
-      const redis = getRedis();
-      await redis.ping();
-      checks.redis = 'ok';
-    } catch {
-      checks.redis = 'fail';
+      checks.sqlite = 'fail';
       healthy = false;
     }
 
@@ -210,12 +242,10 @@ export async function createServer() {
     return { status, checks };
   });
 
-  server.get('/ready', async (request, reply) => {
+  server.get('/ready', async (_request, reply) => {
     try {
-      const pool = getPool();
-      await pool.query('SELECT 1');
-      const redis = getRedis();
-      await redis.ping();
+      const db = getDb();
+      db.prepare('SELECT 1').get();
       return { status: 'ready' };
     } catch {
       reply.status(503);
@@ -233,6 +263,16 @@ export async function createServer() {
   await server.register(embeddingsRoutes, { prefix: '/v1' });
   await server.register(audioRoutes, { prefix: '/v1' });
   await server.register(adminRoutes, { prefix: '/v1' });
+  await server.register(toolsRoutes, { prefix: '/v1' });
+  await server.register(agenticRoutes, { prefix: '/v1' });
+
+  // SPA fallback — serve index.html for non-API GET requests
+  server.get('*', async (request, reply) => {
+    if (request.url.startsWith('/v1/') || request.url.startsWith('/health')) {
+      return reply.code(404).send({ error: 'Not Found' });
+    }
+    return reply.type('text/html').sendFile('index.html');
+  });
 
   // Error handler
   server.setErrorHandler((error, request, reply) => {

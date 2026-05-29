@@ -13,11 +13,8 @@ export async function autoRegisterProviders(): Promise<string[]> {
   const db = getDb();
 
   for (const template of PROVIDER_CATALOG) {
-    const apiKey = process.env[template.envKey];
-
-    if (!apiKey && template.category !== 'local') {
-      continue; // No API key = skip (except local providers)
-    }
+    const apiKey = template.envKey ? process.env[template.envKey] : undefined;
+    const hasKey = !!apiKey;
 
     // Check if provider already exists
     const existing = db.prepare(
@@ -32,15 +29,18 @@ export async function autoRegisterProviders(): Promise<string[]> {
     try {
       // Create provider
       const providerId = crypto.randomUUID();
+      const isActive = hasKey || template.envKey === '';
+      
       db.prepare(
-        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, is_healthy, config)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       ).run(
         providerId,
         template.id,
         template.id,
         template.baseUrl,
-        template.envKey,
+        template.envKey || '',
+        isActive ? 1 : 0,
         JSON.stringify({
           authMethod: template.authMethod,
           authHeader: template.authHeader,
@@ -48,6 +48,10 @@ export async function autoRegisterProviders(): Promise<string[]> {
           streaming: template.streaming,
           toolCalling: template.toolCalling,
           signupUrl: template.signupUrl,
+          hasKey,
+          category: template.category,
+          region: template.region,
+          description: template.description,
         })
       );
 
@@ -73,18 +77,18 @@ export async function autoRegisterProviders(): Promise<string[]> {
           model.capabilities.includes('json_mode') ? 1 : 0,
           model.contextWindow,
           model.maxOutputTokens,
-          (model.inputCostPer1M || 0) / 1000,  // Convert from per-1M to per-1K
+          (model.inputCostPer1M || 0) / 1000,
           (model.outputCostPer1M || 0) / 1000,
           model.costPerImage || 0,
-          0.5, // Default quality score
-          1,
+          0.5,
+          isActive ? 1 : 0,
         );
       }
 
       registered.push(template.id);
       logger.info(
-        { provider: template.id, models: template.models.length },
-        'Auto-registered provider'
+        { provider: template.id, models: template.models.length, hasKey },
+        hasKey ? 'Auto-registered provider (key found)' : 'Registered provider (no key — add one to activate)'
       );
     } catch (error) {
       logger.error({ err: error, provider: template.id }, 'Failed to auto-register provider');

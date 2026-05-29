@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { TestClient } from './test-client.js';
 
-describe('Gateway Connectivity', () => {
+const describeE2E = process.env.DMRX_RUN_E2E === 'true' ? describe : describe.skip;
+
+describeE2E('Gateway Connectivity', () => {
   let client: TestClient;
 
   beforeAll(() => {

@@ -1,56 +1,7 @@
-version: '3.8'
-
-services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_DB: dmr_x
-      POSTGRES_USER: dmrx
-      POSTGRES_PASSWORD: dmrx
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ../../packages/db/src/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dmrx -d dmr_x"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  gateway:
-    build:
-      context: ../..
-      dockerfile: apps/gateway/Dockerfile
-    ports:
-      - "3000:3000"
-    environment:
-      NODE_ENV: development
-      PORT: 3000
-      DATABASE_URL: postgresql://dmrx:dmrx@postgres:5432/dmr_x
-      REDIS_URL: redis://redis:6379
-      LOG_LEVEL: debug
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ../../:/app
-      - /app/node_modules
-
-volumes:
-  postgres_data:
-  redis_data:
+# This file is deprecated. Use the root docker-compose.yml instead.
+# Kept for reference.
+#
+# To run DMR-X with Docker:
+#   docker compose up -d
+#
+# Data is persisted in the dmr-x-data volume at ~/.dmr-x/data.db

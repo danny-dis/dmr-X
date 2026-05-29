@@ -16,7 +16,7 @@ const ImageRequestSchema = z.object({
 });
 
 export async function imagesRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/images/generations', async (request, reply) => {
+  server.post('/images/generations', async (request) => {
     const parsed = ImageRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });

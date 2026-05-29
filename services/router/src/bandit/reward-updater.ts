@@ -1,4 +1,4 @@
-import { getPool } from '@dmr-x/db';
+import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { ThompsonSampler } from './thompson-sampler.js';
 import { calculateReward } from './thompson-sampler.js';
@@ -63,23 +63,23 @@ export class RewardUpdater {
    * Periodically recompute rewards from request logs
    */
   async recomputeFromLogs(daysBack: number = 7): Promise<void> {
-    const pool = getPool();
+    const db = getDb();
 
-    const result = await pool.query(
+    const rows = db.prepare(
       `SELECT
         selected_provider as "providerId",
         selected_model as "modelId",
         AVG(latency_ms) as "avgLatency",
         AVG(quality_score) as "avgQuality",
         COUNT(*) as "totalRequests",
-        COUNT(*) FILTER (WHERE error_code IS NULL) as "successfulRequests"
+        SUM(CASE WHEN error_code IS NULL THEN 1 ELSE 0 END) as "successfulRequests"
       FROM request_logs
-      WHERE timestamp > NOW() - INTERVAL '${daysBack} days'
+      WHERE timestamp > datetime('now', '-' || ? || ' days')
         AND selected_provider IS NOT NULL
       GROUP BY selected_provider, selected_model`
-    );
+    ).all(daysBack) as any[];
 
-    for (const row of result.rows) {
+    for (const row of rows) {
       const successRate = row.successfulRequests / row.totalRequests;
       const reward = calculateReward(
         parseFloat(row.avgQuality) || 0.5,
@@ -107,6 +107,6 @@ export class RewardUpdater {
       );
     }
 
-    logger.info({ models: result.rows.length }, 'Recomputed bandit rewards from logs');
+    logger.info({ models: rows.length }, 'Recomputed bandit rewards from logs');
   }
 }

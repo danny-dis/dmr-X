@@ -64,6 +64,7 @@ export function useProviders() {
         avgLatency: (ap.config?.avgLatencyMs as number) || 0,
         successRate: (ap.config?.successRate as number) || 100,
         signupUrl: (ap.config?.signupUrl as string) || undefined,
+        apiKey: (ap.config?.apiKey as string) || undefined,
       }));
       setProviders(mapped);
     } catch (err) {
@@ -77,6 +78,29 @@ export function useProviders() {
   useEffect(() => { load(); }, [load]);
 
   return { providers, loading, source, error, refetch: load };
+}
+
+export function useCatalog() {
+  const [catalog, setCatalog] = useState<api.ProviderTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      const data = await api.fetchCatalog();
+      setCatalog(data);
+    } catch (err) {
+      setCatalog([]);
+      setError(err instanceof Error ? err.message : 'Failed to load catalog');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return { catalog, loading, error, refetch: load };
 }
 
 export function useModels() {

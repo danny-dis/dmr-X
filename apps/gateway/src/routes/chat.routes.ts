@@ -1,8 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
-import { generateRequestId } from '@dmr-x/utils';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
+
+// NOTE: ModelResult from @dmr-x/utils operates on OpenResponses API types.
+// Full integration requires a /v1/responses endpoint. The streaming logic below
+// handles Chat Completions format. When /v1/responses is built, ModelResult
+// will provide multi-turn tool orchestration, approval gates, and state persistence.
+// ReusableReadableStream is available for multi-consumer streaming (telemetry + response).
 
 const ChatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
@@ -84,31 +90,48 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       if (body.stream) {
         // Streaming response
-        reply.raw.writeHead(200, {
+        const streamHeaders: Record<string, string> = {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
-        });
+          'X-Routed-Via': `${plan.primary.providerId}/${plan.primary.modelId}`,
+          'X-Fallback-Attempts': String(plan.chain.length),
+        };
+        if (unifiedRequest.metadata?.freeTierStrategy) {
+          streamHeaders['X-Free-Tier-Strategy'] = String(unifiedRequest.metadata.freeTierStrategy);
+        }
+        reply.raw.writeHead(200, streamHeaders);
 
         // For streaming, we need to use the adapter's stream method
         const adapterRegistry = (server as any).adapterRegistry;
         const adapter = adapterRegistry.get(plan.primary.providerId);
         if (adapter) {
-          const stream = adapter.executeStream(unifiedRequest);
-          for await (const chunk of stream) {
-            if (chunk.type === 'token') {
-              reply.raw.write(`data: ${JSON.stringify({
-                id: requestId,
-                object: 'chat.completion.chunk',
-                choices: [{ index: 0, delta: chunk.data, finish_reason: null }],
-              })}\n\n`);
-            } else if (chunk.type === 'done') {
-              reply.raw.write(`data: ${JSON.stringify({
-                id: requestId,
-                object: 'chat.completion.chunk',
-                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              })}\n\n`);
+          try {
+            const stream = adapter.executeStream(unifiedRequest);
+            for await (const chunk of stream) {
+              if (chunk.type === 'token') {
+                reply.raw.write(`data: ${JSON.stringify({
+                  id: requestId,
+                  object: 'chat.completion.chunk',
+                  choices: [{ index: 0, delta: chunk.data, finish_reason: null }],
+                })}\n\n`);
+              } else if (chunk.type === 'done') {
+                reply.raw.write(`data: ${JSON.stringify({
+                  id: requestId,
+                  object: 'chat.completion.chunk',
+                  choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+                })}\n\n`);
+              }
             }
+          } catch (streamError) {
+            logger.error({ err: streamError, requestId }, 'Streaming error');
+            // Send an error event to the client
+            reply.raw.write(`data: ${JSON.stringify({
+              error: {
+                message: streamError instanceof Error ? streamError.message : 'Stream failed',
+                type: 'stream_error',
+              },
+            })}\n\n`);
           }
         }
         reply.raw.write('data: [DONE]\n\n');
@@ -117,6 +140,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Non-streaming response
+      reply.header('X-Routed-Via', `${plan.primary.providerId}/${plan.primary.modelId}`);
+      reply.header('X-Fallback-Attempts', String(plan.chain.length));
+      if (unifiedRequest.metadata?.freeTierStrategy) {
+        reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
+      }
+
       return {
         id: requestId,
         object: 'chat.completion',

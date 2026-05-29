@@ -4,6 +4,8 @@ export type Modality =
   | 'embedding'
   | 'audio_tts'
   | 'audio_stt'
+  | 'audio_speech'
+  | 'audio_transcription'
   | 'video'
   | 'music'
   | 'reranking'
@@ -40,6 +42,8 @@ export const DEFAULT_FALLBACK_CHAINS: Record<Modality, string[]> = {
   embedding: ['openai', 'ollama'],
   audio_tts: ['elevenlabs', 'openai'],
   audio_stt: ['openai', 'deepgram'],
+  audio_speech: ['openai', 'elevenlabs'],
+  audio_transcription: ['openai', 'deepgram'],
   video: ['replicate', 'runway'],
   music: ['replicate', 'suno'],
   reranking: ['cohere', 'jina'],
@@ -56,6 +60,8 @@ export const MODALITY_TIMEOUTS: Record<Modality, number> = {
   embedding: 10000,
   audio_tts: 30000,
   audio_stt: 60000,
+  audio_speech: 30000,
+  audio_transcription: 60000,
   video: 300000,
   music: 180000,
   reranking: 10000,

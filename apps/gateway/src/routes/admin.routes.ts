@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { getPool } from '@dmr-x/db';
+import { getDb } from '@dmr-x/db';
+import crypto from 'node:crypto';
 import { ValidationError } from '@dmr-x/core';
+import { PROVIDER_CATALOG, registryService } from '@dmr-x/registry';
 
 const CreateProviderSchema = z.object({
   name: z.string().min(1),
@@ -33,14 +35,123 @@ const TestProviderSchema = z.object({
   api_key: z.string().min(1),
 });
 
+const ActivateProviderSchema = z.object({
+  template_id: z.string().min(1),
+  api_key: z.string().optional(),
+});
+
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
+  // List provider catalog
+  server.get('/admin/catalog', async () => {
+    return { catalog: PROVIDER_CATALOG };
+  });
+
+  // Activate provider from catalog
+  server.post('/admin/providers/activate', async (request, reply) => {
+    const parsed = ActivateProviderSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const { template_id, api_key } = parsed.data;
+    const template = PROVIDER_CATALOG.find(t => t.id === template_id);
+    if (!template) {
+      throw new ValidationError(`Template not found: ${template_id}`);
+    }
+
+    const db = getDb();
+    let provider = db.prepare('SELECT * FROM providers WHERE name = ?').get(template_id) as any;
+
+    if (provider) {
+      // Update existing
+      db.prepare(
+        `UPDATE providers SET 
+          base_url = ?,
+          config = json_set(config, '$.apiKey', ?),
+          is_healthy = 1,
+          updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(template.baseUrl, api_key || '', provider.id);
+    } else {
+      // Create new
+      const id = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        id,
+        template.id,
+        template.id,
+        template.baseUrl,
+        template.envKey || '',
+        JSON.stringify({
+          category: template.category,
+          region: template.region,
+          description: template.description,
+          signupUrl: template.signupUrl,
+          apiKey: api_key || '',
+          isHealthy: true
+        })
+      );
+      provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
+
+      // Create model profiles for this new provider
+      for (const model of template.models) {
+        db.prepare(
+          `INSERT INTO model_profiles (
+            id, provider_id, model_id, display_name, modality, intelligence_layer,
+            supports_streaming, supports_vision, supports_tool_use,
+            context_window, max_output_tokens,
+            input_cost_per_1k, output_cost_per_1k, cost_per_image,
+            quality_score, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          crypto.randomUUID(),
+          id,
+          model.id,
+          model.id,
+          model.modalities[0] || 'llm',
+          'executor',
+          model.capabilities.includes('streaming') ? 1 : 0,
+          model.capabilities.includes('vision') ? 1 : 0,
+          model.capabilities.includes('tool_use') ? 1 : 0,
+          model.contextWindow,
+          model.maxOutputTokens,
+          (model.inputCostPer1M || 0) / 1000,
+          (model.outputCostPer1M || 0) / 1000,
+          model.costPerImage || 0,
+          0.5,
+          1
+        );
+      }
+    }
+
+    // Initialize/Update adapter in registry
+    const adapterRegistry = (server as any).adapterRegistry;
+    let adapter = adapterRegistry.get(template_id);
+
+    if (!adapter && template.apiFormat === 'openai') {
+      const { GenericOpenAIAdapter } = await import('@dmr-x/adapters');
+      adapter = new GenericOpenAIAdapter(template_id);
+      adapterRegistry.register(adapter);
+    }
+
+    if (adapter) {
+      await adapterRegistry.initialize(template_id, {
+        baseUrl: template.baseUrl,
+        apiKey: api_key || '',
+      });
+    }
+
+    reply.status(200);
+    return { success: true, provider };
+  });
+
   // List providers
   server.get('/admin/providers', async () => {
-    const pool = getPool();
-    const result = await pool.query(
-      'SELECT * FROM providers ORDER BY name'
-    );
-    return { providers: result.rows };
+    const db = getDb();
+    const rows = db.prepare('SELECT * FROM providers ORDER BY name').all();
+    return { providers: rows };
   });
 
   // Test provider connection with a given API key
@@ -138,29 +249,28 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data;
-    const pool = getPool();
+    const db = getDb();
+    const id = crypto.randomUUID();
 
-    const result = await pool.query(
-      `INSERT INTO providers (name, adapter_type, base_url, api_key_ref, config)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [body.name, body.adapter_type, body.base_url, body.api_key_ref, JSON.stringify(body.config)]
-    );
+    db.prepare(
+      `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(id, body.name, body.adapter_type, body.base_url, body.api_key_ref, JSON.stringify(body.config));
 
     reply.status(201);
-    return result.rows[0];
+    return db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
   });
 
   // List models
   server.get('/admin/models', async () => {
-    const pool = getPool();
-    const result = await pool.query(
+    const db = getDb();
+    const rows = db.prepare(
       `SELECT mp.*, p.name as provider_name
        FROM model_profiles mp
        JOIN providers p ON p.id = mp.provider_id
        ORDER BY mp.modality, mp.model_id`
-    );
-    return { models: result.rows };
+    ).all();
+    return { models: rows };
   });
 
   // Create model
@@ -171,25 +281,24 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data;
-    const pool = getPool();
+    const db = getDb();
+    const id = crypto.randomUUID();
 
-    const result = await pool.query(
+    db.prepare(
       `INSERT INTO model_profiles (
-        provider_id, model_id, display_name, modality, intelligence_layer,
+        id, provider_id, model_id, display_name, modality, intelligence_layer,
         context_window, max_output_tokens, supports_streaming, supports_vision,
         supports_tool_use, input_cost_per_1k, output_cost_per_1k, cost_per_image
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-      RETURNING *`,
-      [
-        body.provider_id, body.model_id, body.display_name, body.modality,
-        body.intelligence_layer, body.context_window, body.max_output_tokens,
-        body.supports_streaming, body.supports_vision, body.supports_tool_use,
-        body.input_cost_per_1k, body.output_cost_per_1k, body.cost_per_image,
-      ]
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id, body.provider_id, body.model_id, body.display_name, body.modality,
+      body.intelligence_layer, body.context_window, body.max_output_tokens,
+      body.supports_streaming ? 1 : 0, body.supports_vision ? 1 : 0, body.supports_tool_use ? 1 : 0,
+      body.input_cost_per_1k, body.output_cost_per_1k, body.cost_per_image,
     );
 
     reply.status(201);
-    return result.rows[0];
+    return db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id);
   });
 
   // Create tenant
@@ -199,14 +308,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Name is required');
     }
 
-    const pool = getPool();
-    const result = await pool.query(
-      'INSERT INTO tenants (name) VALUES ($1) RETURNING *',
-      [name]
-    );
+    const db = getDb();
+    const id = crypto.randomUUID();
+
+    db.prepare('INSERT INTO tenants (id, name) VALUES (?, ?)').run(id, name);
 
     reply.status(201);
-    return result.rows[0];
+    return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
   });
 
   // Create API key
@@ -220,134 +328,139 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const apiKey = generateApiKey();
     const keyHash = hashApiKey(apiKey);
 
-    const pool = getPool();
-    const result = await pool.query(
-      'INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3) RETURNING id, tenant_id, name, created_at',
-      [tenant_id, keyHash, name]
-    );
+    const db = getDb();
+    const id = crypto.randomUUID();
+
+    db.prepare(
+      'INSERT INTO api_keys (id, tenant_id, key_hash, name) VALUES (?, ?, ?, ?)'
+    ).run(id, tenant_id, keyHash, name);
+
+    const row = db.prepare(
+      'SELECT id, tenant_id, name, created_at FROM api_keys WHERE id = ?'
+    ).get(id);
 
     reply.status(201);
     return {
-      ...result.rows[0],
+      ...row,
       key: apiKey, // Only shown once
     };
   });
 
   // List tenants
   server.get('/admin/tenants', async () => {
-    const pool = getPool();
-    const result = await pool.query(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT t.*,
-        (SELECT COUNT(*) FROM api_keys WHERE tenant_id = t.id AND is_active = true) as key_count
+        (SELECT COUNT(*) FROM api_keys WHERE tenant_id = t.id AND is_active = 1) as key_count
       FROM tenants t ORDER BY name
-    `);
-    return { tenants: result.rows };
+    `).all();
+    return { tenants: rows };
   });
 
   // List API keys
   server.get('/admin/api-keys', async () => {
-    const pool = getPool();
-    const result = await pool.query(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT ak.id, ak.tenant_id, t.name as tenant_name, ak.name, ak.is_active, ak.created_at, ak.last_used_at
       FROM api_keys ak
       JOIN tenants t ON t.id = ak.tenant_id
       ORDER BY ak.created_at DESC
-    `);
-    return { api_keys: result.rows };
+    `).all();
+    return { api_keys: rows };
   });
 
   // List benchmark results
   server.get('/admin/benchmarks', async () => {
-    const pool = getPool();
-    const result = await pool.query(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT br.*, mp.display_name as model_name, mp.model_id as model_identifier
       FROM benchmark_results br
       JOIN model_profiles mp ON mp.id = br.model_id
       ORDER BY br.run_at DESC
       LIMIT 100
-    `);
-    return { benchmarks: result.rows };
+    `).all();
+    return { benchmarks: rows };
   });
 
   // List policies
   server.get('/admin/policies', async () => {
-    const pool = getPool();
-    const result = await pool.query(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT p.*, t.name as tenant_name
       FROM policies p
       JOIN tenants t ON t.id = p.tenant_id
       ORDER BY p.created_at DESC
-    `);
-    return { policies: result.rows };
+    `).all();
+    return { policies: rows };
   });
 
   // Usage history (hourly for last 24h)
   server.get('/admin/billing/usage-history', async () => {
-    const pool = getPool();
-    const result = await pool.query(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT
-        date_trunc('hour', created_at) as time,
+        strftime('%Y-%m-%d %H:00:00', created_at) as time,
         COUNT(*) as requests,
         SUM(total_tokens) as tokens,
-        SUM(cost_cents)::float / 100 as cost
+        CAST(SUM(cost_cents) AS REAL) / 100 as cost
       FROM usage_records
-      WHERE created_at > NOW() - INTERVAL '24 hours'
-      GROUP BY date_trunc('hour', created_at)
+      WHERE created_at > datetime('now', '-24 hours')
+      GROUP BY strftime('%Y-%m-%d %H:00:00', created_at)
       ORDER BY time
-    `);
-    return { history: result.rows };
+    `).all();
+    return { history: rows };
   });
 
   // Billing summary
   server.get('/admin/billing/summary', async () => {
-    const pool = getPool();
+    const db = getDb();
 
     // Current month spend
-    const currentMonth = await pool.query(`
-      SELECT COALESCE(SUM(cost_cents)::float / 100, 0) as spend
+    const currentMonth = db.prepare(`
+      SELECT COALESCE(CAST(SUM(cost_cents) AS REAL) / 100, 0) as spend
       FROM usage_records
-      WHERE created_at >= date_trunc('month', NOW())
-    `);
+      WHERE created_at >= date('now', 'start of month')
+    `).get() as { spend: number } | undefined;
 
     // Previous month spend
-    const previousMonth = await pool.query(`
-      SELECT COALESCE(SUM(cost_cents)::float / 100, 0) as spend
+    const previousMonth = db.prepare(`
+      SELECT COALESCE(CAST(SUM(cost_cents) AS REAL) / 100, 0) as spend
       FROM usage_records
-      WHERE created_at >= date_trunc('month', NOW() - INTERVAL '1 month')
-        AND created_at < date_trunc('month', NOW())
-    `);
+      WHERE created_at >= date('now', 'start of month', '-1 month')
+        AND created_at < date('now', 'start of month')
+    `).get() as { spend: number } | undefined;
 
     // Cost by provider
-    const costByProvider = await pool.query(`
-      SELECT p.name as provider, COALESCE(SUM(ur.cost_cents)::float / 100, 0) as cost
+    const costByProvider = db.prepare(`
+      SELECT p.name as provider, COALESCE(CAST(SUM(ur.cost_cents) AS REAL) / 100, 0) as cost
       FROM usage_records ur
-      JOIN providers p ON p.id::text = ur.provider_id
-      WHERE ur.created_at >= date_trunc('month', NOW())
+      JOIN providers p ON p.id = ur.provider_id
+      WHERE ur.created_at >= date('now', 'start of month')
       GROUP BY p.name
       ORDER BY cost DESC
-    `);
+    `).all();
 
     // Cost by model
-    const costByModel = await pool.query(`
-      SELECT ur.model_id as model, COALESCE(SUM(ur.cost_cents)::float / 100, 0) as cost
+    const costByModel = db.prepare(`
+      SELECT ur.model_id as model, COALESCE(CAST(SUM(ur.cost_cents) AS REAL) / 100, 0) as cost
       FROM usage_records ur
-      WHERE ur.created_at >= date_trunc('month', NOW())
+      WHERE ur.created_at >= date('now', 'start of month')
       GROUP BY ur.model_id
       ORDER BY cost DESC
       LIMIT 10
-    `);
+    `).all();
 
     // Cost by modality
-    const costByModality = await pool.query(`
-      SELECT mp.modality, COALESCE(SUM(ur.cost_cents)::float / 100, 0) as cost
+    const costByModality = db.prepare(`
+      SELECT mp.modality, COALESCE(CAST(SUM(ur.cost_cents) AS REAL) / 100, 0) as cost
       FROM usage_records ur
       JOIN model_profiles mp ON mp.model_id = ur.model_id
-      WHERE ur.created_at >= date_trunc('month', NOW())
+      WHERE ur.created_at >= date('now', 'start of month')
       GROUP BY mp.modality
       ORDER BY cost DESC
-    `);
+    `).all();
 
-    const currentSpend = currentMonth.rows[0]?.spend || 0;
+    const currentSpend = currentMonth?.spend || 0;
     const daysInMonth = 30;
     const dayOfMonth = new Date().getDate();
     const estimatedEndOfMonth = dayOfMonth > 0 ? (currentSpend / dayOfMonth) * daysInMonth : 0;
@@ -358,10 +471,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       tenant_name: 'All Tenants',
       current_month_spend: currentSpend,
       estimated_end_of_month: estimatedEndOfMonth,
-      previous_month_spend: previousMonth.rows[0]?.spend || 0,
-      cost_by_provider: costByProvider.rows,
-      cost_by_model: costByModel.rows,
-      cost_by_modality: costByModality.rows,
+      previous_month_spend: previousMonth?.spend || 0,
+      cost_by_provider: costByProvider,
+      cost_by_model: costByModel,
+      cost_by_modality: costByModality,
       invoices: [],
       plan_limits: { requests: null, tokens: null, spend: null },
       overage_flags: [],
@@ -370,61 +483,60 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Dashboard stats
   server.get('/admin/dashboard/stats', async () => {
-    const pool = getPool();
+    const db = getDb();
 
     // Total requests today
-    const requestsResult = await pool.query(`
+    const req = db.prepare(`
       SELECT COUNT(*) as total,
-        COUNT(*) FILTER (WHERE error_code IS NULL) as success,
+        SUM(CASE WHEN error_code IS NULL THEN 1 ELSE 0 END) as success,
         AVG(latency_ms) as avg_latency
       FROM request_logs
-      WHERE timestamp >= date_trunc('day', NOW())
-    `);
+      WHERE timestamp >= date('now', 'start of day')
+    `).get() as { total: number; success: number; avg_latency: number } | undefined;
 
     // Token usage today
-    const tokenResult = await pool.query(`
+    const tokenRow = db.prepare(`
       SELECT COALESCE(SUM(total_tokens), 0) as tokens,
-        COALESCE(SUM(cost_cents)::float / 100, 0) as spend
+        COALESCE(CAST(SUM(cost_cents) AS REAL) / 100, 0) as spend
       FROM usage_records
-      WHERE created_at >= date_trunc('day', NOW())
-    `);
+      WHERE created_at >= date('now', 'start of day')
+    `).get() as { tokens: number; spend: number } | undefined;
 
     // Active models
-    const modelsResult = await pool.query(`
-      SELECT COUNT(*) as count FROM model_profiles WHERE is_active = true
-    `);
+    const modelsRow = db.prepare(`
+      SELECT COUNT(*) as count FROM model_profiles WHERE is_active = 1
+    `).get() as { count: number } | undefined;
 
     // Provider health
-    const providersResult = await pool.query(`
+    const providersRow = db.prepare(`
       SELECT COUNT(*) as total,
-        COUNT(*) FILTER (WHERE is_healthy = true) as healthy
+        SUM(CASE WHEN is_healthy = 1 THEN 1 ELSE 0 END) as healthy
       FROM providers
-    `);
+    `).get() as { total: number; healthy: number } | undefined;
 
     // Fallback rate
-    const fallbackResult = await pool.query(`
+    const fallbackRow = db.prepare(`
       SELECT COUNT(*) as total,
-        COUNT(*) FILTER (WHERE fallback_used = true) as fallbacks
+        SUM(CASE WHEN fallback_used = 1 THEN 1 ELSE 0 END) as fallbacks
       FROM request_logs
-      WHERE timestamp >= date_trunc('day', NOW())
-    `);
+      WHERE timestamp >= date('now', 'start of day')
+    `).get() as { total: number; fallbacks: number } | undefined;
 
-    const req = requestsResult.rows[0];
-    const total = parseInt(req.total) || 0;
-    const success = parseInt(req.success) || 0;
-    const fallbackTotal = parseInt(fallbackResult.rows[0]?.total) || 0;
-    const fallbacks = parseInt(fallbackResult.rows[0]?.fallbacks) || 0;
-    const providerTotal = parseInt(providersResult.rows[0]?.total) || 0;
-    const providerHealthy = parseInt(providersResult.rows[0]?.healthy) || 0;
+    const total = req?.total || 0;
+    const success = req?.success || 0;
+    const fallbackTotal = fallbackRow?.total || 0;
+    const fallbacks = fallbackRow?.fallbacks || 0;
+    const providerTotal = providersRow?.total || 0;
+    const providerHealthy = providersRow?.healthy || 0;
 
     return {
       total_requests: total,
       success_rate: total > 0 ? Math.round((success / total) * 100 * 10) / 10 : 100,
-      avg_latency: Math.round(req.avg_latency || 0),
-      token_usage: parseInt(tokenResult.rows[0]?.tokens) || 0,
-      daily_spend: tokenResult.rows[0]?.spend || 0,
+      avg_latency: Math.round(req?.avg_latency || 0),
+      token_usage: tokenRow?.tokens || 0,
+      daily_spend: tokenRow?.spend || 0,
       quota_remaining: 1000000,
-      active_models: parseInt(modelsResult.rows[0]?.count) || 0,
+      active_models: modelsRow?.count || 0,
       provider_health: providerTotal > 0 ? Math.round((providerHealthy / providerTotal) * 100) : 100,
       fallback_rate: fallbackTotal > 0 ? Math.round((fallbacks / fallbackTotal) * 100 * 10) / 10 : 0,
       worker_utilization: 0,
@@ -434,17 +546,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Route decisions
   server.get('/admin/routing/decisions', async () => {
-    const pool = getPool();
-    const result = await pool.query(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT
         rl.id,
         rl.timestamp,
-        rl.task_profile->>'taskType' as task_type,
+        json_extract(rl.task_profile, '$.taskType') as task_type,
         rl.selected_model,
         p.name as selected_provider,
-        rl.routing_plan->>'executionMode' as execution_mode,
-        rl.routing_plan->>'decisionReason' as decision_reason,
-        COALESCE(rl.routing_plan->'fallbackChain', '[]') as fallback_chain,
+        json_extract(rl.routing_plan, '$.executionMode') as execution_mode,
+        json_extract(rl.routing_plan, '$.decisionReason') as decision_reason,
+        COALESCE(json_extract(rl.routing_plan, '$.fallbackChain'), '[]') as fallback_chain,
         rl.latency_ms as latency,
         rl.estimated_cost as cost,
         rl.quality_score as confidence,
@@ -457,14 +569,14 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       LEFT JOIN providers p ON p.id = rl.selected_provider
       ORDER BY rl.timestamp DESC
       LIMIT 50
-    `);
-    return { decisions: result.rows };
+    `).all();
+    return { decisions: rows };
   });
 
   // Quota states
   server.get('/admin/quota', async () => {
-    const pool = getPool();
-    const result = await pool.query(`
+    const db = getDb();
+    const rows = db.prepare(`
       SELECT
         qa.id,
         qa.provider_id,
@@ -473,31 +585,31 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         COALESCE(
           (SELECT COUNT(*) FROM request_logs rl
            WHERE rl.selected_provider = qa.provider_id
-           AND rl.timestamp >= date_trunc('month', NOW())),
+           AND rl.timestamp >= date('now', 'start of month')),
           0
         ) as used_quota,
         qa.max_requests - COALESCE(
           (SELECT COUNT(*) FROM request_logs rl
            WHERE rl.selected_provider = qa.provider_id
-           AND rl.timestamp >= date_trunc('month', NOW())),
+           AND rl.timestamp >= date('now', 'start of month')),
           0
         ) as remaining_quota,
         qa.period as window,
-        date_trunc('month', NOW() + INTERVAL '1 month')::text as reset_time,
+        date('now', 'start of month', '+1 month') as reset_time,
         0 as burn_rate,
         null as predicted_exhaustion,
-        '[]'::jsonb as alerts,
-        '[]'::jsonb as rerouting_suggestions
+        '[]' as alerts,
+        '[]' as rerouting_suggestions
       FROM quota_allocations qa
       LEFT JOIN providers p ON p.id = qa.provider_id
       ORDER BY p.name
-    `);
-    return { quotas: result.rows };
+    `).all();
+    return { quotas: rows };
   });
 
   // Alerts (derived from system state)
   server.get('/admin/alerts', async () => {
-    const pool = getPool();
+    const db = getDb();
     const alerts: Array<{
       id: string;
       timestamp: string;
@@ -511,13 +623,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }> = [];
 
     // Check for unhealthy providers
-    const unhealthyProviders = await pool.query(`
+    const unhealthyProviders = db.prepare(`
       SELECT name, consecutive_failures, last_health_check
       FROM providers
-      WHERE is_healthy = false OR consecutive_failures > 0
-    `);
+      WHERE is_healthy = 0 OR consecutive_failures > 0
+    `).all() as Array<{ name: string; consecutive_failures: number; last_health_check: string }>;
 
-    for (const p of unhealthyProviders.rows) {
+    for (const p of unhealthyProviders) {
       alerts.push({
         id: `provider-${p.name}`,
         timestamp: p.last_health_check || new Date().toISOString(),
@@ -532,22 +644,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
 
     // Check for quota nearing exhaustion (>80%)
-    const quotaUsage = await pool.query(`
+    const quotaUsage = db.prepare(`
       SELECT
         p.name as provider_name,
         qa.max_requests,
         COALESCE(
           (SELECT COUNT(*) FROM request_logs rl
            WHERE rl.selected_provider = qa.provider_id
-           AND rl.timestamp >= date_trunc('month', NOW())),
+           AND rl.timestamp >= date('now', 'start of month')),
           0
         ) as used
       FROM quota_allocations qa
       JOIN providers p ON p.id = qa.provider_id
       WHERE qa.max_requests IS NOT NULL
-    `);
+    `).all() as Array<{ provider_name: string; max_requests: number; used: number }>;
 
-    for (const q of quotaUsage.rows) {
+    for (const q of quotaUsage) {
       const usagePercent = q.max_requests > 0 ? (q.used / q.max_requests) * 100 : 0;
       if (usagePercent > 80) {
         alerts.push({
@@ -589,12 +701,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Audit events
   server.get('/admin/audit/events', async () => {
-    const pool = getPool();
+    const db = getDb();
 
     // Get recent request logs as audit events
-    const result = await pool.query(`
+    const rows = db.prepare(`
       SELECT
-        rl.id::text,
+        rl.id as id,
         rl.timestamp,
         CASE
           WHEN rl.error_code IS NOT NULL THEN 'provider_call'
@@ -607,9 +719,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ELSE 'info'
         END as severity,
         'system' as actor,
-        rl.tenant_id::text,
-        CONCAT('Request to ', rl.selected_model, ' via provider') as description,
-        jsonb_build_object(
+        rl.tenant_id as tenant_id,
+        'Request to ' || rl.selected_model || ' via provider' as description,
+        json_object(
           'model', rl.selected_model,
           'latency_ms', rl.latency_ms,
           'tokens', rl.tokens_input + rl.tokens_output,
@@ -619,9 +731,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       FROM request_logs rl
       ORDER BY rl.timestamp DESC
       LIMIT 100
-    `);
+    `).all();
 
-    return { events: result.rows };
+    return { events: rows };
   });
 
   // Stub endpoints for "Coming Soon" features
@@ -648,8 +760,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Delete provider
   server.delete('/admin/providers/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const pool = getPool();
-    await pool.query('DELETE FROM providers WHERE id = $1', [id]);
+    const db = getDb();
+    db.prepare('DELETE FROM providers WHERE id = ?').run(id);
     reply.status(204);
     return null;
   });
@@ -657,8 +769,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Delete model
   server.delete('/admin/models/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const pool = getPool();
-    await pool.query('DELETE FROM model_profiles WHERE id = $1', [id]);
+    const db = getDb();
+    db.prepare('DELETE FROM model_profiles WHERE id = ?').run(id);
     reply.status(204);
     return null;
   });
@@ -666,8 +778,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Delete tenant
   server.delete('/admin/tenants/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const pool = getPool();
-    await pool.query('DELETE FROM tenants WHERE id = $1', [id]);
+    const db = getDb();
+    db.prepare('DELETE FROM tenants WHERE id = ?').run(id);
     reply.status(204);
     return null;
   });
@@ -675,8 +787,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Delete API key
   server.delete('/admin/api-keys/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const pool = getPool();
-    await pool.query('DELETE FROM api_keys WHERE id = $1', [id]);
+    const db = getDb();
+    db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
     reply.status(204);
     return null;
   });
@@ -684,8 +796,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Delete policy
   server.delete('/admin/policies/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const pool = getPool();
-    await pool.query('DELETE FROM policies WHERE id = $1', [id]);
+    const db = getDb();
+    db.prepare('DELETE FROM policies WHERE id = ?').run(id);
     reply.status(204);
     return null;
   });
@@ -702,19 +814,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       api_key_ref?: string;
       config?: Record<string, unknown>;
     };
-    const pool = getPool();
-    const result = await pool.query(
+    const db = getDb();
+    db.prepare(
       `UPDATE providers SET
-        name = COALESCE($2, name),
-        adapter_type = COALESCE($3, adapter_type),
-        base_url = COALESCE($4, base_url),
-        api_key_ref = COALESCE($5, api_key_ref),
-        config = COALESCE($6, config),
-        updated_at = NOW()
-      WHERE id = $1 RETURNING *`,
-      [id, name, adapter_type, base_url, api_key_ref, config ? JSON.stringify(config) : null]
-    );
-    return result.rows[0];
+        name = COALESCE(?, name),
+        adapter_type = COALESCE(?, adapter_type),
+        base_url = COALESCE(?, base_url),
+        api_key_ref = COALESCE(?, api_key_ref),
+        config = COALESCE(?, config),
+        updated_at = datetime('now')
+      WHERE id = ?`
+    ).run(name, adapter_type, base_url, api_key_ref, config ? JSON.stringify(config) : null, id);
+    return db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
   });
 
   // Update model
@@ -727,19 +838,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       max_output_tokens?: number;
       is_active?: boolean;
     };
-    const pool = getPool();
-    const result = await pool.query(
+    const db = getDb();
+    db.prepare(
       `UPDATE model_profiles SET
-        display_name = COALESCE($2, display_name),
-        modality = COALESCE($3, modality),
-        context_window = COALESCE($4, context_window),
-        max_output_tokens = COALESCE($5, max_output_tokens),
-        is_active = COALESCE($6, is_active),
-        updated_at = NOW()
-      WHERE id = $1 RETURNING *`,
-      [id, display_name, modality, context_window, max_output_tokens, is_active]
-    );
-    return result.rows[0];
+        display_name = COALESCE(?, display_name),
+        modality = COALESCE(?, modality),
+        context_window = COALESCE(?, context_window),
+        max_output_tokens = COALESCE(?, max_output_tokens),
+        is_active = COALESCE(?, is_active),
+        updated_at = datetime('now')
+      WHERE id = ?`
+    ).run(display_name, modality, context_window, max_output_tokens, is_active != null ? (is_active ? 1 : 0) : null, id);
+    return db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id);
   });
 
   // Update policy
@@ -750,36 +860,35 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       rules?: Record<string, unknown>[];
       is_active?: boolean;
     };
-    const pool = getPool();
-    const result = await pool.query(
+    const db = getDb();
+    db.prepare(
       `UPDATE policies SET
-        name = COALESCE($2, name),
-        rules = COALESCE($3, rules),
-        is_active = COALESCE($4, is_active),
-        updated_at = NOW()
-      WHERE id = $1 RETURNING *`,
-      [id, name, rules ? JSON.stringify(rules) : null, is_active]
-    );
-    return result.rows[0];
+        name = COALESCE(?, name),
+        rules = COALESCE(?, rules),
+        is_active = COALESCE(?, is_active),
+        updated_at = datetime('now')
+      WHERE id = ?`
+    ).run(name, rules ? JSON.stringify(rules) : null, is_active != null ? (is_active ? 1 : 0) : null, id);
+    return db.prepare('SELECT * FROM policies WHERE id = ?').get(id);
   });
 
   // --- Settings backend ---
 
   // Get settings
   server.get('/admin/settings', async () => {
-    const pool = getPool();
+    const db = getDb();
     // Create settings table if it doesn't exist
-    await pool.query(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS settings (
-        key VARCHAR(255) PRIMARY KEY,
-        value JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
-    const result = await pool.query('SELECT key, value FROM settings');
+    const rows = db.prepare('SELECT key, value FROM settings').all() as Array<{ key: string; value: string }>;
     const settings: Record<string, unknown> = {};
-    for (const row of result.rows) {
-      settings[row.key] = row.value;
+    for (const row of rows) {
+      settings[row.key] = JSON.parse(row.value);
     }
     return settings;
   });
@@ -787,22 +896,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Update settings
   server.put('/admin/settings', async (request) => {
     const settings = request.body as Record<string, unknown>;
-    const pool = getPool();
+    const db = getDb();
     // Create settings table if it doesn't exist
-    await pool.query(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS settings (
-        key VARCHAR(255) PRIMARY KEY,
-        value JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+    const upsert = db.prepare(
+      `INSERT INTO settings (key, value, updated_at)
+       VALUES (?, ?, datetime('now'))
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
+    );
     for (const [key, value] of Object.entries(settings)) {
-      await pool.query(
-        `INSERT INTO settings (key, value, updated_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
-        [key, JSON.stringify(value)]
-      );
+      upsert.run(key, JSON.stringify(value));
     }
     return { success: true };
   });

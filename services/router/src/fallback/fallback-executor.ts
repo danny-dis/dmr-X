@@ -1,5 +1,5 @@
 import type { RoutingPlan, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
-import { AllProvidersFailedError, ProviderError, QuotaExhaustedError } from '@dmr-x/core';
+import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, QuotaExhaustedError } from '@dmr-x/core';
 import { logger } from '@dmr-x/utils';
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
 
@@ -41,9 +41,21 @@ export async function executeWithFallback(
   const rls = options?.rateLimitService;
   const qs = options?.quotaService;
   const tenantId = options?.tenantId;
+  let allRateLimited = true;
 
   // Try primary
   try {
+    // Check rate limit before executing
+    if (rls) {
+      const limitCheck = rls.checkLimit(plan.primary.providerId, plan.primary.modelId, 0);
+      if (!limitCheck.allowed) {
+        logger.info({ provider: plan.primary.providerId, retryAfterMs: limitCheck.retryAfterMs }, 'Primary provider rate-limited, skipping');
+        allRateLimited = true;
+        tried.push(plan.primary.providerId);
+        throw new Error(`Rate limited: ${limitCheck.reason}`);
+      }
+    }
+
     // Check quota before executing
     if (qs && tenantId) {
       await qs.checkQuota(tenantId, plan.primary.providerId, 0, 0);
@@ -62,6 +74,9 @@ export async function executeWithFallback(
     }
     return response;
   } catch (error) {
+    if (!isRateLimitError(error)) {
+      allRateLimited = false;
+    }
     if (isQuotaError(error)) {
       logger.warn({ provider: plan.primary.providerId }, 'Primary provider quota exhausted');
     } else {
@@ -76,11 +91,18 @@ export async function executeWithFallback(
 
   // Try fallback chain
   for (const step of plan.chain) {
-    const trigger = step.trigger;
-
     // Check if this trigger matches the error type
     // For Phase 1, we try all fallbacks regardless of trigger
     try {
+      // Re-check rate limit before executing fallback
+      if (rls) {
+        const limitCheck = rls.checkLimit(step.provider.providerId, step.provider.modelId, 0);
+        if (!limitCheck.allowed) {
+          logger.info({ provider: step.provider.providerId, retryAfterMs: limitCheck.retryAfterMs }, 'Fallback provider rate-limited, skipping');
+          continue;
+        }
+      }
+
       if (step.waitMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, step.waitMs));
       }
@@ -103,6 +125,9 @@ export async function executeWithFallback(
       }
       return response;
     } catch (error) {
+      if (!isRateLimitError(error)) {
+        allRateLimited = false;
+      }
       if (isQuotaError(error)) {
         logger.warn({ provider: step.provider.providerId }, 'Fallback provider quota exhausted');
       } else {
@@ -119,5 +144,8 @@ export async function executeWithFallback(
     }
   }
 
+  if (allRateLimited && tried.length > 0) {
+    throw new ProviderUnavailableError(tried, 5000);
+  }
   throw new AllProvidersFailedError(tried);
 }

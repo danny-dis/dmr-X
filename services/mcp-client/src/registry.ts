@@ -65,7 +65,7 @@ export class MCPServerRegistry {
 
     const client = new Client(
       { name: 'dmr-x-mcp-client', version: '0.1.0' },
-      { capabilities: { tools: {} } }
+      { capabilities: {} }
     );
 
     let transport: StdioClientTransport | SSEClientTransport;

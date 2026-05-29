@@ -11,6 +11,7 @@ import type {
   StreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
+import { HttpError, ClientTimeoutError, ConnectionError, isConnectionError, isTimeoutError, isAbortError } from '@dmr-x/utils';
 import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 /**
@@ -72,27 +73,66 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
 
-    const response = await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
-      headers,
-      timeoutMs: 5000,
-    });
-    if (!response.ok) {
-      throw new Error(`Health check failed: ${response.status}`);
+    try {
+      // Try /models endpoint first
+      await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
+        headers,
+        timeoutMs: 5000,
+      });
+    } catch (error) {
+      // If /models returns 404, try a minimal chat completion as a fallback
+      if (error instanceof HttpError && error.statusCode === 404) {
+        await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'ping', // Some providers might ignore the model name for a minimal check
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 1,
+          }),
+          timeoutMs: 5000,
+        });
+      } else {
+        throw error;
+      }
     }
   }
 
   async execute(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {
     this.assertInitialized();
 
-    if (request.modality === 'llm') {
-      return this.executeChat(request, options);
-    }
+    try {
+      if (request.modality === 'llm') {
+        return this.executeChat(request, options);
+      }
 
-    if (request.modality === 'embedding') {
-      return this.executeEmbedding(request, options);
-    }
+      if (request.modality === 'embedding') {
+        return this.executeEmbedding(request, options);
+      }
 
-    throw new Error(`Unsupported modality: ${request.modality}`);
+      throw new Error(`Unsupported modality: ${request.modality}`);
+    } catch (err) {
+      if (err instanceof ProviderError) throw err;
+      if (err instanceof HttpError) {
+        const providerError = new ProviderError(`${this.providerId}: ${err.message}`, this.providerId, err.statusCode);
+        (providerError as Error).cause = err;
+        throw providerError;
+      }
+      if (err instanceof ConnectionError || isConnectionError(err)) {
+        throw new ProviderError(
+          `${this.providerId}: Connection failed - ${err instanceof Error ? err.message : String(err)}`,
+          this.providerId,
+          502,
+        );
+      }
+      if (err instanceof ClientTimeoutError || isTimeoutError(err) || isAbortError(err)) {
+        throw new ProviderError(`${this.providerId}: Request timed out`, this.providerId, 504);
+      }
+      throw err;
+    }
   }
 
   private async executeChat(
@@ -108,30 +148,35 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       headers['Authorization'] = `Bearer ${key}`;
     }
 
-    const response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: request.model,
-        messages: request.messages,
-        tools: request.tools,
-        tool_choice: request.tool_choice,
-        temperature: request.temperature,
-        max_tokens: request.max_tokens,
-        top_p: request.top_p,
-        frequency_penalty: request.frequency_penalty,
-        presence_penalty: request.presence_penalty,
-        stop: request.stop,
-        response_format: request.response_format,
-        seed: request.seed,
-        stream: false,
-      }),
-      timeoutMs: options?.timeoutMs ?? 60000,
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`${this.providerId} error: ${error}`, this.providerId, response.status);
+    let response: Response;
+    try {
+      response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: request.model,
+          messages: request.messages,
+          tools: request.tools,
+          tool_choice: request.tool_choice,
+          temperature: request.temperature,
+          max_tokens: request.max_tokens,
+          top_p: request.top_p,
+          frequency_penalty: request.frequency_penalty,
+          presence_penalty: request.presence_penalty,
+          stop: request.stop,
+          response_format: request.response_format,
+          seed: request.seed,
+          stream: false,
+        }),
+        timeoutMs: options?.timeoutMs ?? 60000,
+      });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        const providerError = new ProviderError(`${this.providerId}: ${error.message}`, this.providerId, error.statusCode);
+        (providerError as Error).cause = error;
+        throw providerError;
+      }
+      throw error;
     }
 
     const data: any = await response.json();
@@ -162,21 +207,26 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       headers['Authorization'] = `Bearer ${key}`;
     }
 
-    const response = await this.fetchWithTimeout(`${this.config.baseUrl}/embeddings`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: request.model,
-        input: request.input,
-        encoding_format: request.encoding_format,
-        dimensions: request.dimensions,
-      }),
-      timeoutMs: options?.timeoutMs ?? 30000,
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`${this.providerId} embedding error: ${error}`, this.providerId, response.status);
+    let response: Response;
+    try {
+      response = await this.fetchWithTimeout(`${this.config.baseUrl}/embeddings`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: request.model,
+          input: request.input,
+          encoding_format: request.encoding_format,
+          dimensions: request.dimensions,
+        }),
+        timeoutMs: options?.timeoutMs ?? 30000,
+      });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        const providerError = new ProviderError(`${this.providerId} embedding: ${error.message}`, this.providerId, error.statusCode);
+        (providerError as Error).cause = error;
+        throw providerError;
+      }
+      throw error;
     }
 
     const data: any = await response.json();
@@ -203,24 +253,29 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       headers['Authorization'] = `Bearer ${key}`;
     }
 
-    const response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: request.model,
-        messages: request.messages,
-        tools: request.tools,
-        tool_choice: request.tool_choice,
-        temperature: request.temperature,
-        max_tokens: request.max_tokens,
-        stream: true,
-      }),
-      timeoutMs: options?.timeoutMs ?? 120000,
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`${this.providerId} stream error: ${error}`, this.providerId, response.status);
+    let response: Response;
+    try {
+      response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: request.model,
+          messages: request.messages,
+          tools: request.tools,
+          tool_choice: request.tool_choice,
+          temperature: request.temperature,
+          max_tokens: request.max_tokens,
+          stream: true,
+        }),
+        timeoutMs: options?.timeoutMs ?? 120000,
+      });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        const providerError = new ProviderError(`${this.providerId} stream: ${error.message}`, this.providerId, error.statusCode);
+        (providerError as Error).cause = error;
+        throw providerError;
+      }
+      throw error;
     }
 
     yield* createOpenAISSEIterator(response);
@@ -233,11 +288,13 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
 
-    const response = await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
-      headers,
-    });
-
-    if (!response.ok) {
+    let response: Response;
+    try {
+      response = await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
+        headers,
+      });
+    } catch {
+      // Gracefully return empty list on any error (HTTP or transport)
       return [];
     }
 

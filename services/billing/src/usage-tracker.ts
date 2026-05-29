@@ -1,5 +1,6 @@
-import { getPool, getRedis } from '@dmr-x/db';
+import { getDb, cache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
+import crypto from 'node:crypto';
 
 export interface UsageRecord {
   id: string;
@@ -11,7 +12,7 @@ export interface UsageRecord {
   totalTokens: number;
   costCents: number;
   requestId: string;
-  createdAt: Date;
+  createdAt: string;
 }
 
 export interface UsageAggregate {
@@ -23,8 +24,8 @@ export interface UsageAggregate {
   totalOutputTokens: number;
   totalTokens: number;
   totalCostCents: number;
-  periodStart: Date;
-  periodEnd: Date;
+  periodStart: string;
+  periodEnd: string;
 }
 
 export interface UsageQuery {
@@ -38,9 +39,9 @@ export interface UsageQuery {
 }
 
 /**
- * Tracks usage in Redis (real-time counters) and PostgreSQL (persistent history).
+ * Tracks usage in cache (real-time counters) and SQLite (persistent history).
  *
- * Redis keys:
+ * Cache keys:
  *   usage:rt:{tenantId}:{providerId}:{modelId}   -> hash { requests, inputTokens, outputTokens, totalTokens, costCents }
  *   usage:rt:{tenantId}:global                    -> hash { requests, inputTokens, outputTokens, totalTokens, costCents }
  *   usage:daily:{tenantId}:{yyyy-mm-dd}           -> hash { requests, inputTokens, outputTokens, totalTokens, costCents }
@@ -53,55 +54,50 @@ export class UsageTracker {
   private static readonly DEFAULT_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days
 
   /**
-   * Record a single request's usage. Writes to Redis counters and persists to PostgreSQL.
+   * Record a single request's usage. Writes to cache counters and persists to SQLite.
    */
-  async record(record: Omit<UsageRecord, 'id' | 'createdAt'>): Promise<UsageRecord> {
-    const redis = getRedis();
-    const pool = getPool();
+  record(record: Omit<UsageRecord, 'id' | 'createdAt'>): UsageRecord {
+    const db = getDb();
 
     const now = new Date();
     const dayKey = this.formatDay(now);
     const monthKey = this.formatMonth(now);
 
-    // 1. Increment Redis real-time counters
+    // 1. Increment cache real-time counters
     const rtKey = `${UsageTracker.RT_PREFIX}${record.tenantId}:${record.providerId}:${record.modelId}`;
     const globalKey = `${UsageTracker.RT_PREFIX}${record.tenantId}:global`;
     const dailyKey = `${UsageTracker.DAILY_PREFIX}${record.tenantId}:${dayKey}`;
     const monthlyKey = `${UsageTracker.MONTHLY_PREFIX}${record.tenantId}:${monthKey}`;
 
-    const pipeline = redis.multi();
-
     for (const key of [rtKey, globalKey, dailyKey, monthlyKey]) {
-      pipeline.hIncrBy(key, 'requests', 1);
-      pipeline.hIncrBy(key, 'inputTokens', record.inputTokens);
-      pipeline.hIncrBy(key, 'outputTokens', record.outputTokens);
-      pipeline.hIncrBy(key, 'totalTokens', record.totalTokens);
-      pipeline.hIncrBy(key, 'costCents', record.costCents);
-      pipeline.expire(key, UsageTracker.DEFAULT_TTL_SECONDS);
+      cache.hIncrBy(key, 'requests', 1);
+      cache.hIncrBy(key, 'inputTokens', record.inputTokens);
+      cache.hIncrBy(key, 'outputTokens', record.outputTokens);
+      cache.hIncrBy(key, 'totalTokens', record.totalTokens);
+      cache.hIncrBy(key, 'costCents', record.costCents);
+      cache.expire(key, UsageTracker.DEFAULT_TTL_SECONDS);
     }
 
-    await pipeline.exec();
-
-    // 2. Persist to PostgreSQL
-    const result = await pool.query(
+    // 2. Persist to SQLite
+    const id = crypto.randomUUID();
+    db.prepare(
       `INSERT INTO usage_records
-         (tenant_id, provider_id, model_id, input_tokens, output_tokens, total_tokens, cost_cents, request_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, tenant_id, provider_id, model_id, input_tokens, output_tokens, total_tokens, cost_cents, request_id, created_at`,
-      [
-        record.tenantId,
-        record.providerId,
-        record.modelId,
-        record.inputTokens,
-        record.outputTokens,
-        record.totalTokens,
-        record.costCents,
-        record.requestId,
-        now,
-      ]
+         (id, tenant_id, provider_id, model_id, input_tokens, output_tokens, total_tokens, cost_cents, request_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      record.tenantId,
+      record.providerId,
+      record.modelId,
+      record.inputTokens,
+      record.outputTokens,
+      record.totalTokens,
+      record.costCents,
+      record.requestId,
+      now.toISOString(),
     );
 
-    const row = result.rows[0];
+    const row = db.prepare('SELECT * FROM usage_records WHERE id = ?').get(id) as any;
 
     logger.debug(
       {
@@ -118,50 +114,42 @@ export class UsageTracker {
   }
 
   /**
-   * Get real-time usage from Redis for a specific tenant/provider/model.
-   * Falls back to PostgreSQL if Redis has no data.
+   * Get real-time usage from cache for a specific tenant/provider/model.
+   * Falls back to SQLite if cache has no data.
    */
-  async getRealtimeUsage(
+  getRealtimeUsage(
     tenantId: string,
     providerId?: string,
     modelId?: string
-  ): Promise<{ requests: number; inputTokens: number; outputTokens: number; totalTokens: number; costCents: number }> {
-    const redis = getRedis();
-
+  ): { requests: number; inputTokens: number; outputTokens: number; totalTokens: number; costCents: number } {
     const key = providerId && modelId
       ? `${UsageTracker.RT_PREFIX}${tenantId}:${providerId}:${modelId}`
       : `${UsageTracker.RT_PREFIX}${tenantId}:global`;
 
-    const [requests, inputTokens, outputTokens, totalTokens, costCents] = await Promise.all([
-      redis.hGet(key, 'requests').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'inputTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'outputTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'totalTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'costCents').then((v) => parseInt(v || '0', 10)),
-    ]);
+    const requests = parseInt(String(cache.hGet(key, 'requests') || '0'), 10);
+    const inputTokens = parseInt(String(cache.hGet(key, 'inputTokens') || '0'), 10);
+    const outputTokens = parseInt(String(cache.hGet(key, 'outputTokens') || '0'), 10);
+    const totalTokens = parseInt(String(cache.hGet(key, 'totalTokens') || '0'), 10);
+    const costCents = parseInt(String(cache.hGet(key, 'costCents') || '0'), 10);
 
     return { requests, inputTokens, outputTokens, totalTokens, costCents };
   }
 
   /**
-   * Get daily usage from Redis fast path, with PostgreSQL fallback.
+   * Get daily usage from cache fast path, with SQLite fallback.
    */
-  async getDailyUsage(tenantId: string, date: Date): Promise<UsageAggregate | null> {
-    const redis = getRedis();
+  getDailyUsage(tenantId: string, date: Date): UsageAggregate | null {
     const dayKey = this.formatDay(date);
     const key = `${UsageTracker.DAILY_PREFIX}${tenantId}:${dayKey}`;
 
-    const [requests, inputTokens, outputTokens, totalTokens, costCents] = await Promise.all([
-      redis.hGet(key, 'requests').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'inputTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'outputTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'totalTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'costCents').then((v) => parseInt(v || '0', 10)),
-    ]);
+    const requests = parseInt(String(cache.hGet(key, 'requests') || '0'), 10);
+    const inputTokens = parseInt(String(cache.hGet(key, 'inputTokens') || '0'), 10);
+    const outputTokens = parseInt(String(cache.hGet(key, 'outputTokens') || '0'), 10);
+    const totalTokens = parseInt(String(cache.hGet(key, 'totalTokens') || '0'), 10);
+    const costCents = parseInt(String(cache.hGet(key, 'costCents') || '0'), 10);
 
     if (requests === 0) {
-      // Redis expired or empty, aggregate from PostgreSQL
-      return this.aggregateFromPostgres(tenantId, this.startOfDay(date), this.endOfDay(date));
+      return this.aggregateFromDb(tenantId, this.startOfDay(date), this.endOfDay(date));
     }
 
     const periodStart = this.startOfDay(date);
@@ -176,35 +164,30 @@ export class UsageTracker {
       totalOutputTokens: outputTokens,
       totalTokens,
       totalCostCents: costCents,
-      periodStart,
-      periodEnd,
+      periodStart: periodStart.toISOString(),
+      periodEnd: periodEnd.toISOString(),
     };
   }
 
   /**
-   * Get monthly usage from Redis fast path, with PostgreSQL fallback.
+   * Get monthly usage from cache fast path, with SQLite fallback.
    */
-  async getMonthlyUsage(tenantId: string, year: number, month: number): Promise<UsageAggregate | null> {
-    const redis = getRedis();
+  getMonthlyUsage(tenantId: string, year: number, month: number): UsageAggregate | null {
     const monthStr = `${year}-${String(month).padStart(2, '0')}`;
     const key = `${UsageTracker.MONTHLY_PREFIX}${tenantId}:${monthStr}`;
 
-    const [requests, inputTokens, outputTokens, totalTokens, costCents] = await Promise.all([
-      redis.hGet(key, 'requests').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'inputTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'outputTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'totalTokens').then((v) => parseInt(v || '0', 10)),
-      redis.hGet(key, 'costCents').then((v) => parseInt(v || '0', 10)),
-    ]);
-
-    if (requests === 0) {
-      const periodStart = new Date(year, month - 1, 1);
-      const periodEnd = new Date(year, month, 0, 23, 59, 59, 999);
-      return this.aggregateFromPostgres(tenantId, periodStart, periodEnd);
-    }
+    const requests = parseInt(String(cache.hGet(key, 'requests') || '0'), 10);
+    const inputTokens = parseInt(String(cache.hGet(key, 'inputTokens') || '0'), 10);
+    const outputTokens = parseInt(String(cache.hGet(key, 'outputTokens') || '0'), 10);
+    const totalTokens = parseInt(String(cache.hGet(key, 'totalTokens') || '0'), 10);
+    const costCents = parseInt(String(cache.hGet(key, 'costCents') || '0'), 10);
 
     const periodStart = new Date(year, month - 1, 1);
     const periodEnd = new Date(year, month, 0, 23, 59, 59, 999);
+
+    if (requests === 0) {
+      return this.aggregateFromDb(tenantId, periodStart, periodEnd);
+    }
 
     return {
       tenantId,
@@ -215,68 +198,66 @@ export class UsageTracker {
       totalOutputTokens: outputTokens,
       totalTokens,
       totalCostCents: costCents,
-      periodStart,
-      periodEnd,
+      periodStart: periodStart.toISOString(),
+      periodEnd: periodEnd.toISOString(),
     };
   }
 
   /**
-   * Query historical usage records from PostgreSQL.
+   * Query historical usage records from SQLite.
    */
-  async queryRecords(query: UsageQuery): Promise<UsageRecord[]> {
-    const pool = getPool();
+  queryRecords(query: UsageQuery): UsageRecord[] {
+    const db = getDb();
     const conditions: string[] = [];
     const params: unknown[] = [];
-    let paramIndex = 1;
 
     if (query.tenantId) {
-      conditions.push(`tenant_id = $${paramIndex++}`);
+      conditions.push(`tenant_id = ?`);
       params.push(query.tenantId);
     }
     if (query.providerId) {
-      conditions.push(`provider_id = $${paramIndex++}`);
+      conditions.push(`provider_id = ?`);
       params.push(query.providerId);
     }
     if (query.modelId) {
-      conditions.push(`model_id = $${paramIndex++}`);
+      conditions.push(`model_id = ?`);
       params.push(query.modelId);
     }
     if (query.from) {
-      conditions.push(`created_at >= $${paramIndex++}`);
-      params.push(query.from);
+      conditions.push(`created_at >= ?`);
+      params.push(query.from.toISOString());
     }
     if (query.to) {
-      conditions.push(`created_at <= $${paramIndex++}`);
-      params.push(query.to);
+      conditions.push(`created_at <= ?`);
+      params.push(query.to.toISOString());
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
 
-    const result = await pool.query(
+    const rows = db.prepare(
       `SELECT id, tenant_id, provider_id, model_id, input_tokens, output_tokens, total_tokens, cost_cents, request_id, created_at
        FROM usage_records
        ${whereClause}
        ORDER BY created_at DESC
-       LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
-      [...params, limit, offset]
-    );
+       LIMIT ? OFFSET ?`
+    ).all(...params, limit, offset);
 
-    return result.rows.map((row) => this.mapRow(row));
+    return (rows as any[]).map((row) => this.mapRow(row));
   }
 
   /**
-   * Aggregate usage from PostgreSQL grouped by provider and model.
+   * Aggregate usage from SQLite grouped by provider and model.
    */
-  async aggregateByDimensions(
+  aggregateByDimensions(
     tenantId: string,
     from: Date,
     to: Date
-  ): Promise<UsageAggregate[]> {
-    const pool = getPool();
+  ): UsageAggregate[] {
+    const db = getDb();
 
-    const result = await pool.query(
+    const rows = db.prepare(
       `SELECT
          tenant_id,
          provider_id,
@@ -289,15 +270,14 @@ export class UsageTracker {
          MIN(created_at)       AS period_start,
          MAX(created_at)       AS period_end
        FROM usage_records
-       WHERE tenant_id = $1
-         AND created_at >= $2
-         AND created_at <= $3
+       WHERE tenant_id = ?
+         AND created_at >= ?
+         AND created_at <= ?
        GROUP BY tenant_id, provider_id, model_id
-       ORDER BY total_cost_cents DESC`,
-      [tenantId, from, to]
-    );
+       ORDER BY total_cost_cents DESC`
+    ).all(tenantId, from.toISOString(), to.toISOString());
 
-    return result.rows.map((row) => ({
+    return (rows as any[]).map((row) => ({
       tenantId: row.tenant_id,
       providerId: row.provider_id,
       modelId: row.model_id,
@@ -312,16 +292,16 @@ export class UsageTracker {
   }
 
   /**
-   * Aggregate raw records from PostgreSQL for a time window.
+   * Aggregate raw records from SQLite for a time window.
    */
-  private async aggregateFromPostgres(
+  private aggregateFromDb(
     tenantId: string,
     from: Date,
     to: Date
-  ): Promise<UsageAggregate | null> {
-    const pool = getPool();
+  ): UsageAggregate | null {
+    const db = getDb();
 
-    const result = await pool.query(
+    const row = db.prepare(
       `SELECT
          COUNT(*)           AS total_requests,
          SUM(input_tokens)  AS total_input_tokens,
@@ -329,13 +309,11 @@ export class UsageTracker {
          SUM(total_tokens)  AS total_tokens,
          SUM(cost_cents)    AS total_cost_cents
        FROM usage_records
-       WHERE tenant_id = $1
-         AND created_at >= $2
-         AND created_at <= $3`,
-      [tenantId, from, to]
-    );
+       WHERE tenant_id = ?
+         AND created_at >= ?
+         AND created_at <= ?`
+    ).get(tenantId, from.toISOString(), to.toISOString()) as any;
 
-    const row = result.rows[0];
     const totalRequests = parseInt(row.total_requests, 10);
 
     if (totalRequests === 0) {
@@ -351,28 +329,30 @@ export class UsageTracker {
       totalOutputTokens: parseInt(row.total_output_tokens, 10),
       totalTokens: parseInt(row.total_tokens, 10),
       totalCostCents: parseInt(row.total_cost_cents, 10),
-      periodStart: from,
-      periodEnd: to,
+      periodStart: from.toISOString(),
+      periodEnd: to.toISOString(),
     };
   }
 
   /**
-   * Reset real-time Redis counters for a tenant (e.g. on period rollover).
+   * Reset real-time cache counters for a tenant (e.g. on period rollover).
    */
-  async resetRealtimeCounters(tenantId: string): Promise<void> {
-    const redis = getRedis();
+  resetRealtimeCounters(tenantId: string): void {
+    const db = getDb();
 
-    // Scan and delete all usage:rt:{tenantId}:* keys
-    const pattern = `${UsageTracker.RT_PREFIX}${tenantId}:*`;
-    let cursor = 0;
-    do {
-      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
-      cursor = result.cursor;
-      const keys = result.keys;
-      if (keys.length > 0) {
-        await redis.del(...keys);
-      }
-    } while (cursor !== 0);
+    // Get all unique provider/model combos for this tenant from DB
+    const rows = db.prepare(
+      `SELECT DISTINCT provider_id, model_id FROM usage_records WHERE tenant_id = ?`
+    ).all(tenantId) as any[];
+
+    // Delete RT keys for each provider/model combo
+    for (const row of rows) {
+      const rtKey = `${UsageTracker.RT_PREFIX}${tenantId}:${row.provider_id}:${row.model_id}`;
+      cache.del(rtKey);
+    }
+
+    // Delete global key
+    cache.del(`${UsageTracker.RT_PREFIX}${tenantId}:global`);
 
     logger.info({ tenantId }, 'Reset real-time usage counters');
   }
@@ -390,7 +370,7 @@ export class UsageTracker {
       totalTokens: row.total_tokens as number,
       costCents: row.cost_cents as number,
       requestId: row.request_id as string,
-      createdAt: row.created_at as Date,
+      createdAt: row.created_at as string,
     };
   }
 

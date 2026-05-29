@@ -150,7 +150,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const port = getEnvInt('DMRX_MCP_PORT', 3100);
   const host = getEnv('DMRX_MCP_HOST', '0.0.0.0');
 
-  const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>; transport: InstanceType<typeof SSEServerTransport> }>();
+  const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof SSEServerTransport> }>();
 
   const httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
@@ -213,7 +213,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const port = getEnvInt('DMRX_MCP_PORT', 3100);
   const host = getEnv('DMRX_MCP_HOST', '0.0.0.0');
 
-  const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>; transport: InstanceType<typeof StreamableHTTPServerTransport> }>();
+  const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof StreamableHTTPServerTransport> }>();
 
   const httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);

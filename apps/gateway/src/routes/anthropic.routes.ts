@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
+import { ValidationError } from '@dmr-x/core';
 import { generateRequestId } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
 import {

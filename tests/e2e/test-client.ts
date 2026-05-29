@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 
 export class TestClient {
@@ -19,12 +18,22 @@ export class TestClient {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
 
-    const response = await axios.post(`${this.baseUrl}${path}`, requestBody, { headers });
-    return response.data;
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    return response.json() as Promise<T>;
   }
 
   async getModels() {
-    const response = await axios.get(`${this.baseUrl}/v1/models`);
-    return response.data;
+    const response = await fetch(`${this.baseUrl}/v1/models`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    return response.json();
   }
 }

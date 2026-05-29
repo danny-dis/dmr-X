@@ -180,6 +180,8 @@ export class ThompsonSampler {
         return { quality: 0.3, cost: 0.2, latency: 0.2 };
       case 'economy':
         return { quality: 0.1, cost: 0.5, latency: 0.2 };
+      default:
+        return { quality: 0.3, cost: 0.2, latency: 0.2 };
     }
   }
 }

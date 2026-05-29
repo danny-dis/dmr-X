@@ -1,251 +1,103 @@
 # DMR-X
 
-Universal AI routing and orchestration platform. One unified API, intelligent routing across local models, remote providers, and temporary workers.
+Universal AI routing and orchestration platform for OpenAI-compatible, Anthropic-compatible, multimodal, and MCP workflows.
 
-## Vision
+## What It Does
 
-Modern AI systems are fragmented across:
-- different providers
-- different APIs
-- different quotas
-- different model capabilities
-- different pricing structures
-- different hardware environments
-
-DMR-X unifies them behind one intelligent routing layer.
-
-Clients connect to one endpoint. DMR-X handles the rest.
-
----
-
-## Core Features
-
-### Unified AI Gateway
-- OpenAI-compatible API
-- One API key
-- One endpoint
-- Multi-provider execution
-
-### Intelligent Routing
-DMR-X dynamically selects:
-- the best provider
-- the best model
-- local vs remote execution
-- fallback chains
-- execution priority
-
-Routing decisions are based on:
-- quality
-- latency
-- cost
-- quotas
-- modality
-- hardware availability
-- benchmark history
-- policy rules
-
-### Five-Layer Intelligence Hierarchy
-
-| Layer | Role | Description |
-|-------|------|-------------|
-| **Brain** | Frontier reasoning | Strategic cognition, complex problem solving |
-| **Thinkers** | Deep reasoning | Research, architecture, planning |
-| **Executers** | Implementation | Coding, transformations, tool execution |
-| **Workers** | Lightweight processing | Cheap retrieval, simple tasks |
-| **Temporary Workers** | Ephemeral | Local workers spawned dynamically from local models |
-
----
-
-## Multimodal Support
-
-DMR-X supports:
-- text
-- code
-- images
-- audio / speech
-- video / music
-- embeddings
-- retrieval
-- tool execution
-
----
+DMR-X runs a Fastify gateway that accepts AI requests, classifies the task, selects the best available provider/model, executes with fallback, and exposes admin/UI surfaces for providers, models, quotas, routing, billing, telemetry, and policy controls.
 
 ## Architecture
 
-### Core Services
+This is an npm workspace TypeScript monorepo:
 
-| Service | Purpose |
-|---------|---------|
-| Gateway | API entry point, authentication |
-| Router | Intelligent request routing |
-| Registry | Model and provider management |
-| Policy Engine | Routing rules and constraints |
-| Quota Manager | Usage tracking and limits |
-| Billing Engine | Cost tracking and metering |
-| Benchmark Engine | Model performance evaluation |
-| Memory System | Context and session persistence |
-| Telemetry | Observability and monitoring |
-| Federation | Multi-node coordination |
-| Sandbox | Secure code execution |
-| Scheduler | Task and worker orchestration |
+- `apps/gateway`: HTTP API gateway and static UI host.
+- `apps/ui`: React/Vite admin console.
+- `packages/core`: shared request, response, routing, modality, provider, and error types.
+- `packages/db`: SQLite client, cache, and migrations.
+- `packages/utils`: logging, retries, streams, tools, state, and errors.
+- `services/adapters`: provider adapter interface and concrete adapters.
+- `services/router`: task classifier, routing pipeline, fallback, sticky sessions, and decomposition.
+- `services/registry`, `quota`, `policy`, `billing`, `benchmark`, `telemetry`: platform services.
+- `services/mcp-server`, `services/mcp-client`: MCP integration.
+- `tests`: unit tests and opt-in e2e connectivity tests.
 
-### Stack
-- TypeScript
-- Python
-- PostgreSQL + pgvector
-- Redis
-- Docker
-- Kubernetes
-- OpenTelemetry
-- Prometheus + Grafana
+## Prerequisites
 
----
+- Node.js 18 or newer.
+- npm 10 or newer.
+- Windows PowerShell, cmd, Bash, or another shell capable of running npm scripts.
 
-## Getting Started
+## Installation
 
 ```bash
-# Clone the repo
-git clone https://github.com/danny-dis/DMR-X.git
-cd DMR-X
-
-# Install dependencies
 npm install
-
-# Copy environment config
 cp .env.example .env
-
-# Start development
-npm run dev
 ```
 
-### Environment Variables
+Set at least one provider key in `.env`, or use local/free providers such as Ollama where available.
 
-```env
-GATEWAY_PORT=3000
-DATABASE_URL=postgresql://user:pass@localhost:5432/dmr-x
-REDIS_URL=redis://localhost:6379
+## Configuration
 
-# Provider API Keys
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-DEEPSEEK_API_KEY=sk-...
-```
+All supported environment variables are documented in `.env.example` and `docs/CONFIGURATION.md`.
 
----
+Important defaults:
 
-## API Usage
+- `PORT=3000`
+- `DMRX_LOCAL_MODE=true` for local single-user development
+- `DMRX_FREE_TIER_STRATEGY=none`
+- `VITE_API_BASE=` for same-origin UI API calls
 
-DMR-X exposes an OpenAI-compatible endpoint:
+## Usage
 
 ```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "auto",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
+npm run dev          # run workspace dev tasks
+npm run dev:gateway  # gateway only
+npm run dev:ui       # UI only
+npm run build        # production build
+npm run start        # start built gateway
+npm run test         # unit/default tests
 ```
 
-Set `model: "auto"` to let DMR-X route intelligently, or specify a model/provider explicitly.
+E2E connectivity tests are opt-in because they require a running gateway:
 
----
-
-## Routing Philosophy
-
-DMR-X does not bind agents to fixed models.
-
-Agents request capabilities. DMR-X determines the optimal execution path.
-
-This allows:
-- provider abstraction
-- automatic failover
-- quota optimization
-- cost reduction
-- adaptive intelligence
-- hardware-aware execution
-
----
-
-## Local-First Design
-
-DMR-X prioritizes:
-1. Local execution
-2. Temporary local workers
-3. Hybrid execution
-4. Remote escalation only when necessary
-
-This reduces:
-- cost
-- latency
-- vendor lock-in
-- privacy exposure
-
----
-
-## Self-Learning System
-
-DMR-X continuously benchmarks models using:
-- latency
-- hallucination rate
-- tool success rate
-- reasoning quality
-- multimodal accuracy
-- user satisfaction
-- provider reliability
-
-The router evolves dynamically over time.
-
----
-
-## Federated Intelligence
-
-Deployments can optionally share:
-- anonymized benchmark signals
-- routing heuristics
-- provider reliability metrics
-- optimization patterns
-
-Without sharing raw tenant data.
-
----
-
-## Repository Structure
-
-```
-apps/           # Client applications
-services/       # Core microservices
-workers/        # Background workers
-packages/       # Shared libraries
-infra/          # Infrastructure as code
-docs/           # Documentation
-tests/          # Integration tests
+```bash
+DMRX_RUN_E2E=true npm run test -- tests/e2e/connectivity.test.ts
 ```
 
----
+## API Reference
 
-## Project Status
+Gateway endpoints include:
 
-Current phase:
-- production architecture
-- routing engine design
-- provider abstraction layer
-- local-first execution fabric
-- SaaS platform foundation
+- `GET /health`, `/healthz`, `/ready`, `/livez`
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/messages`
+- `POST /v1/images/generations`
+- `POST /v1/embeddings`
+- `POST /v1/audio/*`
+- `POST /v1/tools/execute`
+- `POST /v1/tools/loop`
+- `POST /v1/agentic/chat`
+- `GET/POST/PUT /v1/admin/*`
 
----
+The MCP server exposes `dmrx_chat`, `dmrx_generate_image`, `dmrx_embed`, `dmrx_transcribe`, `dmrx_speak`, `dmrx_rerank`, `dmrx_models`, and `dmrx_status`.
 
-## Goals
+## Testing
 
-- Universal AI execution fabric
-- Provider-agnostic orchestration
-- Autonomous routing intelligence
-- Scalable multimodal infrastructure
-- Local-first AI systems
-- Enterprise-grade AI gateway
+```bash
+npm run test
+```
 
----
+Current default coverage focuses on routing pipeline behavior, classifiers, Anthropic conversion/streaming, utility stream helpers, tool orchestration, memory cache, HTTP errors, SQLite client behavior, and meta-model resolution.
+
+## Contributing
+
+- Branch names: `feature/<topic>`, `fix/<topic>`, `refactor/<topic>`, `docs/<topic>`.
+- Run `npm run test` and `npm run build` before opening a PR.
+- Keep generated files out of source folders; build outputs belong in `dist/` or `apps/gateway/public/`.
+- Prefer behavior-preserving refactors and small commits by phase.
+- Follow existing TypeScript ESM style and package boundaries.
 
 ## License
 
-TBD
+No license is currently declared. Add a `LICENSE` file before public distribution.

@@ -1,4 +1,4 @@
-import type { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
+import type { UnifiedRequest, UnifiedResponse, FreeTierStrategy } from '@dmr-x/core';
 import type { DecomposedTask, SubTask, ExecutionGroup } from './task-decomposer.js';
 import type { SpecialistRouter } from './specialist-router.js';
 import type { AdapterExecutor } from '../fallback/fallback-executor.js';
@@ -36,7 +36,8 @@ export class CompositeExecutor {
     decomposed: DecomposedTask,
     candidates: CandidateSet,
     originalRequest: UnifiedRequest,
-    qualityTarget: 'frontier' | 'balanced' | 'economy' = 'balanced'
+    qualityTarget: 'frontier' | 'balanced' | 'economy' = 'balanced',
+    freeTierStrategy?: FreeTierStrategy
   ): Promise<CompositeResult> {
     const start = Date.now();
     const subTaskResults = new Map<string, SubTaskResult>();
@@ -46,7 +47,8 @@ export class CompositeExecutor {
     const assignments = this.specialistRouter.routeAllSubTasks(
       decomposed.subTasks,
       candidates,
-      qualityTarget
+      qualityTarget,
+      freeTierStrategy
     );
 
     // Log assignments
@@ -263,9 +265,9 @@ export class CompositeExecutor {
    * Aggregate results from all sub-tasks
    */
   private aggregateResults(
-    decomposed: DecomposedTask,
+    _decomposed: DecomposedTask,
     results: Map<string, SubTaskResult>,
-    originalRequest: UnifiedRequest
+    _originalRequest: UnifiedRequest
   ): UnifiedResponse {
     const successfulResults = Array.from(results.values()).filter((r) => r.success);
     const failedResults = Array.from(results.values()).filter((r) => !r.success);

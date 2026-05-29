@@ -1,0 +1,216 @@
+import { describe, it, expect } from 'vitest';
+import { EventStream, parseOpenAISSE } from '../../packages/utils/src/event-stream.js';
+
+function createChunkStream(chunks: string[]): ReadableStream<Uint8Array> {
+  let i = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i >= chunks.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(new TextEncoder().encode(chunks[i]));
+      i++;
+    },
+  });
+}
+
+describe('event-stream', () => {
+  describe('EventStream', () => {
+    it('should parse simple SSE messages', async () => {
+      const stream = createChunkStream(['data: hello\n\n', 'data: world\n\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['hello', 'world']);
+    });
+
+    it('should handle [DONE] sentinel', async () => {
+      const stream = createChunkStream(['data: chunk1\n\n', 'data: [DONE]\n\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => {
+          if (msg.data === '[DONE]') return { done: true, value: undefined };
+          return { done: false, value: msg.data! };
+        },
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['chunk1']);
+    });
+
+    it('should handle event and id fields', async () => {
+      const stream = createChunkStream(['event: message\ndata: test\nid: abc123\n\n']);
+      const eventStream = new EventStream<{ event?: string | null; data?: string; id?: string | null }>(
+        stream,
+        (msg) => ({ done: false, value: { event: msg.event, data: msg.data, id: msg.id } }),
+      );
+
+      const results: { event?: string | null; data?: string; id?: string | null }[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toHaveLength(1);
+      expect(results[0].event).toBe('message');
+      expect(results[0].data).toBe('test');
+      expect(results[0].id).toBe('abc123');
+    });
+
+    it('should handle retry field', async () => {
+      const stream = createChunkStream(['retry: 5000\ndata: hello\n\n']);
+      const eventStream = new EventStream<{ retry?: number | null; data?: string }>(
+        stream,
+        (msg) => ({ done: false, value: { retry: msg.retry, data: msg.data } }),
+      );
+
+      const results: { retry?: number | null; data?: string }[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results[0].retry).toBe(5000);
+    });
+
+    it('should skip comment lines', async () => {
+      const stream = createChunkStream([': this is a comment\ndata: real\n\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['real']);
+    });
+
+    it('should handle multi-line data', async () => {
+      const stream = createChunkStream(['data: line1\ndata: line2\n\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['line1\nline2']);
+    });
+
+    it('should handle empty stream', async () => {
+      const stream = createChunkStream([]);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual([]);
+    });
+
+    it('should handle \n\n boundary', async () => {
+      const stream = createChunkStream(['data: test\n\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['test']);
+    });
+
+    it('should handle \r\n\r\n boundary', async () => {
+      const stream = createChunkStream(['data: test\r\n\r\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['test']);
+    });
+
+    it('should skip data-less events when dataRequired is true (default)', async () => {
+      const stream = createChunkStream(['event: ping\n\n', 'data: pong\n\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data ?? 'no-data' }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      // The event-only message should be skipped (no data field)
+      expect(results).toEqual(['pong']);
+    });
+
+    it('should handle chunked delivery', async () => {
+      // Simulate SSE arriving in multiple small chunks
+      const stream = createChunkStream(['dat', 'a: hel', 'lo\n', '\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['hello']);
+    });
+  });
+
+  describe('parseOpenAISSE', () => {
+    it('should parse OpenAI SSE format', async () => {
+      const stream = createChunkStream([
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+        'data: [DONE]\n\n',
+      ]);
+      const eventStream = parseOpenAISSE(stream);
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toHaveLength(2);
+      expect(results[0]).toContain('Hello');
+      expect(results[1]).toContain('world');
+    });
+
+    it('should stop at [DONE]', async () => {
+      const stream = createChunkStream([
+        'data: chunk\n\n',
+        'data: [DONE]\n\n',
+        'data: after-done\n\n',
+      ]);
+      const eventStream = parseOpenAISSE(stream);
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['chunk']);
+    });
+  });
+});
