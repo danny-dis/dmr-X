@@ -1,6 +1,7 @@
-import { getPool } from '@dmr-x/db';
+import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import { PROVIDER_CATALOG, getProviderTemplate, type ProviderTemplate, type ModelTemplate } from './provider-catalog.js';
+import crypto from 'node:crypto';
 
 /**
  * Auto-register providers from environment variables
@@ -9,7 +10,7 @@ import { PROVIDER_CATALOG, getProviderTemplate, type ProviderTemplate, type Mode
  */
 export async function autoRegisterProviders(): Promise<string[]> {
   const registered: string[] = [];
-  const pool = getPool();
+  const db = getDb();
 
   for (const template of PROVIDER_CATALOG) {
     const apiKey = process.env[template.envKey];
@@ -19,67 +20,64 @@ export async function autoRegisterProviders(): Promise<string[]> {
     }
 
     // Check if provider already exists
-    const existing = await pool.query(
-      'SELECT id FROM providers WHERE name = $1',
-      [template.id]
-    );
+    const existing = db.prepare(
+      'SELECT id FROM providers WHERE name = ?'
+    ).get(template.id);
 
-    if (existing.rows.length > 0) {
+    if (existing) {
       logger.debug({ provider: template.id }, 'Provider already registered');
       continue;
     }
 
     try {
       // Create provider
-      const providerResult = await pool.query(
-        `INSERT INTO providers (name, adapter_type, base_url, api_key_ref, config)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id`,
-        [
-          template.id,
-          template.id,
-          template.baseUrl,
-          template.envKey,
-          JSON.stringify({
-            authMethod: template.authMethod,
-            authHeader: template.authHeader,
-            apiFormat: template.apiFormat,
-            streaming: template.streaming,
-            toolCalling: template.toolCalling,
-          }),
-        ]
+      const providerId = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        providerId,
+        template.id,
+        template.id,
+        template.baseUrl,
+        template.envKey,
+        JSON.stringify({
+          authMethod: template.authMethod,
+          authHeader: template.authHeader,
+          apiFormat: template.apiFormat,
+          streaming: template.streaming,
+          toolCalling: template.toolCalling,
+          signupUrl: template.signupUrl,
+        })
       );
-
-      const providerId = providerResult.rows[0].id;
 
       // Create model profiles
       for (const model of template.models) {
-        await pool.query(
+        db.prepare(
           `INSERT INTO model_profiles (
             provider_id, model_id, display_name, modality, intelligence_layer,
             supports_streaming, supports_vision, supports_tool_use, supports_json_mode,
             context_window, max_output_tokens,
             input_cost_per_1k, output_cost_per_1k, cost_per_image,
             quality_score, is_active
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-          [
-            providerId,
-            model.id,
-            model.id,
-            model.modalities[0] || 'llm',
-            'executor',
-            model.capabilities.includes('streaming'),
-            model.capabilities.includes('vision'),
-            model.capabilities.includes('tool_use'),
-            model.capabilities.includes('json_mode'),
-            model.contextWindow,
-            model.maxOutputTokens,
-            (model.inputCostPer1M || 0) / 1000,  // Convert from per-1M to per-1K
-            (model.outputCostPer1M || 0) / 1000,
-            model.costPerImage || 0,
-            0.5, // Default quality score
-            true,
-          ]
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          providerId,
+          model.id,
+          model.id,
+          model.modalities[0] || 'llm',
+          'executor',
+          model.capabilities.includes('streaming') ? 1 : 0,
+          model.capabilities.includes('vision') ? 1 : 0,
+          model.capabilities.includes('tool_use') ? 1 : 0,
+          model.capabilities.includes('json_mode') ? 1 : 0,
+          model.contextWindow,
+          model.maxOutputTokens,
+          (model.inputCostPer1M || 0) / 1000,  // Convert from per-1M to per-1K
+          (model.outputCostPer1M || 0) / 1000,
+          model.costPerImage || 0,
+          0.5, // Default quality score
+          1,
         );
       }
 
@@ -109,69 +107,66 @@ export async function registerProvider(
   }
 
   const merged = { ...template, ...overrides };
-  const pool = getPool();
+  const db = getDb();
 
   // Check if already exists
-  const existing = await pool.query(
-    'SELECT id FROM providers WHERE name = $1',
-    [merged.id]
-  );
+  const existing = db.prepare(
+    'SELECT id FROM providers WHERE name = ?'
+  ).get(merged.id);
 
-  if (existing.rows.length > 0) {
+  if (existing) {
     throw new Error(`Provider '${merged.id}' is already registered.`);
   }
 
   // Create provider
-  const result = await pool.query(
-    `INSERT INTO providers (name, adapter_type, base_url, api_key_ref, config)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id`,
-    [
-      merged.id,
-      merged.id,
-      merged.baseUrl,
-      merged.envKey,
-      JSON.stringify({
-        authMethod: merged.authMethod,
-        apiFormat: merged.apiFormat,
-        streaming: merged.streaming,
-        toolCalling: merged.toolCalling,
-      }),
-    ]
+  const newProviderId = crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(
+    newProviderId,
+    merged.id,
+    merged.id,
+    merged.baseUrl,
+    merged.envKey,
+    JSON.stringify({
+      authMethod: merged.authMethod,
+      apiFormat: merged.apiFormat,
+      streaming: merged.streaming,
+      toolCalling: merged.toolCalling,
+      signupUrl: merged.signupUrl,
+    })
   );
-
-  const providerId_result = result.rows[0].id;
 
   // Create models
   for (const model of merged.models) {
-    await pool.query(
+    db.prepare(
       `INSERT INTO model_profiles (
         provider_id, model_id, display_name, modality, intelligence_layer,
         supports_streaming, supports_vision, supports_tool_use,
         context_window, input_cost_per_1k, output_cost_per_1k, cost_per_image,
         quality_score, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [
-        providerId_result,
-        model.id,
-        model.id,
-        model.modalities[0] || 'llm',
-        'executor',
-        model.capabilities.includes('streaming'),
-        model.capabilities.includes('vision'),
-        model.capabilities.includes('tool_use'),
-        model.contextWindow,
-        (model.inputCostPer1M || 0) / 1000,
-        (model.outputCostPer1M || 0) / 1000,
-        model.costPerImage || 0,
-        0.5,
-        true,
-      ]
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      newProviderId,
+      model.id,
+      model.id,
+      model.modalities[0] || 'llm',
+      'executor',
+      model.capabilities.includes('streaming') ? 1 : 0,
+      model.capabilities.includes('vision') ? 1 : 0,
+      model.capabilities.includes('tool_use') ? 1 : 0,
+      model.contextWindow,
+      (model.inputCostPer1M || 0) / 1000,
+      (model.outputCostPer1M || 0) / 1000,
+      model.costPerImage || 0,
+      0.5,
+      1,
     );
   }
 
   logger.info({ provider: merged.id, models: merged.models.length }, 'Registered provider');
-  return providerId_result;
+  return newProviderId;
 }
 
 /**
