@@ -1,11 +1,13 @@
+import { timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { getDb } from '@dmr-x/db';
-import { hashApiKey } from '@dmr-x/utils';
+import { hashApiKey, logger } from '@dmr-x/utils';
 import { AuthenticationError } from '@dmr-x/core';
 
 // Routes that don't require auth
 const PUBLIC_ROUTES = new Set(['/health', '/healthz', '/livez', '/ready', '/v1/models']);
 
+// WARNING: Local mode disables all authentication. Never enable in production.
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 
 function extractApiKey(request: FastifyRequest): string | undefined {
@@ -23,13 +25,15 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
   const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
 
   server.addHook('onRequest', async (request) => {
-    // Skip auth for public routes
-    if (PUBLIC_ROUTES.has(request.url)) {
+    // Skip auth for public routes (strip query string so /v1/models?limit=10 still matches)
+    const pathname = request.url.split('?')[0];
+    if (PUBLIC_ROUTES.has(pathname)) {
       return;
     }
 
     // Local mode: skip auth entirely, set default tenant
     if (LOCAL_MODE) {
+      logger.warn('LOCAL MODE ACTIVE — authentication is disabled. Do not use in production.');
       const db = getDb();
       const tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined;
       (request as any).tenant = {
@@ -40,13 +44,18 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       return;
     }
 
-    // Admin routes require admin API key
-    if (request.url.startsWith('/v1/admin')) {
+    // Admin routes require admin API key (use pathname to support query strings)
+    if (pathname.startsWith('/v1/admin')) {
       if (!adminApiKey) {
         throw new AuthenticationError('Admin API not configured');
       }
       const apiKey = extractApiKey(request);
-      if (!apiKey || apiKey !== adminApiKey) {
+      if (!apiKey) {
+        throw new AuthenticationError('Invalid admin API key');
+      }
+      const keyBuf = Buffer.from(apiKey);
+      const adminBuf = Buffer.from(adminApiKey);
+      if (keyBuf.length !== adminBuf.length || !timingSafeEqual(keyBuf, adminBuf)) {
         throw new AuthenticationError('Invalid admin API key');
       }
       return;

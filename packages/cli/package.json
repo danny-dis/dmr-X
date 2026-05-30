@@ -18,7 +18,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
-    "start": "node dist/index.js"
+    "start": "bun dist/index.js"
   },
   "dependencies": {
     "chalk": "^5.3.0",
@@ -29,7 +29,6 @@
     "@dmr-x/utils": "*"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
     "typescript": "^5.4.0"
   }
 }

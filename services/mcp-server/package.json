@@ -15,9 +15,9 @@
     "dmrx-mcp": "./dist/index.js"
   },
   "scripts": {
-    "build": "node --max-old-space-size=4096 ../../node_modules/typescript/bin/tsc -b",
+    "build": "bunx tsc -b",
     "dev": "tsc --watch",
-    "start": "node dist/index.js",
+    "start": "bun dist/index.js",
     "clean": "rm -rf dist"
   },
   "dependencies": {

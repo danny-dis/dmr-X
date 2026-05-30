@@ -50,6 +50,7 @@ export interface Provider {
   avgLatency: number;
   successRate: number;
   signupUrl?: string;
+  hasKey?: boolean;
 }
 
 export interface Model {

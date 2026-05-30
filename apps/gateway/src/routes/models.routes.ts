@@ -38,7 +38,7 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
       `SELECT mp.*, p.name as provider_name
        FROM model_profiles mp
        JOIN providers p ON p.id = mp.provider_id
-       WHERE mp.model_id = ? AND mp.is_active = 1`
+       WHERE mp.model_id = ? AND mp.is_active = 1 AND p.is_healthy = 1`
     ).get(modelId) as any;
 
     if (!row) {

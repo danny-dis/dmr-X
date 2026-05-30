@@ -6,6 +6,8 @@ export interface ClassifyOptions {
   path: string;
   qualityTarget?: 'frontier' | 'balanced' | 'economy';
   priority?: number;
+  /** When true, return only the routing plan without executing the request */
+  planOnly?: boolean;
 }
 
 export function classifyTask(request: UnifiedRequest, options: ClassifyOptions): TaskProfile {

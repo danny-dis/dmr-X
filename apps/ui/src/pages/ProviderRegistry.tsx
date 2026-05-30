@@ -38,7 +38,7 @@ export default function ProviderRegistry() {
       isRegistered: !!registered,
       avgLatency: registered?.avgLatency || 0,
       successRate: registered?.successRate || 100,
-      currentKey: registered?.apiKey,
+      hasKey: registered?.hasKey ?? false,
     };
   });
 
@@ -80,7 +80,7 @@ export default function ProviderRegistry() {
 
   const openActivateDialog = (template: any) => {
     setActiveTemplate(template);
-    setApiKey(template.currentKey || '');
+    setApiKey('');
     setTestResult(null);
     setShowActivateDialog(true);
   };

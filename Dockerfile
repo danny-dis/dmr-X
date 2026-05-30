@@ -4,7 +4,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Copy package files for all workspaces
-COPY package.json package-lock.json turbo.json ./
+COPY package.json turbo.json ./
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/utils/package.json packages/utils/
@@ -56,6 +56,12 @@ COPY --from=builder /app/apps/gateway/public ./apps/gateway/public
 ENV NODE_ENV=production
 ENV PORT=3000
 
+# Create non-root user and ensure data directory is writable
+RUN addgroup -g 1001 -S dmrx && adduser -S dmrx -u 1001 -G dmrx \
+    && mkdir -p /home/dmrx/.dmr-x && chown -R dmrx:dmrx /home/dmrx/.dmr-x
+
 EXPOSE 3000
+
+USER dmrx
 
 CMD ["node", "apps/gateway/dist/main.js"]

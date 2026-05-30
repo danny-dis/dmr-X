@@ -17,6 +17,47 @@ function saveDatabase() {
   }
 }
 
+const SAVE_DEBOUNCE_MS = 100;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSaveResolvers: (() => void)[] = [];
+
+/**
+ * Schedule a debounced save. Multiple calls within the debounce window are
+ * coalesced into a single disk write. Returns a Promise that resolves once
+ * the write actually completes, so callers can await it when needed.
+ */
+function scheduleSave(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    pendingSaveResolvers.push(resolve);
+    if (saveTimer !== null) {
+      clearTimeout(saveTimer);
+    }
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      const resolvers = pendingSaveResolvers;
+      pendingSaveResolvers = [];
+      saveDatabase();
+      for (const r of resolvers) r();
+    }, SAVE_DEBOUNCE_MS);
+  });
+}
+
+/**
+ * Immediately flush any pending debounced save to disk. Use this before
+ * graceful shutdown or after critical writes where you need a guarantee
+ * that data is persisted right now.
+ */
+export async function flush(): Promise<void> {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  const resolvers = pendingSaveResolvers;
+  pendingSaveResolvers = [];
+  saveDatabase();
+  for (const r of resolvers) r();
+}
+
 // Wrapper that mimics better-sqlite3 API on top of sql.js
 class DatabaseWrapper {
   private raw: SqlJsDatabase;
@@ -59,7 +100,7 @@ class DatabaseWrapper {
           stmt.bind(params.length > 0 ? params as initSqlJs.BindParams : undefined);
           stmt.step();
           const changes = raw.getRowsModified();
-          saveDatabase();
+          scheduleSave();
           return { changes };
         } finally {
           stmt.free();
@@ -70,15 +111,19 @@ class DatabaseWrapper {
 
   exec(sql: string) {
     this.raw.exec(sql);
-    saveDatabase();
+    scheduleSave();
   }
 
   pragma(_p: string) {
     // sql.js doesn't support PRAGMA the same way — no-op
   }
 
-  close() {
-    saveDatabase();
+  flush() {
+    return flush();
+  }
+
+  async close() {
+    await flush();
     this.raw.close();
   }
 }
@@ -129,9 +174,9 @@ export function getDb(): DatabaseWrapper {
   return new DatabaseWrapper(db);
 }
 
-export function closeDb() {
+export async function closeDb() {
   if (db) {
-    saveDatabase();
+    await flush();
     db.close();
     db = null;
   }

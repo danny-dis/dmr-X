@@ -27,7 +27,7 @@ const navItems = [
   { id: 'policies', label: 'Policy Engine', icon: ShieldCheck, path: '/policies' },
   { id: 'tenants', label: 'Tenants', icon: Users, path: '/tenants' },
   { id: 'audit', label: 'Audit Logs', icon: ScrollText, path: '/audit' },
-  { id: 'alerts', label: 'Alerts', icon: Bell, path: '/alerts', badge: 7 },
+  { id: 'alerts', label: 'Alerts', icon: Bell, path: '/alerts' },
   { id: 'keys', label: 'Provider Keys', icon: Key, path: '/keys' },
   { id: 'settings', label: 'Settings', icon: Settings, path: '/settings' },
 ];

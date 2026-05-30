@@ -9,10 +9,19 @@ export class ApiError extends Error {
   }
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const apiKey = (typeof localStorage !== 'undefined' && localStorage.getItem('dmrx_api_key')) || import.meta.env.VITE_API_KEY;
+  if (apiKey) {
+    return { Authorization: `Bearer ${apiKey}` };
+  }
+  return {};
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
+      ...getAuthHeaders(),
       ...options?.headers,
     },
     ...options,
@@ -78,6 +87,13 @@ export async function createProvider(input: {
   return request<ApiProvider>('/v1/admin/providers', {
     method: 'POST',
     body: JSON.stringify(input),
+  });
+}
+
+export async function updateProviderApiKey(provider_id: string, api_key: string): Promise<{ success: boolean; provider: ApiProvider }> {
+  return request<{ success: boolean; provider: ApiProvider }>(`/v1/admin/providers/${provider_id}/api-key`, {
+    method: 'PUT',
+    body: JSON.stringify({ api_key }),
   });
 }
 
@@ -171,9 +187,12 @@ export async function createTenant(name: string): Promise<ApiTenant> {
 export interface ApiKey {
   id: string;
   tenant_id: string;
+  tenant_name?: string;
   name: string | null;
-  key: string;
+  key?: string;
+  is_active?: boolean;
   created_at: string;
+  last_used_at?: string;
 }
 
 export async function fetchApiKeys(): Promise<ApiKey[]> {
@@ -530,7 +549,7 @@ export async function chatCompletionStream(
   try {
     const res = await fetch(`${API_BASE}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ ...req, stream: true }),
     });
 
@@ -539,7 +558,8 @@ export async function chatCompletionStream(
       throw new ApiError(res.status, body.message || res.statusText);
     }
 
-    const reader = res.body!.getReader();
+    if (!res.body) throw new ApiError(0, 'Response body is empty');
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
     let buffer = '';

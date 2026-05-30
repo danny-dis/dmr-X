@@ -119,6 +119,10 @@ export class Router {
                 maxRetries: 1,
               };
 
+              if (options.planOnly) {
+                return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
+              }
+
               try {
                 const response = await executeWithFallback(plan, request, this.adapterExecutor, {
                   rateLimitService: this.config.rateLimitService,
@@ -148,6 +152,10 @@ export class Router {
               timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
               maxRetries: 1,
             };
+
+            if (options.planOnly) {
+              return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
+            }
 
             const response = await executeWithFallback(plan, request, this.adapterExecutor, {
               rateLimitService: this.config.rateLimitService,
@@ -196,6 +204,9 @@ export class Router {
           timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
           maxRetries: 0,
         };
+        if (options.planOnly) {
+          return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
+        }
         if (!this.adapterExecutor) throw new Error('No adapter executor configured');
         const response = await executeWithFallback(plan, request, this.adapterExecutor, { rateLimitService: this.config.rateLimitService, quotaService: this.config.quotaService, tenantId });
         return { plan, response };
@@ -258,6 +269,14 @@ export class Router {
       { primary: plan.primary, fallbackCount: plan.chain.length },
       'Routing plan created'
     );
+
+    // If planOnly, return just the plan without executing
+    if (options.planOnly) {
+      return {
+        plan,
+        response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 },
+      };
+    }
 
     // Step 3: Execute with fallback
     if (!this.adapterExecutor) {

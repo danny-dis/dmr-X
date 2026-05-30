@@ -276,7 +276,7 @@ export default function Overview() {
                   <td className="py-2 text-xs text-[#F8F9FC] font-medium">{bm.modelName}</td>
                   <td className="py-2 text-[11px] text-[#A6A6B0]">{bm.benchmarkName}</td>
                   <td className="py-2 text-[11px] text-[#00FFB2] font-mono-data font-semibold">{bm.score}%</td>
-                  <td className="py-2 text-[11px] text-[#595962] font-mono-data">{bm.previousScore}%</td>
+                  <td className="py-2 text-[11px] text-[#595962] font-mono-data">{bm.previousScore != null ? `${bm.previousScore}%` : '—'}</td>
                   <td className="py-2 text-[11px] text-[#595962] font-mono-data">{bm.latency}ms</td>
                   <td className="py-2">
                     {bm.regression ? (

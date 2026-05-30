@@ -6,7 +6,7 @@ import type { Router } from '@dmr-x/router';
 
 const EmbeddingRequestSchema = z.object({
   model: z.string(),
-  input: z.union([z.string(), z.array(z.string())]),
+  input: z.union([z.string(), z.array(z.string()), z.array(z.number()), z.array(z.array(z.number()))]),
   encoding_format: z.enum(['float', 'base64']).optional().default('float'),
   dimensions: z.number().positive().optional(),
   user: z.string().optional(),
@@ -26,7 +26,7 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
     const unifiedRequest: UnifiedRequest = {
       modality: 'embedding',
       model: body.model,
-      input: body.input,
+      input: body.input as string | string[],
       encoding_format: body.encoding_format,
       dimensions: body.dimensions,
       stream: false,
@@ -37,24 +37,20 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
       },
     };
 
-    try {
-      const { response } = await router.route(unifiedRequest, {
-        path: '/v1/embeddings',
-        qualityTarget: 'balanced',
-      });
+    const { response } = await router.route(unifiedRequest, {
+      path: '/v1/embeddings',
+      qualityTarget: 'balanced',
+    });
 
-      return {
-        object: 'list',
-        data: (response.embeddings || []).map((embedding: number[], i: number) => ({
-          object: 'embedding',
-          embedding,
-          index: i,
-        })),
-        model: response.modelId,
-        usage: response.usage || { prompt_tokens: 0, total_tokens: 0 },
-      };
-    } catch (error) {
-      throw error;
-    }
+    return {
+      object: 'list',
+      data: (response.embeddings || []).map((embedding: number[], i: number) => ({
+        object: 'embedding',
+        embedding,
+        index: i,
+      })),
+      model: response.modelId,
+      usage: response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    };
   });
 }

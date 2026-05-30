@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * DMR-X MCP Server — Entry point
  *
@@ -18,6 +18,7 @@
  *   DMRX_MCP_TRANSPORT  — Transport type: "stdio" (default), "sse", or "http"
  *   DMRX_MCP_PORT       — Port for SSE/HTTP transports (default: 3100)
  *   DMRX_MCP_HOST       — Host for SSE/HTTP transports (default: 0.0.0.0)
+ *   DMRX_MCP_API_KEY    — Bearer token required on SSE/HTTP transports (optional)
  *
  * Adapter API keys (standard provider env vars):
  *   OPENAI_API_KEY, ANTHROPIC_API_KEY, REPLICATE_API_TOKEN,
@@ -44,6 +45,30 @@ function getEnvInt(key: string, fallback: number): number {
   if (!val) return fallback;
   const parsed = parseInt(val, 10);
   return isNaN(parsed) ? fallback : parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+const MCP_API_KEY = process.env.DMRX_MCP_API_KEY || '';
+
+/**
+ * Checks the Authorization header against the configured API key.
+ * Returns true if the request is authorized (or no key is configured).
+ * Sends a 401 response and returns false if unauthorized.
+ */
+function checkAuth(req: { headers: Record<string, string | string[] | undefined> }, res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body: string) => void }): boolean {
+  if (!MCP_API_KEY) return true;
+
+  const authHeader = req.headers['authorization'];
+  if (typeof authHeader === 'string' && authHeader === `Bearer ${MCP_API_KEY}`) {
+    return true;
+  }
+
+  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Unauthorized — missing or invalid Bearer token' }));
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +181,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     if (url.pathname === '/sse' && req.method === 'GET') {
+      if (!checkAuth(req, res)) return;
       // Create a new SSE session
       const { server } = createDMRXMcpServer(config);
       const transport = new SSEServerTransport('/messages', res);
@@ -176,6 +202,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     }
 
     if (url.pathname === '/messages' && req.method === 'POST') {
+      if (!checkAuth(req, res)) return;
       const sessionId = url.searchParams.get('sessionId');
       if (!sessionId || !sessions.has(sessionId)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -219,6 +246,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     if (url.pathname === '/mcp') {
+      if (!checkAuth(req, res)) return;
       // Check for existing session
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
@@ -278,6 +306,10 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 async function main(): Promise<void> {
   const transport = getEnv('DMRX_MCP_TRANSPORT', 'stdio').toLowerCase();
   const config = buildConfig();
+
+  if (transport !== 'stdio' && !MCP_API_KEY) {
+    console.warn('WARNING: MCP server running without authentication — set DMRX_MCP_API_KEY to secure it');
+  }
 
   switch (transport) {
     case 'stdio':

@@ -168,7 +168,7 @@ export default function BillingCenter() {
           <div>
             <div className="flex items-center justify-between text-xs mb-2">
               <span className="text-[#595962]">Requests</span>
-              <span className="text-[#F8F9FC] font-mono-data">{(billingSummary.planLimits.requests / 1e6).toFixed(0)}M/mo</span>
+              <span className="text-[#F8F9FC] font-mono-data">{billingSummary.planLimits.requests ? `${(billingSummary.planLimits.requests / 1e6).toFixed(0)}M/mo` : 'Unlimited'}</span>
             </div>
             <div className="w-full h-2 bg-[#1A1A20] rounded-full overflow-hidden">
               <div className="h-full bg-[#F7A51C] rounded-full" style={{ width: '65%' }} />
@@ -177,7 +177,7 @@ export default function BillingCenter() {
           <div>
             <div className="flex items-center justify-between text-xs mb-2">
               <span className="text-[#595962]">Tokens</span>
-              <span className="text-[#F8F9FC] font-mono-data">{(billingSummary.planLimits.tokens / 1e6).toFixed(0)}M/mo</span>
+              <span className="text-[#F8F9FC] font-mono-data">{billingSummary.planLimits.tokens ? `${(billingSummary.planLimits.tokens / 1e6).toFixed(0)}M/mo` : 'Unlimited'}</span>
             </div>
             <div className="w-full h-2 bg-[#1A1A20] rounded-full overflow-hidden">
               <div className="h-full bg-[#FF4D6A] rounded-full" style={{ width: '78%' }} />
@@ -186,7 +186,7 @@ export default function BillingCenter() {
           <div>
             <div className="flex items-center justify-between text-xs mb-2">
               <span className="text-[#595962]">Spend</span>
-              <span className="text-[#F8F9FC] font-mono-data">${billingSummary.planLimits.spend.toLocaleString()}/mo</span>
+              <span className="text-[#F8F9FC] font-mono-data">{billingSummary.planLimits.spend != null ? `$${billingSummary.planLimits.spend.toLocaleString()}/mo` : 'Unlimited'}</span>
             </div>
             <div className="w-full h-2 bg-[#1A1A20] rounded-full overflow-hidden">
               <div className="h-full bg-[#00FFB2] rounded-full" style={{ width: '57%' }} />

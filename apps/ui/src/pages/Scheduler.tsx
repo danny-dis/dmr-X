@@ -50,7 +50,7 @@ export default function Scheduler() {
             <span className="text-[11px] text-[#595962]">Avg Utilization</span>
           </div>
           <div className="text-xl font-bold text-[#F7A51C]">
-            {Math.round(temporaryWorkers.reduce((a, w) => a + w.cpuUsage, 0) / temporaryWorkers.length)}%
+            {temporaryWorkers.length > 0 ? Math.round(temporaryWorkers.reduce((a, w) => a + w.cpuUsage, 0) / temporaryWorkers.length) : 0}%
           </div>
         </div>
       </div>

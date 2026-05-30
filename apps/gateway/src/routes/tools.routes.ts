@@ -26,10 +26,6 @@ export function registerToolHandler(name: string, handler: ToolHandler): void {
   toolHandlers.set(name, handler);
 }
 
-export function getToolHandler(name: string): ToolHandler | undefined {
-  return toolHandlers.get(name);
-}
-
 /** Convert registered tool handlers to SDK Tool objects */
 function getRegisteredSDKTools(): SDKTool[] {
   const tools: SDKTool[] = [];
@@ -250,75 +246,51 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
     // Mode 2: Model request with tool support
     const unifiedRequest = toUnifiedRequest(body, requestId, tenant);
 
-    try {
-      const { response } = await router.route(unifiedRequest, {
-        path: '/v1/tools/execute',
-        qualityTarget: 'balanced',
-      });
+    const { response } = await router.route(unifiedRequest, {
+      path: '/v1/tools/execute',
+      qualityTarget: 'balanced',
+    });
 
-      // Check if the model returned tool_calls
-      const toolCalls = response.message?.tool_calls ?? [];
-      const toolResults: Array<{
-        tool_call_id: string;
-        tool_name: string;
-        result: unknown;
-        error?: { message: string };
-      }> = [];
+    // Check if the model returned tool_calls
+    const toolCalls = response.message?.tool_calls ?? [];
+    const toolResults: Array<{
+      tool_call_id: string;
+      tool_name: string;
+      result: unknown;
+      error?: { message: string };
+    }> = [];
 
-      if (toolCalls.length > 0) {
-        // Execute tool calls using SDK executor
-        const executionPromises = toolCalls.map((tc: ToolCall) =>
-          executeToolCall(tc, { requestId, tenant }),
-        );
+    if (toolCalls.length > 0) {
+      // Execute tool calls using SDK executor
+      const executionPromises = toolCalls.map((tc: ToolCall) =>
+        executeToolCall(tc, { requestId, tenant }),
+      );
 
-        const settled = await Promise.allSettled(executionPromises);
-        for (const s of settled) {
-          if (s.status === 'fulfilled') {
-            toolResults.push(s.value);
-          }
-        }
-      }
-
-      if (body.stream) {
-        // Streaming response
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        });
-
-        // Stream the model response
-        writeSSE(reply, 'message', {
-          id: requestId,
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: response.modelId,
-          choices: [
-            {
-              index: 0,
-              message: response.message,
-              finish_reason: response.finishReason,
-            },
-          ],
-          usage: response.usage,
-        });
-
-        // Stream tool results if any
-        if (toolResults.length > 0) {
-          writeSSE(reply, 'tool_results', {
-            id: requestId,
-            object: 'tool.results',
-            results: toolResults,
+      const settled = await Promise.allSettled(executionPromises);
+      for (const s of settled) {
+        if (s.status === 'fulfilled') {
+          toolResults.push(s.value);
+        } else {
+          toolResults.push({
+            tool_call_id: 'unknown',
+            tool_name: 'unknown',
+            result: null,
+            error: { message: s.reason?.message || 'Tool execution failed' },
           });
         }
-
-        writeSSE(reply, 'done', '[DONE]');
-        reply.raw.end();
-        return reply;
       }
+    }
 
-      // Non-streaming response
-      return {
+    if (body.stream) {
+      // Streaming response
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      // Stream the model response
+      writeSSE(reply, 'message', {
         id: requestId,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
@@ -331,11 +303,38 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
           },
         ],
         usage: response.usage,
-        tool_results: toolResults.length > 0 ? toolResults : undefined,
-      };
-    } catch (error) {
-      throw error;
+      });
+
+      // Stream tool results if any
+      if (toolResults.length > 0) {
+        writeSSE(reply, 'tool_results', {
+          id: requestId,
+          object: 'tool.results',
+          results: toolResults,
+        });
+      }
+
+      writeSSE(reply, 'done', '[DONE]');
+      reply.raw.end();
+      return reply;
     }
+
+    // Non-streaming response
+    return {
+      id: requestId,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: response.modelId,
+      choices: [
+        {
+          index: 0,
+          message: response.message,
+          finish_reason: response.finishReason,
+        },
+      ],
+      usage: response.usage,
+      tool_results: toolResults.length > 0 ? toolResults : undefined,
+    };
   });
 
   /**
@@ -464,8 +463,7 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
     }
 
     // Non-streaming response
-    try {
-      for (let step = 0; step < maxSteps; step++) {
+    for (let step = 0; step < maxSteps; step++) {
         const unifiedRequest = toUnifiedRequest(
           { ...body, messages, stream: false },
           requestId,
@@ -547,8 +545,5 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
         steps_completed: maxSteps,
         all_tool_results: allToolResults,
       };
-    } catch (error) {
-      throw error;
-    }
   });
 }

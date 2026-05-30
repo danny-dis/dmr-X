@@ -13,7 +13,7 @@ export default function FreeTier() {
   const navigate = useNavigate();
 
   // Filter for free models
-  const freeModels = models.filter((m) => m.costPerInput === 0 && m.costPerOutput === 0);
+  const freeModels = models.filter((m) => m.inputCost === 0 && m.outputCost === 0);
 
   const stats = [
     { label: 'Free Models', value: freeModels.length, icon: Sparkles, color: 'text-[#00FFB2]' },
@@ -96,9 +96,9 @@ export default function FreeTier() {
 
                 <div className="flex items-center justify-between pt-2 border-t border-[#27272E]">
                   <div className="flex gap-1">
-                    {model.capabilities.includes('streaming') && <span title="Streaming" className="w-1.5 h-1.5 rounded-full bg-[#00FFB2]" />}
-                    {model.capabilities.includes('vision') && <span title="Vision" className="w-1.5 h-1.5 rounded-full bg-[#00E0FF]" />}
-                    {model.capabilities.includes('tool_use') && <span title="Tools" className="w-1.5 h-1.5 rounded-full bg-[#F7A51C]" />}
+                    {model.streamingSupport && <span title="Streaming" className="w-1.5 h-1.5 rounded-full bg-[#00FFB2]" />}
+                    {model.modality?.includes('vision') && <span title="Vision" className="w-1.5 h-1.5 rounded-full bg-[#00E0FF]" />}
+                    {model.toolSupport && <span title="Tools" className="w-1.5 h-1.5 rounded-full bg-[#F7A51C]" />}
                   </div>
                   <button className="text-[10px] font-bold text-[#595962] group-hover:text-[#F8F9FC] flex items-center gap-1 transition-colors">
                     <MessageSquare className="w-3 h-3" /> Test in Playground

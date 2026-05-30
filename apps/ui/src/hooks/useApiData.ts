@@ -64,7 +64,7 @@ export function useProviders() {
         avgLatency: (ap.config?.avgLatencyMs as number) || 0,
         successRate: (ap.config?.successRate as number) || 100,
         signupUrl: (ap.config?.signupUrl as string) || undefined,
-        apiKey: (ap.config?.apiKey as string) || undefined,
+        hasKey: ap.hasKey ?? false,
       }));
       setProviders(mapped);
     } catch (err) {
@@ -238,7 +238,7 @@ export function useRouteDecisions() {
         selectedProvider: d.selected_provider,
         executionMode: d.execution_mode as RouteDecision['executionMode'],
         decisionReason: d.decision_reason,
-        fallbackChain: d.fallback_chain,
+        fallbackChain: typeof d.fallback_chain === 'string' ? JSON.parse(d.fallback_chain) : (d.fallback_chain || []),
         latency: d.latency,
         cost: d.cost,
         confidence: d.confidence,
@@ -282,8 +282,8 @@ export function useQuotaStates() {
         resetTime: q.reset_time,
         burnRate: q.burn_rate,
         predictedExhaustion: q.predicted_exhaustion,
-        alerts: q.alerts,
-        reroutingSuggestions: q.rerouting_suggestions,
+        alerts: typeof q.alerts === 'string' ? JSON.parse(q.alerts) : (q.alerts || []),
+        reroutingSuggestions: typeof q.rerouting_suggestions === 'string' ? JSON.parse(q.rerouting_suggestions) : (q.rerouting_suggestions || []),
       }));
       setQuotas(mapped);
     } catch (err) {
@@ -311,15 +311,15 @@ export function useBillingSummary() {
       setError(null);
       const ab = await api.fetchBillingSummary();
       setBilling({
-        id: ab.id,
-        tenantId: ab.tenant_id,
-        tenantName: ab.tenant_name,
-        currentMonthSpend: ab.current_month_spend,
-        estimatedEndOfMonth: ab.estimated_end_of_month,
-        previousMonthSpend: ab.previous_month_spend,
-        costByProvider: ab.cost_by_provider,
-        costByModel: ab.cost_by_model,
-        costByModality: ab.cost_by_modality,
+        id: ab.id || '',
+        tenantId: ab.tenant_id || '',
+        tenantName: ab.tenant_name || '',
+        currentMonthSpend: ab.current_month_spend ?? 0,
+        estimatedEndOfMonth: ab.estimated_end_of_month ?? 0,
+        previousMonthSpend: ab.previous_month_spend ?? 0,
+        costByProvider: ab.cost_by_provider || [],
+        costByModel: ab.cost_by_model || [],
+        costByModality: ab.cost_by_modality || [],
         invoices: (ab.invoices || []).map((inv) => ({
           id: inv.id,
           period: inv.period,
@@ -328,8 +328,8 @@ export function useBillingSummary() {
           dueDate: inv.due_date,
           paidDate: inv.paid_date,
         })),
-        planLimits: ab.plan_limits,
-        overageFlags: ab.overage_flags,
+        planLimits: ab.plan_limits || { requests: 0, tokens: 0, spend: 0 },
+        overageFlags: ab.overage_flags || [],
       });
     } catch (err) {
       setBilling(emptyBillingSummary);
@@ -399,7 +399,7 @@ export function useAuditEvents() {
         actor: e.actor,
         tenantId: e.tenant_id,
         description: e.description,
-        metadata: e.metadata,
+        metadata: typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {}),
         ipAddress: e.ip_address,
       }));
       setEvents(mapped);
@@ -436,7 +436,7 @@ export function useTelemetryEvents() {
         traceId: e.trace_id,
         spanId: e.span_id,
         duration: e.duration,
-        metadata: e.metadata,
+        metadata: typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {}),
       }));
       setEvents(mapped);
     } catch (err) {
@@ -475,7 +475,7 @@ export function useBenchmarkResults() {
         runDate: b.run_date,
         regression: b.regression,
         previousScore: b.previous_score,
-        comparisonScores: b.comparison_scores,
+        comparisonScores: typeof b.comparison_scores === 'string' ? JSON.parse(b.comparison_scores) : (b.comparison_scores || []),
       }));
       setBenchmarks(mapped);
     } catch (err) {
@@ -509,7 +509,7 @@ export function usePolicyRules() {
         type: p.type as PolicyRule['type'],
         target: p.target,
         action: p.action as PolicyRule['action'],
-        conditions: p.conditions,
+        conditions: typeof p.conditions === 'string' ? JSON.parse(p.conditions) : (p.conditions || {}),
         priority: p.priority,
         enabled: p.enabled,
         createdAt: p.created_at,
@@ -547,7 +547,7 @@ export function useMemoryItems() {
         createdAt: m.created_at,
         retrievedAt: m.retrieved_at,
         source: m.source,
-        metadata: m.metadata,
+        metadata: typeof m.metadata === 'string' ? JSON.parse(m.metadata) : (m.metadata || {}),
         redactionStatus: m.redaction_status as MemoryItem['redactionStatus'],
         retentionDays: m.retention_days,
         embeddingModel: m.embedding_model,
@@ -583,7 +583,7 @@ export function useSandboxJobs() {
         type: j.type as SandboxJob['type'],
         status: j.status as SandboxJob['status'],
         isolationLevel: j.isolation_level as SandboxJob['isolationLevel'],
-        resourceUsage: j.resource_usage,
+        resourceUsage: typeof j.resource_usage === 'string' ? JSON.parse(j.resource_usage) : (j.resource_usage || {}),
         startTime: j.start_time,
         endTime: j.end_time,
         retries: j.retries,
@@ -661,12 +661,11 @@ export function useFederationNodes() {
         region: n.region,
         status: n.status as FederationNode['status'],
         lastSync: n.last_sync,
-        benchmarkSummary: {
-          globalScore: n.benchmark_summary.global_score,
-          localScore: n.benchmark_summary.local_score,
-          variance: n.benchmark_summary.variance,
-        },
-        anonymizedUpdates: n.anonymized_updates,
+        benchmarkSummary: (() => {
+          const bs = typeof n.benchmark_summary === 'string' ? JSON.parse(n.benchmark_summary) : (n.benchmark_summary || {});
+          return { globalScore: bs.global_score ?? 0, localScore: bs.local_score ?? 0, variance: bs.variance ?? 0 };
+        })(),
+        anonymizedUpdates: typeof n.anonymized_updates === 'string' ? JSON.parse(n.anonymized_updates) : (n.anonymized_updates || []),
         privacyLevel: n.privacy_level as FederationNode['privacyLevel'],
       }));
       setNodes(mapped);
@@ -695,17 +694,17 @@ export function useDashboardStats() {
       setError(null);
       const ds = await api.fetchDashboardStats();
       setStats({
-        totalRequests: ds.total_requests,
-        successRate: ds.success_rate,
-        avgLatency: ds.avg_latency,
-        tokenUsage: ds.token_usage,
-        dailySpend: ds.daily_spend,
-        quotaRemaining: ds.quota_remaining,
-        activeModels: ds.active_models,
-        providerHealth: ds.provider_health,
-        fallbackRate: ds.fallback_rate,
-        workerUtilization: ds.worker_utilization,
-        systemStatus: ds.system_status as DashboardStats['systemStatus'],
+        totalRequests: ds.total_requests ?? 0,
+        successRate: ds.success_rate ?? 0,
+        avgLatency: ds.avg_latency ?? 0,
+        tokenUsage: ds.token_usage ?? 0,
+        dailySpend: ds.daily_spend ?? 0,
+        quotaRemaining: ds.quota_remaining ?? 0,
+        activeModels: ds.active_models ?? 0,
+        providerHealth: ds.provider_health ?? 0,
+        fallbackRate: ds.fallback_rate ?? 0,
+        workerUtilization: ds.worker_utilization ?? 0,
+        systemStatus: (ds.system_status as DashboardStats['systemStatus']) || 'operational',
       });
     } catch (err) {
       setStats(emptyDashboardStats);

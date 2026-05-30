@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     logger.info('Shutting down...');
     await server.close();
-    closeDb();
+    await closeDb();
     process.exit(0);
   };
 

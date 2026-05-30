@@ -1,6 +1,7 @@
 import { getDb, cache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { ProviderModel, CandidateSet } from '@dmr-x/core';
+import crypto from 'node:crypto';
 
 export class RegistryService {
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -91,8 +92,8 @@ export class RegistryService {
 
     // Record health check
     db.prepare(
-      'INSERT INTO health_checks (provider_id, is_healthy, latency_ms) VALUES (?, ?, ?)'
-    ).run(providerId, healthy ? 1 : 0, latencyMs);
+      'INSERT INTO health_checks (id, provider_id, is_healthy, latency_ms) VALUES (?, ?, ?, ?)'
+    ).run(crypto.randomUUID(), providerId, healthy ? 1 : 0, latencyMs ?? null);
   }
 
   getProviderConfig(providerId: string): any {

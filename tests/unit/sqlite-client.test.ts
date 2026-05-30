@@ -113,7 +113,7 @@ describe('sqlite-client', () => {
     it('close() should close the database', async () => {
       const { initDb, closeDb } = await import('../../packages/db/src/client.js');
       await initDb();
-      closeDb();
+      await closeDb();
       expect(mockDb.close).toHaveBeenCalled();
     });
 
