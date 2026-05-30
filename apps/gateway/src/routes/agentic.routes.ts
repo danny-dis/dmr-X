@@ -81,6 +81,21 @@ const AgenticChatRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const conversations = new Map<string, ConversationState>();
+const conversationLocks = new Map<string, Promise<void>>();
+const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const conversationTimestamps = new Map<string, number>();
+
+// Periodic cleanup of expired conversations
+const conversationCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [id, ts] of conversationTimestamps) {
+    if (now - ts > CONVERSATION_TTL_MS) {
+      conversations.delete(id);
+      conversationTimestamps.delete(id);
+    }
+  }
+}, 60_000);
+if (conversationCleanupTimer.unref) conversationCleanupTimer.unref();
 
 // ---------------------------------------------------------------------------
 // Helper: convert to UnifiedRequest
@@ -195,6 +210,19 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     const maxSteps = body.max_steps;
     const stopConditions = body.stopWhen ?? [];
 
+    // Acquire conversation lock to prevent concurrent mutation
+    const convId = body.conversationId ?? requestId;
+    const existingLock = conversationLocks.get(convId);
+    if (existingLock) {
+      await existingLock;
+    }
+    let lockResolver: (() => void) | undefined;
+    const lockPromise = new Promise<void>((resolve) => { lockResolver = resolve; });
+    conversationLocks.set(convId, lockPromise);
+    const releaseLock = () => { lockResolver?.(); if (conversationLocks.get(convId) === lockPromise) conversationLocks.delete(convId); };
+
+    try {
+
     // Load or create conversation state (uses SDK ConversationState)
     let conversation: ConversationState;
     if (body.conversationId && conversations.has(body.conversationId)) {
@@ -202,10 +230,12 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
       conversation = updateState(conversation, {
         messages: [...conversation.messages, ...body.messages],
       });
+      conversationTimestamps.set(conversation.id, Date.now());
     } else {
       conversation = createInitialState(body.conversationId ?? requestId);
       conversation.messages = [...body.messages];
       conversations.set(conversation.id, conversation);
+      conversationTimestamps.set(conversation.id, Date.now());
     }
 
     // Handle approval decisions for resuming a paused conversation
@@ -339,7 +369,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             await isStopConditionMet({ stopConditions: sdkStopConditions, steps: allStepResults })
           ) {
             // Update conversation state
-            messages.push(response.message!);
+            if (response.message) messages.push(response.message);
             conversation = updateState(conversation, {
               messages,
               status: 'completed',
@@ -360,7 +390,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             });
 
             // Add assistant message to conversation
-            messages.push(response.message!);
+            if (response.message) messages.push(response.message);
             conversation = updateState(conversation, { messages });
 
             // Stream approval required event
@@ -369,7 +399,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
               pending_tool_calls: toolCalls.map((tc: ToolCall) => ({
                 id: tc.id,
                 name: tc.function.name,
-                arguments: JSON.parse(tc.function.arguments),
+                arguments: JSON.parse(tc.function.arguments || '{}'),
               })),
             });
 
@@ -473,11 +503,13 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         };
         nonStreamingStepResults.push(stepResult);
 
+        allSteps.push({ turn, message: response.message, tool_calls: toolCalls, tool_results: [] });
+
         if (
           toolCalls.length === 0 ||
           await isStopConditionMet({ stopConditions: nonStreamingStopConditions, steps: nonStreamingStepResults })
         ) {
-          messages.push(response.message!);
+          if (response.message) messages.push(response.message);
           conversation = updateState(conversation, {
             messages,
             status: 'completed',
@@ -513,7 +545,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             status: 'awaiting_approval' as const,
           });
 
-          messages.push(response.message!);
+          if (response.message) messages.push(response.message);
           conversation = updateState(conversation, { messages });
 
           return {
@@ -534,7 +566,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             pending_tool_calls: toolCalls.map((tc: ToolCall) => ({
               id: tc.id,
               name: tc.function.name,
-              arguments: JSON.parse(tc.function.arguments),
+              arguments: JSON.parse(tc.function.arguments || '{}'),
             })),
           };
         }
@@ -552,7 +584,9 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           .filter((s): s is PromiseFulfilledResult<Awaited<ReturnType<typeof executeToolCall>>> => s.status === 'fulfilled')
           .map((s) => s.value);
 
-        allSteps.push({ turn, message: response.message, tool_calls: toolCalls, tool_results: stepResults });
+        // Update the step entry (already pushed before stop check) with actual tool results
+        const lastStep = allSteps[allSteps.length - 1];
+        if (lastStep) lastStep.tool_results = stepResults;
 
         // Add tool results to messages
         for (const tr of stepResults) {
@@ -585,5 +619,9 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
       steps_completed: maxSteps,
       all_steps: allSteps,
     };
+
+    } finally {
+      releaseLock();
+    }
   });
 }
