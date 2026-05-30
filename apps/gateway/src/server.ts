@@ -10,7 +10,7 @@ import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, Replic
 import type { UnifiedRequest } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
-import { quotaService, keyRotationService } from '@dmr-x/quota';
+import { quotaService, keyRotationService, rateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import { chatRoutes } from './routes/chat.routes.js';
 import { modelsRoutes } from './routes/models.routes.js';
@@ -159,10 +159,15 @@ export async function createServer() {
 
   // Initialize router
   const freeTierStrategy = (process.env.DMRX_FREE_TIER_STRATEGY as any) || 'none';
-  const router = new Router({ epsilon: 0.05, quotaService, policyService, freeTierStrategy });
+  const router = new Router({ epsilon: 0.05, quotaService, policyService, rateLimitService, freeTierStrategy });
   router.setAdapterExecutor({
     execute: async (providerId: string, _modelId: string, request: UnifiedRequest) => {
-      const adapter = adapterRegistry.get(providerId);
+      // Resolve UUID to provider name if needed
+      let adapter = adapterRegistry.get(providerId);
+      if (!adapter) {
+        const row = db.prepare('SELECT name FROM providers WHERE id = ?').get(providerId) as any;
+        if (row) adapter = adapterRegistry.get(row.name);
+      }
       if (!adapter) throw new Error(`Adapter not found: ${providerId}`);
       return adapter.execute(request);
     },
@@ -187,8 +192,17 @@ export async function createServer() {
   server.decorate('registerToolHandler', registerToolHandler);
 
   // CORS
+  let corsOrigin: string | string[];
+  if (process.env.DMRX_CORS_ORIGIN) {
+    corsOrigin = process.env.DMRX_CORS_ORIGIN.split(',').map(o => o.trim());
+  } else if (LOCAL_MODE) {
+    corsOrigin = '*';
+  } else {
+    corsOrigin = ['http://localhost:4200', 'http://localhost:5173'];
+  }
+  logger.info({ corsOrigin }, 'CORS configuration');
   await server.register(cors, {
-    origin: process.env.DMRX_CORS_ORIGIN || '*',
+    origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
   });
@@ -217,6 +231,19 @@ export async function createServer() {
   // Middleware
   await server.register(requestIdMiddleware);
   await server.register(authMiddleware);
+
+  // Security headers
+  server.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('X-XSS-Protection', '1; mode=block');
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (process.env.NODE_ENV === 'production') {
+      reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    return payload;
+  });
 
   // Health checks
   server.get('/health', async () => ({ status: 'ok' }));
@@ -279,11 +306,15 @@ export async function createServer() {
     const statusCode = error.statusCode || 500;
     const code = error.code || 'INTERNAL_ERROR';
 
+    // Always log full error server-side
     logger.error({ err: error, req: request }, `Request error: ${error.message}`);
+
+    // For 500+ errors, hide internal details from clients
+    const clientMessage = statusCode >= 500 ? 'Internal server error' : error.message;
 
     reply.status(statusCode).send({
       error: {
-        message: error.message,
+        message: clientMessage,
         type: code,
         code: statusCode >= 500 ? 'internal_error' : code.toLowerCase(),
       },
@@ -295,6 +326,11 @@ export async function createServer() {
     healthChecker.stop();
     await adapterRegistry.disposeAll();
   });
+
+  // Warn if running in local mode (auth disabled)
+  if (LOCAL_MODE) {
+    logger.warn('LOCAL MODE: Authentication is disabled. Set DMRX_LOCAL_MODE=false for production.');
+  }
 
   return server;
 }

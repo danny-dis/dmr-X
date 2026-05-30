@@ -82,32 +82,30 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     };
 
     // Route through Router
-    try {
-      const { plan, response } = await router.route(unifiedRequest, {
-        path: '/v1/chat/completions',
-        qualityTarget: 'balanced',
-      });
+    if (body.stream) {
+        // Streaming: get routing plan only, then stream from adapter
+        const { plan } = await router.route(unifiedRequest, {
+          path: '/v1/chat/completions',
+          qualityTarget: 'balanced',
+          planOnly: true,
+        });
 
-      if (body.stream) {
-        // Streaming response
         const streamHeaders: Record<string, string> = {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
-          'X-Routed-Via': `${plan.primary.providerId}/${plan.primary.modelId}`,
-          'X-Fallback-Attempts': String(plan.chain.length),
         };
         if (unifiedRequest.metadata?.freeTierStrategy) {
           streamHeaders['X-Free-Tier-Strategy'] = String(unifiedRequest.metadata.freeTierStrategy);
         }
         reply.raw.writeHead(200, streamHeaders);
 
-        // For streaming, we need to use the adapter's stream method
         const adapterRegistry = (server as any).adapterRegistry;
         const adapter = adapterRegistry.get(plan.primary.providerId);
         if (adapter) {
           try {
-            const stream = adapter.executeStream(unifiedRequest);
+            const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
+            const stream = adapter.executeStream(routedRequest);
             for await (const chunk of stream) {
               if (chunk.type === 'token') {
                 reply.raw.write(`data: ${JSON.stringify({
@@ -121,27 +119,33 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                   object: 'chat.completion.chunk',
                   choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
                 })}\n\n`);
+              } else if (chunk.type === 'error') {
+                reply.raw.write(`data: ${JSON.stringify({
+                  error: { message: chunk.data?.message || 'Stream error', type: 'stream_error' },
+                })}\n\n`);
               }
             }
           } catch (streamError) {
             logger.error({ err: streamError, requestId }, 'Streaming error');
-            // Send an error event to the client
             reply.raw.write(`data: ${JSON.stringify({
-              error: {
-                message: streamError instanceof Error ? streamError.message : 'Stream failed',
-                type: 'stream_error',
-              },
+              error: { message: streamError instanceof Error ? streamError.message : 'Stream failed', type: 'stream_error' },
             })}\n\n`);
           }
+        } else {
+          reply.raw.write(`data: ${JSON.stringify({
+            error: { message: 'No adapter available for provider', type: 'routing_error' },
+          })}\n\n`);
         }
         reply.raw.write('data: [DONE]\n\n');
         reply.raw.end();
         return reply;
       }
 
-      // Non-streaming response
-      reply.header('X-Routed-Via', `${plan.primary.providerId}/${plan.primary.modelId}`);
-      reply.header('X-Fallback-Attempts', String(plan.chain.length));
+      // Non-streaming: route and execute
+      const { plan, response } = await router.route(unifiedRequest, {
+        path: '/v1/chat/completions',
+        qualityTarget: 'balanced',
+      });
       if (unifiedRequest.metadata?.freeTierStrategy) {
         reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
       }
@@ -160,9 +164,5 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         ],
         usage: response.usage,
       };
-    } catch (error) {
-      // If routing fails, return error
-      throw error;
-    }
   });
 }

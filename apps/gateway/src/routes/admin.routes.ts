@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { getDb } from '@dmr-x/db';
 import crypto from 'node:crypto';
 import { ValidationError } from '@dmr-x/core';
-import { PROVIDER_CATALOG, registryService } from '@dmr-x/registry';
+import { logger } from '@dmr-x/utils';
+import { PROVIDER_CATALOG } from '@dmr-x/registry';
 
 const CreateProviderSchema = z.object({
   name: z.string().min(1),
@@ -39,6 +40,43 @@ const ActivateProviderSchema = z.object({
   template_id: z.string().min(1),
   api_key: z.string().optional(),
 });
+
+const UpdateProviderSchema = z.object({
+  name: z.string().min(1).optional(),
+  adapter_type: z.string().min(1).optional(),
+  base_url: z.string().url().optional().nullable(),
+  api_key_ref: z.string().optional().nullable(),
+  config: z.record(z.unknown()).optional(),
+});
+
+const UpdateApiKeySchema = z.object({
+  api_key: z.string().min(1),
+});
+
+const CreateTenantSchema = z.object({
+  name: z.string().min(1).max(255),
+});
+
+const CreateApiKeySchema = z.object({
+  tenant_id: z.string().uuid(),
+  name: z.string().max(255).optional(),
+});
+
+const UpdateModelSchema = z.object({
+  display_name: z.string().optional(),
+  modality: z.string().optional(),
+  context_window: z.number().positive().optional().nullable(),
+  max_output_tokens: z.number().positive().optional().nullable(),
+  is_active: z.boolean().optional(),
+});
+
+const UpdatePolicySchema = z.object({
+  name: z.string().optional(),
+  rules: z.array(z.record(z.unknown())).optional(),
+  is_active: z.boolean().optional(),
+});
+
+const UpdateSettingsSchema = z.record(z.unknown());
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // List provider catalog
@@ -144,14 +182,92 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
 
     reply.status(200);
-    return { success: true, provider };
+    const providerConfig = JSON.parse(provider.config || '{}');
+    return {
+      success: true,
+      provider: {
+        ...provider,
+        config: { ...providerConfig, apiKey: undefined, hasKey: !!providerConfig.apiKey },
+      },
+    };
   });
 
   // List providers
   server.get('/admin/providers', async () => {
     const db = getDb();
-    const rows = db.prepare('SELECT * FROM providers ORDER BY name').all();
-    return { providers: rows };
+    const rows = db.prepare('SELECT * FROM providers ORDER BY name').all() as any[];
+    const providers = rows.map((row) => {
+      const config = JSON.parse(row.config || '{}');
+      const { apiKey: _stripped, ...safeConfig } = config;
+      return {
+        ...row,
+        config: safeConfig,
+        status: row.is_healthy ? 'healthy' : 'unavailable',
+        hasKey: !!config.apiKey,
+        signupUrl: config.signupUrl || undefined,
+        description: config.description || undefined,
+        category: config.category || [],
+        region: config.region || undefined,
+      };
+    });
+    return { providers };
+  });
+
+  // Update provider API key
+  server.put('/admin/providers/:id/api-key', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = UpdateApiKeySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const { api_key } = parsed.data;
+
+    const db = getDb();
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      reply.status(404);
+      return { error: 'Provider not found' };
+    }
+
+    const config = JSON.parse(provider.config || '{}');
+    config.apiKey = api_key || '';
+    config.hasKey = !!api_key;
+
+    db.prepare(
+      `UPDATE providers SET config = ?, is_healthy = 1, updated_at = datetime('now') WHERE id = ?`
+    ).run(JSON.stringify(config), id);
+
+    // Re-initialize adapter with new key
+    const adapterRegistry = (server as any).adapterRegistry;
+    let adapter = adapterRegistry.get(provider.name);
+    if (!adapter) {
+      const template = PROVIDER_CATALOG.find(t => t.id === provider.name);
+      if (template?.apiFormat === 'openai') {
+        const { GenericOpenAIAdapter } = await import('@dmr-x/adapters');
+        adapter = new GenericOpenAIAdapter(provider.name);
+        adapterRegistry.register(adapter);
+      }
+    }
+    if (adapter) {
+      try {
+        await adapterRegistry.initialize(provider.name, {
+          baseUrl: provider.base_url,
+          apiKey: api_key || '',
+        });
+      } catch (err) {
+        logger.warn({ err, provider: provider.name }, 'Adapter initialization failed — provider may need manual setup');
+      }
+    }
+
+    const updatedRow = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    const updatedConfig = JSON.parse(updatedRow.config || '{}');
+    return {
+      success: true,
+      provider: {
+        ...updatedRow,
+        config: { ...updatedConfig, apiKey: undefined, hasKey: !!updatedConfig.apiKey },
+      },
+    };
   });
 
   // Test provider connection with a given API key
@@ -162,6 +278,38 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const { provider_id, base_url, api_key } = parsed.data;
+
+    // SSRF protection: validate the URL
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(base_url);
+    } catch {
+      throw new ValidationError('Invalid base_url');
+    }
+
+    const blockedProtocols = ['http:', 'https:'];
+    if (!blockedProtocols.includes(parsedUrl.protocol)) {
+      throw new ValidationError('Only http and https protocols are allowed');
+    }
+
+    const hostname = parsedUrl.hostname;
+    const privateRanges = [
+      /^127\./,
+      /^10\./,
+      /^172\.(1[6-9]|2\d|3[01])\./,
+      /^192\.168\./,
+      /^169\.254\./,
+      /^0\.0\.0\.0$/,
+      /^::1$/,
+      /^fc/i,
+      /^fd/i,
+      /^fe80/i,
+    ];
+
+    if (privateRanges.some(rx => rx.test(hostname))) {
+      throw new ValidationError('Fetching private/internal addresses is not allowed');
+    }
+
     const start = Date.now();
 
     try {
@@ -258,7 +406,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     ).run(id, body.name, body.adapter_type, body.base_url, body.api_key_ref, JSON.stringify(body.config));
 
     reply.status(201);
-    return db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
+    const created = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    const createdCfg = JSON.parse(created.config || '{}');
+    return { ...created, config: { ...createdCfg, apiKey: undefined, hasKey: !!createdCfg.apiKey } };
   });
 
   // List models
@@ -303,10 +453,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Create tenant
   server.post('/admin/tenants', async (request, reply) => {
-    const { name } = request.body as { name: string };
-    if (!name) {
-      throw new ValidationError('Name is required');
+    const parsed = CreateTenantSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
+    const { name } = parsed.data;
 
     const db = getDb();
     const id = crypto.randomUUID();
@@ -319,10 +470,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Create API key
   server.post('/admin/api-keys', async (request, reply) => {
-    const { tenant_id, name } = request.body as { tenant_id: string; name?: string };
-    if (!tenant_id) {
-      throw new ValidationError('tenant_id is required');
+    const parsed = CreateApiKeySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
+    const { tenant_id, name } = parsed.data;
 
     const { generateApiKey, hashApiKey } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
@@ -375,11 +527,26 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       SELECT br.*, mp.display_name as model_name, mp.model_id as model_identifier
       FROM benchmark_results br
-      JOIN model_profiles mp ON mp.id = br.model_id
+      LEFT JOIN model_profiles mp ON mp.model_id = br.model_id
       ORDER BY br.run_at DESC
       LIMIT 100
-    `).all();
-    return { benchmarks: rows };
+    `).all() as Array<Record<string, unknown>>;
+    return {
+      benchmarks: rows.map((row) => ({
+        id: row.id,
+        model_id: row.model_id,
+        model_name: row.model_name ?? row.model_identifier ?? row.model_id,
+        benchmark_name: row.benchmark_name,
+        score: row.score,
+        latency: row.latency,
+        cost: row.cost,
+        task_type: row.task_type,
+        run_date: row.run_at ?? row.run_date,
+        regression: row.regression ?? false,
+        previous_score: row.previous_score ?? undefined,
+        comparison_scores: typeof row.comparison_scores === 'string' ? JSON.parse(row.comparison_scores) : row.comparison_scores ?? undefined,
+      })),
+    };
   });
 
   // List policies
@@ -461,8 +628,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     `).all();
 
     const currentSpend = currentMonth?.spend || 0;
-    const daysInMonth = 30;
-    const dayOfMonth = new Date().getDate();
+    const now = new Date();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const dayOfMonth = now.getDate();
     const estimatedEndOfMonth = dayOfMonth > 0 ? (currentSpend / dayOfMonth) * daysInMonth : 0;
 
     return {
@@ -535,7 +703,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       avg_latency: Math.round(req?.avg_latency || 0),
       token_usage: tokenRow?.tokens || 0,
       daily_spend: tokenRow?.spend || 0,
-      quota_remaining: 1000000,
+      quota_remaining: null,
       active_models: modelsRow?.count || 0,
       provider_health: providerTotal > 0 ? Math.round((providerHealthy / providerTotal) * 100) : 100,
       fallback_rate: fallbackTotal > 0 ? Math.round((fallbacks / fallbackTotal) * 100 * 10) / 10 : 0,
@@ -569,8 +737,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       LEFT JOIN providers p ON p.id = rl.selected_provider
       ORDER BY rl.timestamp DESC
       LIMIT 50
-    `).all();
-    return { decisions: rows };
+    `).all() as Array<Record<string, unknown>>;
+    return {
+      decisions: rows.map((row) => ({
+        ...row,
+        fallback_chain: typeof row.fallback_chain === 'string' ? JSON.parse(row.fallback_chain) : row.fallback_chain ?? [],
+      })),
+    };
   });
 
   // Quota states
@@ -603,8 +776,14 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       FROM quota_allocations qa
       LEFT JOIN providers p ON p.id = qa.provider_id
       ORDER BY p.name
-    `).all();
-    return { quotas: rows };
+    `).all() as Array<Record<string, unknown>>;
+    return {
+      quotas: rows.map((row) => ({
+        ...row,
+        alerts: typeof row.alerts === 'string' ? JSON.parse(row.alerts) : row.alerts ?? [],
+        rerouting_suggestions: typeof row.rerouting_suggestions === 'string' ? JSON.parse(row.rerouting_suggestions) : row.rerouting_suggestions ?? [],
+      })),
+    };
   });
 
   // Alerts (derived from system state)
@@ -692,7 +871,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     metadata: Record<string, unknown>;
   }> = [];
 
+  const MAX_TELEMETRY_EVENTS = 1000;
+
   server.get('/admin/telemetry/events', async () => {
+    while (telemetryBuffer.length > MAX_TELEMETRY_EVENTS) {
+      telemetryBuffer.shift();
+    }
     return { events: telemetryBuffer.slice(-100) };
   });
 
@@ -807,13 +991,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Update provider
   server.put('/admin/providers/:id', async (request) => {
     const { id } = request.params as { id: string };
-    const { name, adapter_type, base_url, api_key_ref, config } = request.body as {
-      name?: string;
-      adapter_type?: string;
-      base_url?: string;
-      api_key_ref?: string;
-      config?: Record<string, unknown>;
-    };
+    const parsed = UpdateProviderSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const { name, adapter_type, base_url, api_key_ref, config } = parsed.data;
     const db = getDb();
     db.prepare(
       `UPDATE providers SET
@@ -825,19 +1007,19 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         updated_at = datetime('now')
       WHERE id = ?`
     ).run(name, adapter_type, base_url, api_key_ref, config ? JSON.stringify(config) : null, id);
-    return db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
+    const updated = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    const uCfg = JSON.parse(updated.config || '{}');
+    return { ...updated, config: { ...uCfg, apiKey: undefined, hasKey: !!uCfg.apiKey } };
   });
 
   // Update model
   server.put('/admin/models/:id', async (request) => {
     const { id } = request.params as { id: string };
-    const { display_name, modality, context_window, max_output_tokens, is_active } = request.body as {
-      display_name?: string;
-      modality?: string;
-      context_window?: number;
-      max_output_tokens?: number;
-      is_active?: boolean;
-    };
+    const parsed = UpdateModelSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const { display_name, modality, context_window, max_output_tokens, is_active } = parsed.data;
     const db = getDb();
     db.prepare(
       `UPDATE model_profiles SET
@@ -855,11 +1037,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Update policy
   server.put('/admin/policies/:id', async (request) => {
     const { id } = request.params as { id: string };
-    const { name, rules, is_active } = request.body as {
-      name?: string;
-      rules?: Record<string, unknown>[];
-      is_active?: boolean;
-    };
+    const parsed = UpdatePolicySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const { name, rules, is_active } = parsed.data;
     const db = getDb();
     db.prepare(
       `UPDATE policies SET
@@ -895,7 +1077,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Update settings
   server.put('/admin/settings', async (request) => {
-    const settings = request.body as Record<string, unknown>;
+    const parsed = UpdateSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const settings = parsed.data;
     const db = getDb();
     // Create settings table if it doesn't exist
     db.exec(`
