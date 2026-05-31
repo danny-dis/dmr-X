@@ -1,0 +1,134 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            build_cmd: build:exe
+            binary: dmrx.exe
+            archive_format: zip
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            build_cmd: build:exe:linux
+            binary: dmrx-linux
+            archive_format: tar.gz
+          - os: macos-latest
+            platform: darwin
+            arch: x64
+            build_cmd: build:exe:macos
+            binary: dmrx-darwin
+            archive_format: tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build all packages
+        run: bun run build
+
+      - name: Build UI
+        run: bun run --cwd apps/ui build
+
+      - name: Compile binary
+        working-directory: apps/gateway
+        run: bun run ${{ matrix.build_cmd }}
+
+      - name: Package release
+        shell: bash
+        run: |
+          PLATFORM=${{ matrix.platform }}
+          ARCH=${{ matrix.arch }}
+          BINARY=${{ matrix.binary }}
+          FINAL_NAME="dmrx"
+          if [ "$PLATFORM" = "windows" ]; then FINAL_NAME="dmrx.exe"; fi
+
+          mkdir -p "release/dmrx-${PLATFORM}-${ARCH}"
+          cp "apps/gateway/dist/${BINARY}" "release/dmrx-${PLATFORM}-${ARCH}/${FINAL_NAME}"
+          cp -r apps/gateway/public "release/dmrx-${PLATFORM}-${ARCH}/"
+
+          # Install scripts
+          if [ "$PLATFORM" = "windows" ]; then
+            cp scripts/install.bat "release/dmrx-${PLATFORM}-${ARCH}/"
+          else
+            cp scripts/install.sh "release/dmrx-${PLATFORM}-${ARCH}/"
+            chmod +x "release/dmrx-${PLATFORM}-${ARCH}/install.sh"
+            chmod +x "release/dmrx-${PLATFORM}-${ARCH}/${FINAL_NAME}"
+          fi
+
+          # README
+          RUN_CMD="./dmrx"
+          DATA_DIR="~/.dmr-x"
+          if [ "$PLATFORM" = "windows" ]; then
+            RUN_CMD="dmrx.exe"
+            DATA_DIR='%USERPROFILE%\.dmr-x'
+          fi
+          printf '%s\n' \
+            "DMR-X - AI Model Router Proxy" \
+            "==============================" \
+            "" \
+            "Quick Start:" \
+            "  1. Run: ${RUN_CMD}" \
+            "  2. Open http://localhost:3000 in your browser" \
+            "  3. Add your API keys on the Provider Keys page" \
+            "" \
+            "Data is stored in: ${DATA_DIR}" \
+            > "release/dmrx-${PLATFORM}-${ARCH}/README.txt"
+
+          # Create archive
+          cd release
+          if [ "${{ matrix.archive_format }}" = "zip" ]; then
+            7z a "dmrx-${PLATFORM}-${ARCH}.zip" "dmrx-${PLATFORM}-${ARCH}/"
+          else
+            tar -czf "dmrx-${PLATFORM}-${ARCH}.tar.gz" "dmrx-${PLATFORM}-${ARCH}/"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmrx-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/dmrx-${{ matrix.platform }}-${{ matrix.arch }}.zip
+            release/dmrx-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
