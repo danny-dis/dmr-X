@@ -6,7 +6,7 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
     const rows = getDb().prepare(
       `SELECT mp.model_id, mp.display_name, mp.modality, p.name as provider_name,
               mp.context_window, mp.max_output_tokens, mp.supports_streaming, mp.supports_vision,
-              mp.supports_tool_use, mp.created_at
+              mp.supports_tool_use, mp.supports_json_mode, mp.supports_function_call, mp.supports_reasoning, mp.created_at
        FROM model_profiles mp
        JOIN providers p ON p.id = mp.provider_id
        WHERE mp.is_active = 1 AND p.is_healthy = 1
@@ -28,6 +28,9 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
           supports_streaming: row.supports_streaming,
           supports_vision: row.supports_vision,
           supports_tool_use: row.supports_tool_use,
+          supports_json_mode: row.supports_json_mode,
+          supports_function_call: row.supports_function_call,
+          supports_reasoning: row.supports_reasoning,
         },
       })),
     };

@@ -60,11 +60,13 @@ export async function autoRegisterProviders(): Promise<string[]> {
         db.prepare(
           `INSERT INTO model_profiles (
             id, provider_id, model_id, display_name, modality, intelligence_layer,
-            supports_streaming, supports_vision, supports_tool_use, supports_json_mode,
+            supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
             context_window, max_output_tokens,
             input_cost_per_1k, output_cost_per_1k, cost_per_image,
-            quality_score, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            quality_score, is_active,
+            rate_limit_rpm, rate_limit_rpd, rate_limit_tpm, rate_limit_tpd,
+            monthly_token_budget, intelligence_rank, speed_rank
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           crypto.randomUUID(),
           providerId,
@@ -76,13 +78,22 @@ export async function autoRegisterProviders(): Promise<string[]> {
           model.capabilities.includes('vision') ? 1 : 0,
           model.capabilities.includes('tool_use') ? 1 : 0,
           model.capabilities.includes('json_mode') ? 1 : 0,
-          model.contextWindow,
+          model.capabilities.includes('function_call') ? 1 : 0,
+          model.capabilities.includes('reasoning') ? 1 : 0,
+          model.contextWindow ?? null,
           model.maxOutputTokens ?? null,
-          (model.inputCostPer1M || 0) / 1000,
-          (model.outputCostPer1M || 0) / 1000,
-          model.costPerImage || 0,
+          (model.inputCostPer1M ?? 0) / 1000,
+          (model.outputCostPer1M ?? 0) / 1000,
+          model.costPerImage ?? 0,
           0.5,
           isActive ? 1 : 0,
+          model.freeTier?.rateLimits.rpm ?? null,
+          model.freeTier?.rateLimits.rpd ?? null,
+          model.freeTier?.rateLimits.tpm ?? null,
+          model.freeTier?.rateLimits.tpd ?? null,
+          model.freeTier?.monthlyTokenBudget ?? null,
+          model.freeTier?.intelligenceRank ?? null,
+          model.freeTier?.speedRank ?? null,
         );
       }
 

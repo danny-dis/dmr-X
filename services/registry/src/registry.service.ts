@@ -28,6 +28,7 @@ export class RegistryService {
         mp.supports_tool_use,
         mp.supports_json_mode,
         mp.supports_function_call,
+        mp.supports_reasoning,
         mp.max_output_tokens as "maxOutputTokens",
         mp.rate_limit_rpm as "rateLimitRpm",
         mp.rate_limit_rpd as "rateLimitRpd",
@@ -81,6 +82,8 @@ export class RegistryService {
     if (row.supports_vision) caps.push('vision');
     if (row.supports_tool_use) caps.push('tool_use');
     if (row.supports_json_mode) caps.push('json_mode');
+    if (row.supports_function_call) caps.push('function_call');
+    if (row.supports_reasoning) caps.push('reasoning');
     return caps;
   }
 
