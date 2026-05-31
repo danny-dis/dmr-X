@@ -1,5 +1,5 @@
 import type { StreamChunk, TokenStreamChunk, DoneStreamChunk } from '@dmr-x/core';
-import { EventStream, type SseMessage } from '@dmr-x/utils';
+import { EventStream, logger, type SseMessage } from '@dmr-x/utils';
 
 /**
  * Parse an OpenAI-compatible SSE response into StreamChunks.
@@ -43,8 +43,9 @@ export function createOpenAISSEIterator(
             } as TokenStreamChunk,
           };
         }
-      } catch {
+      } catch (parseErr) {
         // Skip malformed JSON chunks
+        logger.debug({ err: parseErr }, 'SSE stream: skipped malformed JSON chunk');
       }
 
       return { done: false, value: undefined as unknown as StreamChunk };

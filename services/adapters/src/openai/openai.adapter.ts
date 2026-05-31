@@ -13,7 +13,8 @@ import type {
   DoneStreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { HttpError, ClientTimeoutError, ConnectionError, isConnectionError, isTimeoutError, isAbortError } from '@dmr-x/utils';
+import { HttpError } from '@dmr-x/utils';
+import { logger } from '@dmr-x/utils';
 import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 export class OpenAIAdapter extends BaseAdapter {
@@ -59,23 +60,7 @@ export class OpenAIAdapter extends BaseAdapter {
 
       throw new Error(`Unsupported modality: ${request.modality}`);
     } catch (err) {
-      if (err instanceof ProviderError) throw err;
-      if (err instanceof HttpError) {
-        const providerError = new ProviderError(`OpenAI: ${err.message}`, this.providerId, err.statusCode);
-        (providerError as Error).cause = err;
-        throw providerError;
-      }
-      if (err instanceof ConnectionError || isConnectionError(err)) {
-        throw new ProviderError(
-          `OpenAI: Connection failed - ${err instanceof Error ? err.message : String(err)}`,
-          this.providerId,
-          502,
-        );
-      }
-      if (err instanceof ClientTimeoutError || isTimeoutError(err) || isAbortError(err)) {
-        throw new ProviderError('OpenAI: Request timed out', this.providerId, 504);
-      }
-      throw err;
+      throw this.handleAdapterError(err);
     }
   }
 
@@ -112,12 +97,7 @@ export class OpenAIAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 60000,
       });
     } catch (error) {
-      if (error instanceof HttpError) {
-        const providerError = new ProviderError(`OpenAI: ${error.message}`, this.providerId, error.statusCode);
-        (providerError as Error).cause = error;
-        throw providerError;
-      }
-      throw error;
+      throw this.handleAdapterError(error, 'chat');
     }
 
     const data = (await response.json()) as Record<string, unknown>;
@@ -158,12 +138,7 @@ export class OpenAIAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 30000,
       });
     } catch (error) {
-      if (error instanceof HttpError) {
-        const providerError = new ProviderError(`OpenAI embedding: ${error.message}`, this.providerId, error.statusCode);
-        (providerError as Error).cause = error;
-        throw providerError;
-      }
-      throw error;
+      throw this.handleAdapterError(error, 'embedding');
     }
 
     const data = (await response.json()) as Record<string, unknown>;
@@ -205,12 +180,7 @@ export class OpenAIAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 120000,
       });
     } catch (error) {
-      if (error instanceof HttpError) {
-        const providerError = new ProviderError(`OpenAI image: ${error.message}`, this.providerId, error.statusCode);
-        (providerError as Error).cause = error;
-        throw providerError;
-      }
-      throw error;
+      throw this.handleAdapterError(error, 'image');
     }
 
     const data = (await response.json()) as Record<string, unknown>;
@@ -250,12 +220,7 @@ export class OpenAIAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 120000,
       });
     } catch (error) {
-      if (error instanceof HttpError) {
-        const providerError = new ProviderError(`OpenAI stream: ${error.message}`, this.providerId, error.statusCode);
-        (providerError as Error).cause = error;
-        throw providerError;
-      }
-      throw error;
+      throw this.handleAdapterError(error, 'stream');
     }
 
     yield* createOpenAISSEIterator(response);
@@ -269,8 +234,9 @@ export class OpenAIAdapter extends BaseAdapter {
       response = await this.fetchWithTimeout(`${baseUrl}/v1/models`, {
         headers: { Authorization: `Bearer ${this.apiKey}` },
       });
-    } catch {
+    } catch (error) {
       // Gracefully return empty list on any error (HTTP or transport)
+      logger.debug({ err: error, providerId: this.providerId }, 'Failed to list models, returning empty list');
       return [];
     }
 

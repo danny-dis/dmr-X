@@ -1,6 +1,8 @@
-import { getDb, cache } from '@dmr-x/db';
+import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import crypto from 'node:crypto';
+
+const cache = createNamespacedCache('usage');
 
 export interface UsageRecord {
   id: string;
@@ -48,9 +50,9 @@ export interface UsageQuery {
  *   usage:monthly:{tenantId}:{yyyy-mm}            -> hash { requests, inputTokens, outputTokens, totalTokens, costCents }
  */
 export class UsageTracker {
-  private static readonly RT_PREFIX = 'usage:rt:';
-  private static readonly DAILY_PREFIX = 'usage:daily:';
-  private static readonly MONTHLY_PREFIX = 'usage:monthly:';
+  private static readonly RT_PREFIX = 'rt:';
+  private static readonly DAILY_PREFIX = 'daily:';
+  private static readonly MONTHLY_PREFIX = 'monthly:';
   private static readonly DEFAULT_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days
 
   /**
@@ -94,7 +96,7 @@ export class UsageTracker {
       record.totalTokens,
       record.costCents,
       record.requestId,
-      now.toISOString(),
+      this.formatDateTime(now),
     );
 
     const row = db.prepare('SELECT * FROM usage_records WHERE id = ?').get(id) as any;
@@ -372,6 +374,16 @@ export class UsageTracker {
       requestId: row.request_id as string,
       createdAt: row.created_at as string,
     };
+  }
+
+  private formatDateTime(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const h = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    const s = String(date.getSeconds()).padStart(2, '0');
+    return `${y}-${m}-${d} ${h}:${min}:${s}`;
   }
 
   private formatDay(date: Date): string {

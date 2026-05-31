@@ -10,7 +10,7 @@ export {
 } from './retry.js';
 export { retry } from './retries.js';
 export { CircuitBreaker, type CircuitBreakerOptions } from './circuit-breaker.js';
-export { generateId, generateRequestId, generateApiKey, hashApiKey } from './crypto.js';
+export { generateId, generateRequestId, generateApiKey, hashApiKey, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey } from './crypto.js';
 export { EventStream, parseOpenAISSE, type SseMessage } from './event-stream.js';
 export { ReusableReadableStream } from './reusable-stream.js';
 export {
@@ -358,8 +358,6 @@ export {
   formatToolResultForModel,
   formatToolExecutionError,
   parseToolCallArguments,
-  validateToolInput,
-  validateToolOutput,
   convertToolsToAPIFormat,
   convertZodToJsonSchema,
   sanitizeJsonSchema,

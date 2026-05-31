@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb } from '@dmr-x/db';
 import crypto from 'node:crypto';
 import { ValidationError } from '@dmr-x/core';
-import { logger } from '@dmr-x/utils';
+import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey } from '@dmr-x/utils';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
 
 const CreateProviderSchema = z.object({
@@ -18,7 +18,7 @@ const CreateModelSchema = z.object({
   provider_id: z.string().uuid(),
   model_id: z.string().min(1),
   display_name: z.string().optional(),
-  modality: z.enum(['llm', 'diffusion', 'embedding', 'audio_speech', 'audio_transcription', 'video', 'music']),
+  modality: z.enum(['llm', 'diffusion', 'embedding', 'audio_tts', 'audio_stt', 'audio_speech', 'audio_transcription', 'video', 'music', 'reranking', 'moderation', 'code_completion', 'image_upscaling', 'image_inpainting']),
   intelligence_layer: z.enum(['brain', 'thinker', 'executor', 'worker', 'temp_worker']).optional().default('executor'),
   context_window: z.number().positive().optional(),
   max_output_tokens: z.number().positive().optional(),
@@ -70,13 +70,106 @@ const UpdateModelSchema = z.object({
   is_active: z.boolean().optional(),
 });
 
-const UpdatePolicySchema = z.object({
-  name: z.string().optional(),
-  rules: z.array(z.record(z.unknown())).optional(),
-  is_active: z.boolean().optional(),
+const CreatePolicySchema = z.object({
+  tenant_id: z.string().optional().default('default'),
+  name: z.string().min(1),
+  type: z.enum(['provider_allow', 'provider_deny', 'model_allow', 'model_deny', 'cost_cap', 'modality_restriction', 'residency', 'tool_permission']),
+  target: z.array(z.string()).default([]),
+  action: z.enum(['allow', 'deny', 'redirect']).default('deny'),
+  conditions: z.record(z.unknown()).optional().default({}),
+  priority: z.number().int().min(0).default(0),
+  enabled: z.boolean().default(true),
 });
 
-const UpdateSettingsSchema = z.record(z.unknown());
+const UpdatePolicySchema = z.object({
+  name: z.string().optional(),
+  type: z.enum(['provider_allow', 'provider_deny', 'model_allow', 'model_deny', 'cost_cap', 'modality_restriction', 'residency', 'tool_permission']).optional(),
+  target: z.array(z.string()).optional(),
+  action: z.enum(['allow', 'deny', 'redirect']).optional(),
+  conditions: z.record(z.unknown()).optional(),
+  priority: z.number().int().min(0).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const PrimitiveValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+// Defense-in-depth: blocked keys that could enable prototype pollution
+const BLOCKED_SETTINGS_KEYS = new Set(['__proto__', 'constructor', 'prototype', 'toString', 'valueOf']);
+
+// Strict allowlist: only known settings keys accepted; unknown keys are rejected via .strict()
+const UpdateSettingsSchema = z.object({
+  routingTimeout: z.union([z.string(), z.number()]).optional(),
+  fallbackEnabled: z.boolean().optional(),
+  logRetention: z.union([z.string(), z.number()]).optional(),
+  qualityWeight: z.union([z.string(), z.number()]).optional(),
+  costWeight: z.union([z.string(), z.number()]).optional(),
+  latencyWeight: z.union([z.string(), z.number()]).optional(),
+  platformName: z.string().optional(),
+  timezone: z.string().optional(),
+  requestTimeout: z.union([z.string(), z.number()]).optional(),
+  slackWebhookUrl: z.string().optional(),
+  emailRecipients: z.string().optional(),
+  latencyAlertThreshold: z.union([z.string(), z.number()]).optional(),
+  quotaAlertThreshold: z.union([z.string(), z.number()]).optional(),
+  requireApiKeyAuth: z.boolean().optional(),
+  autoKeyRotation: z.boolean().optional(),
+  allowedOrigins: z.string().optional(),
+  maxRequestSizeMb: z.union([z.string(), z.number()]).optional(),
+  autoBenchmarkRuns: z.boolean().optional(),
+  benchmarkFrequency: z.string().optional(),
+  regressionThreshold: z.union([z.string(), z.number()]).optional(),
+  routeDecisionWebhook: z.string().optional(),
+  alertWebhook: z.string().optional(),
+  webhookMaxRetries: z.union([z.string(), z.number()]).optional(),
+  webhookRetryBackoff: z.union([z.string(), z.number()]).optional(),
+  requestLogRetentionDays: z.union([z.string(), z.number()]).optional(),
+  memoryRetentionDays: z.union([z.string(), z.number()]).optional(),
+  benchmarkHistoryDays: z.union([z.string(), z.number()]).optional(),
+}).refine(
+  (obj) => !Object.keys(obj).some((k) => BLOCKED_SETTINGS_KEYS.has(k)),
+  { message: 'Blocked key detected' }
+);
+
+// SSRF validation: block private/internal IP ranges and non-http(s) protocols
+function validateBaseUrlForSSRF(urlStr: string): void {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(urlStr);
+  } catch {
+    throw new ValidationError('Invalid base_url');
+  }
+
+  const allowedProtocols = ['http:', 'https:'];
+  if (!allowedProtocols.includes(parsedUrl.protocol)) {
+    throw new ValidationError('Only http and https protocols are allowed');
+  }
+
+  const hostname = parsedUrl.hostname.toLowerCase();
+
+  // Block localhost and common private/internal hostnames explicitly
+  const blockedHostnames = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', 'ip6-localhost', 'ip6-loopback'];
+  if (blockedHostnames.includes(hostname)) {
+    throw new ValidationError('Fetching private/internal addresses is not allowed');
+  }
+
+  const privateRanges = [
+    /^127\./,
+    /^10\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^192\.168\./,
+    /^169\.254\./,
+    /^0\./,
+    /^::1$/,
+    /^\[::1\]$/,
+    /^fc/i,
+    /^fd/i,
+    /^fe80/i,
+  ];
+
+  if (privateRanges.some((rx) => rx.test(hostname))) {
+    throw new ValidationError('Fetching private/internal addresses is not allowed');
+  }
+}
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // List provider catalog
@@ -100,19 +193,33 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const db = getDb();
     let provider = db.prepare('SELECT * FROM providers WHERE name = ?').get(template_id) as any;
 
+    // SSRF validation for base URL
+    if (template.baseUrl) {
+      validateBaseUrlForSSRF(template.baseUrl);
+    }
+
     if (provider) {
-      // Update existing
+      // Update existing — encrypt API key before storing
+      const encKey = api_key ? encrypt(api_key) : '';
       db.prepare(
-        `UPDATE providers SET 
+        `UPDATE providers SET
           base_url = ?,
           config = json_set(config, '$.apiKey', ?),
           is_healthy = 1,
           updated_at = datetime('now')
          WHERE id = ?`
-      ).run(template.baseUrl, api_key || '', provider.id);
+      ).run(template.baseUrl, encKey, provider.id);
     } else {
-      // Create new
+      // Create new — encrypt API key before storing
       const id = crypto.randomUUID();
+      const configObj = {
+        category: template.category,
+        region: template.region,
+        description: template.description,
+        signupUrl: template.signupUrl,
+        apiKey: api_key ? encrypt(api_key) : '',
+        isHealthy: true
+      };
       db.prepare(
         `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
          VALUES (?, ?, ?, ?, ?, ?)`
@@ -122,14 +229,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         template.id,
         template.baseUrl,
         template.envKey || '',
-        JSON.stringify({
-          category: template.category,
-          region: template.region,
-          description: template.description,
-          signupUrl: template.signupUrl,
-          apiKey: api_key || '',
-          isHealthy: true
-        })
+        JSON.stringify(configObj)
       );
       provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
 
@@ -226,11 +326,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
     if (!provider) {
       reply.status(404);
-      return { error: 'Provider not found' };
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
     }
 
     const config = JSON.parse(provider.config || '{}');
-    config.apiKey = api_key || '';
+    // Issue #2: Encrypt API key before storing
+    config.apiKey = api_key ? encrypt(api_key) : '';
     config.hasKey = !!api_key;
 
     db.prepare(
@@ -248,7 +349,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         adapterRegistry.register(adapter);
       }
     }
-    if (adapter) {
+    if (adapter && provider.base_url) {
       try {
         await adapterRegistry.initialize(provider.name, {
           baseUrl: provider.base_url,
@@ -279,36 +380,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     const { provider_id, base_url, api_key } = parsed.data;
 
-    // SSRF protection: validate the URL
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(base_url);
-    } catch {
-      throw new ValidationError('Invalid base_url');
-    }
-
-    const blockedProtocols = ['http:', 'https:'];
-    if (!blockedProtocols.includes(parsedUrl.protocol)) {
-      throw new ValidationError('Only http and https protocols are allowed');
-    }
-
-    const hostname = parsedUrl.hostname;
-    const privateRanges = [
-      /^127\./,
-      /^10\./,
-      /^172\.(1[6-9]|2\d|3[01])\./,
-      /^192\.168\./,
-      /^169\.254\./,
-      /^0\.0\.0\.0$/,
-      /^::1$/,
-      /^fc/i,
-      /^fd/i,
-      /^fe80/i,
-    ];
-
-    if (privateRanges.some(rx => rx.test(hostname))) {
-      throw new ValidationError('Fetching private/internal addresses is not allowed');
-    }
+    // SSRF protection: validate the URL (shared helper)
+    validateBaseUrlForSSRF(base_url);
 
     const start = Date.now();
 
@@ -317,9 +390,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       const timeout = setTimeout(() => controller.abort(), 10000);
 
       // Try /models endpoint first (works for most OpenAI-compatible providers)
+      // redirect: 'error' prevents SSRF via open redirects
       let response = await fetch(`${base_url}/models`, {
         headers: { 'Authorization': `Bearer ${api_key}` },
         signal: controller.signal,
+        redirect: 'error',
       });
 
       // If /models fails, try /chat/completions with a minimal request
@@ -336,6 +411,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
             max_tokens: 1,
           }),
           signal: controller.signal,
+          redirect: 'error',
         });
       }
 
@@ -370,6 +446,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     } catch (error: unknown) {
       const latencyMs = Date.now() - start;
       const msg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn({ err: error, provider_id }, 'Provider test connection error');
 
       if (msg.includes('abort')) {
         return {
@@ -384,7 +461,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         status: 'failed',
         provider_id,
         latency_ms: latencyMs,
-        message: `Connection error: ${msg}`,
+        message: 'Connection failed',
       };
     }
   });
@@ -397,13 +474,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data;
+
+    // Issue #9: SSRF validation on base_url
+    if (body.base_url) {
+      validateBaseUrlForSSRF(body.base_url);
+    }
+
+    // Issue #2: Encrypt any apiKey in config before storing
+    const configToStore = encryptConfigApiKey({ ...body.config });
+
     const db = getDb();
     const id = crypto.randomUUID();
 
     db.prepare(
       `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
        VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(id, body.name, body.adapter_type, body.base_url, body.api_key_ref, JSON.stringify(body.config));
+    ).run(id, body.name, body.adapter_type, body.base_url ?? null, body.api_key_ref ?? null, JSON.stringify(configToStore));
 
     reply.status(201);
     const created = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
@@ -476,11 +562,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
     const { tenant_id, name } = parsed.data;
 
+    const db = getDb();
+
+    // Verify tenant exists
+    const tenant = db.prepare('SELECT id FROM tenants WHERE id = ?').get(tenant_id);
+    if (!tenant) {
+      throw new ValidationError('Tenant not found');
+    }
+
     const { generateApiKey, hashApiKey } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
     const keyHash = hashApiKey(apiKey);
 
-    const db = getDb();
     const id = crypto.randomUUID();
 
     db.prepare(
@@ -527,25 +620,28 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       SELECT br.*, mp.display_name as model_name, mp.model_id as model_identifier
       FROM benchmark_results br
-      LEFT JOIN model_profiles mp ON mp.model_id = br.model_id
+      LEFT JOIN model_profiles mp ON mp.id = br.model_id
       ORDER BY br.run_at DESC
       LIMIT 100
     `).all() as Array<Record<string, unknown>>;
     return {
-      benchmarks: rows.map((row) => ({
-        id: row.id,
-        model_id: row.model_id,
-        model_name: row.model_name ?? row.model_identifier ?? row.model_id,
-        benchmark_name: row.benchmark_name,
-        score: row.score,
-        latency: row.latency,
-        cost: row.cost,
-        task_type: row.task_type,
-        run_date: row.run_at ?? row.run_date,
-        regression: row.regression ?? false,
-        previous_score: row.previous_score ?? undefined,
-        comparison_scores: typeof row.comparison_scores === 'string' ? JSON.parse(row.comparison_scores) : row.comparison_scores ?? undefined,
-      })),
+      benchmarks: rows.map((row) => {
+        const details = typeof row.details === 'string' ? JSON.parse(row.details as string) : (row.details || {});
+        return {
+          id: row.id,
+          model_id: row.model_id,
+          model_name: row.model_name ?? row.model_identifier ?? row.model_id,
+          benchmark_name: row.benchmark_type,
+          score: row.score,
+          latency: details.latency ?? 0,
+          cost: details.cost ?? 0,
+          task_type: details.task_type ?? String(row.benchmark_type ?? 'unknown'),
+          run_date: row.run_at,
+          regression: details.regression ?? false,
+          previous_score: details.previous_score ?? undefined,
+          comparison_scores: details.comparison_scores ?? undefined,
+        };
+      }),
     };
   });
 
@@ -555,10 +651,62 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const rows = db.prepare(`
       SELECT p.*, t.name as tenant_name
       FROM policies p
-      JOIN tenants t ON t.id = p.tenant_id
+      LEFT JOIN tenants t ON t.id = p.tenant_id
       ORDER BY p.created_at DESC
-    `).all();
-    return { policies: rows };
+    `).all() as Array<Record<string, unknown>>;
+    return {
+      policies: rows.map((row) => {
+        const rules = typeof row.rules === 'string' ? JSON.parse(row.rules as string) : (row.rules || {});
+        return {
+          id: row.id,
+          tenant_id: row.tenant_id,
+          tenant_name: row.tenant_name,
+          name: row.name,
+          type: rules.type || 'provider_allow',
+          target: rules.target || [],
+          action: rules.action || 'deny',
+          conditions: rules.conditions || {},
+          priority: rules.priority ?? 0,
+          enabled: !!row.is_active,
+          created_at: row.created_at,
+        };
+      }),
+    };
+  });
+
+  // Create policy
+  server.post('/admin/policies', async (request, reply) => {
+    const parsed = CreatePolicySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const body = parsed.data;
+    const db = getDb();
+    const id = crypto.randomUUID();
+    const rulesBlob = JSON.stringify({
+      type: body.type,
+      target: body.target,
+      action: body.action,
+      conditions: body.conditions,
+      priority: body.priority,
+    });
+    db.prepare(
+      `INSERT INTO policies (id, tenant_id, name, rules, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))`
+    ).run(id, body.tenant_id, body.name, rulesBlob, body.enabled ? 1 : 0);
+    reply.status(201);
+    return {
+      id,
+      tenant_id: body.tenant_id,
+      name: body.name,
+      type: body.type,
+      target: body.target,
+      action: body.action,
+      conditions: body.conditions,
+      priority: body.priority,
+      enabled: body.enabled,
+      created_at: new Date().toISOString(),
+    };
   });
 
   // Usage history (hourly for last 24h)
@@ -566,14 +714,30 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const db = getDb();
     const rows = db.prepare(`
       SELECT
-        strftime('%Y-%m-%d %H:00:00', created_at) as time,
-        COUNT(*) as requests,
-        SUM(total_tokens) as tokens,
-        CAST(SUM(cost_cents) AS REAL) / 100 as cost
-      FROM usage_records
-      WHERE created_at > datetime('now', '-24 hours')
-      GROUP BY strftime('%Y-%m-%d %H:00:00', created_at)
-      ORDER BY time
+        u.time,
+        u.requests,
+        u.tokens,
+        u.cost,
+        COALESCE(r.latency, 0) as latency
+      FROM (
+        SELECT
+          strftime('%Y-%m-%d %H:00:00', created_at) as time,
+          COUNT(*) as requests,
+          SUM(total_tokens) as tokens,
+          CAST(SUM(cost_cents) AS REAL) / 100 as cost
+        FROM usage_records
+        WHERE created_at > datetime('now', '-24 hours')
+        GROUP BY strftime('%Y-%m-%d %H:00:00', created_at)
+      ) u
+      LEFT JOIN (
+        SELECT
+          strftime('%Y-%m-%d %H:00:00', timestamp) as time,
+          ROUND(AVG(latency_ms)) as latency
+        FROM request_logs
+        WHERE timestamp > datetime('now', '-24 hours') AND latency_ms IS NOT NULL
+        GROUP BY strftime('%Y-%m-%d %H:00:00', timestamp)
+      ) r ON u.time = r.time
+      ORDER BY u.time
     `).all();
     return { history: rows };
   });
@@ -690,12 +854,28 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       WHERE timestamp >= date('now', 'start of day')
     `).get() as { total: number; fallbacks: number } | undefined;
 
+    // Actual remaining quota from allocations (compute from max_requests - used)
+    const quotaRow = db.prepare(`
+      SELECT COALESCE(SUM(
+        CASE WHEN qa.max_requests IS NOT NULL THEN
+          qa.max_requests - COALESCE(
+            (SELECT COUNT(*) FROM request_logs rl
+             WHERE (qa.provider_id IS NULL OR rl.selected_provider = qa.provider_id)
+             AND rl.timestamp >= date('now', 'start of month')),
+            0
+          )
+        ELSE 0 END
+      ), 0) as remaining
+      FROM quota_allocations qa
+    `).get() as { remaining: number } | undefined;
+
     const total = req?.total || 0;
     const success = req?.success || 0;
     const fallbackTotal = fallbackRow?.total || 0;
     const fallbacks = fallbackRow?.fallbacks || 0;
     const providerTotal = providersRow?.total || 0;
     const providerHealthy = providersRow?.healthy || 0;
+    const healthPercent = providerTotal > 0 ? Math.round((providerHealthy / providerTotal) * 100) : 0;
 
     return {
       total_requests: total,
@@ -703,12 +883,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       avg_latency: Math.round(req?.avg_latency || 0),
       token_usage: tokenRow?.tokens || 0,
       daily_spend: tokenRow?.spend || 0,
-      quota_remaining: null,
+      quota_remaining: quotaRow?.remaining ?? 0,
       active_models: modelsRow?.count || 0,
-      provider_health: providerTotal > 0 ? Math.round((providerHealthy / providerTotal) * 100) : 100,
+      provider_health: healthPercent,
       fallback_rate: fallbackTotal > 0 ? Math.round((fallbacks / fallbackTotal) * 100 * 10) / 10 : 0,
       worker_utilization: 0,
-      system_status: 'operational',
+      system_status: providerTotal === 0 ? 'no_providers' : healthPercent === 100 ? 'operational' : healthPercent >= 50 ? 'degraded' : 'outage',
     };
   });
 
@@ -757,13 +937,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         qa.max_requests as total_quota,
         COALESCE(
           (SELECT COUNT(*) FROM request_logs rl
-           WHERE rl.selected_provider = qa.provider_id
+           WHERE (qa.provider_id IS NULL OR rl.selected_provider = qa.provider_id)
            AND rl.timestamp >= date('now', 'start of month')),
           0
         ) as used_quota,
         qa.max_requests - COALESCE(
           (SELECT COUNT(*) FROM request_logs rl
-           WHERE rl.selected_provider = qa.provider_id
+           WHERE (qa.provider_id IS NULL OR rl.selected_provider = qa.provider_id)
            AND rl.timestamp >= date('now', 'start of month')),
           0
         ) as remaining_quota,
@@ -873,15 +1053,21 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   const MAX_TELEMETRY_EVENTS = 1000;
 
-  server.get('/admin/telemetry/events', async () => {
+  /** Trim the telemetry buffer to MAX_TELEMETRY_EVENTS. */
+  function trimTelemetryBuffer(): void {
     while (telemetryBuffer.length > MAX_TELEMETRY_EVENTS) {
       telemetryBuffer.shift();
     }
+  }
+
+  server.get('/admin/telemetry/events', async () => {
+    trimTelemetryBuffer();
     return { events: telemetryBuffer.slice(-100) };
   });
 
   // Expose buffer for adding events from other routes
   (server as unknown as Record<string, unknown>).telemetryBuffer = telemetryBuffer;
+  (server as unknown as Record<string, unknown>).trimTelemetryBuffer = trimTelemetryBuffer;
 
   // Audit events
   server.get('/admin/audit/events', async () => {
@@ -908,7 +1094,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         json_object(
           'model', rl.selected_model,
           'latency_ms', rl.latency_ms,
-          'tokens', rl.tokens_input + rl.tokens_output,
+          'tokens', COALESCE(rl.tokens_input, 0) + COALESCE(rl.tokens_output, 0),
           'fallback', rl.fallback_used
         ) as metadata,
         null as ip_address
@@ -989,13 +1175,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // --- UPDATE endpoints ---
 
   // Update provider
-  server.put('/admin/providers/:id', async (request) => {
+  server.put('/admin/providers/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     const parsed = UpdateProviderSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
     const { name, adapter_type, base_url, api_key_ref, config } = parsed.data;
+
+    // Issue #9: SSRF validation on base_url
+    if (base_url) {
+      validateBaseUrlForSSRF(base_url);
+    }
+
+    // Issue #2: Encrypt any apiKey in config before storing
+    const configToStore = config ? encryptConfigApiKey({ ...config }) : null;
+
     const db = getDb();
     db.prepare(
       `UPDATE providers SET
@@ -1006,14 +1201,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         config = COALESCE(?, config),
         updated_at = datetime('now')
       WHERE id = ?`
-    ).run(name, adapter_type, base_url, api_key_ref, config ? JSON.stringify(config) : null, id);
+    ).run(name ?? null, adapter_type ?? null, base_url ?? null, api_key_ref ?? null, configToStore ? JSON.stringify(configToStore) : null, id);
     const updated = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!updated) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
     const uCfg = JSON.parse(updated.config || '{}');
     return { ...updated, config: { ...uCfg, apiKey: undefined, hasKey: !!uCfg.apiKey } };
   });
 
   // Update model
-  server.put('/admin/models/:id', async (request) => {
+  server.put('/admin/models/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     const parsed = UpdateModelSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -1031,7 +1230,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         updated_at = datetime('now')
       WHERE id = ?`
     ).run(display_name, modality, context_window, max_output_tokens, is_active != null ? (is_active ? 1 : 0) : null, id);
-    return db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id);
+    const updated = db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id);
+    if (!updated) {
+      reply.status(404);
+      return { error: { message: 'Model not found', type: 'not_found', code: 'model_not_found' } };
+    }
+    return updated;
   });
 
   // Update policy
@@ -1041,17 +1245,48 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { name, rules, is_active } = parsed.data;
+    const { name, type, target, action, conditions, priority, enabled } = parsed.data;
     const db = getDb();
+    const existing = db.prepare('SELECT rules FROM policies WHERE id = ?').get(id) as { rules: string } | undefined;
+    if (!existing) {
+      throw new ValidationError('Policy not found');
+    }
+    const currentRules = JSON.parse(existing.rules || '{}');
+    const updatedRules = {
+      type: type ?? currentRules.type,
+      target: target ?? currentRules.target,
+      action: action ?? currentRules.action,
+      conditions: conditions ?? currentRules.conditions,
+      priority: priority ?? currentRules.priority,
+    };
     db.prepare(
       `UPDATE policies SET
         name = COALESCE(?, name),
-        rules = COALESCE(?, rules),
+        rules = ?,
         is_active = COALESCE(?, is_active),
         updated_at = datetime('now')
       WHERE id = ?`
-    ).run(name, rules ? JSON.stringify(rules) : null, is_active != null ? (is_active ? 1 : 0) : null, id);
-    return db.prepare('SELECT * FROM policies WHERE id = ?').get(id);
+    ).run(name ?? null, JSON.stringify(updatedRules), enabled != null ? (enabled ? 1 : 0) : null, id);
+    const row = db.prepare(`
+      SELECT p.*, t.name as tenant_name
+      FROM policies p
+      JOIN tenants t ON t.id = p.tenant_id
+      WHERE p.id = ?
+    `).get(id) as Record<string, unknown>;
+    const rules = JSON.parse(row.rules as string);
+    return {
+      id: row.id,
+      tenant_id: row.tenant_id,
+      tenant_name: row.tenant_name,
+      name: row.name,
+      type: rules.type || 'provider_allow',
+      target: rules.target || [],
+      action: rules.action || 'deny',
+      conditions: rules.conditions || {},
+      priority: rules.priority ?? 0,
+      enabled: !!row.is_active,
+      created_at: row.created_at,
+    };
   });
 
   // --- Settings backend ---
@@ -1059,14 +1294,6 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Get settings
   server.get('/admin/settings', async () => {
     const db = getDb();
-    // Create settings table if it doesn't exist
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
     const rows = db.prepare('SELECT key, value FROM settings').all() as Array<{ key: string; value: string }>;
     const settings: Record<string, unknown> = {};
     for (const row of rows) {
@@ -1083,14 +1310,6 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
     const settings = parsed.data;
     const db = getDb();
-    // Create settings table if it doesn't exist
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
     const upsert = db.prepare(
       `INSERT INTO settings (key, value, updated_at)
        VALUES (?, ?, datetime('now'))

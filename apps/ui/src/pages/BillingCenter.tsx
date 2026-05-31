@@ -112,8 +112,8 @@ export default function BillingCenter() {
           <h3 className="text-sm font-semibold text-[#F8F9FC] mb-4">Cost by Modality</h3>
           <div className="space-y-3">
             {billingSummary.costByModality.map((mod) => {
-              const maxCost = Math.max(...billingSummary.costByModality.map((m) => m.cost));
-              const pct = (mod.cost / maxCost) * 100;
+              const maxCost = Math.max(...billingSummary.costByModality.map((m) => m.cost), 0);
+              const pct = maxCost > 0 ? (mod.cost / maxCost) * 100 : 0;
               return (
                 <div key={mod.modality}>
                   <div className="flex items-center justify-between text-xs mb-1">
@@ -171,7 +171,7 @@ export default function BillingCenter() {
               <span className="text-[#F8F9FC] font-mono-data">{billingSummary.planLimits.requests ? `${(billingSummary.planLimits.requests / 1e6).toFixed(0)}M/mo` : 'Unlimited'}</span>
             </div>
             <div className="w-full h-2 bg-[#1A1A20] rounded-full overflow-hidden">
-              <div className="h-full bg-[#F7A51C] rounded-full" style={{ width: '65%' }} />
+              <div className="h-full bg-[#F7A51C] rounded-full" style={{ width: billingSummary.planLimits.requests ? `${Math.min((billingSummary.currentMonthSpend / billingSummary.planLimits.requests) * 100, 100)}%` : '0%' }} />
             </div>
           </div>
           <div>
@@ -180,7 +180,7 @@ export default function BillingCenter() {
               <span className="text-[#F8F9FC] font-mono-data">{billingSummary.planLimits.tokens ? `${(billingSummary.planLimits.tokens / 1e6).toFixed(0)}M/mo` : 'Unlimited'}</span>
             </div>
             <div className="w-full h-2 bg-[#1A1A20] rounded-full overflow-hidden">
-              <div className="h-full bg-[#FF4D6A] rounded-full" style={{ width: '78%' }} />
+              <div className="h-full bg-[#FF4D6A] rounded-full" style={{ width: '0%' }} />
             </div>
           </div>
           <div>
@@ -189,7 +189,7 @@ export default function BillingCenter() {
               <span className="text-[#F8F9FC] font-mono-data">{billingSummary.planLimits.spend != null ? `$${billingSummary.planLimits.spend.toLocaleString()}/mo` : 'Unlimited'}</span>
             </div>
             <div className="w-full h-2 bg-[#1A1A20] rounded-full overflow-hidden">
-              <div className="h-full bg-[#00FFB2] rounded-full" style={{ width: '57%' }} />
+              <div className="h-full bg-[#00FFB2] rounded-full" style={{ width: billingSummary.planLimits.spend ? `${Math.min((billingSummary.currentMonthSpend / billingSummary.planLimits.spend) * 100, 100)}%` : '0%' }} />
             </div>
           </div>
         </div>

@@ -120,7 +120,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     id: 'google',
     name: 'Google Gemini',
     category: 'cloud_llm',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/v1',
     authMethod: 'bearer',
     apiFormat: 'openai',
     modalities: ['llm', 'embedding', 'audio_stt', 'diffusion'],
@@ -1352,7 +1352,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       // Gemma
       { id: 'google/gemma-2-27b-it', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0.3, outputCostPer1M: 0.3, capabilities: ['streaming'], specializations: ['fast', 'cheap'] },
       // Embeddings
-      { id: 'togethercomputer/m2-bert-80M-32k-retrieval', modalities: ['embedding'], contextWindow: 32768, inputCostPer1M: 0.008, outputCostPer1M: 0, capabilities: [], specializations: ['embedding'] },
+      { id: 'togethercomputer/m2-bert-80M-32k-retrieval', modalities: ['embedding'], contextWindow: 32768, inputCostPer1M: 0.008, outputCostPer1M: 0, capabilities: ['embedding'], specializations: ['embedding'] },
       // Whisper
       { id: 'openai/whisper-large-v3', modalities: ['audio_stt'], capabilities: ['stt'], specializations: ['audio'] },
     ],
@@ -1543,9 +1543,9 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'custom',
     modalities: ['diffusion', 'video'],
     models: [
-      { id: 'fal-ai/flux/schnell', modalities: ['diffusion'], contextWindow: 0, maxOutputTokens: 0, costPerImage: 0.003, capabilities: [], specializations: ['image_generation'] },
-      { id: 'fal-ai/flux/dev', modalities: ['diffusion'], contextWindow: 0, maxOutputTokens: 0, costPerImage: 0.025, capabilities: [], specializations: ['image_generation'] },
-      { id: 'fal-ai/flux-pro/v1.1', modalities: ['diffusion'], contextWindow: 0, maxOutputTokens: 0, costPerImage: 0.05, capabilities: [], specializations: ['image_generation'] },
+      { id: 'fal-ai/flux/schnell', modalities: ['diffusion'], costPerImage: 0.003, capabilities: ['text2img'], specializations: ['image_generation'] },
+      { id: 'fal-ai/flux/dev', modalities: ['diffusion'], costPerImage: 0.025, capabilities: ['text2img'], specializations: ['image_generation'] },
+      { id: 'fal-ai/flux-pro/v1.1', modalities: ['diffusion'], costPerImage: 0.05, capabilities: ['text2img'], specializations: ['image_generation'] },
     ],
     streaming: false,
     toolCalling: false,
@@ -1564,8 +1564,8 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['embedding'],
     models: [
-      { id: 'nomic-embed-text-v1.5', modalities: ['embedding'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: [], specializations: ['embedding'], freeTier: { rateLimits: { rpm: 100, rpd: 50000, tpm: 1000000, tpd: 100000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-      { id: 'nomic-embed-text-v2-moe', modalities: ['embedding'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: [], specializations: ['embedding'], freeTier: { rateLimits: { rpm: 100, rpd: 50000, tpm: 1000000, tpd: 100000000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
+      { id: 'nomic-embed-text-v1.5', modalities: ['embedding'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['embedding'], specializations: ['embedding'], freeTier: { rateLimits: { rpm: 100, rpd: 50000, tpm: 1000000, tpd: 100000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'nomic-embed-text-v2-moe', modalities: ['embedding'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['embedding'], specializations: ['embedding'], freeTier: { rateLimits: { rpm: 100, rpd: 50000, tpm: 1000000, tpd: 100000000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
     ],
     streaming: false,
     toolCalling: false,
@@ -1627,7 +1627,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     models: [
       { id: 'luminous-base', modalities: ['llm'], contextWindow: 8192, maxOutputTokens: 4096, inputCostPer1M: 3, outputCostPer1M: 9, capabilities: ['streaming'], specializations: ['general'] },
       { id: 'luminous-supreme', modalities: ['llm'], contextWindow: 32768, maxOutputTokens: 4096, inputCostPer1M: 12, outputCostPer1M: 36, capabilities: ['streaming'], specializations: ['reasoning'] },
-      { id: 'luminous-base-embed', modalities: ['embedding'], contextWindow: 8192, inputCostPer1M: 0.03, outputCostPer1M: 0, capabilities: [], specializations: ['embedding'] },
+      { id: 'luminous-base-embed', modalities: ['embedding'], contextWindow: 8192, inputCostPer1M: 0.03, outputCostPer1M: 0, capabilities: ['embedding'], specializations: ['embedding'] },
     ],
     streaming: true,
     toolCalling: false,

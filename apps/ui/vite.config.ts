@@ -14,6 +14,8 @@ export default defineConfig({
       },
       '/health': 'http://localhost:3000',
       '/healthz': 'http://localhost:3000',
+      '/ready': 'http://localhost:3000',
+      '/livez': 'http://localhost:3000',
     },
   },
   resolve: {

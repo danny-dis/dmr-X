@@ -25,48 +25,164 @@ const sections: SettingSection[] = [
 
 const STORAGE_KEY = 'dmrx-settings';
 
+interface LocalSettings {
+  platformName: string;
+  timezone: string;
+  requestTimeout: string;
+  qualityWeight: string;
+  costWeight: string;
+  latencyWeight: string;
+  slackWebhook: string;
+  emailRecipients: string;
+  latencyThreshold: string;
+  quotaThreshold: string;
+  requireApiKey: boolean;
+  autoKeyRotation: boolean;
+  corsOrigins: string;
+  maxRequestSize: string;
+  autoBenchmark: boolean;
+  benchmarkFrequency: string;
+  regressionThreshold: string;
+  routeDecisionWebhook: string;
+  alertWebhook: string;
+  webhookMaxRetries: string;
+  webhookRetryBackoff: string;
+  requestLogRetention: string;
+  memoryRetention: string;
+  benchmarkHistory: string;
+}
+
+const defaultLocal: LocalSettings = {
+  platformName: 'DMR-X',
+  timezone: 'UTC',
+  requestTimeout: '30',
+  qualityWeight: '0.4',
+  costWeight: '0.3',
+  latencyWeight: '0.3',
+  slackWebhook: '',
+  emailRecipients: '',
+  latencyThreshold: '5000',
+  quotaThreshold: '75',
+  requireApiKey: true,
+  autoKeyRotation: true,
+  corsOrigins: '*',
+  maxRequestSize: '50',
+  autoBenchmark: true,
+  benchmarkFrequency: 'Every 6 hours',
+  regressionThreshold: '2.0',
+  routeDecisionWebhook: '',
+  alertWebhook: '',
+  webhookMaxRetries: '3',
+  webhookRetryBackoff: '5',
+  requestLogRetention: '7',
+  memoryRetention: '90',
+  benchmarkHistory: '365',
+};
+
 export default function Settings() {
   const { settings: serverSettings, loading, save: saveToServer } = useSettings();
   const [activeSection, setActiveSection] = useState('general');
   const [routingTimeout, setRoutingTimeout] = useState('30');
   const [fallbackEnabled, setFallbackEnabled] = useState(true);
   const [logRetention, setLogRetention] = useState('30');
+  const [local, setLocal] = useState<LocalSettings>(defaultLocal);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const updateLocal = <K extends keyof LocalSettings>(key: K, value: LocalSettings[K]) => {
+    setLocal((prev) => ({ ...prev, [key]: value }));
+  };
 
   useEffect(() => {
-    // Load from server, falling back to localStorage, then defaults
     if (loading) return;
+    // Merge server settings into local state
     if (Object.keys(serverSettings).length > 0) {
       setRoutingTimeout(String(serverSettings.routingTimeout ?? '30'));
       setFallbackEnabled(serverSettings.fallbackEnabled !== false);
       setLogRetention(String(serverSettings.logRetention ?? '30'));
-    } else {
-      // Fallback to localStorage
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          const s = JSON.parse(saved);
-          setRoutingTimeout(s.routingTimeout ?? '30');
-          setFallbackEnabled(s.fallbackEnabled !== false);
-          setLogRetention(s.logRetention ?? '30');
-        }
-      } catch {}
+      setLocal((prev) => ({
+        ...prev,
+        ...(serverSettings.platformName != null && { platformName: String(serverSettings.platformName) }),
+        ...(serverSettings.timezone != null && { timezone: String(serverSettings.timezone) }),
+        ...(serverSettings.requestTimeout != null && { requestTimeout: String(serverSettings.requestTimeout) }),
+        ...(serverSettings.qualityWeight != null && { qualityWeight: String(serverSettings.qualityWeight) }),
+        ...(serverSettings.costWeight != null && { costWeight: String(serverSettings.costWeight) }),
+        ...(serverSettings.latencyWeight != null && { latencyWeight: String(serverSettings.latencyWeight) }),
+        ...(serverSettings.slackWebhookUrl != null && { slackWebhook: String(serverSettings.slackWebhookUrl) }),
+        ...(serverSettings.emailRecipients != null && { emailRecipients: String(serverSettings.emailRecipients) }),
+        ...(serverSettings.latencyAlertThreshold != null && { latencyThreshold: String(serverSettings.latencyAlertThreshold) }),
+        ...(serverSettings.quotaAlertThreshold != null && { quotaThreshold: String(serverSettings.quotaAlertThreshold) }),
+        ...(serverSettings.requireApiKeyAuth != null && { requireApiKey: !!serverSettings.requireApiKeyAuth }),
+        ...(serverSettings.autoKeyRotation != null && { autoKeyRotation: !!serverSettings.autoKeyRotation }),
+        ...(serverSettings.allowedOrigins != null && { corsOrigins: String(serverSettings.allowedOrigins) }),
+        ...(serverSettings.maxRequestSizeMb != null && { maxRequestSize: String(serverSettings.maxRequestSizeMb) }),
+        ...(serverSettings.autoBenchmarkRuns != null && { autoBenchmark: !!serverSettings.autoBenchmarkRuns }),
+        ...(serverSettings.benchmarkFrequency != null && { benchmarkFrequency: String(serverSettings.benchmarkFrequency) }),
+        ...(serverSettings.regressionThreshold != null && { regressionThreshold: String(serverSettings.regressionThreshold) }),
+        ...(serverSettings.routeDecisionWebhook != null && { routeDecisionWebhook: String(serverSettings.routeDecisionWebhook) }),
+        ...(serverSettings.alertWebhook != null && { alertWebhook: String(serverSettings.alertWebhook) }),
+        ...(serverSettings.webhookMaxRetries != null && { webhookMaxRetries: String(serverSettings.webhookMaxRetries) }),
+        ...(serverSettings.webhookRetryBackoff != null && { webhookRetryBackoff: String(serverSettings.webhookRetryBackoff) }),
+        ...(serverSettings.requestLogRetentionDays != null && { requestLogRetention: String(serverSettings.requestLogRetentionDays) }),
+        ...(serverSettings.memoryRetentionDays != null && { memoryRetention: String(serverSettings.memoryRetentionDays) }),
+        ...(serverSettings.benchmarkHistoryDays != null && { benchmarkHistory: String(serverSettings.benchmarkHistoryDays) }),
+      }));
     }
+    // Also load from localStorage (takes precedence for fields that exist there)
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const s = JSON.parse(saved);
+        setRoutingTimeout(s.routingTimeout ?? '30');
+        setFallbackEnabled(s.fallbackEnabled !== false);
+        setLogRetention(s.logRetention ?? '30');
+        if (s.local) setLocal((prev) => ({ ...prev, ...s.local }));
+      }
+    } catch {}
   }, [loading, serverSettings]);
 
   const handleSave = useCallback(async () => {
-    const data = { routingTimeout, fallbackEnabled, logRetention };
-    // Save to localStorage as cache
+    const data = { routingTimeout, fallbackEnabled, logRetention, local };
+    // Save to localStorage
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    // Save to server
+    // Save all fields to server
     try {
-      await saveToServer(data);
-    } catch {
-      // Server save failed, localStorage already saved as fallback
+      await saveToServer({
+        routingTimeout,
+        fallbackEnabled,
+        logRetention,
+        qualityWeight: local.qualityWeight,
+        costWeight: local.costWeight,
+        latencyWeight: local.latencyWeight,
+        platformName: local.platformName,
+        timezone: local.timezone,
+        requestTimeout: local.requestTimeout,
+        slackWebhookUrl: local.slackWebhook,
+        emailRecipients: local.emailRecipients,
+        latencyAlertThreshold: local.latencyThreshold,
+        quotaAlertThreshold: local.quotaThreshold,
+        requireApiKeyAuth: local.requireApiKey,
+        autoKeyRotation: local.autoKeyRotation,
+        allowedOrigins: local.corsOrigins,
+        maxRequestSizeMb: local.maxRequestSize,
+        autoBenchmarkRuns: local.autoBenchmark,
+        benchmarkFrequency: local.benchmarkFrequency,
+        regressionThreshold: local.regressionThreshold,
+        routeDecisionWebhook: local.routeDecisionWebhook,
+        alertWebhook: local.alertWebhook,
+        webhookMaxRetries: local.webhookMaxRetries,
+        webhookRetryBackoff: local.webhookRetryBackoff,
+        requestLogRetentionDays: local.requestLogRetention,
+        memoryRetentionDays: local.memoryRetention,
+        benchmarkHistoryDays: local.benchmarkHistory,
+      });
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Server save failed');
+      setTimeout(() => setSaveError(null), 5000);
     }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-  }, [routingTimeout, fallbackEnabled, logRetention, saveToServer]);
+  }, [routingTimeout, fallbackEnabled, logRetention, local, saveToServer]);
 
   return (
     <div className="space-y-4">
@@ -88,6 +204,11 @@ export default function Settings() {
           {saved ? 'Saved!' : 'Save Changes'}
         </button>
       </div>
+      {saveError && (
+        <div className="text-xs text-[#FF4D6A] bg-[#FF4D6A]/10 rounded-lg px-3 py-2">
+          {saveError}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         {/* Section Navigation */}
@@ -125,13 +246,18 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Platform Name</label>
                   <input
                     type="text"
-                    defaultValue="DMR-X"
+                    value={local.platformName}
+                    onChange={(e) => updateLocal('platformName', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
                 <div>
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Default Timezone</label>
-                  <select className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]">
+                  <select
+                    value={local.timezone}
+                    onChange={(e) => updateLocal('timezone', e.target.value)}
+                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
+                  >
                     <option>UTC</option>
                     <option>America/New_York</option>
                     <option>Europe/London</option>
@@ -142,7 +268,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Request Timeout (seconds)</label>
                   <input
                     type="number"
-                    defaultValue="30"
+                    value={local.requestTimeout}
+                    onChange={(e) => updateLocal('requestTimeout', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -185,7 +312,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Quality Weight (0-1)</label>
                   <input
                     type="number"
-                    defaultValue="0.4"
+                    value={local.qualityWeight}
+                    onChange={(e) => updateLocal('qualityWeight', e.target.value)}
                     step="0.1"
                     min="0"
                     max="1"
@@ -196,7 +324,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Cost Weight (0-1)</label>
                   <input
                     type="number"
-                    defaultValue="0.3"
+                    value={local.costWeight}
+                    onChange={(e) => updateLocal('costWeight', e.target.value)}
                     step="0.1"
                     min="0"
                     max="1"
@@ -207,7 +336,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Latency Weight (0-1)</label>
                   <input
                     type="number"
-                    defaultValue="0.3"
+                    value={local.latencyWeight}
+                    onChange={(e) => updateLocal('latencyWeight', e.target.value)}
                     step="0.1"
                     min="0"
                     max="1"
@@ -226,23 +356,28 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Slack Webhook URL</label>
                   <input
                     type="text"
-                    defaultValue="https://hooks.slack.com/services/..."
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
+                    value={local.slackWebhook}
+                    onChange={(e) => updateLocal('slackWebhook', e.target.value)}
+                    placeholder="https://hooks.slack.com/services/..."
+                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
                   />
                 </div>
                 <div>
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Email Recipients (comma-separated)</label>
                   <input
                     type="text"
-                    defaultValue="ops@acme.com"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
+                    value={local.emailRecipients}
+                    onChange={(e) => updateLocal('emailRecipients', e.target.value)}
+                    placeholder="ops@example.com"
+                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
                   />
                 </div>
                 <div>
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Latency Alert Threshold (ms)</label>
                   <input
                     type="number"
-                    defaultValue="5000"
+                    value={local.latencyThreshold}
+                    onChange={(e) => updateLocal('latencyThreshold', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -250,7 +385,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Quota Alert Threshold (%)</label>
                   <input
                     type="number"
-                    defaultValue="75"
+                    value={local.quotaThreshold}
+                    onChange={(e) => updateLocal('quotaThreshold', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -267,23 +403,42 @@ export default function Settings() {
                     <div className="text-xs text-[#F8F9FC] font-medium">Require API Key Auth</div>
                     <div className="text-[11px] text-[#595962]">All requests must include valid API key</div>
                   </div>
-                  <div className="w-10 h-5 rounded-full bg-[#00FFB2] relative">
-                    <div className="w-4 h-4 rounded-full bg-white absolute top-0.5 left-5" />
-                  </div>
+                  <button
+                    onClick={() => updateLocal('requireApiKey', !local.requireApiKey)}
+                    className={cn(
+                      'w-10 h-5 rounded-full transition-colors relative',
+                      local.requireApiKey ? 'bg-[#00FFB2]' : 'bg-[#27272E]'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all',
+                      local.requireApiKey ? 'left-5' : 'left-0.5'
+                    )} />
+                  </button>
                 </div>
                 <div className="flex items-center justify-between p-3 bg-[#0A0A0C] rounded-lg border border-[#27272E]">
                   <div>
                     <div className="text-xs text-[#F8F9FC] font-medium">Auto Key Rotation</div>
                     <div className="text-[11px] text-[#595962]">Rotate provider keys every 90 days</div>
                   </div>
-                  <div className="w-10 h-5 rounded-full bg-[#00FFB2] relative">
-                    <div className="w-4 h-4 rounded-full bg-white absolute top-0.5 left-5" />
-                  </div>
+                  <button
+                    onClick={() => updateLocal('autoKeyRotation', !local.autoKeyRotation)}
+                    className={cn(
+                      'w-10 h-5 rounded-full transition-colors relative',
+                      local.autoKeyRotation ? 'bg-[#00FFB2]' : 'bg-[#27272E]'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all',
+                      local.autoKeyRotation ? 'left-5' : 'left-0.5'
+                    )} />
+                  </button>
                 </div>
                 <div>
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Allowed Origins (CORS)</label>
                   <textarea
-                    defaultValue="*"
+                    value={local.corsOrigins}
+                    onChange={(e) => updateLocal('corsOrigins', e.target.value)}
                     rows={3}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] resize-none"
                   />
@@ -292,7 +447,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Max Request Size (MB)</label>
                   <input
                     type="number"
-                    defaultValue="50"
+                    value={local.maxRequestSize}
+                    onChange={(e) => updateLocal('maxRequestSize', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -309,13 +465,26 @@ export default function Settings() {
                     <div className="text-xs text-[#F8F9FC] font-medium">Auto Benchmark Runs</div>
                     <div className="text-[11px] text-[#595962]">Automatically run benchmarks on schedule</div>
                   </div>
-                  <div className="w-10 h-5 rounded-full bg-[#00FFB2] relative">
-                    <div className="w-4 h-4 rounded-full bg-white absolute top-0.5 left-5" />
-                  </div>
+                  <button
+                    onClick={() => updateLocal('autoBenchmark', !local.autoBenchmark)}
+                    className={cn(
+                      'w-10 h-5 rounded-full transition-colors relative',
+                      local.autoBenchmark ? 'bg-[#00FFB2]' : 'bg-[#27272E]'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all',
+                      local.autoBenchmark ? 'left-5' : 'left-0.5'
+                    )} />
+                  </button>
                 </div>
                 <div>
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Run Frequency</label>
-                  <select className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]">
+                  <select
+                    value={local.benchmarkFrequency}
+                    onChange={(e) => updateLocal('benchmarkFrequency', e.target.value)}
+                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
+                  >
                     <option>Every 6 hours</option>
                     <option>Every 12 hours</option>
                     <option>Daily</option>
@@ -326,7 +495,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Regression Threshold (%)</label>
                   <input
                     type="number"
-                    defaultValue="2.0"
+                    value={local.regressionThreshold}
+                    onChange={(e) => updateLocal('regressionThreshold', e.target.value)}
                     step="0.1"
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
@@ -343,6 +513,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Route Decision Webhook</label>
                   <input
                     type="text"
+                    value={local.routeDecisionWebhook}
+                    onChange={(e) => updateLocal('routeDecisionWebhook', e.target.value)}
                     placeholder="https://your-app.com/webhooks/routing"
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
                   />
@@ -351,6 +523,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Alert Webhook</label>
                   <input
                     type="text"
+                    value={local.alertWebhook}
+                    onChange={(e) => updateLocal('alertWebhook', e.target.value)}
                     placeholder="https://your-app.com/webhooks/alerts"
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
                   />
@@ -359,7 +533,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Max Retries</label>
                   <input
                     type="number"
-                    defaultValue="3"
+                    value={local.webhookMaxRetries}
+                    onChange={(e) => updateLocal('webhookMaxRetries', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -367,7 +542,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Retry Backoff (seconds)</label>
                   <input
                     type="number"
-                    defaultValue="5"
+                    value={local.webhookRetryBackoff}
+                    onChange={(e) => updateLocal('webhookRetryBackoff', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -392,7 +568,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Request Log Retention (days)</label>
                   <input
                     type="number"
-                    defaultValue="7"
+                    value={local.requestLogRetention}
+                    onChange={(e) => updateLocal('requestLogRetention', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -400,7 +577,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Memory Retention (days)</label>
                   <input
                     type="number"
-                    defaultValue="90"
+                    value={local.memoryRetention}
+                    onChange={(e) => updateLocal('memoryRetention', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>
@@ -408,7 +586,8 @@ export default function Settings() {
                   <label className="text-xs text-[#A6A6B0] block mb-1.5">Benchmark History (days)</label>
                   <input
                     type="number"
-                    defaultValue="365"
+                    value={local.benchmarkHistory}
+                    onChange={(e) => updateLocal('benchmarkHistory', e.target.value)}
                     className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
                   />
                 </div>

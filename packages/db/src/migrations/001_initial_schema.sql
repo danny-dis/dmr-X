@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS model_profiles (
   supports_tool_use INTEGER NOT NULL DEFAULT 0,
   supports_json_mode INTEGER NOT NULL DEFAULT 0,
   supports_function_call INTEGER NOT NULL DEFAULT 0,
+  supports_reasoning INTEGER NOT NULL DEFAULT 0,
 
   -- LLM-specific
   context_window INTEGER,

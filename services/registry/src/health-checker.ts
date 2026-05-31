@@ -76,7 +76,11 @@ export class HealthChecker {
         const status = await adapter.healthCheck();
         registryService.updateHealth(providerUuid, status.healthy, status.latencyMs);
 
-        if (!status.healthy) {
+        // Sync circuit breaker state with health check result
+        if (status.healthy) {
+          this.adapterRegistry.recordSuccess(adapterId);
+        } else {
+          this.adapterRegistry.recordFailure(adapterId);
           logger.warn(
             { adapterId, providerUuid, error: status.error },
             'Provider unhealthy'
@@ -84,6 +88,8 @@ export class HealthChecker {
         }
       } catch (error) {
         logger.error({ err: error, adapterId }, 'Health check failed');
+        // Record circuit breaker failure on exception
+        this.adapterRegistry.recordFailure(adapterId);
         const providerUuid = this.getProviderUuid(adapterId);
         if (providerUuid) {
           registryService.updateHealth(providerUuid, false);

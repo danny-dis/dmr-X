@@ -1,0 +1,92 @@
+Business Source License 1.1
+
+Licensor: DMR-X Contributors
+Licensed Work: DMR-X Universal AI routing and orchestration platform
+Change Date: 2030-05-30
+Change License: GNU Affero General Public License v3.0
+
+Additional Use Grant: Production use of the Licensed Work is permitted
+for organizations where no more than fifty (50) individuals can access,
+use, or in any way directly or indirectly benefit from the software.
+This includes, but is not limited to, developers, testers, operations
+staff, end-users, and indirect users via integrated systems.
+
+For the purposes of this license, an "individual" means a single natural
+person who can access, use, or benefit from the software, whether
+directly or indirectly. An "organization" means any legal entity,
+corporation, partnership, sole proprietorship, or other business entity,
+including its subsidiaries and affiliates.
+
+Terms
+
+The Licensor grants you a non-exclusive, royalty-free, worldwide license
+to copy, modify, create derivative works of, publicly display, publicly
+perform, and redistribute the Licensed Work and such derivative works,
+subject to the following conditions:
+
+1. Use Restriction. You may not use the Licensed Work for Production
+   purposes if you exceed the Additional Use Grant threshold. "Production
+   purposes" means any use of the Licensed Work in a live operating
+   environment where the Licensed Work is providing services to users,
+   whether internal or external to your organization.
+
+2. Production Use. For the purposes of this license, "Production use"
+   includes, but is not limited to:
+   a) Running the Licensed Work in a live environment serving users
+   b) Integrating the Licensed Work into products or services offered
+      to users
+   c) Using the Licensed Work to process data for third parties
+   d) Deploying the Licensed Work in any capacity that exceeds the
+      Additional Use Grant threshold
+
+3. Non-Production Use. You may use the Licensed Work without restriction
+   for non-production purposes, including but not limited to:
+   a) Development and testing
+   b) Evaluation and benchmarking
+   c) Learning and education
+   d) Personal projects with no commercial intent
+
+4. Distribution. When redistributing the Licensed Work or derivative
+   works thereof, you must:
+   a) Include a copy of this license
+   b) Retain all copyright, patent, trademark, and attribution notices
+   c) State changes made to the original Licensed Work
+   d) Not grant additional rights beyond those provided by this license
+
+5. Change License. On the Change Date, the Licensed Work will convert
+   to the Change License (GNU Affero General Public License v3.0). You
+   may also choose to use the Licensed Work under the Change License at
+   any time prior to the Change Date.
+
+6. Attribution. You must retain all copyright notices and attributions
+   in the Licensed Work and any derivative works thereof.
+
+7. Trademarks. This license does not grant permission to use the trade
+   names, trademarks, service marks, or product names of the Licensor,
+   except as required for reasonable and customary use in describing the
+   origin of the Licensed Work.
+
+8. Disclaimer. THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY
+   OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+   WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY
+   CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+   WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS IN THE LICENSED
+   WORK.
+
+9. Commercial License. If you exceed the Additional Use Grant threshold
+   or require additional rights not granted by this license, you must
+   contact the Licensor to obtain a commercial license. Commercial
+   license terms will be negotiated in good faith and on fair,
+   reasonable, and non-discriminatory terms.
+
+10. Termination. This license terminates automatically if you breach
+    any term of this license. Upon termination, you must cease all use
+    of the Licensed Work and destroy all copies thereof.
+
+For commercial licensing inquiries, contact:
+[Your Name/Email Here]
+
+For the full text of the Change License (GNU Affero General Public
+License v3.0), see: https://www.gnu.org/licenses/agpl-3.0.html

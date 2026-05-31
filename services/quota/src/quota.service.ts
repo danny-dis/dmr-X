@@ -1,9 +1,12 @@
-import { getDb, cache } from '@dmr-x/db';
+import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import { QuotaExhaustedError } from '@dmr-x/core';
 import type { CandidateSet } from '@dmr-x/core';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
 import crypto from 'node:crypto';
+
+const quotaCache = createNamespacedCache('quota');
+const budgetCache = createNamespacedCache('freebudget');
 
 export interface QuotaAllocation {
   id: string;
@@ -82,8 +85,8 @@ export class QuotaService {
    * Get accumulated token usage for a provider's free-tier budget
    */
   async getProviderBudgetUsage(tenantId: string, providerId: string): Promise<number> {
-    const key = `freebudget:${tenantId}:${providerId}`;
-    const usage = cache.get(key);
+    const key = `${tenantId}:${providerId}`;
+    const usage = budgetCache.get(key);
     return parseInt(usage || '0');
   }
 
@@ -95,10 +98,10 @@ export class QuotaService {
     providerId: string,
     tokens: number
   ): Promise<void> {
-    const key = `freebudget:${tenantId}:${providerId}`;
-    cache.incrBy(key, tokens);
+    const key = `${tenantId}:${providerId}`;
+    budgetCache.incrBy(key, tokens);
     // Expire at end of month (30 days)
-    cache.expire(key, 30 * 24 * 60 * 60);
+    budgetCache.expire(key, 30 * 24 * 60 * 60);
   }
 
   /**
@@ -111,20 +114,21 @@ export class QuotaService {
     cost: number
   ): Promise<void> {
     // Increment counters in cache (fast path)
-    const key = `quota:${tenantId}:${providerId}`;
-    cache.hIncrBy(key, 'requests', 1);
-    cache.hIncrBy(key, 'tokens', tokens);
-    cache.hIncrBy(key, 'cost', Math.round(cost));
+    const key = `${tenantId}:${providerId}`;
+    quotaCache.hIncrBy(key, 'requests', 1);
+    quotaCache.hIncrBy(key, 'tokens', tokens);
+    quotaCache.hIncrBy(key, 'cost', Math.round(cost));
 
     // Set expiry based on period (default: 30 days)
-    cache.expire(key, 30 * 24 * 60 * 60);
+    quotaCache.expire(key, 30 * 24 * 60 * 60);
 
     // Also record in database for persistence
     const db = getDb();
+    const id = crypto.randomUUID();
     db.prepare(
-      `INSERT INTO billing_records (tenant_id, amount, description)
-       VALUES (?, ?, ?)`
-    ).run(tenantId, cost, `Usage: ${tokens} tokens via ${providerId}`);
+      `INSERT INTO billing_records (id, tenant_id, request_id, amount, description)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(id, tenantId, null, cost, `Usage: ${tokens} tokens via ${providerId}`);
   }
 
   /**
@@ -177,11 +181,11 @@ export class QuotaService {
   }
 
   private async getUsage(tenantId: string, allocation: QuotaAllocation): Promise<QuotaUsage> {
-    const key = `quota:${tenantId}:${allocation.providerId || 'global'}`;
+    const key = `${tenantId}:${allocation.providerId || 'global'}`;
 
-    const requests = parseInt(cache.hGet(key, 'requests') || '0');
-    const tokens = parseInt(cache.hGet(key, 'tokens') || '0');
-    const cost = parseFloat(cache.hGet(key, 'cost') || '0');
+    const requests = parseInt(quotaCache.hGet(key, 'requests') || '0');
+    const tokens = parseInt(quotaCache.hGet(key, 'tokens') || '0');
+    const cost = parseFloat(quotaCache.hGet(key, 'cost') || '0');
 
     return { requests, tokens, cost };
   }
@@ -198,8 +202,8 @@ export class QuotaService {
       : db.prepare('SELECT * FROM quota_allocations').all() as any[];
 
     for (const allocation of rows) {
-      const key = `quota:${allocation.tenant_id}:${allocation.provider_id || 'global'}`;
-      cache.del(key);
+      const key = `${allocation.tenant_id}:${allocation.provider_id || 'global'}`;
+      quotaCache.del(key);
     }
 
     logger.info({ tenantId }, 'Reset quotas');

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, Fragment } from 'react';
 import { useMemoryItems } from '@/hooks/useApiData';
 import StatusBadge from '@/components/StatusBadge';
 import { cn } from '@/lib/utils';
@@ -74,9 +74,8 @@ export default function MemoryCenter() {
           </thead>
           <tbody className="divide-y divide-[#27272E]/30">
             {filtered.map((item) => (
-              <>
+              <Fragment key={item.id}>
                 <tr
-                  key={item.id}
                   className={cn(
                     'hover:bg-[#1A1A20] transition-colors cursor-pointer',
                     expandedItem === item.id && 'bg-[#1A1A20]'
@@ -155,7 +154,7 @@ export default function MemoryCenter() {
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             ))}
           </tbody>
         </table>

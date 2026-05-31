@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { MemoryCache } from '../../packages/db/src/cache.js';
+import { MemoryCache, createNamespacedCache } from '../../packages/db/src/cache.js';
 
 describe('MemoryCache', () => {
   let cache: MemoryCache;
@@ -10,6 +10,7 @@ describe('MemoryCache', () => {
   });
 
   afterEach(() => {
+    cache.destroy();
     vi.useRealTimers();
   });
 
@@ -166,6 +167,89 @@ describe('MemoryCache', () => {
       vi.advanceTimersByTime(1500); // past expiry
       // Entry should be cleaned up — get returns null
       expect(cache.get('temp')).toBeNull();
+    });
+  });
+
+  describe('LRU eviction', () => {
+    it('should evict least-recently-used entries when maxSize is reached', () => {
+      const lruCache = new MemoryCache(3);
+      lruCache.set('a', '1');
+      lruCache.set('b', '2');
+      lruCache.set('c', '3');
+
+      // Adding a 4th entry should evict 'a' (LRU)
+      lruCache.set('d', '4');
+      expect(lruCache.get('a')).toBeNull();
+      expect(lruCache.get('b')).toBe('2');
+      expect(lruCache.get('c')).toBe('3');
+      expect(lruCache.get('d')).toBe('4');
+      lruCache.destroy();
+    });
+
+    it('should promote accessed entries and evict truly LRU ones', () => {
+      const lruCache = new MemoryCache(3);
+      lruCache.set('a', '1');
+      lruCache.set('b', '2');
+      lruCache.set('c', '3');
+
+      // Access 'a' to promote it to MRU
+      lruCache.get('a');
+
+      // Now 'b' is LRU; adding 'd' should evict 'b'
+      lruCache.set('d', '4');
+      expect(lruCache.get('a')).toBe('1');
+      expect(lruCache.get('b')).toBeNull();
+      expect(lruCache.get('c')).toBe('3');
+      expect(lruCache.get('d')).toBe('4');
+      lruCache.destroy();
+    });
+
+    it('should update LRU position on set() for existing key', () => {
+      const lruCache = new MemoryCache(3);
+      lruCache.set('a', '1');
+      lruCache.set('b', '2');
+      lruCache.set('c', '3');
+
+      // Overwrite 'a' — should promote it to MRU
+      lruCache.set('a', '1-updated');
+
+      // Now 'b' is LRU; adding 'd' should evict 'b'
+      lruCache.set('d', '4');
+      expect(lruCache.get('a')).toBe('1-updated');
+      expect(lruCache.get('b')).toBeNull();
+      lruCache.destroy();
+    });
+  });
+
+  describe('namespaced cache', () => {
+    it('should isolate keys by namespace', () => {
+      const ns1 = createNamespacedCache('ns1');
+      const ns2 = createNamespacedCache('ns2');
+
+      ns1.set('key', 'value1');
+      ns2.set('key', 'value2');
+
+      expect(ns1.get('key')).toBe('value1');
+      expect(ns2.get('key')).toBe('value2');
+    });
+
+    it('should share the same backing store', () => {
+      const ns = createNamespacedCache('test', cache);
+      ns.set('shared', 'data');
+
+      // The backing cache should see it with the namespace prefix
+      expect(cache.get('test:shared')).toBe('data');
+    });
+
+    it('should support hash operations with namespaces', () => {
+      const ns = createNamespacedCache('h');
+
+      ns.hSet('user', 'name', 'Alice');
+      expect(ns.hGet('user', 'name')).toBe('Alice');
+      expect(ns.hGetAll('user')).toEqual({ name: 'Alice' });
+
+      ns.del('user');
+      expect(ns.hGet('user', 'name')).toBeNull();
     });
   });
 });

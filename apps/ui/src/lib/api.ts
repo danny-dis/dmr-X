@@ -18,13 +18,14 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const { headers: customHeaders, ...rest } = options || {};
   const res = await fetch(`${API_BASE}${path}`, {
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
       ...getAuthHeaders(),
-      ...options?.headers,
+      ...customHeaders,
     },
-    ...options,
   });
 
   if (!res.ok) {
@@ -45,6 +46,12 @@ export interface ApiProvider {
   api_key_ref: string | null;
   config: Record<string, unknown>;
   created_at: string;
+  status?: string;
+  hasKey?: boolean;
+  signupUrl?: string;
+  description?: string;
+  category?: string | string[];
+  region?: string;
 }
 
 export interface ProviderTemplate {
@@ -130,6 +137,10 @@ export interface ApiModel {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_use: boolean;
+  supports_reasoning: boolean;
+  supports_function_call: boolean;
+  supports_json_mode: boolean;
+  quality_score: number;
   input_cost_per_1k: number;
   output_cost_per_1k: number;
   cost_per_image: number;
@@ -205,6 +216,10 @@ export async function createApiKey(tenant_id: string, name?: string): Promise<Ap
     method: 'POST',
     body: JSON.stringify({ tenant_id, name }),
   });
+}
+
+export async function deleteApiKey(id: string): Promise<void> {
+  await request<unknown>(`/v1/admin/api-keys/${id}`, { method: 'DELETE' });
 }
 
 // --- Admin: Routing ---
@@ -385,6 +400,24 @@ export async function fetchPolicyRules(): Promise<ApiPolicyRule[]> {
   return data.policies;
 }
 
+export async function createPolicy(policy: { name: string; tenant_id?: string; type: string; target: string[]; action: string; priority?: number }): Promise<ApiPolicyRule> {
+  return request<ApiPolicyRule>('/v1/admin/policies', {
+    method: 'POST',
+    body: JSON.stringify(policy),
+  });
+}
+
+export async function updatePolicy(id: string, updates: { name?: string; type?: string; target?: string[]; action?: string; priority?: number; enabled?: boolean }): Promise<ApiPolicyRule> {
+  return request<ApiPolicyRule>(`/v1/admin/policies/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function deletePolicy(id: string): Promise<void> {
+  await request(`/v1/admin/policies/${id}`, { method: 'DELETE' });
+}
+
 // --- Admin: Memory ---
 
 export interface ApiMemoryItem {
@@ -504,8 +537,9 @@ export async function saveSettings(settings: Record<string, unknown>): Promise<v
 // --- Chat Completions ---
 
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  tool_call_id?: string;
 }
 
 export interface ChatCompletionRequest {
@@ -583,13 +617,21 @@ export async function chatCompletionStream(
 
         try {
           const parsed = JSON.parse(data);
-          const delta = parsed.choices?.[0]?.delta?.content;
-          if (delta) {
-            fullText += delta;
+          const delta = parsed.choices?.[0]?.delta;
+          if (delta?.content) {
+            fullText += delta.content;
+            onChunk(fullText);
+          } else if (delta?.tool_calls) {
+            // Tool calls in streaming — append to full text for visibility
+            for (const tc of delta.tool_calls) {
+              if (tc.function?.name) fullText += `\n[tool_call: ${tc.function.name}]`;
+              if (tc.function?.arguments) fullText += tc.function.arguments;
+            }
             onChunk(fullText);
           }
-        } catch {
-          // skip malformed chunks
+        } catch (parseErr) {
+          // skip malformed SSE chunks (common in streaming)
+          console.debug('[ui] Skipped malformed SSE chunk:', parseErr);
         }
       }
     }

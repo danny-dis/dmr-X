@@ -8,6 +8,8 @@ export interface ClassifyOptions {
   priority?: number;
   /** When true, return only the routing plan without executing the request */
   planOnly?: boolean;
+  /** Request-scoped ID for tracing through the pipeline */
+  requestId?: string;
 }
 
 export function classifyTask(request: UnifiedRequest, options: ClassifyOptions): TaskProfile {

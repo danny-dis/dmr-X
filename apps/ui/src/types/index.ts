@@ -24,7 +24,7 @@ export interface User {
 export interface APIKey {
   id: string;
   name: string;
-  key: string;
+  key?: string;
   tenantId: string;
   providerId?: string;
   scopes: string[];

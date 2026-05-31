@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route } from 'react-router';
 import Layout from '@/components/layout/Layout';
 import Overview from './Overview';
 import RoutingConsole from './RoutingConsole';
@@ -20,6 +20,7 @@ import ProviderKeys from './ProviderKeys';
 import Settings from './Settings';
 import Playground from './Playground';
 import FreeTier from './FreeTier';
+import NotFound from './NotFound';
 
 export default function Home() {
   return (
@@ -45,6 +46,7 @@ export default function Home() {
         <Route path="/keys" element={<ProviderKeys />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/playground" element={<Playground />} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </Layout>
   );

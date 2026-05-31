@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { usePolicyRules, useTenants } from '@/hooks/useApiData';
+import { createPolicy } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { ErrorBanner } from '@/components/ErrorBanner';
-import { ShieldCheck, Search, Plus, Shield, DollarSign, Globe, Wrench, Filter } from 'lucide-react';
+import { ShieldCheck, Search, Plus, Shield, DollarSign, Globe, Wrench, Filter, X } from 'lucide-react';
 
 const typeIcons: Record<string, typeof ShieldCheck> = {
   provider_allow: ShieldCheck,
@@ -27,13 +28,44 @@ const typeLabels: Record<string, string> = {
 };
 
 export default function PolicyEngine() {
-  const { policies: policyRules, error } = usePolicyRules();
+  const { policies: policyRules, error, refetch } = usePolicyRules();
   const { tenants } = useTenants();
   const [searchQuery, setSearchQuery] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    name: '',
+    type: 'provider_allow' as string,
+    target: '',
+    action: 'allow' as string,
+    tenant_id: '',
+  });
 
   const filtered = policyRules.filter((p) =>
     !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const handleCreate = useCallback(async () => {
+    if (!form.name || !form.target || !form.tenant_id) {
+      setFormError('Name, target, and tenant are required');
+      return;
+    }
+    try {
+      setFormError(null);
+      await createPolicy({
+        name: form.name,
+        type: form.type,
+        target: form.target.split(',').map((t) => t.trim()).filter(Boolean),
+        action: form.action,
+        tenant_id: form.tenant_id,
+      });
+      setShowForm(false);
+      setForm({ name: '', type: 'provider_allow', target: '', action: 'allow', tenant_id: '' });
+      refetch();
+    } catch (e: any) {
+      setFormError(e.message || 'Failed to create policy');
+    }
+  }, [form, refetch]);
 
   return (
     <div className="space-y-4">
@@ -42,13 +74,93 @@ export default function PolicyEngine() {
           <h1 className="text-xl font-bold text-[#F8F9FC]">Policy Engine</h1>
           <p className="text-xs text-[#595962] mt-0.5">Tenant policies, restrictions, and compliance rules</p>
         </div>
-        <button className="flex items-center gap-2 px-3 py-2 bg-[#F7A51C] text-[#060608] rounded-md text-xs font-semibold hover:bg-[#F7A51C]/90 transition-colors">
+        <button
+          onClick={() => setShowForm(!showForm)}
+          className="flex items-center gap-2 px-3 py-2 bg-[#F7A51C] text-[#060608] rounded-md text-xs font-semibold hover:bg-[#F7A51C]/90 transition-colors"
+        >
           <Plus className="w-3.5 h-3.5" />
           New Policy
         </button>
       </div>
 
       <ErrorBanner error={error} />
+
+      {showForm && (
+        <div className="glass-card rounded-xl p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-[#F8F9FC]">Create New Policy</h3>
+            <button onClick={() => { setShowForm(false); setFormError(null); }} className="text-[#595962] hover:text-[#A6A6B0]">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          {formError && <p className="text-xs text-red-400">{formError}</p>}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs text-[#595962] mb-1 block">Name</label>
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-sm text-[#F8F9FC] focus:outline-none focus:border-[#F7A51C]"
+                placeholder="Policy name"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#595962] mb-1 block">Tenant</label>
+              <select
+                value={form.tenant_id}
+                onChange={(e) => setForm({ ...form, tenant_id: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-sm text-[#F8F9FC] focus:outline-none focus:border-[#F7A51C]"
+              >
+                <option value="">Select tenant...</option>
+                {tenants.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-[#595962] mb-1 block">Type</label>
+              <select
+                value={form.type}
+                onChange={(e) => setForm({ ...form, type: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-sm text-[#F8F9FC] focus:outline-none focus:border-[#F7A51C]"
+              >
+                {Object.entries(typeLabels).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-[#595962] mb-1 block">Target (comma-separated)</label>
+              <input
+                value={form.target}
+                onChange={(e) => setForm({ ...form, target: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-sm text-[#F8F9FC] focus:outline-none focus:border-[#F7A51C]"
+                placeholder="openai, anthropic"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#595962] mb-1 block">Action</label>
+              <select
+                value={form.action}
+                onChange={(e) => setForm({ ...form, action: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-sm text-[#F8F9FC] focus:outline-none focus:border-[#F7A51C]"
+              >
+                <option value="allow">Allow</option>
+                <option value="deny">Deny</option>
+                <option value="redirect">Redirect</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={handleCreate}
+              className="flex items-center gap-2 px-4 py-2 bg-[#F7A51C] text-[#060608] rounded-md text-xs font-semibold hover:bg-[#F7A51C]/90 transition-colors"
+            >
+              Create Policy
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 px-3 py-2 bg-[#0F0F12] border border-[#27272E] rounded-lg flex-1 max-w-sm">

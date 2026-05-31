@@ -23,6 +23,8 @@ export interface RouterConfig {
   quotaService?: QuotaService;
   policyService?: PolicyService;
   freeTierStrategy?: FreeTierStrategy;
+  onProviderSuccess?: (providerId: string) => void;
+  onProviderFailure?: (providerId: string) => void;
 }
 
 export class Router {
@@ -43,6 +45,10 @@ export class Router {
     this.candidates = candidates;
   }
 
+  getCandidateCount(): number {
+    return this.candidates.length;
+  }
+
   setAdapterExecutor(executor: AdapterExecutor): void {
     this.adapterExecutor = executor;
     this.compositeExecutor = new CompositeExecutor(this.specialistRouter, executor);
@@ -53,7 +59,7 @@ export class Router {
    */
   async route(
     request: UnifiedRequest,
-    options: ClassifyOptions
+    options: ClassifyOptions & { requestId?: string }
   ): Promise<{ plan: RoutingPlan; response: UnifiedResponse }> {
     // Check if decomposition is enabled and the prompt is complex enough
     const shouldDecompose = this.config.enableDecomposition !== false &&
@@ -72,8 +78,10 @@ export class Router {
    */
   private async routeSimple(
     request: UnifiedRequest,
-    options: ClassifyOptions
+    options: ClassifyOptions & { requestId?: string }
   ): Promise<{ plan: RoutingPlan; response: UnifiedResponse }> {
+    // Resolve requestId from options or from request metadata
+    const requestId = options.requestId || (request as any).metadata?.requestId;
     // Step 0: Check for sticky session
     const messages = request.messages || [];
     const conversationHash = hashConversation(messages);
@@ -128,6 +136,9 @@ export class Router {
                   rateLimitService: this.config.rateLimitService,
                   quotaService: this.config.quotaService,
                   tenantId: (request as any).metadata?.tenant?.id,
+                  requestId,
+                  onSuccess: this.config.onProviderSuccess,
+                  onFailure: this.config.onProviderFailure,
                 });
                 return { plan, response };
               } catch (error) {
@@ -161,6 +172,9 @@ export class Router {
               rateLimitService: this.config.rateLimitService,
               quotaService: this.config.quotaService,
               tenantId: (request as any).metadata?.tenant?.id,
+              requestId,
+              onSuccess: this.config.onProviderSuccess,
+              onFailure: this.config.onProviderFailure,
             });
 
             return { plan, response };
@@ -208,7 +222,14 @@ export class Router {
           return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
         }
         if (!this.adapterExecutor) throw new Error('No adapter executor configured');
-        const response = await executeWithFallback(plan, request, this.adapterExecutor, { rateLimitService: this.config.rateLimitService, quotaService: this.config.quotaService, tenantId });
+        const response = await executeWithFallback(plan, request, this.adapterExecutor, {
+          rateLimitService: this.config.rateLimitService,
+          quotaService: this.config.quotaService,
+          tenantId,
+          requestId,
+          onSuccess: this.config.onProviderSuccess,
+          onFailure: this.config.onProviderFailure,
+        });
         return { plan, response };
       }
     }
@@ -287,6 +308,9 @@ export class Router {
       rateLimitService: this.config.rateLimitService,
       quotaService: this.config.quotaService,
       tenantId,
+      requestId,
+      onSuccess: this.config.onProviderSuccess,
+      onFailure: this.config.onProviderFailure,
     });
 
     // Step 4: Set sticky session for this conversation

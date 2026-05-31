@@ -272,7 +272,7 @@ export function createHttpError(
   try {
     data = JSON.parse(httpMeta.body);
   } catch {
-    // Body is not JSON; use empty data object
+    // Body is not JSON; use empty data object (non-error for HTTP responses with text bodies)
   }
 
   const ErrorClass = HttpErrorMap[statusCode];

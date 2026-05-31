@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useDashboardStats, useProviders, useModels, useRouteDecisions, useBenchmarkResults, useTelemetryEvents, useUsageHistory } from '@/hooks/useApiData';
 import StatCard from '@/components/StatCard';
 import StatusBadge from '@/components/StatusBadge';
@@ -25,6 +25,16 @@ export default function Overview() {
   const healthyProviders = providers.filter((p) => p.status === 'healthy').length;
   const totalProviders = providers.length;
 
+  // Compute trends from usage history
+  const prev = usageHistory.length >= 2 ? usageHistory[usageHistory.length - 2] : null;
+  const curr = usageHistory.length >= 1 ? usageHistory[usageHistory.length - 1] : null;
+  const latencyTrend = prev && prev.latency > 0
+    ? Math.round(((curr?.latency ?? 0) - prev.latency) / prev.latency * 100)
+    : 0;
+  const spendTrend = prev && prev.cost > 0
+    ? Math.round(((curr?.cost ?? 0) - prev.cost) / prev.cost * 100)
+    : 0;
+
   return (
     <div className="space-y-6">
       <ErrorBanner error={error} />
@@ -37,8 +47,19 @@ export default function Overview() {
           <div className="flex items-end justify-between">
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <div className="w-2 h-2 rounded-full bg-[#00FFB2] pulse-ring-amber" />
-                <span className="text-[11px] text-[#00FFB2] font-mono-data tracking-wider">SYSTEM OPERATIONAL</span>
+                <div className={cn(
+                  'w-2 h-2 rounded-full',
+                  dashboardStats.systemStatus === 'operational' ? 'bg-[#00FFB2] pulse-ring-amber' :
+                  dashboardStats.systemStatus === 'degraded' ? 'bg-[#F7A51C]' : 'bg-[#FF4D6A]'
+                )} />
+                <span className={cn(
+                  'text-[11px] font-mono-data tracking-wider',
+                  dashboardStats.systemStatus === 'operational' ? 'text-[#00FFB2]' :
+                  dashboardStats.systemStatus === 'degraded' ? 'text-[#F7A51C]' : 'text-[#FF4D6A]'
+                )}>
+                  {dashboardStats.systemStatus === 'operational' ? 'SYSTEM OPERATIONAL' :
+                   dashboardStats.systemStatus === 'degraded' ? 'SYSTEM DEGRADED' : 'SYSTEM OUTAGE'}
+                </span>
               </div>
               <h1 className="text-4xl font-black text-[#F8F9FC] tracking-tight text-glow">
                 {dashboardStats.totalRequests.toLocaleString()}
@@ -62,8 +83,8 @@ export default function Overview() {
           <StatCard
             title="Average Latency"
             value={`${dashboardStats.avgLatency}ms`}
-            subtitle="P95: 1,240ms"
-            trend={{ value: 12, positive: false }}
+            subtitle={`${usageHistory.length} data points`}
+            trend={{ value: Math.abs(latencyTrend), positive: latencyTrend <= 0 }}
             icon={<Clock className="w-4 h-4 text-[#F7A51C]" />}
             index={0}
           />
@@ -72,8 +93,8 @@ export default function Overview() {
           <StatCard
             title="Daily Spend"
             value={`$${dashboardStats.dailySpend.toLocaleString()}`}
-            subtitle="Budget: $2,000"
-            trend={{ value: 23, positive: false }}
+            subtitle={`Quota remaining: ${dashboardStats.quotaRemaining.toLocaleString()}`}
+            trend={{ value: Math.abs(spendTrend), positive: spendTrend <= 0 }}
             icon={<Coins className="w-4 h-4 text-[#F7A51C]" />}
             index={1}
           />
@@ -83,7 +104,7 @@ export default function Overview() {
             title="Active Models"
             value={dashboardStats.activeModels}
             subtitle={`${models.length} registered`}
-            trend={{ value: 8, positive: true }}
+            trend={{ value: dashboardStats.providerHealth, positive: dashboardStats.providerHealth >= 80 }}
             icon={<Brain className="w-4 h-4 text-[#F7A51C]" />}
             index={2}
           />
@@ -92,8 +113,8 @@ export default function Overview() {
           <StatCard
             title="Fallback Rate"
             value={`${dashboardStats.fallbackRate}%`}
-            subtitle="Target: < 1%"
-            trend={{ value: 0.1, positive: false }}
+            subtitle={`Provider health: ${dashboardStats.providerHealth}%`}
+            trend={{ value: dashboardStats.fallbackRate, positive: dashboardStats.fallbackRate < 1 }}
             icon={<ServerCrash className="w-4 h-4 text-[#F7A51C]" />}
             index={3}
           />

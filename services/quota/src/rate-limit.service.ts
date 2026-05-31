@@ -1,6 +1,8 @@
-import { cache } from '@dmr-x/db';
+import { createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { RateLimitConfig, RateLimitCheckResult, RateLimitState } from '@dmr-x/core';
+
+const cache = createNamespacedCache('rl');
 
 interface WindowData {
   count?: number;
@@ -41,7 +43,7 @@ export class RateLimitService {
    * Get the cache key for a window.
    */
   private cacheKey(providerId: string, modelId: string, window: string): string {
-    return `rl:${providerId}:${modelId}:${window}`;
+    return `${providerId}:${modelId}:${window}`;
   }
 
   /**

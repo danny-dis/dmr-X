@@ -11,7 +11,7 @@ import type {
   StreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { createHttpError, isConnectionError, isTimeoutError, isAbortError, type HttpMeta } from '@dmr-x/utils';
+import { createHttpError, logger, type HttpMeta } from '@dmr-x/utils';
 
 /** Parse an NDJSON (newline-delimited JSON) response body into an async iterable. */
 async function* parseNDJSON<T extends Record<string, unknown>>(
@@ -33,16 +33,16 @@ async function* parseNDJSON<T extends Record<string, unknown>>(
         if (!trimmed) continue;
         try {
           yield JSON.parse(trimmed) as T;
-        } catch {
-          // Skip malformed JSON lines
+        } catch (parseErr) {
+          logger.debug({ err: parseErr }, 'Ollama NDJSON: skipped malformed JSON line');
         }
       }
     }
     if (buffer.trim()) {
       try {
         yield JSON.parse(buffer.trim()) as T;
-      } catch {
-        // Skip malformed JSON
+      } catch (parseErr) {
+        logger.debug({ err: parseErr }, 'Ollama NDJSON: skipped malformed JSON remainder');
       }
     }
   } finally {
@@ -84,18 +84,7 @@ export class OllamaAdapter extends BaseAdapter {
 
       throw new Error(`Unsupported modality: ${request.modality}`);
     } catch (err) {
-      if (err instanceof ProviderError) throw err;
-      if (isConnectionError(err)) {
-        throw new ProviderError(
-          `Ollama: Connection failed - ${err instanceof Error ? err.message : String(err)}`,
-          this.providerId,
-          502,
-        );
-      }
-      if (isTimeoutError(err) || isAbortError(err)) {
-        throw new ProviderError('Ollama: Request timed out', this.providerId, 504);
-      }
-      throw err;
+      throw this.handleAdapterError(err);
     }
   }
 

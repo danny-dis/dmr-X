@@ -5,7 +5,7 @@ import { ErrorBanner } from '@/components/ErrorBanner';
 import {
   Zap, Database, ChevronRight, Loader2, Sparkles, ShieldCheck, Globe, Clock, BarChart3, MessageSquare
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 
 export default function FreeTier() {
   const { models, loading: modelsLoading, error: modelsError } = useModels();
@@ -17,7 +17,7 @@ export default function FreeTier() {
 
   const stats = [
     { label: 'Free Models', value: freeModels.length, icon: Sparkles, color: 'text-[#00FFB2]' },
-    { label: 'Free Providers', value: providers.filter(p => p.costTier === 'low' || p.baseUrl.includes('free') || p.id === 'pollinations').length, icon: Globe, color: 'text-[#00E0FF]' },
+    { label: 'Free Providers', value: providers.filter(p => p.costTier === 'low' || p.baseUrl.includes('free') || p.name === 'pollinations').length, icon: Globe, color: 'text-[#00E0FF]' },
     { label: 'Avg Latency', value: '240ms', icon: Clock, color: 'text-[#F7A51C]' },
     { label: 'Uptime', value: '99.9%', icon: ShieldCheck, color: 'text-[#00FFB2]' },
   ];
@@ -68,7 +68,7 @@ export default function FreeTier() {
               <div 
                 key={`${model.providerId}-${model.id}`}
                 className="glass-card rounded-xl p-4 hover:border-[#00FFB2]/30 transition-all cursor-pointer group"
-                onClick={() => navigate('/playground', { state: { modelId: model.id } })}
+                onClick={() => navigate('/playground', { state: { modelName: model.name } })}
               >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-2">
@@ -76,8 +76,8 @@ export default function FreeTier() {
                       <Zap className="w-4 h-4 text-[#00FFB2]" />
                     </div>
                     <div>
-                      <div className="text-sm font-semibold text-[#F8F9FC] group-hover:text-[#00FFB2] transition-colors">{model.id}</div>
-                      <div className="text-[10px] text-[#595962] font-mono-data uppercase">{model.providerId}</div>
+                      <div className="text-sm font-semibold text-[#F8F9FC] group-hover:text-[#00FFB2] transition-colors">{model.name}</div>
+                      <div className="text-[10px] text-[#595962] font-mono-data uppercase">{model.provider}</div>
                     </div>
                   </div>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#00FFB2]/10 text-[#00FFB2] border border-[#00FFB2]/20 font-bold uppercase">FREE</span>

@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useStore } from '@/store/useStore';
 import { useState, useEffect, useRef } from 'react';
 import { Search, Command } from 'lucide-react';
@@ -31,7 +31,7 @@ const commands = [
 ];
 
 export default function CommandPalette() {
-  const { commandPaletteOpen, setCommandPaletteOpen, setCurrentPage } = useStore();
+  const { commandPaletteOpen, setCommandPaletteOpen } = useStore();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -73,7 +73,6 @@ export default function CommandPalette() {
   }, [commandPaletteOpen]);
 
   const handleSelect = (cmd: (typeof commands)[0]) => {
-    setCurrentPage(cmd.id);
     navigate(cmd.path);
     setCommandPaletteOpen(false);
   };

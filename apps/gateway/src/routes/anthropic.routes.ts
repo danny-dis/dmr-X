@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError } from '@dmr-x/core';
+import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
 import { generateRequestId, logger } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
 import {
@@ -91,14 +91,20 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
           planOnly: true,
         });
 
+        if (!plan.primary) {
+          reply.raw.writeHead(503, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+          reply.raw.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'No available providers' } })}\n\n`);
+          reply.raw.end();
+          return;
+        }
+
         reply.raw.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
         });
 
-        const adapterRegistry = (server as any).adapterRegistry;
-        const adapter = adapterRegistry.get(plan.primary.providerId);
+        const adapter = (server as any).getAdapter(plan.primary.providerId);
         if (adapter) {
           try {
             const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
@@ -113,7 +119,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
             logger.error({ err: streamError, requestId }, 'Anthropic streaming error');
             reply.raw.write(`event: error\ndata: ${JSON.stringify({
               type: 'error',
-              error: { type: 'stream_error', message: streamError instanceof Error ? streamError.message : 'Stream failed' },
+              error: { type: 'stream_error', message: 'Stream failed' },
             })}\n\n`);
           }
         } else {
@@ -131,6 +137,9 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
         path: '/v1/messages',
         qualityTarget: 'balanced',
       });
+      if (!plan.primary) {
+        throw new ProviderUnavailableError([]);
+      }
 
       return convertUnifiedResponseToAnthropic(response);
   });

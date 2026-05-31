@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useProviders, useCatalog } from '@/hooks/useApiData';
 import { updateProviderApiKey, activateProvider, testProviderConnection, type TestProviderResult } from '@/lib/api';
 import StatusBadge from '@/components/StatusBadge';
-import { Key, Search, ExternalLink, Eye, EyeOff, Save, Loader2, X, Plug, CheckCircle2, XCircle, Activity } from 'lucide-react';
+import { Key, Search, ExternalLink, Eye, EyeOff, Save, Loader2, X, Plug, CheckCircle2, XCircle, Activity, Zap, Plus } from 'lucide-react';
 import { ErrorBanner } from '@/components/ErrorBanner';
 import { cn } from '@/lib/utils';
 
@@ -21,6 +21,12 @@ export default function ProviderKeys() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestProviderResult | null>(null);
 
+  // Quick Connect State
+  const [quickProviderId, setQuickProviderId] = useState('');
+  const [quickApiKey, setQuickApiKey] = useState('');
+  const [quickConnecting, setQuickConnecting] = useState(false);
+  const [quickResult, setQuickResult] = useState<TestProviderResult | null>(null);
+
   // Merge catalog with registered providers
   const mergedProviders = catalog.map((template) => {
     const registered = providers.find((p) => p.name === template.id);
@@ -36,6 +42,49 @@ export default function ProviderKeys() {
   const filtered = mergedProviders.filter((p) =>
     !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const handleQuickConnect = async () => {
+    if (!quickProviderId || !quickApiKey) return;
+    setQuickConnecting(true);
+    setQuickResult(null);
+
+    const template = catalog.find(t => t.id === quickProviderId);
+    if (!template) {
+      setQuickConnecting(false);
+      return;
+    }
+
+    try {
+      // 1. Test the connection first
+      const result = await testProviderConnection(quickProviderId, template.baseUrl, quickApiKey);
+      setQuickResult(result);
+
+      if (result.status === 'passed') {
+        // 2. If test passed, activate/update the provider
+        const registered = providers.find(p => p.name === template.id);
+        if (registered) {
+          await updateProviderApiKey(registered.id, quickApiKey);
+        } else {
+          await activateProvider(quickProviderId, quickApiKey);
+        }
+        
+        // 3. Refresh data and clear form
+        await refetchProviders();
+        setQuickApiKey('');
+        // Keep the result visible for 3 seconds then clear
+        setTimeout(() => setQuickResult(null), 3000);
+      }
+    } catch (err: unknown) {
+      setQuickResult({
+        status: 'failed',
+        provider_id: quickProviderId,
+        latency_ms: 0,
+        message: err instanceof Error ? err.message : 'Connection failed',
+      });
+    } finally {
+      setQuickConnecting(false);
+    }
+  };
 
   const handleSaveKey = async (provider: any) => {
     setSaving(true);
@@ -104,6 +153,85 @@ export default function ProviderKeys() {
       </div>
 
       <ErrorBanner error={providersError || catalogError} />
+
+      {/* Quick Connect Widget */}
+      <div className="glass-card rounded-xl p-5 mb-6 border-[#F7A51C]/10">
+        <div className="flex items-center gap-2 mb-4">
+          <Zap className="w-4 h-4 text-[#F7A51C]" />
+          <h2 className="text-sm font-bold text-[#F8F9FC]">Quick Connect</h2>
+          <p className="text-[11px] text-[#595962] ml-2">Select a provider and paste your key to test & save instantly</p>
+        </div>
+        
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
+          <div className="flex-1 min-w-[200px]">
+            <select
+              value={quickProviderId}
+              onChange={(e) => setQuickProviderId(e.target.value)}
+              className="w-full px-3 py-2 text-xs bg-[#0A0A0C] border border-[#27272E] rounded-lg text-[#F8F9FC] outline-none focus:border-[#F7A51C]/40 appearance-none cursor-pointer"
+            >
+              <option value="" disabled>Select Provider...</option>
+              {catalog.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          
+          <div className="flex-[2] relative">
+            <input
+              type="password"
+              value={quickApiKey}
+              onChange={(e) => setQuickApiKey(e.target.value)}
+              placeholder="Paste API Key here..."
+              className="w-full px-3 py-2 pl-9 text-xs bg-[#0A0A0C] border border-[#27272E] rounded-lg text-[#F8F9FC] placeholder-[#595962] outline-none focus:border-[#F7A51C]/40 font-mono-data"
+            />
+            <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#595962]" />
+          </div>
+
+          <button
+            onClick={handleQuickConnect}
+            disabled={quickConnecting || !quickProviderId || !quickApiKey}
+            className="flex items-center justify-center gap-2 px-6 py-2 text-xs font-bold bg-[#F7A51C] text-black rounded-lg hover:bg-[#F7A51C]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+          >
+            {quickConnecting ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Connecting...
+              </>
+            ) : (
+              <>
+                <Plus className="w-3.5 h-3.5" />
+                Connect
+              </>
+            )}
+          </button>
+        </div>
+
+        {quickResult && (
+          <div className={`mt-4 p-3 rounded-lg flex items-start gap-3 animate-in fade-in slide-in-from-top-2 duration-300 ${
+            quickResult.status === 'passed'
+              ? 'bg-emerald-500/10 border border-emerald-500/20'
+              : 'bg-red-500/10 border border-red-500/20'
+          }`}>
+            {quickResult.status === 'passed' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5" />
+            ) : (
+              <XCircle className="w-4 h-4 text-red-400 mt-0.5" />
+            )}
+            <div>
+              <div className={`text-xs font-bold ${
+                quickResult.status === 'passed' ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                {quickResult.status === 'passed' ? 'Successfully Connected & Saved' : 'Connection Failed'}
+              </div>
+              <p className="text-[11px] text-[#A6A6B0] mt-0.5">
+                {quickResult.message} {quickResult.latency_ms > 0 && `(${quickResult.latency_ms}ms)`}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="flex items-center gap-2 px-3 py-2 bg-[#0F0F12] border border-[#27272E] rounded-lg max-w-sm">
         <Search className="w-3.5 h-3.5 text-[#595962]" />

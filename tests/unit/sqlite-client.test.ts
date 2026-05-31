@@ -31,12 +31,18 @@ vi.mock('node:fs', () => ({
     readFileSync: vi.fn(),
     writeFileSync: vi.fn(),
     readdirSync: vi.fn(() => []),
+    promises: {
+      writeFile: vi.fn(async () => {}),
+    },
   },
   existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   readdirSync: vi.fn(() => []),
+  promises: {
+    writeFile: vi.fn(async () => {}),
+  },
 }));
 
 describe('sqlite-client', () => {

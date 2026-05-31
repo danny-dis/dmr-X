@@ -47,7 +47,8 @@ export class AdapterRegistry {
         } else {
           this.circuitBreakers.get(id)?.recordFailure();
         }
-      } catch {
+      } catch (error) {
+        logger.warn({ err: error, providerId: id }, 'Health check threw, marking unhealthy');
         results.set(id, false);
         this.circuitBreakers.get(id)?.recordFailure();
       }

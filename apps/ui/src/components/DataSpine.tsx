@@ -1,4 +1,21 @@
+import { useMemo } from 'react';
+
+function seededRandom(seed: number) {
+  const x = Math.sin(seed) * 10000;
+  return x - Math.floor(x);
+}
+
 export default function DataSpine() {
+  const dots = useMemo(() =>
+    Array.from({ length: 20 }).map((_, i) => ({
+      width: 2 + seededRandom(i * 7 + 1) * 4,
+      left: seededRandom(i * 7 + 2) * 100,
+      top: seededRandom(i * 7 + 3) * 100,
+      color: seededRandom(i * 7 + 4) > 0.5 ? '#F7A51C' : '#00E0FF',
+      duration: 2 + seededRandom(i * 7 + 5) * 3,
+      delay: seededRandom(i * 7 + 6) * 2,
+    })), []);
+
   return (
     <div className="absolute inset-0 z-0 overflow-hidden">
       {/* Animated gradient background */}
@@ -14,18 +31,18 @@ export default function DataSpine() {
       />
       {/* Animated dots */}
       <div className="absolute inset-0" style={{ opacity: 0.3 }}>
-        {Array.from({ length: 20 }).map((_, i) => (
+        {dots.map((dot, i) => (
           <div
             key={i}
             className="absolute rounded-full"
             style={{
-              width: `${2 + Math.random() * 4}px`,
-              height: `${2 + Math.random() * 4}px`,
-              left: `${Math.random() * 100}%`,
-              top: `${Math.random() * 100}%`,
-              backgroundColor: Math.random() > 0.5 ? '#F7A51C' : '#00E0FF',
-              animation: `pulse-ring ${2 + Math.random() * 3}s ease-in-out infinite`,
-              animationDelay: `${Math.random() * 2}s`,
+              width: `${dot.width}px`,
+              height: `${dot.width}px`,
+              left: `${dot.left}%`,
+              top: `${dot.top}%`,
+              backgroundColor: dot.color,
+              animation: `pulse-ring ${dot.duration}s ease-in-out infinite`,
+              animationDelay: `${dot.delay}s`,
             }}
           />
         ))}

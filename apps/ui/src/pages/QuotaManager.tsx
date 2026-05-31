@@ -59,7 +59,7 @@ export default function QuotaManager() {
       {/* Quota Details */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {quotaStates.map((quota) => {
-          const usagePercent = (quota.usedQuota / quota.totalQuota) * 100;
+          const usagePercent = quota.totalQuota > 0 ? (quota.usedQuota / quota.totalQuota) * 100 : 0;
           const isWarning = usagePercent > 75;
           const isCritical = usagePercent > 90;
           return (

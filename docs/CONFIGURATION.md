@@ -11,7 +11,7 @@ Use `.env.example` as the authoritative template. Values are read from `process.
 - `DMRX_UI_DIR`: static UI directory.
 - `DMRX_LOCAL_MODE`: `true` skips tenant API key auth for local use.
 - `DMRX_ADMIN_API_KEY`: required for admin routes outside local mode.
-- `DMRX_CORS_ORIGIN`: allowed origin, default `*`.
+- `DMRX_CORS_ORIGIN`: comma-separated allowed origins. Default: `http://localhost:4200`, `http://localhost:5173` (never wildcard).
 - `DMRX_RATE_LIMIT_MAX`: Fastify rate-limit max.
 - `DMRX_RATE_LIMIT_WINDOW`: Fastify rate-limit window.
 - `DMRX_FREE_TIER_STRATEGY`: `none`, `prioritize`, `load_balance`, or `fallback`.
@@ -28,4 +28,4 @@ Provider keys are optional unless you want that provider enabled. Examples inclu
 
 - `DMRX_MCP_TRANSPORT`: `stdio`, `sse`, or `http`.
 - `DMRX_MCP_PORT`: MCP HTTP/SSE port, default `3100`.
-- `DMRX_MCP_HOST`: MCP HTTP/SSE host, default `0.0.0.0`.
+- `DMRX_MCP_HOST`: MCP HTTP/SSE host, default `127.0.0.1`.

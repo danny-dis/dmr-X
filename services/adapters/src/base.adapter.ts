@@ -6,6 +6,7 @@ import type {
   ExecuteOptions,
 } from './adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
+import { ProviderError } from '@dmr-x/core';
 import {
   logger,
   DefaultHttpHooks,
@@ -20,6 +21,7 @@ import {
   PermanentError,
   isConnectionError,
   isTimeoutError,
+  isAbortError,
   type RetryConfig,
   ConnectionError,
   ClientTimeoutError,
@@ -73,6 +75,9 @@ export abstract class BaseAdapter implements ProviderAdapter {
   }
 
   async healthCheck(): Promise<HealthStatus> {
+    if (!this.initialized) {
+      return { healthy: false, latencyMs: 0, error: 'Adapter not initialized' };
+    }
     const start = Date.now();
     try {
       await this.checkHealth();
@@ -101,6 +106,48 @@ export abstract class BaseAdapter implements ProviderAdapter {
     if (!this.initialized) {
       throw new Error(`Adapter ${this.providerId} not initialized`);
     }
+  }
+
+  /**
+   * Standardized error handler for adapter execute methods.
+   * Converts transport-level errors (connection, timeout, HTTP) into
+   * ProviderError instances with appropriate status codes.
+   *
+   * Usage in subclass execute() methods:
+   *   try { ... } catch (err) { throw this.handleAdapterError(err); }
+   *
+   * @param error - The caught error
+   * @param context - Optional context string (e.g., "stream", "embedding") for error messages
+   * @returns ProviderError for transport errors, or re-throws the original error
+   */
+  protected handleAdapterError(error: unknown, context?: string): ProviderError | never {
+    if (error instanceof ProviderError) throw error;
+
+    const prefix = context ? `${this.providerId} ${context}` : this.providerId;
+
+    if (error instanceof HttpError) {
+      const providerError = new ProviderError(
+        `${prefix}: ${error.message}`,
+        this.providerId,
+        error.statusCode,
+      );
+      (providerError as Error).cause = error;
+      throw providerError;
+    }
+
+    if (error instanceof ConnectionError || isConnectionError(error)) {
+      throw new ProviderError(
+        `${prefix}: Connection failed - ${error instanceof Error ? error.message : String(error)}`,
+        this.providerId,
+        502,
+      );
+    }
+
+    if (error instanceof ClientTimeoutError || isTimeoutError(error) || isAbortError(error)) {
+      throw new ProviderError(`${prefix}: Request timed out`, this.providerId, 504);
+    }
+
+    throw error;
   }
 
   /**

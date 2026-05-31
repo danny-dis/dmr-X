@@ -3,15 +3,25 @@
  *
  * Provides fetch-specific retry with exponential backoff, jitter,
  * retry-after header parsing, and status-code-based retryable detection.
+ *
+ * Shared types (BackoffStrategy, RetryConfig, PermanentError, TemporaryError)
+ * are re-exported from the canonical retry.ts module.
  */
 
 import { isConnectionError, isTimeoutError } from "./error-classifiers.js";
+import {
+  type BackoffStrategy,
+  type RetryConfig,
+  PermanentError,
+  TemporaryError,
+} from "./retry.js";
 
-export type BackoffStrategy = {
-  initialInterval: number;
-  maxInterval: number;
-  exponent: number;
-  maxElapsedTime: number;
+// Re-export shared types for backward compatibility
+export {
+  type BackoffStrategy,
+  type RetryConfig,
+  PermanentError,
+  TemporaryError,
 };
 
 const defaultBackoff: BackoffStrategy = {
@@ -20,57 +30,6 @@ const defaultBackoff: BackoffStrategy = {
   exponent: 1.5,
   maxElapsedTime: 3600000,
 };
-
-export type RetryConfig =
-  | { strategy: "none" }
-  | {
-      strategy: "backoff";
-      backoff?: BackoffStrategy;
-      retryConnectionErrors?: boolean;
-    };
-
-/**
- * PermanentError is an error that is not recoverable. Throwing this error will
- * cause a retry loop to terminate.
- */
-export class PermanentError extends Error {
-  /** The underlying cause of the error. */
-  override readonly cause: unknown;
-
-  constructor(message: string, options?: { cause?: unknown }) {
-    let msg = message;
-    if (options?.cause) {
-      msg += `: ${options.cause}`;
-    }
-
-    super(msg, options);
-    this.name = "PermanentError";
-    // In older runtimes, the cause field would not have been assigned through
-    // the super() call.
-    if (typeof this.cause === "undefined") {
-      this.cause = options?.cause;
-    }
-
-    Object.setPrototypeOf(this, PermanentError.prototype);
-  }
-}
-
-/**
- * TemporaryError is an error is used to signal that an HTTP request can be
- * retried as part of a retry loop. If retry attempts are exhausted and this
- * error is thrown, the response will be returned to the caller.
- */
-export class TemporaryError extends Error {
-  response: Response;
-
-  constructor(message: string, response: Response) {
-    super(message);
-    this.response = response;
-    this.name = "TemporaryError";
-
-    Object.setPrototypeOf(this, TemporaryError.prototype);
-  }
-}
 
 export async function retry(
   fetchFn: () => Promise<Response>,

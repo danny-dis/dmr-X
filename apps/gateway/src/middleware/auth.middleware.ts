@@ -31,20 +31,7 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       return;
     }
 
-    // Local mode: skip auth entirely, set default tenant
-    if (LOCAL_MODE) {
-      logger.warn('LOCAL MODE ACTIVE — authentication is disabled. Do not use in production.');
-      const db = getDb();
-      const tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined;
-      (request as any).tenant = {
-        id: tenant?.id ?? 'local',
-        name: tenant?.name ?? 'local',
-        apiKeyId: 'local',
-      };
-      return;
-    }
-
-    // Admin routes require admin API key (use pathname to support query strings)
+    // Admin routes ALWAYS require admin API key — even in local mode
     if (pathname.startsWith('/v1/admin')) {
       if (!adminApiKey) {
         throw new AuthenticationError('Admin API not configured');
@@ -58,6 +45,19 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       if (keyBuf.length !== adminBuf.length || !timingSafeEqual(keyBuf, adminBuf)) {
         throw new AuthenticationError('Invalid admin API key');
       }
+      return;
+    }
+
+    // Local mode: skip tenant API key check for public API routes only
+    if (LOCAL_MODE) {
+      logger.warn('LOCAL MODE ACTIVE — tenant API key check is disabled. Do not use in production.');
+      const db = getDb();
+      const tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined;
+      (request as any).tenant = {
+        id: tenant?.id ?? 'local',
+        name: tenant?.name ?? 'local',
+        apiKeyId: 'local',
+      };
       return;
     }
 

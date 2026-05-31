@@ -18,7 +18,7 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
       data: rows.map((row) => ({
         id: row.model_id,
         object: 'model',
-        created: Math.floor(new Date(row.created_at).getTime() / 1000),
+        created: row.created_at ? Math.floor(new Date(row.created_at).getTime() / 1000) : 0,
         owned_by: row.provider_name,
         meta: {
           modality: row.modality,
@@ -47,7 +47,7 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
 
     if (!row) {
       reply.status(404);
-      return { error: { message: `Model '${modelId}' not found`, type: 'not_found' } };
+      return { error: { message: `Model '${modelId}' not found`, type: 'not_found', code: 'model_not_found' } };
     }
 
     return {

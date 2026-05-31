@@ -7,11 +7,11 @@ import { fileURLToPath } from 'node:url';
 let db: SqlJsDatabase | null = null;
 let dbPath = '';
 
-function saveDatabase() {
+async function saveDatabase(): Promise<void> {
   if (!db || !dbPath) return;
   try {
     const data = db.export();
-    fs.writeFileSync(dbPath, Buffer.from(data));
+    await fs.promises.writeFile(dbPath, Buffer.from(data));
   } catch (err) {
     console.error('[dmr-x] Failed to save database:', err);
   }
@@ -32,11 +32,11 @@ function scheduleSave(): Promise<void> {
     if (saveTimer !== null) {
       clearTimeout(saveTimer);
     }
-    saveTimer = setTimeout(() => {
+    saveTimer = setTimeout(async () => {
       saveTimer = null;
       const resolvers = pendingSaveResolvers;
       pendingSaveResolvers = [];
-      saveDatabase();
+      await saveDatabase();
       for (const r of resolvers) r();
     }, SAVE_DEBOUNCE_MS);
   });
@@ -54,7 +54,7 @@ export async function flush(): Promise<void> {
   }
   const resolvers = pendingSaveResolvers;
   pendingSaveResolvers = [];
-  saveDatabase();
+  await saveDatabase();
   for (const r of resolvers) r();
 }
 
@@ -149,12 +149,50 @@ export async function initDb(): Promise<DatabaseWrapper> {
   const __dirname = path.dirname(__filename);
   const migrationsDir = path.join(__dirname, 'migrations');
 
+  // Enable foreign key enforcement (SQLite has it off by default)
+  db.exec('PRAGMA foreign_keys = ON;');
+
   if (fs.existsSync(migrationsDir)) {
+    // Create schema_version table if it doesn't exist (first-run)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER PRIMARY KEY,
+        filename TEXT NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
+    // Get already-applied migration versions
+    const applied = new Set<number>();
+    try {
+      const rows = db.exec('SELECT version FROM schema_version');
+      if (rows.length > 0 && rows[0].values) {
+        for (const row of rows[0].values) {
+          applied.add(row[0] as number);
+        }
+      }
+    } catch {
+      // schema_version table doesn't yet exist; first migration will create it
+    }
+
     const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
     for (const file of files) {
+      // Extract version number from filename (e.g., "001_initial_schema.sql" → 1)
+      const versionMatch = file.match(/^(\d+)_/);
+      if (!versionMatch) continue;
+      const version = parseInt(versionMatch[1], 10);
+
+      if (applied.has(version)) {
+        continue; // Already applied — skip
+      }
+
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
       try {
         db.exec(sql);
+        // Record successful migration
+        db.exec(
+          `INSERT OR IGNORE INTO schema_version (version, filename) VALUES (${version}, '${file}')`
+        );
       } catch (err) {
         console.error(`[dmr-x] Migration ${file} failed:`, err);
         throw err;
@@ -162,7 +200,7 @@ export async function initDb(): Promise<DatabaseWrapper> {
     }
   }
 
-  saveDatabase();
+  await saveDatabase();
   console.log(`[dmr-x] SQLite database ready at ${dbPath}`);
   return new DatabaseWrapper(db);
 }
@@ -181,3 +219,20 @@ export async function closeDb() {
     db = null;
   }
 }
+
+// Register process signal handlers to flush pending writes on crash/shutdown
+function registerCrashHandlers(): void {
+  const emergencyFlush = async () => {
+    try {
+      await flush();
+    } catch {
+      // Best-effort — nothing more we can do
+    }
+  };
+
+  process.on('SIGTERM', () => { void emergencyFlush(); });
+  process.on('SIGINT', () => { void emergencyFlush(); });
+  process.on('beforeExit', () => { void emergencyFlush(); });
+}
+
+registerCrashHandlers();

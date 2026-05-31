@@ -291,8 +291,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     for (const [providerId, cfg] of Object.entries(adapterConfigs)) {
       try {
         await adapterRegistry.initialize(providerId, cfg);
-      } catch {
-        // Adapter not configured — skip silently
+      } catch (initErr) {
+        // Adapter not configured — skip but log for debugging
+        console.warn(`[mcp-server] Failed to initialize adapter "${providerId}":`, initErr instanceof Error ? initErr.message : initErr);
       }
     }
     adaptersInitialized = true;
@@ -631,8 +632,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
                     });
                   }
                 }
-              } catch {
-                // Adapter not initialized — skip
+              } catch (listErr) {
+                // Adapter not initialized — skip but log for debugging
+                console.warn(`[mcp-server] Failed to list models from adapter:`, listErr instanceof Error ? listErr.message : listErr);
               }
             }
           }

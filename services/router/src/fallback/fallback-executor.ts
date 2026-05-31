@@ -15,6 +15,9 @@ export interface FallbackOptions {
   rateLimitService?: RateLimitService;
   quotaService?: QuotaService;
   tenantId?: string;
+  requestId?: string;
+  onSuccess?: (providerId: string) => void;
+  onFailure?: (providerId: string) => void;
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -62,30 +65,42 @@ export async function executeWithFallback(
     }
     tried.push(plan.primary.providerId);
     const response = await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
-    // Record successful usage
-    if (rls) {
-      const tokens = response.usage?.total_tokens || 0;
-      await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, tokens);
-    }
-    if (qs && tenantId) {
-      const tokens = response.usage?.total_tokens || 0;
-      await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
-      await qs.recordProviderBudgetUsage(tenantId, plan.primary.providerId, tokens);
+    // Record circuit breaker success
+    options?.onSuccess?.(plan.primary.providerId);
+    // Record successful usage (fire-and-forget, never fail the request)
+    try {
+      if (rls) {
+        const tokens = response.usage?.total_tokens || 0;
+        await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, tokens);
+      }
+      if (qs && tenantId) {
+        const tokens = response.usage?.total_tokens || 0;
+        await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
+        await qs.recordProviderBudgetUsage(tenantId, plan.primary.providerId, tokens);
+      }
+    } catch (usageErr) {
+      logger.warn({ err: usageErr, provider: plan.primary.providerId, requestId: options?.requestId }, 'Failed to record usage for primary provider');
     }
     return response;
   } catch (error) {
+    // Record circuit breaker failure
+    options?.onFailure?.(plan.primary.providerId);
     if (!isRateLimitError(error)) {
       allRateLimited = false;
     }
     if (isQuotaError(error)) {
-      logger.warn({ provider: plan.primary.providerId }, 'Primary provider quota exhausted');
+      logger.warn({ provider: plan.primary.providerId, requestId: options?.requestId }, 'Primary provider quota exhausted');
     } else {
-      logger.warn({ err: error, provider: plan.primary.providerId }, 'Primary provider failed');
+      logger.warn({ err: error, provider: plan.primary.providerId, requestId: options?.requestId }, 'Primary provider failed');
     }
     // On 429, add penalty and record usage
     if (rls && isRateLimitError(error)) {
       rls.addPenalty(plan.primary.providerId, plan.primary.modelId);
-      await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0);
+      try {
+        await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0);
+      } catch (usageErr) {
+        logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record rate limit usage');
+      }
     }
   }
 
@@ -113,33 +128,45 @@ export async function executeWithFallback(
       }
       tried.push(step.provider.providerId);
       const response = await executor.execute(step.provider.providerId, step.provider.modelId, request);
-      // Record successful usage
-      if (rls) {
-        const tokens = response.usage?.total_tokens || 0;
-        await rls.recordUsage(step.provider.providerId, step.provider.modelId, tokens);
-      }
-      if (qs && tenantId) {
-        const tokens = response.usage?.total_tokens || 0;
-        await qs.recordUsage(tenantId, step.provider.providerId, tokens, 0);
-        await qs.recordProviderBudgetUsage(tenantId, step.provider.providerId, tokens);
+      // Record circuit breaker success
+      options?.onSuccess?.(step.provider.providerId);
+      // Record successful usage (fire-and-forget, never fail the request)
+      try {
+        if (rls) {
+          const tokens = response.usage?.total_tokens || 0;
+          await rls.recordUsage(step.provider.providerId, step.provider.modelId, tokens);
+        }
+        if (qs && tenantId) {
+          const tokens = response.usage?.total_tokens || 0;
+          await qs.recordUsage(tenantId, step.provider.providerId, tokens, 0);
+          await qs.recordProviderBudgetUsage(tenantId, step.provider.providerId, tokens);
+        }
+      } catch (usageErr) {
+        logger.warn({ err: usageErr, provider: step.provider.providerId, requestId: options?.requestId }, 'Failed to record usage for fallback provider');
       }
       return response;
     } catch (error) {
+      // Record circuit breaker failure
+      options?.onFailure?.(step.provider.providerId);
       if (!isRateLimitError(error)) {
         allRateLimited = false;
       }
       if (isQuotaError(error)) {
-        logger.warn({ provider: step.provider.providerId }, 'Fallback provider quota exhausted');
+        logger.warn({ provider: step.provider.providerId, requestId: options?.requestId }, 'Fallback provider quota exhausted');
       } else {
         logger.warn(
-          { err: error, provider: step.provider.providerId },
+          { err: error, provider: step.provider.providerId, requestId: options?.requestId },
           'Fallback provider failed'
         );
       }
       // On 429, add penalty and record usage
       if (rls && isRateLimitError(error)) {
         rls.addPenalty(step.provider.providerId, step.provider.modelId);
-        await rls.recordUsage(step.provider.providerId, step.provider.modelId, 0);
+        try {
+          await rls.recordUsage(step.provider.providerId, step.provider.modelId, 0);
+        } catch (usageErr) {
+          logger.warn({ err: usageErr, provider: step.provider.providerId }, 'Failed to record rate limit usage');
+        }
       }
     }
   }

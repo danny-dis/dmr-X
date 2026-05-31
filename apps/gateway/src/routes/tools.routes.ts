@@ -10,6 +10,7 @@ import {
   logger,
 } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
+import { ChatMessageSchema, ToolSchema, ToolCallSchema } from './shared-schemas.js';
 
 // ---------------------------------------------------------------------------
 // Tool handler registry (server-side tool execution)
@@ -73,12 +74,12 @@ async function executeToolCall(
       error: result.error ? { message: String(result.error) } : undefined,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    logger.error({ err: error, tool: tc.function.name }, 'Tool execution error');
     return {
       tool_call_id: tc.id,
       tool_name: tc.function.name,
       result: null,
-      error: { message },
+      error: { message: 'Tool execution failed' },
     };
   }
 }
@@ -88,32 +89,6 @@ export { executeToolCall };
 // ---------------------------------------------------------------------------
 // Zod schemas
 // ---------------------------------------------------------------------------
-
-const ChatMessageSchema = z.object({
-  role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.union([z.string(), z.array(z.any())]).nullable().optional(),
-  name: z.string().optional(),
-  tool_calls: z.array(z.any()).optional(),
-  tool_call_id: z.string().optional(),
-});
-
-const ToolSchema = z.object({
-  type: z.literal('function'),
-  function: z.object({
-    name: z.string(),
-    description: z.string().optional(),
-    parameters: z.record(z.unknown()).optional(),
-  }),
-});
-
-const ToolCallSchema = z.object({
-  id: z.string(),
-  type: z.literal('function'),
-  function: z.object({
-    name: z.string(),
-    arguments: z.string(),
-  }),
-});
 
 // POST /v1/tools/execute
 const ToolExecuteRequestSchema = z.object({
@@ -231,14 +206,13 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
           result,
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        logger.error({ err: error, requestId, tool: toolCall.function.name }, 'Tool execution failed');
         reply.status(500);
         return {
           id: requestId,
-          object: 'tool.result',
           tool_call_id: toolCall.id,
           tool_name: toolCall.function.name,
-          error: { message },
+          error: { message: 'Tool execution failed' },
         };
       }
     }
@@ -271,11 +245,12 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
         if (s.status === 'fulfilled') {
           toolResults.push(s.value);
         } else {
+          logger.error({ err: s.reason, requestId }, 'Tool execution rejected');
           toolResults.push({
             tool_call_id: 'unknown',
             tool_name: 'unknown',
             result: null,
-            error: { message: s.reason?.message || 'Tool execution failed' },
+            error: { message: 'Tool execution failed' },
           });
         }
       }
@@ -453,8 +428,8 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
           }
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        writeSSE(reply, 'error', { error: { message } });
+        logger.error({ err: error, requestId }, 'Agentic streaming error');
+        writeSSE(reply, 'error', { error: { message: 'Stream failed' } });
       }
 
       writeSSE(reply, 'done', '[DONE]');

@@ -2,9 +2,10 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
+import fastifyMultipart from '@fastify/multipart';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { logger } from '@dmr-x/utils';
+import { logger, decryptConfigApiKey } from '@dmr-x/utils';
 import { Router } from '@dmr-x/router';
 import { getTelemetryService } from '@dmr-x/telemetry';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter } from '@dmr-x/adapters';
@@ -136,6 +137,7 @@ export async function createServer() {
   for (const row of registeredProviders) {
     const template = PROVIDER_CATALOG.find(t => t.id === row.name);
     const config = JSON.parse(row.config || '{}');
+    decryptConfigApiKey(config);
     const apiKey = config.apiKey || (row.api_key_ref ? process.env[row.api_key_ref] : undefined);
 
     // If adapter not yet registered, register GenericOpenAIAdapter if it's OpenAI-compatible
@@ -157,6 +159,11 @@ export async function createServer() {
         logger.warn({ providerId: row.name, err }, 'Failed to initialize adapter on startup');
       }
     }
+  }
+
+  // Warn if encryption is not configured
+  if (!process.env.DMRX_ENCRYPTION_KEY) {
+    logger.warn('DMRX_ENCRYPTION_KEY not set — provider API keys are stored in plaintext');
   }
 
   // Initialize router
@@ -232,13 +239,20 @@ export async function createServer() {
   await server.register(cors, {
     origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-free-tier-strategy'],
   });
 
   // Rate limiting
   await server.register(rateLimit, {
     max: parseInt(process.env.DMRX_RATE_LIMIT_MAX || '100', 10),
     timeWindow: process.env.DMRX_RATE_LIMIT_WINDOW || '1 minute',
+  });
+
+  // Multipart uploads (for audio endpoints)
+  await server.register(fastifyMultipart, {
+    limits: {
+      fileSize: 25 * 1024 * 1024, // 25MB max
+    },
   });
 
   // Serve UI static files
@@ -305,6 +319,12 @@ export async function createServer() {
     try {
       const db = getDb();
       db.prepare('SELECT 1').get();
+      // Also check router has loaded candidates
+      const router = (server as any).router;
+      if (!router || router.getCandidateCount() === 0) {
+        reply.status(503);
+        return { status: 'not_ready', reason: 'no_routing_candidates' };
+      }
       return { status: 'ready' };
     } catch {
       reply.status(503);
@@ -363,6 +383,14 @@ export async function createServer() {
   // Warn if running in local mode (auth disabled)
   if (LOCAL_MODE) {
     logger.warn('LOCAL MODE: Authentication is disabled. Set DMRX_LOCAL_MODE=false for production.');
+  }
+
+  // Validate admin API key strength in production
+  if (!LOCAL_MODE) {
+    const adminKey = process.env.DMRX_ADMIN_API_KEY;
+    if (!adminKey || adminKey === 'replace-with-admin-key' || adminKey.length < 16) {
+      logger.warn('DMRX_ADMIN_API_KEY is weak or unset. Set a strong key for production.');
+    }
   }
 
   return server;

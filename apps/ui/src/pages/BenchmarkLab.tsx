@@ -25,7 +25,7 @@ export default function BenchmarkLab() {
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 bg-[#1A1A20] rounded-md border border-[#27272E]">
           <Activity className="w-3.5 h-3.5 text-[#00FFB2]" />
-          <span className="text-[11px] text-[#00FFB2] font-mono-data">9 benchmarks run</span>
+          <span className="text-[11px] text-[#00FFB2] font-mono-data">{Object.keys(byBenchmark).length} benchmarks run</span>
         </div>
       </div>
 
@@ -82,7 +82,7 @@ export default function BenchmarkLab() {
                       </div>
                     </td>
                     <td className="py-2 text-sm font-semibold text-[#00FFB2] font-mono-data">{bm.score}%</td>
-                    <td className="py-2 text-[11px] text-[#595962] font-mono-data">{bm.previousScore}%</td>
+                    <td className="py-2 text-[11px] text-[#595962] font-mono-data">{bm.previousScore != null ? `${bm.previousScore}%` : '—'}</td>
                     <td className="py-2">
                       <span className={cn(
                         'text-[11px] font-mono-data font-semibold',

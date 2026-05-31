@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import { chatCompletionStream, listModels, type OpenAIModel, type ChatMessage } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import {
@@ -95,16 +95,16 @@ export default function Playground() {
     listModels()
       .then((m) => {
         setModels(m);
-        const preselected = location.state?.modelId;
-        if (preselected && m.find((x) => x.id === preselected)) {
-          setSelectedModel(preselected);
+        const preselectedName = location.state?.modelName;
+        if (preselectedName && m.find((x) => x.id === preselectedName)) {
+          setSelectedModel(preselectedName);
         } else if (m.length > 0) {
           setSelectedModel(m[0].id);
         }
       })
       .catch(() => {})
       .finally(() => setModelsLoading(false));
-  }, [location.state]);
+  }, [location.state?.modelName]);
 
   // Auto-scroll on new messages
   useEffect(() => {

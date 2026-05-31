@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
-import { cache } from '@dmr-x/db';
+import { createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { RateLimitService } from '@dmr-x/quota';
+
+const cache = createNamespacedCache('sticky');
 
 /**
  * Sticky session service for multi-turn conversations.
@@ -44,7 +46,7 @@ export async function getStickyProvider(
   freeTierStrategy?: string,
   isFreeModel?: (providerId: string, modelId: string) => boolean
 ): Promise<StickySession | null> {
-  const key = `sticky:${conversationHash}`;
+  const key = conversationHash;
 
   const value = cache.get(key);
   if (!value) return null;
@@ -78,8 +80,7 @@ export async function getStickyProvider(
  * Break a sticky session for a conversation hash.
  */
 export async function breakStickySession(conversationHash: string, reason: string): Promise<void> {
-  const key = `sticky:${conversationHash}`;
-  cache.del(key);
+  cache.del(conversationHash);
   logger.info({ conversationHash, reason }, 'Sticky session broken');
 }
 
@@ -102,9 +103,7 @@ export async function setStickyProvider(
     ttlSeconds = adjustedTtl;
   }
 
-  const key = `sticky:${conversationHash}`;
-
-  cache.set(key, `${providerId}:${modelId}`, ttlSeconds);
+  cache.set(conversationHash, `${providerId}:${modelId}`, ttlSeconds);
 
   logger.debug(
     { conversationHash, providerId, modelId, ttlSeconds },

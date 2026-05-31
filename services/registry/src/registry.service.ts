@@ -61,16 +61,16 @@ export class RegistryService {
       avgLatencyMs: row.avgLatencyMs || 1000,
       qualityScore: parseFloat(row.qualityScore) || 0.5,
       maxOutputTokens: row.maxOutputTokens || undefined,
-      isHealthy: row.isHealthy,
-      freeTierMetadata: (row.intelligenceRank || row.speedRank) ? {
-        intelligenceRank: row.intelligenceRank || 0,
-        speedRank: row.speedRank || 0,
-        monthlyTokenBudget: row.monthlyTokenBudget || 0,
+      isHealthy: row.isHealthy === 1 || row.isHealthy === true,
+      freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
+        intelligenceRank: row.intelligenceRank ?? 0,
+        speedRank: row.speedRank ?? 0,
+        monthlyTokenBudget: row.monthlyTokenBudget ?? 0,
         rateLimits: {
-          rpm: row.rateLimitRpm || 0,
-          rpd: row.rateLimitRpd || 0,
-          tpm: row.rateLimitTpm || 0,
-          tpd: row.rateLimitTpd || 0,
+          rpm: row.rateLimitRpm ?? 0,
+          rpd: row.rateLimitRpd ?? 0,
+          tpm: row.rateLimitTpm ?? 0,
+          tpd: row.rateLimitTpd ?? 0,
         },
       } : undefined,
     }));

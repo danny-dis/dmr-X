@@ -8,33 +8,18 @@ import {
   isStopConditionMet,
   createInitialState,
   updateState,
+  logger,
   type StopCondition,
   type StepResult,
   type ConversationState,
 } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
 import { executeToolCall } from './tools.routes.js';
+import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 
 // ---------------------------------------------------------------------------
 // Zod schemas
 // ---------------------------------------------------------------------------
-
-const ChatMessageSchema = z.object({
-  role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.union([z.string(), z.array(z.any())]).nullable().optional(),
-  name: z.string().optional(),
-  tool_calls: z.array(z.any()).optional(),
-  tool_call_id: z.string().optional(),
-});
-
-const ToolSchema = z.object({
-  type: z.literal('function'),
-  function: z.object({
-    name: z.string(),
-    description: z.string().optional(),
-    parameters: z.record(z.unknown()).optional(),
-  }),
-});
 
 const StopConditionSchema = z.object({
   type: z.enum(['step_count', 'tool_call', 'text_match']),
@@ -89,6 +74,8 @@ const conversationTimestamps = new Map<string, number>();
 const conversationCleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of conversationTimestamps) {
+    // Don't clean up conversations that are currently locked (being processed)
+    if (conversationLocks.has(id)) continue;
     if (now - ts > CONVERSATION_TTL_MS) {
       conversations.delete(id);
       conversationTimestamps.delete(id);
@@ -451,8 +438,8 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           }
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        writeSSE(reply, 'error', { error: { message } });
+        logger.error({ err: error, requestId }, 'Agentic streaming error');
+        writeSSE(reply, 'error', { error: { message: 'Request failed' } });
       }
 
       writeSSE(reply, 'done', { status: 'completed', conversationId: conversation.id });

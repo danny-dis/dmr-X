@@ -1,31 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
+import { ValidationError, ProviderUnavailableError, type UnifiedRequest } from '@dmr-x/core';
 import { generateRequestId, logger } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
-
-// NOTE: ModelResult from @dmr-x/utils operates on OpenResponses API types.
-// Full integration requires a /v1/responses endpoint. The streaming logic below
-// handles Chat Completions format. When /v1/responses is built, ModelResult
-// will provide multi-turn tool orchestration, approval gates, and state persistence.
-// ReusableReadableStream is available for multi-consumer streaming (telemetry + response).
-
-const ChatMessageSchema = z.object({
-  role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.union([z.string(), z.array(z.any())]),
-  name: z.string().optional(),
-  tool_calls: z.array(z.any()).optional(),
-  tool_call_id: z.string().optional(),
-});
-
-const ToolSchema = z.object({
-  type: z.literal('function'),
-  function: z.object({
-    name: z.string(),
-    description: z.string().optional(),
-    parameters: z.record(z.unknown()).optional(),
-  }),
-});
+import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 
 const ChatRequestSchema = z.object({
   model: z.string(),
@@ -90,6 +68,14 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           planOnly: true,
         });
 
+        if (!plan.primary) {
+          reply.raw.writeHead(503, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+          reply.raw.write(`data: ${JSON.stringify({ error: { message: 'No available providers for this request', type: 'service_unavailable' } })}\n\n`);
+          reply.raw.write('data: [DONE]\n\n');
+          reply.raw.end();
+          return;
+        }
+
         const streamHeaders: Record<string, string> = {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -100,8 +86,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         }
         reply.raw.writeHead(200, streamHeaders);
 
-        const adapterRegistry = (server as any).adapterRegistry;
-        const adapter = adapterRegistry.get(plan.primary.providerId);
+        const adapter = (server as any).getAdapter(plan.primary.providerId);
         if (adapter) {
           try {
             const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
@@ -120,15 +105,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                   choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
                 })}\n\n`);
               } else if (chunk.type === 'error') {
+                logger.error({ requestId, chunkError: chunk.data }, 'Adapter stream error chunk');
                 reply.raw.write(`data: ${JSON.stringify({
-                  error: { message: chunk.data?.message || 'Stream error', type: 'stream_error' },
+                  error: { message: 'Stream error', type: 'stream_error' },
                 })}\n\n`);
               }
             }
           } catch (streamError) {
             logger.error({ err: streamError, requestId }, 'Streaming error');
             reply.raw.write(`data: ${JSON.stringify({
-              error: { message: streamError instanceof Error ? streamError.message : 'Stream failed', type: 'stream_error' },
+              error: { message: 'Stream failed', type: 'stream_error' },
             })}\n\n`);
           }
         } else {
@@ -146,6 +132,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         path: '/v1/chat/completions',
         qualityTarget: 'balanced',
       });
+      if (!plan.primary) {
+        throw new ProviderUnavailableError([]);
+      }
       if (unifiedRequest.metadata?.freeTierStrategy) {
         reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
       }

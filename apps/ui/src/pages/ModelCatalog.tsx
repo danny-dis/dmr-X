@@ -9,7 +9,7 @@ import {
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 
 export default function ModelCatalog() {
-  const { models, loading, source, error } = useModels();
+  const { models, loading, error } = useModels();
   const { providers } = useProviders();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -36,12 +36,6 @@ export default function ModelCatalog() {
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold text-[#F8F9FC]">Model Catalog</h1>
             {loading && <Loader2 className="w-4 h-4 text-[#F7A51C] animate-spin" />}
-            <span className={cn(
-              'text-[10px] px-1.5 py-0.5 rounded font-mono-data',
-              source === 'api' ? 'bg-[#00FFB2]/10 text-[#00FFB2]' : 'bg-[#595962]/10 text-[#595962]'
-            )}>
-              {source}
-            </span>
           </div>
           <p className="text-xs text-[#595962] mt-0.5">{models.length} models across {providers.length} providers</p>
         </div>
@@ -224,11 +218,11 @@ export default function ModelCatalog() {
                 </div>
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-[#595962]">Input Cost</span>
-                  <span className="text-[#F7A51C] font-mono-data">${detailModel.inputCost}/1M</span>
+                  <span className="text-[#F7A51C] font-mono-data">${(detailModel.inputCost * 1000).toFixed(2)}/1M</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-[#595962]">Output Cost</span>
-                  <span className="text-[#F7A51C] font-mono-data">${detailModel.outputCost}/1M</span>
+                  <span className="text-[#F7A51C] font-mono-data">${(detailModel.outputCost * 1000).toFixed(2)}/1M</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-[#595962]">Quality Score</span>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, Fragment } from 'react';
 import { useRouteDecisions } from '@/hooks/useApiData';
 import StatusBadge from '@/components/StatusBadge';
 import { cn } from '@/lib/utils';
@@ -115,9 +115,8 @@ export default function RoutingConsole() {
           </thead>
           <tbody className="divide-y divide-[#27272E]/30">
             {filtered.map((route) => (
-              <>
+              <Fragment key={route.id}>
                 <tr
-                  key={route.id}
                   className={cn(
                     'hover:bg-[#1A1A20] transition-colors cursor-pointer group',
                     expandedRow === route.id && 'bg-[#1A1A20]'
@@ -230,7 +229,7 @@ export default function RoutingConsole() {
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             ))}
           </tbody>
         </table>

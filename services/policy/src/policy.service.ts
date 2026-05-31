@@ -90,7 +90,7 @@ export class PolicyService {
   private applyCostLimit(candidates: CandidateSet, maxCostPerToken: number): CandidateSet {
     if (!maxCostPerToken) return candidates;
     return candidates.filter((c) => {
-      const cost = c.costPerInputToken || c.costPerImage || 0;
+      const cost = c.costPerInputToken ?? c.costPerImage ?? 0;
       return cost <= maxCostPerToken;
     });
   }
@@ -99,7 +99,7 @@ export class PolicyService {
     if (!allowedRegions || allowedRegions.length === 0) return candidates;
 
     return candidates.filter((c) => {
-      const template = getProviderTemplate(c.providerId);
+      const template = getProviderTemplate(c.providerName);
       const region = template?.region || 'global';
       return allowedRegions.includes(region);
     });

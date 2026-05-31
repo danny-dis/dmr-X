@@ -7,7 +7,7 @@ npm install
 npm run build
 ```
 
-The UI builds into `apps/gateway/public`. The gateway runs from `apps/gateway/dist/main.js`.
+The UI builds into `apps/gateway/public`. The gateway runs from `apps/gateway/dist/main.js`. The primary runtime is [Bun](https://bun.sh).
 
 ## Start
 

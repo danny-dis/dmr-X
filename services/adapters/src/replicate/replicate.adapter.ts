@@ -2,7 +2,7 @@ import { BaseAdapter } from '../base.adapter.js';
 import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { createHttpError, isConnectionError, isTimeoutError, isAbortError, type HttpMeta } from '@dmr-x/utils';
+import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 
 export class ReplicateAdapter extends BaseAdapter {
   readonly providerId = 'replicate';
@@ -100,18 +100,7 @@ export class ReplicateAdapter extends BaseAdapter {
         latencyMs,
       };
     } catch (err) {
-      if (err instanceof ProviderError) throw err;
-      if (isConnectionError(err)) {
-        throw new ProviderError(
-          `Replicate: Connection failed - ${err instanceof Error ? err.message : String(err)}`,
-          this.providerId,
-          502,
-        );
-      }
-      if (isTimeoutError(err) || isAbortError(err)) {
-        throw new ProviderError('Replicate: Request timed out', this.providerId, 504);
-      }
-      throw err;
+      throw this.handleAdapterError(err);
     }
   }
 

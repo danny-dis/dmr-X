@@ -23,3 +23,5 @@ coverage/
 *.db-wal
 *.db-shm
 apps/gateway/public/
+cla/*.md
+!cla/README.md

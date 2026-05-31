@@ -11,7 +11,7 @@ import type {
   StreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { HttpError, ClientTimeoutError, ConnectionError, isConnectionError, isTimeoutError, isAbortError } from '@dmr-x/utils';
+import { HttpError, logger } from '@dmr-x/utils';
 import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 /**
@@ -115,23 +115,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
       throw new Error(`Unsupported modality: ${request.modality}`);
     } catch (err) {
-      if (err instanceof ProviderError) throw err;
-      if (err instanceof HttpError) {
-        const providerError = new ProviderError(`${this.providerId}: ${err.message}`, this.providerId, err.statusCode);
-        (providerError as Error).cause = err;
-        throw providerError;
-      }
-      if (err instanceof ConnectionError || isConnectionError(err)) {
-        throw new ProviderError(
-          `${this.providerId}: Connection failed - ${err instanceof Error ? err.message : String(err)}`,
-          this.providerId,
-          502,
-        );
-      }
-      if (err instanceof ClientTimeoutError || isTimeoutError(err) || isAbortError(err)) {
-        throw new ProviderError(`${this.providerId}: Request timed out`, this.providerId, 504);
-      }
-      throw err;
+      throw this.handleAdapterError(err);
     }
   }
 
@@ -171,12 +155,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 60000,
       });
     } catch (error) {
-      if (error instanceof HttpError) {
-        const providerError = new ProviderError(`${this.providerId}: ${error.message}`, this.providerId, error.statusCode);
-        (providerError as Error).cause = error;
-        throw providerError;
-      }
-      throw error;
+      throw this.handleAdapterError(error, 'chat');
     }
 
     const data: any = await response.json();
@@ -221,12 +200,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 30000,
       });
     } catch (error) {
-      if (error instanceof HttpError) {
-        const providerError = new ProviderError(`${this.providerId} embedding: ${error.message}`, this.providerId, error.statusCode);
-        (providerError as Error).cause = error;
-        throw providerError;
-      }
-      throw error;
+      throw this.handleAdapterError(error, 'embedding');
     }
 
     const data: any = await response.json();
@@ -270,12 +244,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 120000,
       });
     } catch (error) {
-      if (error instanceof HttpError) {
-        const providerError = new ProviderError(`${this.providerId} stream: ${error.message}`, this.providerId, error.statusCode);
-        (providerError as Error).cause = error;
-        throw providerError;
-      }
-      throw error;
+      throw this.handleAdapterError(error, 'stream');
     }
 
     yield* createOpenAISSEIterator(response);
@@ -293,8 +262,9 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       response = await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
         headers,
       });
-    } catch {
+    } catch (error) {
       // Gracefully return empty list on any error (HTTP or transport)
+      logger.debug({ err: error, providerId: this.providerId }, 'Failed to list models, returning empty list');
       return [];
     }
 

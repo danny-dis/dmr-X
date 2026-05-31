@@ -2,15 +2,21 @@ import { useStore } from '@/store/useStore';
 import { cn } from '@/lib/utils';
 import { Search, Command, Cpu, Activity, Bell } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useDashboardStats, useTenants } from '@/hooks/useApiData';
 
 export default function Topbar() {
   const { sidebarCollapsed, setCommandPaletteOpen } = useStore();
   const [time, setTime] = useState(new Date());
+  const { stats } = useDashboardStats();
+  const { tenants } = useTenants();
 
   useEffect(() => {
     const interval = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  const envLabel = import.meta.env.MODE === 'production' ? 'Production' : 'Development';
+  const tenantName = tenants.length > 0 ? tenants[0].name : 'Local';
 
   return (
     <header
@@ -42,21 +48,21 @@ export default function Topbar() {
         <div className="flex items-center gap-2 px-3 py-1.5 bg-[#1A1A20] rounded-md border border-[#27272E]">
           <Activity className="w-3.5 h-3.5 text-[#00FFB2]" />
           <span className="text-[11px] text-[#00FFB2] font-mono-data">API LIVE</span>
-          <span className="text-[#595962] text-[11px] font-mono-data">24ms</span>
+          <span className="text-[#595962] text-[11px] font-mono-data">{stats.avgLatency}ms</span>
         </div>
 
         {/* Environment */}
         <div className="flex items-center gap-2 px-3 py-1.5 bg-[#1A1A20] rounded-md border border-[#27272E]">
           <Cpu className="w-3.5 h-3.5 text-[#F7A51C]" />
-          <span className="text-[11px] text-[#A6A6B0] font-medium">Production</span>
+          <span className="text-[11px] text-[#A6A6B0] font-medium">{envLabel}</span>
         </div>
 
         {/* Tenant */}
         <div className="flex items-center gap-2 px-3 py-1.5 bg-[#1A1A20] rounded-md border border-[#27272E]">
           <div className="w-5 h-5 rounded bg-[#F7A51C]/20 flex items-center justify-center">
-            <span className="text-[10px] font-bold text-[#F7A51C]">A</span>
+            <span className="text-[10px] font-bold text-[#F7A51C]">{tenantName[0]}</span>
           </div>
-          <span className="text-[11px] text-[#F8F9FC] font-medium">Acme Corp</span>
+          <span className="text-[11px] text-[#F8F9FC] font-medium">{tenantName}</span>
         </div>
 
         {/* Notifications */}

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Universal AI routing and orchestration platform",
+  "license": "BSL-1.1",
   "workspaces": [
     "apps/*",
     "services/*",
@@ -12,11 +13,11 @@
     "dev": "turbo dev",
     "dev:gateway": "bun run --cwd apps/gateway dev",
     "dev:ui": "bun run --cwd apps/ui dev",
-    "build": "turbo build",
+    "build": "turbo build && bun run --cwd apps/ui build",
     "build:ui": "bun run --cwd apps/ui build",
     "start": "bun run --cwd apps/gateway start",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "bun vitest run",
+    "test:watch": "bun vitest",
     "lint": "turbo lint",
     "clean": "turbo clean"
   },
@@ -30,5 +31,5 @@
   "engines": {
     "bun": ">=1.0.0"
   },
-  "packageManager": "bun@1.0.0"
+  "packageManager": "bun@1.2.0"
 }

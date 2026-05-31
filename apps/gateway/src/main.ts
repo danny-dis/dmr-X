@@ -25,16 +25,49 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Graceful shutdown
-  const shutdown = async () => {
-    logger.info('Shutting down...');
-    await server.close();
-    await closeDb();
+  // Graceful shutdown with 30-second timeout
+  const SHUTDOWN_TIMEOUT_MS = 30_000;
+  let shuttingDown = false;
+
+  const shutdown = async (signal?: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'Shutting down...');
+
+    const forceExitTimer = setTimeout(() => {
+      logger.error('Shutdown timed out after 30s, forcing exit');
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    // Allow the process to exit even if the timer is still pending
+    forceExitTimer.unref();
+
+    try {
+      await server.close();
+    } catch (err) {
+      logger.error({ err }, 'Error during server.close()');
+    }
+    try {
+      await closeDb();
+    } catch (err) {
+      logger.error({ err }, 'Error during closeDb()');
+    }
+    logger.info('Shutdown complete');
     process.exit(0);
   };
 
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // Catch unrecoverable errors to ensure clean shutdown
+  process.on('uncaughtException', (err) => {
+    logger.fatal({ err }, 'Uncaught exception');
+    shutdown('uncaughtException');
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logger.fatal({ reason }, 'Unhandled rejection');
+    shutdown('unhandledRejection');
+  });
 }
 
 main();

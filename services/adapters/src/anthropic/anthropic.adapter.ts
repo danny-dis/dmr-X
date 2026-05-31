@@ -14,9 +14,7 @@ import type {
 import { ProviderError } from '@dmr-x/core';
 import {
   createHttpError,
-  isConnectionError,
-  isTimeoutError,
-  isAbortError,
+  logger,
   EventStream,
   type HttpMeta,
   type ClaudeMessageParam,
@@ -129,18 +127,7 @@ export class AnthropicAdapter extends BaseAdapter {
         latencyMs,
       };
     } catch (err) {
-      if (err instanceof ProviderError) throw err;
-      if (isConnectionError(err)) {
-        throw new ProviderError(
-          `Anthropic: Connection failed - ${err instanceof Error ? err.message : String(err)}`,
-          this.providerId,
-          502,
-        );
-      }
-      if (isTimeoutError(err) || isAbortError(err)) {
-        throw new ProviderError('Anthropic: Request timed out', this.providerId, 504);
-      }
-      throw err;
+      throw this.handleAdapterError(err);
     }
   }
 
@@ -170,17 +157,7 @@ export class AnthropicAdapter extends BaseAdapter {
         timeoutMs: options?.timeoutMs ?? 120000,
       });
     } catch (err) {
-      if (isConnectionError(err)) {
-        throw new ProviderError(
-          `Anthropic: Connection failed - ${err instanceof Error ? err.message : String(err)}`,
-          this.providerId,
-          502,
-        );
-      }
-      if (isTimeoutError(err) || isAbortError(err)) {
-        throw new ProviderError('Anthropic: Request timed out', this.providerId, 504);
-      }
-      throw err;
+      throw this.handleAdapterError(err, 'stream');
     }
 
     if (!response.ok) {
@@ -200,8 +177,9 @@ export class AnthropicAdapter extends BaseAdapter {
         try {
           const parsed = JSON.parse(msg.data) as Record<string, unknown>;
           return { done: false, value: parsed };
-        } catch {
+        } catch (parseError) {
           // Skip malformed JSON -- return a sentinel that we filter below
+          logger.debug({ err: parseError }, 'Anthropic SSE: skipped malformed JSON chunk');
           return { done: false, value: { _malformed: true } as Record<string, unknown> };
         }
       },

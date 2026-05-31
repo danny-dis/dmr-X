@@ -42,7 +42,6 @@ const emptyBillingSummary: BillingSummary = {
 export function useProviders() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -56,7 +55,7 @@ export function useProviders() {
         baseUrl: ap.base_url || '',
         region: (ap.config?.region as string) || 'unknown',
         costTier: (ap.config?.costTier as Provider['costTier']) || 'medium',
-        status: ap.config?.isHealthy === false ? 'unavailable' as const : 'healthy' as const,
+        status: (ap.status === 'unavailable' ? 'unavailable' : 'healthy') as Provider['status'],
         models: (ap.config?.models as string[]) || [],
         rateLimit: { requests: (ap.config?.rateLimitRpm as number) || 0, window: '1m' },
         failoverStatus: 'active' as const,
@@ -64,7 +63,7 @@ export function useProviders() {
         avgLatency: (ap.config?.avgLatencyMs as number) || 0,
         successRate: (ap.config?.successRate as number) || 100,
         signupUrl: (ap.config?.signupUrl as string) || undefined,
-        hasKey: ap.hasKey ?? false,
+        hasKey: (ap as any).hasKey ?? false,
       }));
       setProviders(mapped);
     } catch (err) {
@@ -77,7 +76,7 @@ export function useProviders() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { providers, loading, source, error, refetch: load };
+  return { providers, loading, error, refetch: load };
 }
 
 export function useCatalog() {
@@ -106,7 +105,6 @@ export function useCatalog() {
 export function useModels() {
   const [models, setModels] = useState<Model[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -122,7 +120,7 @@ export function useModels() {
         contextWindow: am.context_window || 0,
         inputCost: am.input_cost_per_1k || 0,
         outputCost: am.output_cost_per_1k || 0,
-        qualityScore: 0,
+        qualityScore: am.quality_score ?? 0,
         speedClass: 'balanced' as const,
         reliability: 100,
         toolSupport: am.supports_tool_use ?? false,
@@ -143,14 +141,13 @@ export function useModels() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { models, loading, source, error, refetch: load };
+  return { models, loading, error, refetch: load };
 }
 
 // --- Tenants ---
 export function useTenants() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -179,15 +176,15 @@ export function useTenants() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { tenants, loading, source, error, refetch: load };
+  return { tenants, loading, error, refetch: load };
 }
 
 // --- API Keys ---
 export function useApiKeys() {
   const [keys, setKeys] = useState<APIKey[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
+  const [newKeyPlaintext, setNewKeyPlaintext] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -200,7 +197,7 @@ export function useApiKeys() {
         tenantId: ak.tenant_id,
         providerId: undefined,
         scopes: [],
-        lastUsed: ak.created_at,
+        lastUsed: ak.last_used_at || ak.created_at,
         createdAt: ak.created_at,
         status: 'active' as const,
         usageThisMonth: 0,
@@ -216,14 +213,29 @@ export function useApiKeys() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { keys, loading, source, error, refetch: load };
+  const createKey = useCallback(async (tenantId: string, name?: string) => {
+    const result = await api.createApiKey(tenantId, name);
+    if (result.key) {
+      setNewKeyPlaintext(result.key);
+    }
+    await load();
+    return result;
+  }, [load]);
+
+  const deleteKey = useCallback(async (id: string) => {
+    await api.deleteApiKey(id);
+    await load();
+  }, [load]);
+
+  const clearNewKey = useCallback(() => setNewKeyPlaintext(null), []);
+
+  return { keys, loading, error, refetch: load, createKey, deleteKey, newKeyPlaintext, clearNewKey };
 }
 
 // --- Route Decisions ---
 export function useRouteDecisions() {
   const [decisions, setDecisions] = useState<RouteDecision[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -257,14 +269,13 @@ export function useRouteDecisions() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { decisions, loading, source, error, refetch: load };
+  return { decisions, loading, error, refetch: load };
 }
 
 // --- Quota States ---
 export function useQuotaStates() {
   const [quotas, setQuotas] = useState<QuotaState[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -296,14 +307,13 @@ export function useQuotaStates() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { quotas, loading, source, error, refetch: load };
+  return { quotas, loading, error, refetch: load };
 }
 
 // --- Billing Summary ---
 export function useBillingSummary() {
   const [billing, setBilling] = useState<BillingSummary>(emptyBillingSummary);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -341,14 +351,13 @@ export function useBillingSummary() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { billing, loading, source, error, refetch: load };
+  return { billing, loading, error, refetch: load };
 }
 
 // --- Alerts ---
 export function useAlerts() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -377,14 +386,13 @@ export function useAlerts() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { alerts, loading, source, error, refetch: load };
+  return { alerts, loading, error, refetch: load };
 }
 
 // --- Audit Events ---
 export function useAuditEvents() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -413,14 +421,13 @@ export function useAuditEvents() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { events, loading, source, error, refetch: load };
+  return { events, loading, error, refetch: load };
 }
 
 // --- Telemetry Events ---
 export function useTelemetryEvents() {
   const [events, setEvents] = useState<TelemetryEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -449,14 +456,13 @@ export function useTelemetryEvents() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { events, loading, source, error, refetch: load };
+  return { events, loading, error, refetch: load };
 }
 
 // --- Benchmark Results ---
 export function useBenchmarkResults() {
   const [benchmarks, setBenchmarks] = useState<BenchmarkResult[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -475,7 +481,7 @@ export function useBenchmarkResults() {
         runDate: b.run_date,
         regression: b.regression,
         previousScore: b.previous_score,
-        comparisonScores: typeof b.comparison_scores === 'string' ? JSON.parse(b.comparison_scores) : (b.comparison_scores || []),
+        comparisonScores: typeof b.comparison_scores === 'string' ? JSON.parse(b.comparison_scores) : (b.comparison_scores || {}),
       }));
       setBenchmarks(mapped);
     } catch (err) {
@@ -488,14 +494,13 @@ export function useBenchmarkResults() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { benchmarks, loading, source, error, refetch: load };
+  return { benchmarks, loading, error, refetch: load };
 }
 
 // --- Policy Rules ---
 export function usePolicyRules() {
   const [policies, setPolicies] = useState<PolicyRule[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -525,14 +530,13 @@ export function usePolicyRules() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { policies, loading, source, error, refetch: load };
+  return { policies, loading, error, refetch: load };
 }
 
 // --- Memory Items ---
 export function useMemoryItems() {
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -563,14 +567,13 @@ export function useMemoryItems() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { items, loading, source, error, refetch: load };
+  return { items, loading, error, refetch: load };
 }
 
 // --- Sandbox Jobs ---
 export function useSandboxJobs() {
   const [jobs, setJobs] = useState<SandboxJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -602,14 +605,13 @@ export function useSandboxJobs() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { jobs, loading, source, error, refetch: load };
+  return { jobs, loading, error, refetch: load };
 }
 
 // --- Workers ---
 export function useWorkers() {
   const [workers, setWorkers] = useState<TemporaryWorker[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -641,14 +643,13 @@ export function useWorkers() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { workers, loading, source, error, refetch: load };
+  return { workers, loading, error, refetch: load };
 }
 
 // --- Federation Nodes ---
 export function useFederationNodes() {
   const [nodes, setNodes] = useState<FederationNode[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -665,7 +666,7 @@ export function useFederationNodes() {
           const bs = typeof n.benchmark_summary === 'string' ? JSON.parse(n.benchmark_summary) : (n.benchmark_summary || {});
           return { globalScore: bs.global_score ?? 0, localScore: bs.local_score ?? 0, variance: bs.variance ?? 0 };
         })(),
-        anonymizedUpdates: typeof n.anonymized_updates === 'string' ? JSON.parse(n.anonymized_updates) : (n.anonymized_updates || []),
+        anonymizedUpdates: typeof n.anonymized_updates === 'number' ? n.anonymized_updates : (Number(n.anonymized_updates) || 0),
         privacyLevel: n.privacy_level as FederationNode['privacyLevel'],
       }));
       setNodes(mapped);
@@ -679,14 +680,13 @@ export function useFederationNodes() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { nodes, loading, source, error, refetch: load };
+  return { nodes, loading, error, refetch: load };
 }
 
 // --- Dashboard Stats ---
 export function useDashboardStats() {
   const [stats, setStats] = useState<DashboardStats>(emptyDashboardStats);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -716,14 +716,13 @@ export function useDashboardStats() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { stats, loading, source, error, refetch: load };
+  return { stats, loading, error, refetch: load };
 }
 
 // --- Settings ---
 export function useSettings() {
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -746,14 +745,13 @@ export function useSettings() {
     setSettings(newSettings);
   }, []);
 
-  return { settings, loading, source, error, refetch: load, save };
+  return { settings, loading, error, refetch: load, save };
 }
 
 // --- Usage History ---
 export function useUsageHistory() {
   const [history, setHistory] = useState<{ time: string; requests: number; latency: number; cost: number }[]>([]);
   const [loading, setLoading] = useState(true);
-  const [source] = useState<'api'>('api');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -771,5 +769,5 @@ export function useUsageHistory() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { history, loading, source, error, refetch: load };
+  return { history, loading, error, refetch: load };
 }

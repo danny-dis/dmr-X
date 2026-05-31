@@ -3,10 +3,8 @@
  * Handles both regular and generator tool execution with context.
  *
  * Ported from OpenRouter SDK's tool-executor.ts with adaptations for DMR-X.
- * Uses Zod-agnostic schema types - validation is optional and no-op when
- * schemas are not Zod types. When Zod is added as a dependency, the
- * validateToolInput/validateToolOutput functions should be updated to use
- * z4.parse() for full schema validation.
+ * Uses Zod-agnostic schema types - tools receive arguments directly without
+ * intermediate validation wrappers.
  */
 
 import type {
@@ -127,56 +125,12 @@ export function convertToolsToAPIFormat(tools: readonly Tool[]): APITool[] {
 import type { APITool } from './tool-types.js';
 
 // ---------------------------------------------------------------------------
-// Validation (Zod-agnostic pass-through)
+// Schema utilities (Zod-agnostic)
 // ---------------------------------------------------------------------------
 
-/**
- * Validate tool input against schema.
- * When Zod is available, this should use z4.parse() for full validation.
- * Currently returns the input as-is (pass-through).
- *
- * TODO: Add Zod dependency and implement:
- *   return z4.parse(schema, args);
- *
- * @throws Error if validation fails (when Zod is available)
- */
-export function validateToolInput<T = unknown>(schema: unknown, args: unknown): T {
-  // TODO: When Zod is available, replace with:
-  // return z4.parse(schema, args);
-  return args as T;
-}
-
-/**
- * Validate tool output against schema.
- * When Zod is available, this should use z4.parse() for full validation.
- * Currently returns the output as-is (pass-through).
- *
- * TODO: Add Zod dependency and implement:
- *   return z4.parse(schema, result);
- *
- * @throws Error if validation fails (when Zod is available)
- */
-export function validateToolOutput<T = unknown>(schema: unknown, result: unknown): T {
-  // TODO: When Zod is available, replace with:
-  // return z4.parse(schema, result);
-  return result as T;
-}
-
-/**
- * Try to validate a value against a schema without throwing.
- * Returns true if validation succeeds, false otherwise.
- * Currently always returns true (no-op validation).
- *
- * TODO: Add Zod dependency and implement:
- *   const result = z4.safeParse(schema, value);
- *   return result.success;
- */
-function tryValidate(_schema: unknown, _value: unknown): boolean {
-  // TODO: When Zod is available, replace with:
-  // const result = z4.safeParse(schema, value);
-  // return result.success;
-  return true;
-}
+// NOTE: validateToolInput, validateToolOutput, and tryValidate were removed.
+// They were no-op pass-through stubs with no Zod dependency available.
+// Callers now use arguments/results directly without validation wrappers.
 
 /**
  * Parse tool call arguments from JSON string.
@@ -240,22 +194,10 @@ export async function executeRegularTool(
   }
 
   try {
-    const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
     const executeContext = buildExecuteCtx(tool, context, contextStore);
 
     // Execute tool with context
-    const result = await Promise.resolve(tool.function.execute!(validatedInput, executeContext));
-
-    // Validate output if schema is provided
-    if (tool.function.outputSchema) {
-      const validatedOutput = validateToolOutput(tool.function.outputSchema, result);
-
-      return {
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        result: validatedOutput,
-      };
-    }
+    const result = await Promise.resolve(tool.function.execute!(toolCall.arguments, executeContext));
 
     return {
       toolCallId: toolCall.id,
@@ -290,7 +232,6 @@ export async function executeGeneratorTool(
   }
 
   try {
-    const validatedInput = validateToolInput(tool.function.inputSchema, toolCall.arguments);
     const executeContext = buildExecuteCtx(tool, context, contextStore);
 
     const preliminaryResults: unknown[] = [];
@@ -299,7 +240,7 @@ export async function executeGeneratorTool(
     let lastEmittedValue: unknown;
     let hasEmittedValue = false;
 
-    const iterator = tool.function.execute!(validatedInput, executeContext);
+    const iterator = tool.function.execute!(toolCall.arguments, executeContext);
     let iterResult = await iterator.next();
 
     while (!iterResult.done) {
@@ -307,17 +248,14 @@ export async function executeGeneratorTool(
       lastEmittedValue = event;
       hasEmittedValue = true;
 
-      const matchesOutputSchema = tryValidate(tool.function.outputSchema, event);
-      const matchesEventSchema = tryValidate(tool.function.eventSchema, event);
-
-      if (matchesOutputSchema && !matchesEventSchema && !hasFinalResult) {
-        finalResult = validateToolOutput(tool.function.outputSchema, event);
+      // Treat the last emitted value as the final result if no explicit output follows
+      if (!hasFinalResult) {
+        finalResult = event;
         hasFinalResult = true;
       } else {
-        const validatedPreliminary = validateToolOutput(tool.function.eventSchema, event);
-        preliminaryResults.push(validatedPreliminary);
+        preliminaryResults.push(event);
         if (onPreliminaryResult) {
-          onPreliminaryResult(toolCall.id, validatedPreliminary);
+          onPreliminaryResult(toolCall.id, event);
         }
       }
 
@@ -325,7 +263,7 @@ export async function executeGeneratorTool(
     }
 
     if (iterResult.value !== undefined) {
-      finalResult = validateToolOutput(tool.function.outputSchema, iterResult.value);
+      finalResult = iterResult.value;
       hasFinalResult = true;
     }
 
@@ -335,7 +273,7 @@ export async function executeGeneratorTool(
           `Generator tool "${toolCall.name}" completed without emitting any values or returning a result`,
         );
       }
-      finalResult = validateToolOutput(tool.function.outputSchema, lastEmittedValue);
+      finalResult = lastEmittedValue;
     }
 
     return {
