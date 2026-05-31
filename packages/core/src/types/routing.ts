@@ -45,6 +45,8 @@ export interface ProviderModel {
   quantization?: string;
   /** Maximum context length in tokens */
   contextLength?: number;
+  /** Maximum output tokens for this model */
+  maxOutputTokens?: number;
   /** Supported parameter names (e.g., 'tools', 'response_format') */
   supportedParameters?: string[];
   /** Free-tier metadata from provider catalog (populated when available) */

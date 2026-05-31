@@ -5,7 +5,7 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
   server.get('/models', async () => {
     const rows = getDb().prepare(
       `SELECT mp.model_id, mp.display_name, mp.modality, p.name as provider_name,
-              mp.context_window, mp.supports_streaming, mp.supports_vision,
+              mp.context_window, mp.max_output_tokens, mp.supports_streaming, mp.supports_vision,
               mp.supports_tool_use, mp.created_at
        FROM model_profiles mp
        JOIN providers p ON p.id = mp.provider_id
@@ -24,6 +24,7 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
           modality: row.modality,
           display_name: row.display_name,
           context_window: row.context_window,
+          max_output_tokens: row.max_output_tokens,
           supports_streaming: row.supports_streaming,
           supports_vision: row.supports_vision,
           supports_tool_use: row.supports_tool_use,

@@ -1,7 +1,9 @@
-import { getDb, cache } from '@dmr-x/db';
+import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { ProviderModel, CandidateSet } from '@dmr-x/core';
 import crypto from 'node:crypto';
+
+const cache = createNamespacedCache('registry');
 
 export class RegistryService {
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -24,7 +26,15 @@ export class RegistryService {
         mp.supports_streaming,
         mp.supports_vision,
         mp.supports_tool_use,
-        mp.supports_json_mode
+        mp.supports_json_mode,
+        mp.max_output_tokens as "maxOutputTokens",
+        mp.rate_limit_rpm as "rateLimitRpm",
+        mp.rate_limit_rpd as "rateLimitRpd",
+        mp.rate_limit_tpm as "rateLimitTpm",
+        mp.rate_limit_tpd as "rateLimitTpd",
+        mp.monthly_token_budget as "monthlyTokenBudget",
+        mp.intelligence_rank as "intelligenceRank",
+        mp.speed_rank as "speedRank"
       FROM model_profiles mp
       JOIN providers p ON p.id = mp.provider_id
       WHERE mp.is_active = 1 AND p.is_healthy = 1
@@ -48,7 +58,19 @@ export class RegistryService {
       costPerImage: parseFloat(row.costPerImage) || 0,
       avgLatencyMs: row.avgLatencyMs || 1000,
       qualityScore: parseFloat(row.qualityScore) || 0.5,
+      maxOutputTokens: row.maxOutputTokens || undefined,
       isHealthy: row.isHealthy,
+      freeTierMetadata: (row.intelligenceRank || row.speedRank) ? {
+        intelligenceRank: row.intelligenceRank || 0,
+        speedRank: row.speedRank || 0,
+        monthlyTokenBudget: row.monthlyTokenBudget || 0,
+        rateLimits: {
+          rpm: row.rateLimitRpm || 0,
+          rpd: row.rateLimitRpd || 0,
+          tpm: row.rateLimitTpm || 0,
+          tpd: row.rateLimitTpd || 0,
+        },
+      } : undefined,
     }));
   }
 
@@ -97,7 +119,7 @@ export class RegistryService {
   }
 
   getProviderConfig(providerId: string): any {
-    const cacheKey = `provider:config:${providerId}`;
+    const cacheKey = `config:${providerId}`;
 
     const cached = cache.get(cacheKey) as string | undefined;
     if (cached) {
