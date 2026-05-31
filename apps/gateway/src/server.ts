@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logger } from '@dmr-x/utils';
 import { Router } from '@dmr-x/router';
+import { getTelemetryService } from '@dmr-x/telemetry';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter } from '@dmr-x/adapters';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
@@ -119,8 +120,18 @@ export async function createServer() {
     });
   }
 
-  // Load all registered providers from DB and initialize adapters
+  // Auto-register any new catalog items FIRST (first-run or updates)
   const db = getDb();
+  try {
+    const newlyRegistered = await autoRegisterProviders();
+    if (newlyRegistered.length > 0) {
+      logger.info({ count: newlyRegistered.length }, 'Auto-registered new catalog providers');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to auto-register providers');
+  }
+
+  // Load all registered providers from DB and initialize adapters
   const registeredProviders = db.prepare('SELECT * FROM providers').all() as any[];
   for (const row of registeredProviders) {
     const template = PROVIDER_CATALOG.find(t => t.id === row.name);
@@ -134,10 +145,11 @@ export async function createServer() {
     }
 
     const adapter = adapterRegistry.get(row.name);
-    if (adapter && (apiKey || !template?.envKey)) {
+    const baseUrl = row.base_url || template?.baseUrl;
+    if (adapter && baseUrl && (apiKey || !template?.envKey)) {
       try {
         await adapterRegistry.initialize(row.name, {
-          baseUrl: row.base_url || template?.baseUrl || '',
+          baseUrl,
           apiKey: apiKey || '',
         });
         logger.info({ providerId: row.name }, 'Initialized adapter from DB/Env');
@@ -147,27 +159,36 @@ export async function createServer() {
     }
   }
 
-  // Auto-register any new catalog items (first-run or updates)
-  try {
-    const newlyRegistered = await autoRegisterProviders();
-    if (newlyRegistered.length > 0) {
-      logger.info({ count: newlyRegistered.length }, 'Auto-registered new catalog providers');
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to auto-register providers');
-  }
-
   // Initialize router
   const freeTierStrategy = (process.env.DMRX_FREE_TIER_STRATEGY as any) || 'none';
-  const router = new Router({ epsilon: 0.05, quotaService, policyService, rateLimitService, freeTierStrategy });
+  const router = new Router({
+    epsilon: 0.05,
+    quotaService,
+    policyService,
+    rateLimitService,
+    freeTierStrategy,
+    onProviderSuccess: (providerId: string) => adapterRegistry.recordSuccess(providerId),
+    onProviderFailure: (providerId: string) => adapterRegistry.recordFailure(providerId),
+  });
+
+  // Make router and helpers available
+  server.decorate('router', router);
+  server.decorate('adapterRegistry', adapterRegistry);
+  server.decorate('registerToolHandler', registerToolHandler);
+
+  // Helper to get adapter by provider ID (UUID or name)
+  server.decorate('getAdapter', (providerId: string) => {
+    let adapter = adapterRegistry.get(providerId);
+    if (!adapter) {
+      const row = db.prepare('SELECT name FROM providers WHERE id = ?').get(providerId) as any;
+      if (row) adapter = adapterRegistry.get(row.name);
+    }
+    return adapter;
+  });
+
   router.setAdapterExecutor({
     execute: async (providerId: string, _modelId: string, request: UnifiedRequest) => {
-      // Resolve UUID to provider name if needed
-      let adapter = adapterRegistry.get(providerId);
-      if (!adapter) {
-        const row = db.prepare('SELECT name FROM providers WHERE id = ?').get(providerId) as any;
-        if (row) adapter = adapterRegistry.get(row.name);
-      }
+      const adapter = (server as any).getAdapter(providerId);
       if (!adapter) throw new Error(`Adapter not found: ${providerId}`);
       return adapter.execute(request);
     },
@@ -182,23 +203,30 @@ export async function createServer() {
     logger.warn({ err }, 'Could not load candidates from registry (DB may not be ready)');
   }
 
-  // Start health checker
+  // Start health checker — delay initial run to allow all adapters (including
+  // those loaded from DB and auto-registered) to fully initialise.
   const healthChecker = new HealthChecker(adapterRegistry, 30000);
-  healthChecker.start();
+  setTimeout(() => healthChecker.start(), 5000);
 
-  // Make router available to routes
-  server.decorate('router', router);
-  server.decorate('adapterRegistry', adapterRegistry);
-  server.decorate('registerToolHandler', registerToolHandler);
+  // Start telemetry service (fire-and-forget — must not crash the server)
+  try {
+    const telemetry = getTelemetryService();
+    await telemetry.start();
+    logger.info('Telemetry service started');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to start telemetry service — continuing without telemetry');
+  }
 
-  // CORS
-  let corsOrigin: string | string[];
+  // CORS — never use wildcard origin; always use explicit origins
+  const defaultOrigins = [
+    'http://localhost:4200', 'http://localhost:5173',
+    'http://127.0.0.1:4200', 'http://127.0.0.1:5173',
+  ];
+  let corsOrigin: string[];
   if (process.env.DMRX_CORS_ORIGIN) {
     corsOrigin = process.env.DMRX_CORS_ORIGIN.split(',').map(o => o.trim());
-  } else if (LOCAL_MODE) {
-    corsOrigin = '*';
   } else {
-    corsOrigin = ['http://localhost:4200', 'http://localhost:5173'];
+    corsOrigin = defaultOrigins;
   }
   logger.info({ corsOrigin }, 'CORS configuration');
   await server.register(cors, {
@@ -239,6 +267,10 @@ export async function createServer() {
     reply.header('X-XSS-Protection', '1; mode=block');
     reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    reply.header(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+    );
     if (process.env.NODE_ENV === 'production') {
       reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     }
@@ -309,13 +341,14 @@ export async function createServer() {
     // Always log full error server-side
     logger.error({ err: error, req: request }, `Request error: ${error.message}`);
 
-    // For 500+ errors, hide internal details from clients
+    // For 500+ errors, hide all internal details from clients
     const clientMessage = statusCode >= 500 ? 'Internal server error' : error.message;
+    const clientType = statusCode >= 500 ? 'server_error' : code;
 
     reply.status(statusCode).send({
       error: {
         message: clientMessage,
-        type: code,
+        type: clientType,
         code: statusCode >= 500 ? 'internal_error' : code.toLowerCase(),
       },
     });
