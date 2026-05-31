@@ -17,8 +17,8 @@
  * Environment variables:
  *   DMRX_MCP_TRANSPORT  — Transport type: "stdio" (default), "sse", or "http"
  *   DMRX_MCP_PORT       — Port for SSE/HTTP transports (default: 3100)
- *   DMRX_MCP_HOST       — Host for SSE/HTTP transports (default: 0.0.0.0)
- *   DMRX_MCP_API_KEY    — Bearer token required on SSE/HTTP transports (optional)
+ *   DMRX_MCP_HOST       — Host for SSE/HTTP transports (default: 127.0.0.1)
+ *   DMRX_MCP_API_KEY    — Bearer token required on SSE/HTTP transports (required in production)
  *
  * Adapter API keys (standard provider env vars):
  *   OPENAI_API_KEY, ANTHROPIC_API_KEY, REPLICATE_API_TOKEN,
@@ -173,7 +173,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const http = await import('node:http');
 
   const port = getEnvInt('DMRX_MCP_PORT', 3100);
-  const host = getEnv('DMRX_MCP_HOST', '0.0.0.0');
+  const host = getEnv('DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof SSEServerTransport> }>();
 
@@ -238,7 +238,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const http = await import('node:http');
 
   const port = getEnvInt('DMRX_MCP_PORT', 3100);
-  const host = getEnv('DMRX_MCP_HOST', '0.0.0.0');
+  const host = getEnv('DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof StreamableHTTPServerTransport> }>();
 
@@ -308,6 +308,10 @@ async function main(): Promise<void> {
   const config = buildConfig();
 
   if (transport !== 'stdio' && !MCP_API_KEY) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('FATAL: DMRX_MCP_API_KEY must be set in production. Refusing to start without authentication.');
+      process.exit(1);
+    }
     console.warn('WARNING: MCP server running without authentication — set DMRX_MCP_API_KEY to secure it');
   }
 

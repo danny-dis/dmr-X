@@ -120,7 +120,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     id: 'google',
     name: 'Google Gemini',
     category: 'cloud_llm',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/v1',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     authMethod: 'bearer',
     apiFormat: 'openai',
     modalities: ['llm', 'embedding', 'audio_stt', 'diffusion'],

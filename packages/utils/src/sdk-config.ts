@@ -4,7 +4,7 @@
  * SDK configuration: SDKOptions, serverURLFromOptions(), ServerList, SDK_METADATA.
  */
 
-import type { RetryConfig } from "./retries.js";
+import type { RetryConfig } from "./retry.js";
 
 // ---------------------------------------------------------------------------
 // Minimal local stand-ins for OpenRouter SDK dependencies

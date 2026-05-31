@@ -8,7 +8,7 @@ export {
   type RetryConfig,
   type BackoffStrategy,
 } from './retry.js';
-export { retry } from './retries.js';
+export { withRetry as retry } from './retry.js';
 export { CircuitBreaker, type CircuitBreakerOptions } from './circuit-breaker.js';
 export { generateId, generateRequestId, generateApiKey, hashApiKey, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey } from './crypto.js';
 export { EventStream, parseOpenAISSE, type SseMessage } from './event-stream.js';

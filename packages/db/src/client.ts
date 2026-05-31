@@ -4,6 +4,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+// Use console for logging since @dmr-x/utils may depend on @dmr-x/db (avoid circular)
+const log = {
+  info: (...args: unknown[]) => console.log('[dmr-x]', ...args),
+  error: (...args: unknown[]) => console.error('[dmr-x]', ...args),
+  warn: (...args: unknown[]) => console.warn('[dmr-x]', ...args),
+};
+
 let db: SqlJsDatabase | null = null;
 let dbPath = '';
 
@@ -13,7 +20,7 @@ async function saveDatabase(): Promise<void> {
     const data = db.export();
     await fs.promises.writeFile(dbPath, Buffer.from(data));
   } catch (err) {
-    console.error('[dmr-x] Failed to save database:', err);
+    log.error('Failed to save database:', err);
   }
 }
 
@@ -56,6 +63,54 @@ export async function flush(): Promise<void> {
   pendingSaveResolvers = [];
   await saveDatabase();
   for (const r of resolvers) r();
+}
+
+// ---------------------------------------------------------------------------
+// One-time migration: encrypt any plaintext provider API keys
+// ---------------------------------------------------------------------------
+
+async function migratePlaintextApiKeys(dbWrapper: SqlJsDatabase): Promise<void> {
+  if (!process.env.DMRX_ENCRYPTION_KEY) return; // No encryption configured
+
+  let encrypt: ((plaintext: string) => string) | null = null;
+  let decrypt: ((encryptedHex: string) => string) | null = null;
+  try {
+    const crypto = await import('@dmr-x/utils');
+    encrypt = crypto.encrypt;
+    decrypt = crypto.decrypt;
+  } catch {
+    // utils not available — skip migration
+    return;
+  }
+
+  try {
+    const rows = dbWrapper.exec('SELECT id, config FROM providers');
+    if (rows.length === 0 || !rows[0].values) return;
+
+    const stmt = dbWrapper.prepare('UPDATE providers SET config = ? WHERE id = ?');
+    for (const row of rows[0].values) {
+      const id = row[0] as string;
+      const configStr = row[1] as string || '{}';
+      const config = JSON.parse(configStr);
+
+      if (typeof config.apiKey !== 'string' || config.apiKey.length === 0) continue;
+
+      // Try decrypting — if it fails, the key is plaintext
+      try {
+        decrypt!(config.apiKey);
+        // Decryption succeeded — already encrypted, skip
+      } catch {
+        // Plaintext — encrypt it
+        config.apiKey = encrypt!(config.apiKey);
+        stmt.bind([JSON.stringify(config), id]);
+        stmt.step();
+        stmt.free();
+        log.info(`Migrated plaintext API key for provider "${id}" to encrypted`);
+      }
+    }
+  } catch (err) {
+    log.error('API key migration failed (non-fatal):', err);
+  }
 }
 
 // Wrapper that mimics better-sqlite3 API on top of sql.js
@@ -194,14 +249,18 @@ export async function initDb(): Promise<DatabaseWrapper> {
           `INSERT OR IGNORE INTO schema_version (version, filename) VALUES (${version}, '${file}')`
         );
       } catch (err) {
-        console.error(`[dmr-x] Migration ${file} failed:`, err);
+        log.error(`Migration ${file} failed:`, err);
         throw err;
       }
     }
   }
 
   await saveDatabase();
-  console.log(`[dmr-x] SQLite database ready at ${dbPath}`);
+  log.info(`SQLite database ready at ${dbPath}`);
+
+  // Migrate plaintext API keys to encrypted (one-time pass)
+  await migratePlaintextApiKeys(db);
+
   return new DatabaseWrapper(db);
 }
 

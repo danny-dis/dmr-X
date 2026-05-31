@@ -376,6 +376,12 @@ export class UsageTracker {
     };
   }
 
+  /**
+   * Format date as 'YYYY-MM-DD HH:MM:SS' for SQLite compatibility.
+   * NOTE: This format does not include timezone information.
+   * Previous code used ISO format (toISOString()). External consumers
+   * parsing this field should handle both formats.
+   */
   private formatDateTime(date: Date): string {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');

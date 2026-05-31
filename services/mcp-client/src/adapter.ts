@@ -212,7 +212,7 @@ export class MCPToolAdapter implements ProviderAdapter {
           args = JSON.parse(tc.function.arguments);
         } catch (parseErr) {
           // If arguments is not valid JSON, pass as-is
-          console.debug(`[mcp-client] Non-JSON tool arguments for "${tc.function.name}", passing raw`);
+          logger.debug({ toolName: tc.function.name }, 'Non-JSON tool arguments, passing raw');
           args = { raw: tc.function.arguments };
         }
         return {

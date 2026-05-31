@@ -8,6 +8,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter } from '@dmr-x/adapters';
 import { ReplicateAdapter, StabilityAdapter } from '@dmr-x/adapters';
+import { logger } from '@dmr-x/utils';
 import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter } from '@dmr-x/adapters';
 import type {
@@ -293,7 +294,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         await adapterRegistry.initialize(providerId, cfg);
       } catch (initErr) {
         // Adapter not configured — skip but log for debugging
-        console.warn(`[mcp-server] Failed to initialize adapter "${providerId}":`, initErr instanceof Error ? initErr.message : initErr);
+        logger.warn({ err: initErr, providerId }, 'Failed to initialize adapter');
       }
     }
     adaptersInitialized = true;
@@ -634,7 +635,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
                 }
               } catch (listErr) {
                 // Adapter not initialized — skip but log for debugging
-                console.warn(`[mcp-server] Failed to list models from adapter:`, listErr instanceof Error ? listErr.message : listErr);
+                logger.warn({ err: listErr }, 'Failed to list models from adapter');
               }
             }
           }

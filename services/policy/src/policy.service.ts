@@ -74,6 +74,7 @@ export class PolicyService {
 
   private applyProviderAllowlist(candidates: CandidateSet, allowedProviders: string[]): CandidateSet {
     if (!allowedProviders || allowedProviders.length === 0) return candidates;
+    // NOTE: providerName is the catalog template ID (e.g., 'openai'), not the DB UUID.
     return candidates.filter((c) => allowedProviders.includes(c.providerName));
   }
 
