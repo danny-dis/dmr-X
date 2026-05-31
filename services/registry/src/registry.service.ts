@@ -27,6 +27,7 @@ export class RegistryService {
         mp.supports_vision,
         mp.supports_tool_use,
         mp.supports_json_mode,
+        mp.supports_function_call,
         mp.max_output_tokens as "maxOutputTokens",
         mp.rate_limit_rpm as "rateLimitRpm",
         mp.rate_limit_rpd as "rateLimitRpd",
