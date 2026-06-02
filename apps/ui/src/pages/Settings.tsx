@@ -1,601 +1,346 @@
-import { useState, useEffect, useCallback } from 'react';
-import { cn } from '@/lib/utils';
-import {
-  Settings as SettingsIcon, Bell, ShieldCheck,
-  Route, BarChart3, Webhook, Database, Save
-} from 'lucide-react';
-import { useSettings } from '@/hooks/useApiData';
+import * as React from 'react';
+import { Settings as SettingsIcon, Save, RotateCcw, Server, Shield, Brain, Cpu } from 'lucide-react';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Button } from '@/components/primitives/Button';
+import { Badge } from '@/components/primitives/Badge';
+import { Input } from '@/components/primitives/Input';
+import { Switch } from '@/components/primitives/Switch';
+import { Slider } from '@/components/primitives/Slider';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { useApiData } from '@/hooks/useApiData';
+import { Admin } from '@/lib/admin';
+import { toast } from '@/components/primitives/Toast';
 
-interface SettingSection {
-  id: string;
-  label: string;
-  icon: typeof SettingsIcon;
-  description: string;
-}
-
-const sections: SettingSection[] = [
-  { id: 'general', label: 'General', icon: SettingsIcon, description: 'Platform name, timezone, defaults' },
-  { id: 'routing', label: 'Routing', icon: Route, description: 'Weights, timeouts, fallback rules' },
-  { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Alert channels, thresholds' },
-  { id: 'security', label: 'Security', icon: ShieldCheck, description: 'Auth, CORS, encryption' },
-  { id: 'benchmarks', label: 'Benchmarks', icon: BarChart3, description: 'Schedules, test suites' },
-  { id: 'webhooks', label: 'Webhooks', icon: Webhook, description: 'Endpoint URLs, retry config' },
-  { id: 'retention', label: 'Retention', icon: Database, description: 'Log TTL, data cleanup' },
-];
-
-const STORAGE_KEY = 'dmrx-settings';
-
-interface LocalSettings {
-  platformName: string;
-  timezone: string;
-  requestTimeout: string;
-  qualityWeight: string;
-  costWeight: string;
-  latencyWeight: string;
-  slackWebhook: string;
-  emailRecipients: string;
-  latencyThreshold: string;
-  quotaThreshold: string;
-  requireApiKey: boolean;
-  autoKeyRotation: boolean;
+interface SettingsForm {
+  routingStrategy: 'auto' | 'cost' | 'latency' | 'round-robin' | 'priority';
+  costOptimization: boolean;
+  latencyBudgetMs: number;
+  autoFallback: boolean;
+  defaultModel: string;
+  maxContextWindow: number;
+  defaultTemperature: number;
+  requireAuth: boolean;
   corsOrigins: string;
-  maxRequestSize: string;
-  autoBenchmark: boolean;
-  benchmarkFrequency: string;
-  regressionThreshold: string;
-  routeDecisionWebhook: string;
-  alertWebhook: string;
-  webhookMaxRetries: string;
-  webhookRetryBackoff: string;
-  requestLogRetention: string;
-  memoryRetention: string;
-  benchmarkHistory: string;
+  rateLimitRpm: number;
+  cacheTtlSec: number;
+  streamingChunkSize: number;
+  workerConcurrency: number;
 }
 
-const defaultLocal: LocalSettings = {
-  platformName: 'DMR-X',
-  timezone: 'UTC',
-  requestTimeout: '30',
-  qualityWeight: '0.4',
-  costWeight: '0.3',
-  latencyWeight: '0.3',
-  slackWebhook: '',
-  emailRecipients: '',
-  latencyThreshold: '5000',
-  quotaThreshold: '75',
-  requireApiKey: true,
-  autoKeyRotation: true,
+const DEFAULTS: SettingsForm = {
+  routingStrategy: 'auto',
+  costOptimization: true,
+  latencyBudgetMs: 2000,
+  autoFallback: true,
+  defaultModel: 'free',
+  maxContextWindow: 128000,
+  defaultTemperature: 0.7,
+  requireAuth: true,
   corsOrigins: '*',
-  maxRequestSize: '50',
-  autoBenchmark: true,
-  benchmarkFrequency: 'Every 6 hours',
-  regressionThreshold: '2.0',
-  routeDecisionWebhook: '',
-  alertWebhook: '',
-  webhookMaxRetries: '3',
-  webhookRetryBackoff: '5',
-  requestLogRetention: '7',
-  memoryRetention: '90',
-  benchmarkHistory: '365',
+  rateLimitRpm: 600,
+  cacheTtlSec: 300,
+  streamingChunkSize: 64,
+  workerConcurrency: 8,
 };
 
-export default function Settings() {
-  const { settings: serverSettings, loading, save: saveToServer } = useSettings();
-  const [activeSection, setActiveSection] = useState('general');
-  const [routingTimeout, setRoutingTimeout] = useState('30');
-  const [fallbackEnabled, setFallbackEnabled] = useState(true);
-  const [logRetention, setLogRetention] = useState('30');
-  const [local, setLocal] = useState<LocalSettings>(defaultLocal);
-  const [saved, setSaved] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+function fromServer(s: Record<string, unknown> | null): SettingsForm {
+  if (!s) return { ...DEFAULTS };
+  return {
+    routingStrategy: (s.routingStrategy as SettingsForm['routingStrategy']) ?? DEFAULTS.routingStrategy,
+    costOptimization: s.costOptimization != null ? Boolean(s.costOptimization) : DEFAULTS.costOptimization,
+    latencyBudgetMs: typeof s.latencyBudgetMs === 'number' ? s.latencyBudgetMs : DEFAULTS.latencyBudgetMs,
+    autoFallback: s.autoFallback != null ? Boolean(s.autoFallback) : DEFAULTS.autoFallback,
+    defaultModel: typeof s.defaultModel === 'string' ? s.defaultModel : DEFAULTS.defaultModel,
+    maxContextWindow: typeof s.maxContextWindow === 'number' ? s.maxContextWindow : DEFAULTS.maxContextWindow,
+    defaultTemperature: typeof s.defaultTemperature === 'number' ? s.defaultTemperature : DEFAULTS.defaultTemperature,
+    requireAuth: s.requireAuth != null ? Boolean(s.requireAuth) : DEFAULTS.requireAuth,
+    corsOrigins: typeof s.corsOrigins === 'string' ? s.corsOrigins : DEFAULTS.corsOrigins,
+    rateLimitRpm: typeof s.rateLimitRpm === 'number' ? s.rateLimitRpm : DEFAULTS.rateLimitRpm,
+    cacheTtlSec: typeof s.cacheTtlSec === 'number' ? s.cacheTtlSec : DEFAULTS.cacheTtlSec,
+    streamingChunkSize: typeof s.streamingChunkSize === 'number' ? s.streamingChunkSize : DEFAULTS.streamingChunkSize,
+    workerConcurrency: typeof s.workerConcurrency === 'number' ? s.workerConcurrency : DEFAULTS.workerConcurrency,
+  };
+}
 
-  const updateLocal = <K extends keyof LocalSettings>(key: K, value: LocalSettings[K]) => {
-    setLocal((prev) => ({ ...prev, [key]: value }));
+function toServer(f: SettingsForm): Record<string, unknown> {
+  return {
+    routingStrategy: f.routingStrategy,
+    costOptimization: f.costOptimization,
+    latencyBudgetMs: f.latencyBudgetMs,
+    autoFallback: f.autoFallback,
+    defaultModel: f.defaultModel,
+    maxContextWindow: f.maxContextWindow,
+    defaultTemperature: f.defaultTemperature,
+    requireAuth: f.requireAuth,
+    corsOrigins: f.corsOrigins,
+    rateLimitRpm: f.rateLimitRpm,
+    cacheTtlSec: f.cacheTtlSec,
+    streamingChunkSize: f.streamingChunkSize,
+    workerConcurrency: f.workerConcurrency,
+  };
+}
+
+export function SettingsPage() {
+  const settings = useApiData<Record<string, unknown>>(
+    () => Admin.getSettings(),
+    [],
+    { refetchInterval: 60000 }
+  );
+  const [form, setForm] = React.useState<SettingsForm>(DEFAULTS);
+  const [saving, setSaving] = React.useState(false);
+  const [resetKey, setResetKey] = React.useState(0);
+
+  React.useEffect(() => {
+    setForm(fromServer(settings.data));
+  }, [settings.data, resetKey]);
+
+  const update = <K extends keyof SettingsForm>(key: K, value: SettingsForm[K]) =>
+    setForm((f) => ({ ...f, [key]: value }));
+
+  const onSave = async () => {
+    setSaving(true);
+    try {
+      await Admin.updateSettings(toServer(form));
+      toast.success('Settings saved', { description: 'Configuration persisted to the gateway.' });
+      await settings.refetch();
+    } catch (e) {
+      toast.error('Save failed', { description: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
   };
 
-  useEffect(() => {
-    if (loading) return;
-    // Merge server settings into local state
-    if (Object.keys(serverSettings).length > 0) {
-      setRoutingTimeout(String(serverSettings.routingTimeout ?? '30'));
-      setFallbackEnabled(serverSettings.fallbackEnabled !== false);
-      setLogRetention(String(serverSettings.logRetention ?? '30'));
-      setLocal((prev) => ({
-        ...prev,
-        ...(serverSettings.platformName != null && { platformName: String(serverSettings.platformName) }),
-        ...(serverSettings.timezone != null && { timezone: String(serverSettings.timezone) }),
-        ...(serverSettings.requestTimeout != null && { requestTimeout: String(serverSettings.requestTimeout) }),
-        ...(serverSettings.qualityWeight != null && { qualityWeight: String(serverSettings.qualityWeight) }),
-        ...(serverSettings.costWeight != null && { costWeight: String(serverSettings.costWeight) }),
-        ...(serverSettings.latencyWeight != null && { latencyWeight: String(serverSettings.latencyWeight) }),
-        ...(serverSettings.slackWebhookUrl != null && { slackWebhook: String(serverSettings.slackWebhookUrl) }),
-        ...(serverSettings.emailRecipients != null && { emailRecipients: String(serverSettings.emailRecipients) }),
-        ...(serverSettings.latencyAlertThreshold != null && { latencyThreshold: String(serverSettings.latencyAlertThreshold) }),
-        ...(serverSettings.quotaAlertThreshold != null && { quotaThreshold: String(serverSettings.quotaAlertThreshold) }),
-        ...(serverSettings.requireApiKeyAuth != null && { requireApiKey: !!serverSettings.requireApiKeyAuth }),
-        ...(serverSettings.autoKeyRotation != null && { autoKeyRotation: !!serverSettings.autoKeyRotation }),
-        ...(serverSettings.allowedOrigins != null && { corsOrigins: String(serverSettings.allowedOrigins) }),
-        ...(serverSettings.maxRequestSizeMb != null && { maxRequestSize: String(serverSettings.maxRequestSizeMb) }),
-        ...(serverSettings.autoBenchmarkRuns != null && { autoBenchmark: !!serverSettings.autoBenchmarkRuns }),
-        ...(serverSettings.benchmarkFrequency != null && { benchmarkFrequency: String(serverSettings.benchmarkFrequency) }),
-        ...(serverSettings.regressionThreshold != null && { regressionThreshold: String(serverSettings.regressionThreshold) }),
-        ...(serverSettings.routeDecisionWebhook != null && { routeDecisionWebhook: String(serverSettings.routeDecisionWebhook) }),
-        ...(serverSettings.alertWebhook != null && { alertWebhook: String(serverSettings.alertWebhook) }),
-        ...(serverSettings.webhookMaxRetries != null && { webhookMaxRetries: String(serverSettings.webhookMaxRetries) }),
-        ...(serverSettings.webhookRetryBackoff != null && { webhookRetryBackoff: String(serverSettings.webhookRetryBackoff) }),
-        ...(serverSettings.requestLogRetentionDays != null && { requestLogRetention: String(serverSettings.requestLogRetentionDays) }),
-        ...(serverSettings.memoryRetentionDays != null && { memoryRetention: String(serverSettings.memoryRetentionDays) }),
-        ...(serverSettings.benchmarkHistoryDays != null && { benchmarkHistory: String(serverSettings.benchmarkHistoryDays) }),
-      }));
-    }
-    // Also load from localStorage (takes precedence for fields that exist there)
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const s = JSON.parse(saved);
-        setRoutingTimeout(s.routingTimeout ?? '30');
-        setFallbackEnabled(s.fallbackEnabled !== false);
-        setLogRetention(s.logRetention ?? '30');
-        if (s.local) setLocal((prev) => ({ ...prev, ...s.local }));
-      }
-    } catch {}
-  }, [loading, serverSettings]);
+  const onReset = () => {
+    setResetKey((k) => k + 1);
+    setForm({ ...DEFAULTS });
+    toast.show('Reset to defaults', { description: 'Click Save to apply.', tone: 'info' });
+  };
 
-  const handleSave = useCallback(async () => {
-    const data = { routingTimeout, fallbackEnabled, logRetention, local };
-    // Save to localStorage
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    // Save all fields to server
-    try {
-      await saveToServer({
-        routingTimeout,
-        fallbackEnabled,
-        logRetention,
-        qualityWeight: local.qualityWeight,
-        costWeight: local.costWeight,
-        latencyWeight: local.latencyWeight,
-        platformName: local.platformName,
-        timezone: local.timezone,
-        requestTimeout: local.requestTimeout,
-        slackWebhookUrl: local.slackWebhook,
-        emailRecipients: local.emailRecipients,
-        latencyAlertThreshold: local.latencyThreshold,
-        quotaAlertThreshold: local.quotaThreshold,
-        requireApiKeyAuth: local.requireApiKey,
-        autoKeyRotation: local.autoKeyRotation,
-        allowedOrigins: local.corsOrigins,
-        maxRequestSizeMb: local.maxRequestSize,
-        autoBenchmarkRuns: local.autoBenchmark,
-        benchmarkFrequency: local.benchmarkFrequency,
-        regressionThreshold: local.regressionThreshold,
-        routeDecisionWebhook: local.routeDecisionWebhook,
-        alertWebhook: local.alertWebhook,
-        webhookMaxRetries: local.webhookMaxRetries,
-        webhookRetryBackoff: local.webhookRetryBackoff,
-        requestLogRetentionDays: local.requestLogRetention,
-        memoryRetentionDays: local.memoryRetention,
-        benchmarkHistoryDays: local.benchmarkHistory,
-      });
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Server save failed');
-      setTimeout(() => setSaveError(null), 5000);
-    }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  }, [routingTimeout, fallbackEnabled, logRetention, local, saveToServer]);
+  const dirty = JSON.stringify(form) !== JSON.stringify(fromServer(settings.data));
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-[#F8F9FC]">Settings</h1>
-          <p className="text-xs text-[#595962] mt-0.5">Configure DMR-X platform settings</p>
-        </div>
-        <button
-          onClick={handleSave}
-          className={cn(
-            'flex items-center gap-2 px-3 py-2 rounded-md text-xs font-semibold transition-colors',
-            saved
-              ? 'bg-[#00FFB2] text-[#060608]'
-              : 'bg-[#F7A51C] text-[#060608] hover:bg-[#F7A51C]/90'
-          )}
-        >
-          <Save className="w-3.5 h-3.5" />
-          {saved ? 'Saved!' : 'Save Changes'}
-        </button>
+    <PageContainer>
+      <PageHeader
+        title="Settings"
+        description="Gateway configuration — routing, defaults, security, performance"
+        icon={<SettingsIcon className="size-5" />}
+        actions={
+          <>
+            {dirty && (
+              <Badge tone="warning" size="sm">
+                Unsaved
+              </Badge>
+            )}
+            <Button variant="ghost" size="sm" onClick={onReset} disabled={saving}>
+              <RotateCcw className="size-3" />
+              Reset
+            </Button>
+            <Button size="sm" onClick={onSave} loading={saving} disabled={!dirty}>
+              <Save className="size-3" />
+              Save
+            </Button>
+          </>
+        }
+      />
+
+      <div className="mt-5">
+        {settings.isLoading ? (
+          <Skeleton className="h-96 w-full" />
+        ) : (
+          <Tabs defaultValue="routing" orientation="vertical">
+            <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-3">
+              <TabsList variant="pills" className="flex-col items-stretch h-fit">
+                <TabsTrigger value="routing" variant="pills" className="justify-start">
+                  <Brain className="size-3" /> Routing
+                </TabsTrigger>
+                <TabsTrigger value="defaults" variant="pills" className="justify-start">
+                  <Cpu className="size-3" /> Defaults
+                </TabsTrigger>
+                <TabsTrigger value="security" variant="pills" className="justify-start">
+                  <Shield className="size-3" /> Security
+                </TabsTrigger>
+                <TabsTrigger value="performance" variant="pills" className="justify-start">
+                  <Server className="size-3" /> Performance
+                </TabsTrigger>
+              </TabsList>
+
+              <div>
+                <TabsContent value="routing">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Routing strategy</CardTitle>
+                      <p className="text-[10px] text-fg-muted mt-0.5">How requests are assigned to providers</p>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Default strategy" description="Fallback when no policy applies">
+                        <Select
+                          value={form.routingStrategy}
+                          onValueChange={(v) => update('routingStrategy', v as SettingsForm['routingStrategy'])}
+                        >
+                          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">Auto (intelligence-aware)</SelectItem>
+                            <SelectItem value="cost">Lowest cost</SelectItem>
+                            <SelectItem value="latency">Lowest latency</SelectItem>
+                            <SelectItem value="round-robin">Round-robin</SelectItem>
+                            <SelectItem value="priority">Priority order</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </SettingRow>
+                      <SettingRow label="Cost optimization" description="Prefer cheaper models when possible">
+                        <Switch
+                          checked={form.costOptimization}
+                          onCheckedChange={(v) => update('costOptimization', v)}
+                        />
+                      </SettingRow>
+                      <SettingRow label="Latency budget" description="Max acceptable p95 latency (ms)">
+                        <div className="w-48 space-y-2">
+                          <Slider
+                            value={[form.latencyBudgetMs]}
+                            min={100}
+                            max={10000}
+                            step={100}
+                            onValueChange={(v) => update('latencyBudgetMs', v[0] ?? DEFAULTS.latencyBudgetMs)}
+                          />
+                          <p className="text-[10px] text-fg-muted text-right">{form.latencyBudgetMs}ms</p>
+                        </div>
+                      </SettingRow>
+                      <SettingRow label="Auto-fallback" description="Retry on alternate provider if first fails">
+                        <Switch
+                          checked={form.autoFallback}
+                          onCheckedChange={(v) => update('autoFallback', v)}
+                        />
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="defaults">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Model defaults</CardTitle>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Default model">
+                        <Input
+                          value={form.defaultModel}
+                          onChange={(e) => update('defaultModel', e.target.value)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Max context window" description="Tokens">
+                        <Input
+                          type="number"
+                          value={form.maxContextWindow}
+                          onChange={(e) => update('maxContextWindow', Number(e.target.value) || DEFAULTS.maxContextWindow)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Default temperature">
+                        <Input
+                          type="number"
+                          step="0.1"
+                          value={form.defaultTemperature}
+                          onChange={(e) => update('defaultTemperature', Number(e.target.value) || DEFAULTS.defaultTemperature)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="security">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Security</CardTitle>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Require auth" description="Reject unauthenticated requests">
+                        <Switch
+                          checked={form.requireAuth}
+                          onCheckedChange={(v) => update('requireAuth', v)}
+                        />
+                      </SettingRow>
+                      <SettingRow label="CORS allowed origins">
+                        <Input
+                          value={form.corsOrigins}
+                          onChange={(e) => update('corsOrigins', e.target.value)}
+                          className="w-72"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Rate limit (req/min)">
+                        <Input
+                          type="number"
+                          value={form.rateLimitRpm}
+                          onChange={(e) => update('rateLimitRpm', Number(e.target.value) || DEFAULTS.rateLimitRpm)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="performance">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Performance</CardTitle>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Cache TTL (seconds)">
+                        <Input
+                          type="number"
+                          value={form.cacheTtlSec}
+                          onChange={(e) => update('cacheTtlSec', Number(e.target.value) || DEFAULTS.cacheTtlSec)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Streaming chunk size">
+                        <Input
+                          type="number"
+                          value={form.streamingChunkSize}
+                          onChange={(e) => update('streamingChunkSize', Number(e.target.value) || DEFAULTS.streamingChunkSize)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Worker concurrency">
+                        <Input
+                          type="number"
+                          value={form.workerConcurrency}
+                          onChange={(e) => update('workerConcurrency', Number(e.target.value) || DEFAULTS.workerConcurrency)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+              </div>
+            </div>
+          </Tabs>
+        )}
       </div>
-      {saveError && (
-        <div className="text-xs text-[#FF4D6A] bg-[#FF4D6A]/10 rounded-lg px-3 py-2">
-          {saveError}
-        </div>
-      )}
+    </PageContainer>
+  );
+}
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        {/* Section Navigation */}
-        <div className="space-y-1">
-          {sections.map((section) => {
-            const Icon = section.icon;
-            return (
-              <button
-                key={section.id}
-                onClick={() => setActiveSection(section.id)}
-                className={cn(
-                  'w-full flex items-start gap-3 px-3 py-2.5 rounded-lg text-left transition-colors',
-                  activeSection === section.id
-                    ? 'bg-[#F7A51C]/10 text-[#F7A51C]'
-                    : 'text-[#A6A6B0] hover:bg-[#1A1A20] hover:text-[#F8F9FC]'
-                )}
-              >
-                <Icon className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <div>
-                  <div className="text-sm font-medium">{section.label}</div>
-                  <div className="text-[11px] text-[#595962] mt-0.5">{section.description}</div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Settings Content */}
-        <div className="lg:col-span-3 glass-card rounded-xl p-6">
-          {activeSection === 'general' && (
-            <div className="space-y-6">
-              <h3 className="text-sm font-semibold text-[#F8F9FC]">General Settings</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Platform Name</label>
-                  <input
-                    type="text"
-                    value={local.platformName}
-                    onChange={(e) => updateLocal('platformName', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Default Timezone</label>
-                  <select
-                    value={local.timezone}
-                    onChange={(e) => updateLocal('timezone', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  >
-                    <option>UTC</option>
-                    <option>America/New_York</option>
-                    <option>Europe/London</option>
-                    <option>Asia/Tokyo</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Request Timeout (seconds)</label>
-                  <input
-                    type="number"
-                    value={local.requestTimeout}
-                    onChange={(e) => updateLocal('requestTimeout', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'routing' && (
-            <div className="space-y-6">
-              <h3 className="text-sm font-semibold text-[#F8F9FC]">Routing Configuration</h3>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-[#0A0A0C] rounded-lg border border-[#27272E]">
-                  <div>
-                    <div className="text-xs text-[#F8F9FC] font-medium">Fallback Enabled</div>
-                    <div className="text-[11px] text-[#595962]">Automatically route to backup providers on failure</div>
-                  </div>
-                  <button
-                    onClick={() => setFallbackEnabled(!fallbackEnabled)}
-                    className={cn(
-                      'w-10 h-5 rounded-full transition-colors relative',
-                      fallbackEnabled ? 'bg-[#00FFB2]' : 'bg-[#27272E]'
-                    )}
-                  >
-                    <div className={cn(
-                      'w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all',
-                      fallbackEnabled ? 'left-5' : 'left-0.5'
-                    )} />
-                  </button>
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Max Routing Timeout (seconds)</label>
-                  <input
-                    type="number"
-                    value={routingTimeout}
-                    onChange={(e) => setRoutingTimeout(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Quality Weight (0-1)</label>
-                  <input
-                    type="number"
-                    value={local.qualityWeight}
-                    onChange={(e) => updateLocal('qualityWeight', e.target.value)}
-                    step="0.1"
-                    min="0"
-                    max="1"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Cost Weight (0-1)</label>
-                  <input
-                    type="number"
-                    value={local.costWeight}
-                    onChange={(e) => updateLocal('costWeight', e.target.value)}
-                    step="0.1"
-                    min="0"
-                    max="1"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Latency Weight (0-1)</label>
-                  <input
-                    type="number"
-                    value={local.latencyWeight}
-                    onChange={(e) => updateLocal('latencyWeight', e.target.value)}
-                    step="0.1"
-                    min="0"
-                    max="1"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'notifications' && (
-            <div className="space-y-6">
-              <h3 className="text-sm font-semibold text-[#F8F9FC]">Notification Settings</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Slack Webhook URL</label>
-                  <input
-                    type="text"
-                    value={local.slackWebhook}
-                    onChange={(e) => updateLocal('slackWebhook', e.target.value)}
-                    placeholder="https://hooks.slack.com/services/..."
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Email Recipients (comma-separated)</label>
-                  <input
-                    type="text"
-                    value={local.emailRecipients}
-                    onChange={(e) => updateLocal('emailRecipients', e.target.value)}
-                    placeholder="ops@example.com"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Latency Alert Threshold (ms)</label>
-                  <input
-                    type="number"
-                    value={local.latencyThreshold}
-                    onChange={(e) => updateLocal('latencyThreshold', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Quota Alert Threshold (%)</label>
-                  <input
-                    type="number"
-                    value={local.quotaThreshold}
-                    onChange={(e) => updateLocal('quotaThreshold', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'security' && (
-            <div className="space-y-6">
-              <h3 className="text-sm font-semibold text-[#F8F9FC]">Security Settings</h3>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-[#0A0A0C] rounded-lg border border-[#27272E]">
-                  <div>
-                    <div className="text-xs text-[#F8F9FC] font-medium">Require API Key Auth</div>
-                    <div className="text-[11px] text-[#595962]">All requests must include valid API key</div>
-                  </div>
-                  <button
-                    onClick={() => updateLocal('requireApiKey', !local.requireApiKey)}
-                    className={cn(
-                      'w-10 h-5 rounded-full transition-colors relative',
-                      local.requireApiKey ? 'bg-[#00FFB2]' : 'bg-[#27272E]'
-                    )}
-                  >
-                    <div className={cn(
-                      'w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all',
-                      local.requireApiKey ? 'left-5' : 'left-0.5'
-                    )} />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-[#0A0A0C] rounded-lg border border-[#27272E]">
-                  <div>
-                    <div className="text-xs text-[#F8F9FC] font-medium">Auto Key Rotation</div>
-                    <div className="text-[11px] text-[#595962]">Rotate provider keys every 90 days</div>
-                  </div>
-                  <button
-                    onClick={() => updateLocal('autoKeyRotation', !local.autoKeyRotation)}
-                    className={cn(
-                      'w-10 h-5 rounded-full transition-colors relative',
-                      local.autoKeyRotation ? 'bg-[#00FFB2]' : 'bg-[#27272E]'
-                    )}
-                  >
-                    <div className={cn(
-                      'w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all',
-                      local.autoKeyRotation ? 'left-5' : 'left-0.5'
-                    )} />
-                  </button>
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Allowed Origins (CORS)</label>
-                  <textarea
-                    value={local.corsOrigins}
-                    onChange={(e) => updateLocal('corsOrigins', e.target.value)}
-                    rows={3}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] resize-none"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Max Request Size (MB)</label>
-                  <input
-                    type="number"
-                    value={local.maxRequestSize}
-                    onChange={(e) => updateLocal('maxRequestSize', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'benchmarks' && (
-            <div className="space-y-6">
-              <h3 className="text-sm font-semibold text-[#F8F9FC]">Benchmark Schedule</h3>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-[#0A0A0C] rounded-lg border border-[#27272E]">
-                  <div>
-                    <div className="text-xs text-[#F8F9FC] font-medium">Auto Benchmark Runs</div>
-                    <div className="text-[11px] text-[#595962]">Automatically run benchmarks on schedule</div>
-                  </div>
-                  <button
-                    onClick={() => updateLocal('autoBenchmark', !local.autoBenchmark)}
-                    className={cn(
-                      'w-10 h-5 rounded-full transition-colors relative',
-                      local.autoBenchmark ? 'bg-[#00FFB2]' : 'bg-[#27272E]'
-                    )}
-                  >
-                    <div className={cn(
-                      'w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all',
-                      local.autoBenchmark ? 'left-5' : 'left-0.5'
-                    )} />
-                  </button>
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Run Frequency</label>
-                  <select
-                    value={local.benchmarkFrequency}
-                    onChange={(e) => updateLocal('benchmarkFrequency', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  >
-                    <option>Every 6 hours</option>
-                    <option>Every 12 hours</option>
-                    <option>Daily</option>
-                    <option>Weekly</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Regression Threshold (%)</label>
-                  <input
-                    type="number"
-                    value={local.regressionThreshold}
-                    onChange={(e) => updateLocal('regressionThreshold', e.target.value)}
-                    step="0.1"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'webhooks' && (
-            <div className="space-y-6">
-              <h3 className="text-sm font-semibold text-[#F8F9FC]">Webhook Configuration</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Route Decision Webhook</label>
-                  <input
-                    type="text"
-                    value={local.routeDecisionWebhook}
-                    onChange={(e) => updateLocal('routeDecisionWebhook', e.target.value)}
-                    placeholder="https://your-app.com/webhooks/routing"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Alert Webhook</label>
-                  <input
-                    type="text"
-                    value={local.alertWebhook}
-                    onChange={(e) => updateLocal('alertWebhook', e.target.value)}
-                    placeholder="https://your-app.com/webhooks/alerts"
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C] placeholder-[#595962]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Max Retries</label>
-                  <input
-                    type="number"
-                    value={local.webhookMaxRetries}
-                    onChange={(e) => updateLocal('webhookMaxRetries', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Retry Backoff (seconds)</label>
-                  <input
-                    type="number"
-                    value={local.webhookRetryBackoff}
-                    onChange={(e) => updateLocal('webhookRetryBackoff', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeSection === 'retention' && (
-            <div className="space-y-6">
-              <h3 className="text-sm font-semibold text-[#F8F9FC]">Data Retention</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Audit Log Retention (days)</label>
-                  <input
-                    type="number"
-                    value={logRetention}
-                    onChange={(e) => setLogRetention(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Request Log Retention (days)</label>
-                  <input
-                    type="number"
-                    value={local.requestLogRetention}
-                    onChange={(e) => updateLocal('requestLogRetention', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Memory Retention (days)</label>
-                  <input
-                    type="number"
-                    value={local.memoryRetention}
-                    onChange={(e) => updateLocal('memoryRetention', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#A6A6B0] block mb-1.5">Benchmark History (days)</label>
-                  <input
-                    type="number"
-                    value={local.benchmarkHistory}
-                    onChange={(e) => updateLocal('benchmarkHistory', e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0A0A0C] border border-[#27272E] rounded-md text-xs text-[#F8F9FC] outline-none focus:border-[#F7A51C]"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+function SettingRow({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-2 border-b border-border last:border-0">
+      <div>
+        <p className="text-sm font-medium text-fg">{label}</p>
+        {description && <p className="text-[11px] text-fg-muted mt-0.5">{description}</p>}
       </div>
+      {children}
     </div>
   );
 }
