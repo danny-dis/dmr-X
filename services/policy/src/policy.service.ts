@@ -1,7 +1,8 @@
-import { getPool } from '@dmr-x/db';
+import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { CandidateSet, TaskProfile } from '@dmr-x/core';
 import { getProviderTemplate } from '@dmr-x/registry';
+import crypto from 'node:crypto';
 
 export interface PolicyRule {
   type: 'provider_allowlist' | 'provider_blocklist' | 'model_blocklist' | 'cost_limit' | 'data_residency';
@@ -73,6 +74,7 @@ export class PolicyService {
 
   private applyProviderAllowlist(candidates: CandidateSet, allowedProviders: string[]): CandidateSet {
     if (!allowedProviders || allowedProviders.length === 0) return candidates;
+    // NOTE: providerName is the catalog template ID (e.g., 'openai'), not the DB UUID.
     return candidates.filter((c) => allowedProviders.includes(c.providerName));
   }
 
@@ -89,7 +91,7 @@ export class PolicyService {
   private applyCostLimit(candidates: CandidateSet, maxCostPerToken: number): CandidateSet {
     if (!maxCostPerToken) return candidates;
     return candidates.filter((c) => {
-      const cost = c.costPerInputToken || c.costPerImage || 0;
+      const cost = c.costPerInputToken ?? c.costPerImage ?? 0;
       return cost <= maxCostPerToken;
     });
   }
@@ -98,26 +100,25 @@ export class PolicyService {
     if (!allowedRegions || allowedRegions.length === 0) return candidates;
 
     return candidates.filter((c) => {
-      const template = getProviderTemplate(c.providerId);
+      const template = getProviderTemplate(c.providerName);
       const region = template?.region || 'global';
       return allowedRegions.includes(region);
     });
   }
 
   private async getPolicies(tenantId: string): Promise<Policy[]> {
-    const pool = getPool();
-    const result = await pool.query(
+    const db = getDb();
+    const rows = db.prepare(
       `SELECT id, tenant_id, name, rules, is_active
        FROM policies
-       WHERE tenant_id = $1 AND is_active = true`,
-      [tenantId]
-    );
+       WHERE tenant_id = ? AND is_active = 1`
+    ).all(tenantId) as any[];
 
-    return result.rows.map((row) => ({
+    return rows.map((row) => ({
       id: row.id,
       tenantId: row.tenant_id,
       name: row.name,
-      rules: row.rules || [],
+      rules: typeof row.rules === 'string' ? JSON.parse(row.rules) : (row.rules || []),
       isActive: row.is_active,
     }));
   }
@@ -126,20 +127,19 @@ export class PolicyService {
    * Create a new policy
    */
   async createPolicy(tenantId: string, name: string, rules: PolicyRule[]): Promise<Policy> {
-    const pool = getPool();
-    const result = await pool.query(
-      `INSERT INTO policies (tenant_id, name, rules)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
-      [tenantId, name, JSON.stringify(rules)]
-    );
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO policies (id, tenant_id, name, rules)
+       VALUES (?, ?, ?, ?)`
+    ).run(id, tenantId, name, JSON.stringify(rules));
 
-    const row = result.rows[0];
+    const row = db.prepare('SELECT * FROM policies WHERE id = ?').get(id) as any;
     return {
       id: row.id,
       tenantId: row.tenant_id,
       name: row.name,
-      rules: row.rules,
+      rules: typeof row.rules === 'string' ? JSON.parse(row.rules) : (row.rules || []),
       isActive: row.is_active,
     };
   }
@@ -148,30 +148,28 @@ export class PolicyService {
    * Update a policy
    */
   async updatePolicy(policyId: string, updates: Partial<Policy>): Promise<void> {
-    const pool = getPool();
+    const db = getDb();
     const setClauses: string[] = [];
     const values: unknown[] = [];
-    let paramIndex = 1;
 
     if (updates.name !== undefined) {
-      setClauses.push(`name = $${paramIndex++}`);
+      setClauses.push(`name = ?`);
       values.push(updates.name);
     }
     if (updates.rules !== undefined) {
-      setClauses.push(`rules = $${paramIndex++}`);
+      setClauses.push(`rules = ?`);
       values.push(JSON.stringify(updates.rules));
     }
     if (updates.isActive !== undefined) {
-      setClauses.push(`is_active = $${paramIndex++}`);
-      values.push(updates.isActive);
+      setClauses.push(`is_active = ?`);
+      values.push(updates.isActive ? 1 : 0);
     }
 
     if (setClauses.length > 0) {
       values.push(policyId);
-      await pool.query(
-        `UPDATE policies SET ${setClauses.join(', ')}, updated_at = NOW() WHERE id = $${paramIndex}`,
-        values
-      );
+      db.prepare(
+        `UPDATE policies SET ${setClauses.join(', ')}, updated_at = datetime('now') WHERE id = ?`
+      ).run(...values);
     }
   }
 }

@@ -1,4 +1,4 @@
-import { getPool } from '@dmr-x/db';
+import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import { UsageTracker, usageTracker } from './usage-tracker.js';
 import type { UsageAggregate, UsageQuery, UsageRecord } from './usage-tracker.js';
@@ -72,7 +72,7 @@ export class BillingService {
 
   /**
    * Record usage for a completed request. Calculates cost from model_profiles
-   * pricing, then persists to both Redis and PostgreSQL.
+   * pricing, then persists to both cache and SQLite.
    */
   async recordUsage(input: RecordUsageInput): Promise<UsageRecord> {
     const pricing = await this.getModelPricing(input.providerId, input.modelId);
@@ -223,7 +223,7 @@ export class BillingService {
   }
 
   /**
-   * Get current-period daily or monthly summary from the fast Redis path.
+   * Get current-period daily or monthly summary from the fast cache path.
    */
   async getCurrentPeriodUsage(
     tenantId: string,
@@ -258,19 +258,19 @@ export class BillingService {
    * Force-refresh the pricing cache from the database.
    */
   async refreshPricingCache(): Promise<void> {
-    const pool = getPool();
+    const db = getDb();
 
-    const result = await pool.query(
+    const rows = db.prepare(
       `SELECT provider_id, model_id,
               COALESCE(input_cost_per_1k, 0)  AS input_price,
               COALESCE(output_cost_per_1k, 0) AS output_price
        FROM model_profiles
        WHERE input_cost_per_1k IS NOT NULL
           OR output_cost_per_1k IS NOT NULL`
-    );
+    ).all();
 
     this.pricingCache.clear();
-    for (const row of result.rows) {
+    for (const row of rows as any[]) {
       const pricing: ModelPricing = {
         providerId: row.provider_id,
         modelId: row.model_id,
@@ -281,7 +281,7 @@ export class BillingService {
     }
 
     this.pricingCacheLoadedAt = Date.now();
-    logger.debug({ count: result.rows.length }, 'Refreshed pricing cache');
+    logger.debug({ count: rows.length }, 'Refreshed pricing cache');
   }
 
   /**

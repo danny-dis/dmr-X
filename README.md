@@ -1,251 +1,314 @@
 # DMR-X
 
-Universal AI routing and orchestration platform. One unified API, intelligent routing across local models, remote providers, and temporary workers.
+Universal AI routing and orchestration platform. A single gateway that accepts requests in **OpenAI**, **Anthropic**, and **Google Gemini** wire formats, routes them to the best available provider, and returns responses in the same format.
 
-## Vision
+## Key Features
 
-Modern AI systems are fragmented across:
-- different providers
-- different APIs
-- different quotas
-- different model capabilities
-- different pricing structures
-- different hardware environments
+- **Multi-Format API** — native OpenAI, Anthropic, and Gemini endpoints from one gateway
+- **Dynamic Routing** — cost/latency/quality scoring with fallback chains and Thompson Sampling bandit
+- **Meta-Model Aliases** — `free-coding`, `free-smart`, `free-agentic`, `free-fast`, `free` for automatic provider selection
+- **70+ Provider Adapters** — OpenAI, Anthropic, Google, Mistral, DeepSeek, Cohere, Ollama, Replicate, and more
+- **Zero External Dependencies** — SQLite via sql.js, no Redis/Postgres required
+- **Single Binary Distribution** — compile to standalone executable for Windows, Linux, macOS
+- **Admin UI** — React/Vite dashboard for providers, models, tenants, keys, policies, quotas, and telemetry
+- **MCP Server** — expose DMR-X routing as MCP tools (stdio, SSE, HTTP transports)
+- **Multi-Tenant** — per-tenant API keys, quotas, policies, and billing tracking
+- **Agentic Workflows** — tool execution, multi-turn tool loops, and agentic chat with approval gates
 
-DMR-X unifies them behind one intelligent routing layer.
+## Quick Start
 
-Clients connect to one endpoint. DMR-X handles the rest.
+### From Source
 
----
+```bash
+# Clone and install
+git clone https://github.com/dmr-x/dmr-x.git
+cd dmr-x
+bun install
 
-## Core Features
+# Configure
+cp .env.example .env
+# Edit .env — set at least one provider key, or use local providers like Ollama
 
-### Unified AI Gateway
-- OpenAI-compatible API
-- One API key
-- One endpoint
-- Multi-provider execution
+# Run
+bun run dev:gateway
+# Open http://localhost:3000
+```
 
-### Intelligent Routing
-DMR-X dynamically selects:
-- the best provider
-- the best model
-- local vs remote execution
-- fallback chains
-- execution priority
+### From Binary
 
-Routing decisions are based on:
-- quality
-- latency
-- cost
-- quotas
-- modality
-- hardware availability
-- benchmark history
-- policy rules
+```bash
+# Linux / macOS
+curl -sL https://github.com/dmr-x/dmr-x/releases/latest/download/dmrx-linux-x64.tar.gz | tar xz
+./dmrx
 
-### Five-Layer Intelligence Hierarchy
+# Windows
+# Download dmrx-windows-x64.zip from releases, extract, run dmrx.exe
+```
 
-| Layer | Role | Description |
-|-------|------|-------------|
-| **Brain** | Frontier reasoning | Strategic cognition, complex problem solving |
-| **Thinkers** | Deep reasoning | Research, architecture, planning |
-| **Executers** | Implementation | Coding, transformations, tool execution |
-| **Workers** | Lightweight processing | Cheap retrieval, simple tasks |
-| **Temporary Workers** | Ephemeral | Local workers spawned dynamically from local models |
+### Docker
 
----
-
-## Multimodal Support
-
-DMR-X supports:
-- text
-- code
-- images
-- audio / speech
-- video / music
-- embeddings
-- retrieval
-- tool execution
-
----
+```bash
+docker compose up -d
+# Gateway at http://localhost:3000
+```
 
 ## Architecture
 
-### Core Services
+```
+┌─────────────────────────────────────────────────────┐
+│                    Client (any format)               │
+│         OpenAI / Anthropic / Gemini / MCP            │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│                   DMR-X Gateway (:3000)               │
+│                                                       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
+│  │  Auth    │→ │  Router   │→ │  Adapter Executor │   │
+│  │Middleware│  │ Pipeline  │  │                   │   │
+│  └──────────┘  └──────────┘  └──────────────────┘   │
+│                       │                               │
+│  ┌──────────────────────────────────────────────┐    │
+│  │  Services: Registry, Quota, Policy, Billing,  │    │
+│  │  Benchmark, Telemetry, MCP Server             │    │
+│  └──────────────────────────────────────────────┘    │
+│                       │                               │
+│  ┌──────────────────────────────────────────────┐    │
+│  │  SQLite (sql.js) — debounced save, flush on   │    │
+│  │  shutdown, zero external dependencies          │    │
+│  └──────────────────────────────────────────────┘    │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│  Provider Adapters                                    │
+│  OpenAI · Anthropic · Google · Mistral · DeepSeek    │
+│  Cohere · Ollama · Replicate · Stability · ElevenLabs│
+│  Deepgram · Jina · GenericOpenAI (any OAI-compat)    │
+└──────────────────────────────────────────────────────┘
+```
 
-| Service | Purpose |
-|---------|---------|
-| Gateway | API entry point, authentication |
-| Router | Intelligent request routing |
-| Registry | Model and provider management |
-| Policy Engine | Routing rules and constraints |
-| Quota Manager | Usage tracking and limits |
-| Billing Engine | Cost tracking and metering |
-| Benchmark Engine | Model performance evaluation |
-| Memory System | Context and session persistence |
-| Telemetry | Observability and monitoring |
-| Federation | Multi-node coordination |
-| Sandbox | Secure code execution |
-| Scheduler | Task and worker orchestration |
+This is an npm workspace TypeScript monorepo. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
 
-### Stack
-- TypeScript
-- Python
-- PostgreSQL + pgvector
-- Redis
-- Docker
-- Kubernetes
-- OpenTelemetry
-- Prometheus + Grafana
+## Repository Layout
 
----
+```
+dmr-x/
+├── apps/
+│   ├── gateway/          # Fastify HTTP gateway + static UI host
+│   └── ui/               # React/Vite admin dashboard
+├── packages/
+│   ├── core/             # Shared types, schemas, and contracts
+│   ├── db/               # SQLite client, cache, and migrations
+│   ├── utils/            # Logging, retries, streams, crypto, errors
+│   └── cli/              # CLI tool (dmrx command)
+├── services/
+│   ├── adapters/         # Provider adapter interface + 10 concrete adapters
+│   ├── router/           # Task classifier, routing pipeline, fallback, bandit
+│   ├── registry/         # Provider and model registry
+│   ├── quota/            # Quota management
+│   ├── policy/           # Routing policies (allowlist, blocklist, cost, residency)
+│   ├── billing/          # Usage tracking and billing
+│   ├── benchmark/        # Provider benchmarking
+│   ├── telemetry/        # Metrics and observability
+│   ├── oauth/            # OAuth provider authentication
+│   ├── federation/       # Cross-instance federation
+│   ├── memory/           # Conversation memory management
+│   ├── sandbox/          # Sandboxed code execution
+│   ├── workers/          # Background worker tasks
+│   ├── mcp-server/       # MCP tool server (stdio/SSE/HTTP)
+│   └── mcp-client/       # MCP client integration
+├── tests/
+│   ├── unit/             # Unit tests (20 test suites)
+│   └── e2e/              # Opt-in end-to-end connectivity tests
+├── scripts/              # Install scripts and release packaging
+├── docs/                 # Documentation
+├── infra/                # Infrastructure configs
+└── release/              # Pre-built release artifacts
+```
 
-## Getting Started
+## Multi-Format API
+
+DMR-X natively serves three API wire formats from a single gateway. Send requests in the format your client already uses — no SDK changes needed.
+
+| Format | Chat Endpoint | Streaming | Auth Header |
+|--------|--------------|-----------|-------------|
+| **OpenAI** | `POST /v1/chat/completions` | SSE with `data: [DONE]` | `Authorization: Bearer <key>` |
+| **Anthropic** | `POST /v1/messages` | SSE with `event:` types | `x-api-key: <key>` |
+| **Google Gemini** | `POST /v1/gemini/generateContent` | SSE with `data:` lines | `x-api-key: <key>` |
+
+All three formats support streaming, tool/function calling, vision (image inputs), JSON mode, and temperature/top_p/top_k/max_tokens/stop parameters.
+
+The gateway converts every request into a unified internal format, routes it to the best available provider, and converts the response back to the requested wire format. An Anthropic-formatted request can be served by an OpenAI provider (or vice versa).
+
+### Meta-Models (Dynamic Routing)
+
+Instead of hard-coding a model name, use a **meta-model alias** — DMR-X picks the best available provider at request time:
+
+| Alias | Picks |
+|-------|-------|
+| `free` | Any free model |
+| `free-fast` | Fastest free model |
+| `free-smart` | Most capable free model |
+| `free-agentic` | Best free model for tool use (64K+ context) |
+| `free-coding` | Best free model for code generation |
+
+Use them exactly like a model name: `"model": "free-coding"`.
+
+See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and SDK integration guides for Claude Code, Cursor, Continue, and more.
+
+## API Endpoints
+
+### Core
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat |
+| `POST` | `/v1/messages` | Anthropic-compatible messages |
+| `POST` | `/v1/gemini/generateContent` | Gemini-compatible generateContent |
+| `GET` | `/v1/models` | List available models (OpenAI format) |
+| `GET` | `/v1/models/:modelId` | Single model lookup |
+
+### Multimodal
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/images/generations` | Image generation |
+| `POST` | `/v1/embeddings` | Text embeddings |
+| `POST` | `/v1/audio/speech` | Text-to-speech |
+| `POST` | `/v1/audio/transcriptions` | Speech-to-text |
+
+### Agentic
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/tools/execute` | Single tool execution |
+| `POST` | `/v1/tools/loop` | Multi-turn tool loop |
+| `POST` | `/v1/agentic/chat` | Agentic chat with approval gates |
+
+### Admin
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET/POST/PUT/DELETE` | `/v1/admin/tenants` | Tenant management |
+| `GET/POST/DELETE` | `/v1/admin/api-keys` | API key management |
+| `GET/PUT` | `/v1/admin/providers` | Provider configuration |
+| `GET/PUT` | `/v1/admin/settings` | System settings |
+| `GET` | `/v1/admin/policies` | Routing policies |
+| `GET` | `/v1/admin/quotas` | Quota management |
+| `GET` | `/v1/admin/billing` | Usage and billing |
+| `GET` | `/v1/admin/telemetry` | Metrics and observability |
+
+### Health
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Basic health check |
+| `GET` | `/healthz` | Health with subsystem checks |
+| `GET` | `/ready` | Readiness probe |
+| `GET` | `/livez` | Liveness probe |
+
+## Configuration
+
+All environment variables are documented in `.env.example` and [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+Key variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | Gateway listen port |
+| `DMRX_LOCAL_MODE` | `false` | Skip tenant auth for local dev |
+| `DMRX_ADMIN_API_KEY` | — | Admin API key (required in production) |
+| `DMRX_ENCRYPTION_KEY` | — | AES-256-GCM key for provider key encryption |
+| `DMRX_CORS_ORIGIN` | `http://localhost:4200` | Allowed CORS origins |
+| `DMRX_FREE_TIER_STRATEGY` | `none` | Free-tier routing: none/prioritize/load_balance/fallback |
+
+## Development
 
 ```bash
-# Clone the repo
-git clone https://github.com/danny-dis/DMR-X.git
-cd DMR-X
-
-# Install dependencies
-npm install
-
-# Copy environment config
-cp .env.example .env
-
-# Start development
-npm run dev
+bun install              # Install dependencies
+bun run dev              # Run all workspace dev tasks (turbo)
+bun run dev:gateway      # Gateway only
+bun run dev:ui           # UI only (Vite at :4200, proxies /v1/* to gateway :3000)
+bun run build            # Production build
+bun run start            # Start built gateway
+bun run test             # Run unit tests
+bun run lint             # Lint all packages
 ```
 
-### Environment Variables
-
-```env
-GATEWAY_PORT=3000
-DATABASE_URL=postgresql://user:pass@localhost:5432/dmr-x
-REDIS_URL=redis://localhost:6379
-
-# Provider API Keys
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-DEEPSEEK_API_KEY=sk-...
-```
-
----
-
-## API Usage
-
-DMR-X exposes an OpenAI-compatible endpoint:
+E2E connectivity tests require a running gateway:
 
 ```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "auto",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
+DMRX_RUN_E2E=true bun run test -- tests/e2e/connectivity.test.ts
 ```
 
-Set `model: "auto"` to let DMR-X route intelligently, or specify a model/provider explicitly.
+## Testing
 
----
-
-## Routing Philosophy
-
-DMR-X does not bind agents to fixed models.
-
-Agents request capabilities. DMR-X determines the optimal execution path.
-
-This allows:
-- provider abstraction
-- automatic failover
-- quota optimization
-- cost reduction
-- adaptive intelligence
-- hardware-aware execution
-
----
-
-## Local-First Design
-
-DMR-X prioritizes:
-1. Local execution
-2. Temporary local workers
-3. Hybrid execution
-4. Remote escalation only when necessary
-
-This reduces:
-- cost
-- latency
-- vendor lock-in
-- privacy exposure
-
----
-
-## Self-Learning System
-
-DMR-X continuously benchmarks models using:
-- latency
-- hallucination rate
-- tool success rate
-- reasoning quality
-- multimodal accuracy
-- user satisfaction
-- provider reliability
-
-The router evolves dynamically over time.
-
----
-
-## Federated Intelligence
-
-Deployments can optionally share:
-- anonymized benchmark signals
-- routing heuristics
-- provider reliability metrics
-- optimization patterns
-
-Without sharing raw tenant data.
-
----
-
-## Repository Structure
-
-```
-apps/           # Client applications
-services/       # Core microservices
-workers/        # Background workers
-packages/       # Shared libraries
-infra/          # Infrastructure as code
-docs/           # Documentation
-tests/          # Integration tests
+```bash
+bun run test
 ```
 
----
+20 unit test suites covering:
 
-## Project Status
+- Routing pipeline (capability filter, availability, cost/latency scoring, final selector, fallback)
+- Anthropic converter and stream serializer
+- API contracts and auth middleware
+- Task classifier and tool orchestrator
+- SQLite client, memory cache, crypto
+- Meta-model resolution
+- Event streams, HTTP errors, stop conditions
 
-Current phase:
-- production architecture
-- routing engine design
-- provider abstraction layer
-- local-first execution fabric
-- SaaS platform foundation
+See [docs/TESTING.md](docs/TESTING.md) for details.
 
----
+## Distribution
 
-## Goals
+DMR-X compiles to a single standalone binary via `bun build --compile`. Pre-built binaries are available on the [Releases](https://github.com/dmr-x/dmr-x/releases) page for:
 
-- Universal AI execution fabric
-- Provider-agnostic orchestration
-- Autonomous routing intelligence
-- Scalable multimodal infrastructure
-- Local-first AI systems
-- Enterprise-grade AI gateway
+- **Linux x64** — `dmrx-linux-x64.tar.gz`
+- **macOS x64** — `dmrx-darwin-x64.tar.gz`
+- **Windows x64** — `dmrx-windows-x64.zip`
 
----
+Each archive contains the binary, UI assets, and an install script. See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for details.
+
+CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that builds, packages, and publishes all platform binaries.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture and request flow |
+| [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) | API usage with SDK examples |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Environment variable reference |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Deployment guide (Bun, Docker, binary) |
+| [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) | Binary packaging and install scripts |
+| [docs/MCP.md](docs/MCP.md) | MCP server setup and tool reference |
+| [docs/TESTING.md](docs/TESTING.md) | Testing guide |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
+| [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Provider API reference (35+ providers) |
+| [docs/AI_API_PROVIDERS_EXHAUSTIVE.md](docs/AI_API_PROVIDERS_EXHAUSTIVE.md) | Exhaustive provider catalog (100+) |
+| [docs/FREE_API_PROVIDERS_REPORT.md](docs/FREE_API_PROVIDERS_REPORT.md) | Free-tier provider report |
+
+## Contributing
+
+- Branch names: `feature/<topic>`, `fix/<topic>`, `refactor/<topic>`, `docs/<topic>`.
+- Run `bun run test` and `bun run build` before opening a PR.
+- Keep generated files out of source folders; build outputs belong in `dist/` or `apps/gateway/public/`.
+- Prefer behavior-preserving refactors and small commits by phase.
+- Follow existing TypeScript ESM style and package boundaries.
+- **All contributors must sign the [CLA](CLA.md) before contributions can be merged.**
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## License
 
-TBD
+This project is licensed under the [Business Source License 1.1](LICENSE) (BSL-1.1).
+
+| Use Case | Terms |
+|----------|-------|
+| **Production (≤50 users)** | Free |
+| **Non-production** | Unlimited (dev, testing, evaluation) |
+| **Production (>50 users)** | Commercial license required |
+| **After 2030-05-30** | Converts to AGPL-3.0 |
+
+For commercial licensing: see [LICENSE](LICENSE) for contact details.

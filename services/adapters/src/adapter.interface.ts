@@ -15,6 +15,8 @@ export interface ModelInfo {
 export interface ProviderConfig {
   baseUrl: string;
   apiKey?: string;
+  accessToken?: string;
+  authMethod?: 'api_key' | 'oauth';
   [key: string]: unknown;
 }
 

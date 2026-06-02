@@ -12,13 +12,14 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -b",
     "dev": "tsc --watch",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
+    "@dmr-x/registry": "*",
     "@dmr-x/utils": "*"
   },
   "devDependencies": {

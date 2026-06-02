@@ -8,6 +8,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter } from '@dmr-x/adapters';
 import { ReplicateAdapter, StabilityAdapter } from '@dmr-x/adapters';
+import { logger } from '@dmr-x/utils';
 import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter } from '@dmr-x/adapters';
 import type {
@@ -53,6 +54,8 @@ interface ServerState {
   startTime: number;
   requestCount: number;
   lastError: string | null;
+  /** SDK tool definitions for programmatic access and discovery */
+  sdkTools: Array<{ name: string; description: string; params: unknown }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +69,8 @@ const MODALITY_TO_PATH: Record<Modality, string> = {
   embedding: '/v1/embeddings',
   audio_tts: '/v1/audio/speech',
   audio_stt: '/v1/audio/transcriptions',
+  audio_speech: '/v1/audio/speech',
+  audio_transcription: '/v1/audio/transcriptions',
   video: '/v1/video/generations',
   music: '/v1/music/generations',
   reranking: '/v1/rerank',
@@ -287,8 +292,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     for (const [providerId, cfg] of Object.entries(adapterConfigs)) {
       try {
         await adapterRegistry.initialize(providerId, cfg);
-      } catch {
-        // Adapter not configured — skip silently
+      } catch (initErr) {
+        // Adapter not configured — skip but log for debugging
+        logger.warn({ err: initErr, providerId }, 'Failed to initialize adapter');
       }
     }
     adaptersInitialized = true;
@@ -305,7 +311,24 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     startTime: Date.now(),
     requestCount: 0,
     lastError: null,
+    sdkTools: [],
   };
+
+  // SDK tool definitions for programmatic access and discovery
+  const sdkToolDefs: Array<{ name: string; description: string; params: unknown }> = [
+    { name: TOOL_NAMES.CHAT, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT], params: chatParams },
+    { name: TOOL_NAMES.GENERATE_IMAGE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE], params: imageParams },
+    { name: TOOL_NAMES.EMBED, description: TOOL_DESCRIPTIONS[TOOL_NAMES.EMBED], params: embedParams },
+    { name: TOOL_NAMES.TRANSCRIBE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.TRANSCRIBE], params: transcribeParams },
+    { name: TOOL_NAMES.SPEAK, description: TOOL_DESCRIPTIONS[TOOL_NAMES.SPEAK], params: speakParams },
+    { name: TOOL_NAMES.RERANK, description: TOOL_DESCRIPTIONS[TOOL_NAMES.RERANK], params: rerankParams },
+    { name: TOOL_NAMES.MODELS, description: TOOL_DESCRIPTIONS[TOOL_NAMES.MODELS], params: modelsParams },
+    { name: TOOL_NAMES.STATUS, description: TOOL_DESCRIPTIONS[TOOL_NAMES.STATUS], params: statusParams },
+  ];
+
+  for (const def of sdkToolDefs) {
+    state.sdkTools.push(def);
+  }
 
   // Wire up adapter executor for fallback
   router.setAdapterExecutor({
@@ -339,8 +362,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.CHAT,
     TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT],
-    chatParams,
-    async (params) => {
+    chatParams as any,
+    async (params: any) => {
       await initAdapters();
       state.requestCount++;
 
@@ -377,8 +400,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.GENERATE_IMAGE,
     TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE],
-    imageParams,
-    async (params) => {
+    imageParams as any,
+    async (params: any) => {
       await initAdapters();
       state.requestCount++;
 
@@ -415,8 +438,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.EMBED,
     TOOL_DESCRIPTIONS[TOOL_NAMES.EMBED],
-    embedParams,
-    async (params) => {
+    embedParams as any,
+    async (params: any) => {
       await initAdapters();
       state.requestCount++;
 
@@ -453,8 +476,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.TRANSCRIBE,
     TOOL_DESCRIPTIONS[TOOL_NAMES.TRANSCRIBE],
-    transcribeParams,
-    async (params) => {
+    transcribeParams as any,
+    async (params: any) => {
       await initAdapters();
       state.requestCount++;
 
@@ -491,8 +514,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.SPEAK,
     TOOL_DESCRIPTIONS[TOOL_NAMES.SPEAK],
-    speakParams,
-    async (params) => {
+    speakParams as any,
+    async (params: any) => {
       await initAdapters();
       state.requestCount++;
 
@@ -529,8 +552,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.RERANK,
     TOOL_DESCRIPTIONS[TOOL_NAMES.RERANK],
-    rerankParams,
-    async (params) => {
+    rerankParams as any,
+    async (params: any) => {
       await initAdapters();
       state.requestCount++;
 
@@ -567,8 +590,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.MODELS,
     TOOL_DESCRIPTIONS[TOOL_NAMES.MODELS],
-    modelsParams,
-    async (params) => {
+    modelsParams as any,
+    async (params: any) => {
       await initAdapters();
 
       try {
@@ -610,8 +633,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
                     });
                   }
                 }
-              } catch {
-                // Adapter not initialized — skip
+              } catch (listErr) {
+                // Adapter not initialized — skip but log for debugging
+                logger.warn({ err: listErr }, 'Failed to list models from adapter');
               }
             }
           }
@@ -670,8 +694,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server.tool(
     TOOL_NAMES.STATUS,
     TOOL_DESCRIPTIONS[TOOL_NAMES.STATUS],
-    statusParams,
-    async (params) => {
+    statusParams as any,
+    async (params: any) => {
       await initAdapters();
 
       try {

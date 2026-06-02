@@ -1,11 +1,32 @@
-import type { UnifiedRequest, UnifiedResponse, Message, Tool, ToolCall } from '@dmr-x/core';
+import type {
+  UnifiedRequest,
+  UnifiedResponse,
+  Message,
+  ContentPart,
+  Tool,
+  ToolCall,
+} from '@dmr-x/core';
+import {
+  fromClaudeMessages,
+  type ClaudeMessageParam,
+  type ClaudeTextBlockParam,
+  type ClaudeImageBlockParam,
+  type ClaudeToolUseBlockParam,
+  type ClaudeToolResultBlockParam,
+  type InputsUnion,
+  type EasyInputMessage,
+  type InputMessageItem,
+  type FunctionCallOutputItem,
+  type FunctionCallItem,
+} from '@dmr-x/utils';
 
 // --- Anthropic Wire Format Types ---
+// These remain as the external API contract types.
 
 export interface AnthropicMessagesRequest {
   model: string;
   max_tokens: number;
-  system?: string | AnthropicContentBlock[];
+  system?: string | { type: 'text'; text: string }[];
   messages: AnthropicMessage[];
   tools?: AnthropicTool[];
   tool_choice?: AnthropicToolChoice;
@@ -54,85 +75,132 @@ export type AnthropicResponseContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> };
 
-// --- Conversion Functions ---
+// ---------------------------------------------------------------------------
+// Bridge: InputsUnion -> Message[]
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert OpenResponses InputsUnion items (produced by fromClaudeMessages)
+ * back to the gateway's internal Message[] format for UnifiedRequest.
+ */
+function inputsUnionToMessages(inputs: InputsUnion): Message[] {
+  const messages: Message[] = [];
+
+  for (const item of inputs) {
+    // EasyInputMessage has no 'type' field -- it's { role, content }
+    if (!('type' in item)) {
+      const simple = item as EasyInputMessage;
+      messages.push({ role: simple.role, content: simple.content });
+      continue;
+    }
+
+    switch (item.type) {
+      case 'message': {
+        // InputMessageItem -- structured content with text/image parts
+        const msgItem = item as InputMessageItem;
+        const contentParts: ContentPart[] = msgItem.content.map((part) => {
+          if (part.type === 'input_text') {
+            return { type: 'text' as const, text: part.text };
+          }
+          // input_image
+          return {
+            type: 'image_url' as const,
+            image_url: { url: part.imageUrl, detail: part.detail },
+          };
+        });
+        // Map 'developer' role to 'assistant' (Anthropic doesn't have 'developer')
+        const role = msgItem.role === 'developer' ? 'assistant' : msgItem.role;
+        messages.push({ role: role as Message['role'], content: contentParts });
+        break;
+      }
+
+      case 'function_call': {
+        // FunctionCallItem -- assistant tool call
+        const fcItem = item as FunctionCallItem;
+        const toolCall: ToolCall = {
+          id: fcItem.callId,
+          type: 'function',
+          function: {
+            name: fcItem.name,
+            arguments: fcItem.arguments,
+          },
+        };
+
+        // Attach to the last assistant message if it exists,
+        // otherwise create a new assistant message
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg?.role === 'assistant') {
+          if (!lastMsg.tool_calls) {
+            lastMsg.tool_calls = [];
+          }
+          lastMsg.tool_calls.push(toolCall);
+        } else {
+          messages.push({
+            role: 'assistant',
+            content: '',
+            tool_calls: [toolCall],
+          });
+        }
+        break;
+      }
+
+      case 'function_call_output': {
+        // FunctionCallOutputItem -- tool result from user
+        const fcOutput = item as FunctionCallOutputItem;
+        messages.push({
+          role: 'tool',
+          tool_call_id: fcOutput.callId,
+          content: fcOutput.output,
+        });
+        break;
+      }
+
+      case 'image_generation_call': {
+        // Not directly representable as a Message -- skip
+        break;
+      }
+    }
+  }
+
+  return messages;
+}
+
+// ---------------------------------------------------------------------------
+// Request conversion: Anthropic -> Unified
+// ---------------------------------------------------------------------------
 
 export function convertAnthropicRequestToUnified(
   body: AnthropicMessagesRequest,
   metadata: Record<string, unknown>
 ): UnifiedRequest {
-  const messages: Message[] = [];
-
-  // Extract system prompt into a message
+  // Extract system prompt before passing messages to fromClaudeMessages
+  // (Anthropic's system is a top-level field, not a message)
+  let systemContent: string | undefined;
   if (body.system) {
-    const systemContent = typeof body.system === 'string'
+    systemContent = typeof body.system === 'string'
       ? body.system
-      : body.system.map(b => b.type === 'text' ? b.text : '').join('');
-    messages.push({ role: 'system', content: systemContent });
+      : body.system.map(b => b.text).join('');
   }
 
-  // Convert messages
-  for (const msg of body.messages) {
-    if (typeof msg.content === 'string') {
-      messages.push({ role: msg.role, content: msg.content });
-      continue;
-    }
+  // Use fromClaudeMessages to parse Anthropic message content blocks
+  // into the OpenResponses InputsUnion format.
+  // AnthropicContentBlock is a subset of ClaudeContentBlockParam, so the cast is safe.
+  type ClaudeContentBlockUnion = ClaudeTextBlockParam | ClaudeImageBlockParam | ClaudeToolUseBlockParam | ClaudeToolResultBlockParam;
+  const claudeMessages: ClaudeMessageParam[] = body.messages.map(msg => ({
+    role: msg.role,
+    content: msg.content as string | ClaudeContentBlockUnion[],
+  }));
+  const inputs = fromClaudeMessages(claudeMessages);
 
-    // Handle content blocks
-    const textParts: string[] = [];
-    const toolCalls: ToolCall[] = [];
-    const toolResults: Message[] = [];
+  // Bridge from InputsUnion to internal Message[] format
+  const messages = inputsUnionToMessages(inputs);
 
-    for (const block of msg.content) {
-      switch (block.type) {
-        case 'text':
-          textParts.push(block.text);
-          break;
-        case 'image':
-          // Convert Anthropic image to unified image_url format
-          textParts.push(''); // placeholder, images go in content parts
-          break;
-        case 'tool_use':
-          toolCalls.push({
-            id: block.id,
-            type: 'function',
-            function: {
-              name: block.name,
-              arguments: JSON.stringify(block.input),
-            },
-          });
-          break;
-        case 'tool_result':
-          toolResults.push({
-            role: 'tool',
-            tool_call_id: block.tool_use_id,
-            content: typeof block.content === 'string'
-              ? block.content
-              : JSON.stringify(block.content),
-          });
-          break;
-      }
-    }
-
-    // For assistant messages with tool_calls
-    if (msg.role === 'assistant' && toolCalls.length > 0) {
-      messages.push({
-        role: 'assistant',
-        content: textParts.join('') || '',
-        tool_calls: toolCalls,
-      });
-      continue;
-    }
-
-    // For user messages, emit text first, then tool results as separate messages
-    if (textParts.join('').trim()) {
-      messages.push({ role: msg.role, content: textParts.join('') });
-    }
-    for (const tr of toolResults) {
-      messages.push(tr);
-    }
+  // Prepend system message if present
+  if (systemContent) {
+    messages.unshift({ role: 'system', content: systemContent });
   }
 
-  // Convert tools
+  // Convert tools (DMR-X specific -- fromClaudeMessages doesn't handle tools)
   const tools: Tool[] | undefined = body.tools?.map(t => ({
     type: 'function' as const,
     function: {
@@ -142,7 +210,7 @@ export function convertAnthropicRequestToUnified(
     },
   }));
 
-  // Convert tool_choice
+  // Convert tool_choice (DMR-X specific)
   let toolChoice: UnifiedRequest['tool_choice'];
   if (body.tool_choice) {
     switch (body.tool_choice.type) {
@@ -177,6 +245,18 @@ export function convertAnthropicRequestToUnified(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Response conversion: Unified -> Anthropic
+// ---------------------------------------------------------------------------
+
+// Stop reason mapping shared between response and stream serializer
+export const ANTHROPIC_STOP_REASON_MAP: Record<string, AnthropicMessagesResponse['stop_reason']> = {
+  stop: 'end_turn',
+  tool_calls: 'tool_use',
+  length: 'max_tokens',
+  content_filter: 'end_turn',
+};
+
 export function convertUnifiedResponseToAnthropic(
   response: UnifiedResponse
 ): AnthropicMessagesResponse {
@@ -199,15 +279,8 @@ export function convertUnifiedResponseToAnthropic(
     }
   }
 
-  // Map finish reason
-  const stopReasonMap: Record<string, AnthropicMessagesResponse['stop_reason']> = {
-    stop: 'end_turn',
-    tool_calls: 'tool_use',
-    length: 'max_tokens',
-    content_filter: 'end_turn',
-  };
   const stopReason = response.finishReason
-    ? (stopReasonMap[response.finishReason] ?? null)
+    ? (ANTHROPIC_STOP_REASON_MAP[response.finishReason] ?? null)
     : null;
 
   return {

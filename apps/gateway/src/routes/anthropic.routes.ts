@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
-import { generateRequestId } from '@dmr-x/utils';
+import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
 import {
   convertAnthropicRequestToUnified,
@@ -83,37 +83,64 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
       apiFormat: 'anthropic',
     });
 
-    try {
-      const { plan, response } = await router.route(unifiedRequest, {
-        path: '/v1/messages',
-        qualityTarget: 'balanced',
-      });
+    if (body.stream) {
+        // Streaming: get routing plan only, then stream from adapter
+        const { plan } = await router.route(unifiedRequest, {
+          path: '/v1/messages',
+          qualityTarget: 'balanced',
+          planOnly: true,
+        });
 
-      if (body.stream) {
+        if (!plan.primary) {
+          reply.raw.writeHead(503, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+          reply.raw.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'No available providers' } })}\n\n`);
+          reply.raw.end();
+          return;
+        }
+
         reply.raw.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
         });
 
-        const adapterRegistry = (server as any).adapterRegistry;
-        const adapter = adapterRegistry.get(plan.primary.providerId);
+        const adapter = (server as any).getAdapter(plan.primary.providerId);
         if (adapter) {
-          const stream = adapter.executeStream(unifiedRequest);
-          for await (const sseLine of createAnthropicSSEStream(stream, {
-            model: response.modelId,
-            requestId,
-          })) {
-            reply.raw.write(sseLine);
+          try {
+            const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
+            const stream = adapter.executeStream(routedRequest);
+            for await (const sseLine of createAnthropicSSEStream(stream, {
+              model: plan.primary.modelId,
+              requestId,
+            })) {
+              reply.raw.write(sseLine);
+            }
+          } catch (streamError) {
+            logger.error({ err: streamError, requestId }, 'Anthropic streaming error');
+            reply.raw.write(`event: error\ndata: ${JSON.stringify({
+              type: 'error',
+              error: { type: 'stream_error', message: 'Stream failed' },
+            })}\n\n`);
           }
+        } else {
+          reply.raw.write(`event: error\ndata: ${JSON.stringify({
+            type: 'error',
+            error: { type: 'routing_error', message: 'No adapter available for provider' },
+          })}\n\n`);
         }
         reply.raw.end();
         return reply;
       }
 
+      // Non-streaming: route and execute
+      const { plan, response } = await router.route(unifiedRequest, {
+        path: '/v1/messages',
+        qualityTarget: 'balanced',
+      });
+      if (!plan.primary) {
+        throw new ProviderUnavailableError([]);
+      }
+
       return convertUnifiedResponseToAnthropic(response);
-    } catch (error) {
-      throw error;
-    }
   });
 }

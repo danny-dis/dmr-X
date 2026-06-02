@@ -11,6 +11,44 @@ import type {
   StreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
+import { createHttpError, logger, type HttpMeta } from '@dmr-x/utils';
+
+/** Parse an NDJSON (newline-delimited JSON) response body into an async iterable. */
+async function* parseNDJSON<T extends Record<string, unknown>>(
+  body: ReadableStream<Uint8Array> | null,
+): AsyncIterable<T> {
+  if (!body) throw new Error('Response body is null');
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          yield JSON.parse(trimmed) as T;
+        } catch (parseErr) {
+          logger.debug({ err: parseErr }, 'Ollama NDJSON: skipped malformed JSON line');
+        }
+      }
+    }
+    if (buffer.trim()) {
+      try {
+        yield JSON.parse(buffer.trim()) as T;
+      } catch (parseErr) {
+        logger.debug({ err: parseErr }, 'Ollama NDJSON: skipped malformed JSON remainder');
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 export class OllamaAdapter extends BaseAdapter {
   readonly providerId = 'ollama';
@@ -22,7 +60,10 @@ export class OllamaAdapter extends BaseAdapter {
       timeoutMs: 5000,
     });
     if (!response.ok) {
-      throw new Error(`Ollama health check failed: ${response.status}`);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new Error(`Ollama health check failed: ${httpError.message}`);
     }
   }
 
@@ -32,15 +73,19 @@ export class OllamaAdapter extends BaseAdapter {
     const baseUrl = this.config.baseUrl || 'http://localhost:11434';
     const start = Date.now();
 
-    if (request.modality === 'llm') {
-      return this.executeChat(baseUrl, request, options);
-    }
+    try {
+      if (request.modality === 'llm') {
+        return this.executeChat(baseUrl, request, options);
+      }
 
-    if (request.modality === 'embedding') {
-      return this.executeEmbedding(baseUrl, request, options);
-    }
+      if (request.modality === 'embedding') {
+        return this.executeEmbedding(baseUrl, request, options);
+      }
 
-    throw new Error(`Unsupported modality: ${request.modality}`);
+      throw new Error(`Unsupported modality: ${request.modality}`);
+    } catch (err) {
+      throw this.handleAdapterError(err);
+    }
   }
 
   private async executeChat(
@@ -69,8 +114,10 @@ export class OllamaAdapter extends BaseAdapter {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`Ollama error: ${error}`, this.providerId, response.status);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new ProviderError(`Ollama: ${httpError.message}`, this.providerId, response.status);
     }
 
     const data = await response.json() as Record<string, unknown>;
@@ -112,8 +159,10 @@ export class OllamaAdapter extends BaseAdapter {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`Ollama embedding error: ${error}`, this.providerId, response.status);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new ProviderError(`Ollama embedding: ${httpError.message}`, this.providerId, response.status);
     }
 
     const data = await response.json() as Record<string, unknown>;
@@ -152,50 +201,19 @@ export class OllamaAdapter extends BaseAdapter {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`Ollama stream error: ${error}`, this.providerId, response.status);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new ProviderError(`Ollama stream: ${httpError.message}`, this.providerId, response.status);
     }
 
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('Response body is null');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
     let index = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
-        try {
-          const parsed = JSON.parse(trimmed);
-
-          if (parsed.message?.content) {
-            yield {
-              type: 'token',
-              data: { content: parsed.message.content },
-              index: index++,
-            };
-          }
-
-          if (parsed.done) {
-            yield {
-              type: 'done',
-              data: {},
-              index: index++,
-            };
-          }
-        } catch {
-          // Skip malformed JSON
-        }
+    for await (const parsed of parseNDJSON<{ message?: { content?: string }; done?: boolean }>(response.body)) {
+      if (parsed.message?.content) {
+        yield { type: 'token', data: { content: parsed.message.content }, index: index++ };
+      }
+      if (parsed.done) {
+        yield { type: 'done', data: {}, index: index++ };
       }
     }
   }

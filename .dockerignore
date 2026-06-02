@@ -1,0 +1,19 @@
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+.git
+.gitnexus
+.env
+.env.*
+.turbo
+proto ui
+.claude
+.openclaude
+*.md
+agents checklist.md
+p0-integration-checklist.md
+ARCHITECTURE.md
+AGENTS.md
+CLAUDE.md
+README.md

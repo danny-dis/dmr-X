@@ -1,4 +1,6 @@
 import type { StreamChunk, TokenStreamChunk, DoneStreamChunk, ErrorStreamChunk } from '@dmr-x/core';
+import type { ClaudeStopReason } from '@dmr-x/utils';
+import { ANTHROPIC_STOP_REASON_MAP } from './anthropic-converter.js';
 
 interface AnthropicStreamOptions {
   model: string;
@@ -79,14 +81,10 @@ export async function* createAnthropicSSEStream(
         blockStarted = false;
       }
 
-      // Map finish reason
+      // Map finish reason using shared mapping from anthropic-converter
       const finishReason = data.finishReason ?? 'stop';
-      const stopReasonMap: Record<string, string> = {
-        stop: 'end_turn',
-        tool_calls: 'tool_use',
-        length: 'max_tokens',
-      };
-      const stopReason = stopReasonMap[finishReason] ?? 'end_turn';
+      const stopReason: ClaudeStopReason =
+        (ANTHROPIC_STOP_REASON_MAP[finishReason] as ClaudeStopReason) ?? 'end_turn';
 
       // Emit message_delta with stop_reason and usage
       yield formatEvent('message_delta', {

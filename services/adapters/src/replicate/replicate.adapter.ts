@@ -2,6 +2,7 @@ import { BaseAdapter } from '../base.adapter.js';
 import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
+import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 
 export class ReplicateAdapter extends BaseAdapter {
   readonly providerId = 'replicate';
@@ -23,7 +24,10 @@ export class ReplicateAdapter extends BaseAdapter {
       timeoutMs: 5000,
     });
     if (!response.ok) {
-      throw new Error(`Replicate health check failed: ${response.status}`);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new Error(`Replicate health check failed: ${httpError.message}`);
     }
   }
 
@@ -37,61 +41,67 @@ export class ReplicateAdapter extends BaseAdapter {
     const start = Date.now();
     const model = request.model || 'stability-ai/sdxl';
 
-    // Create prediction
-    const createResponse = await this.fetchWithTimeout(
-      `https://api.replicate.com/v1/predictions`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-          Prefer: 'wait',
-        },
-        body: JSON.stringify({
-          version: await this.getModelVersion(model),
-          input: {
-            prompt: request.prompt,
-            negative_prompt: request.negative_prompt,
-            width: request.width || 1024,
-            height: request.height || 1024,
-            num_inference_steps: request.steps || 50,
-            guidance_scale: request.cfg_scale || 7.5,
-            seed: request.diffusion_seed,
+    try {
+      // Create prediction
+      const createResponse = await this.fetchWithTimeout(
+        `https://api.replicate.com/v1/predictions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+            Prefer: 'wait',
           },
-        }),
-        timeoutMs: options?.timeoutMs ?? 120000,
+          body: JSON.stringify({
+            version: await this.getModelVersion(model),
+            input: {
+              prompt: request.prompt,
+              negative_prompt: request.negative_prompt,
+              width: request.width || 1024,
+              height: request.height || 1024,
+              num_inference_steps: request.steps || 50,
+              guidance_scale: request.cfg_scale || 7.5,
+              seed: request.diffusion_seed,
+            },
+          }),
+          timeoutMs: options?.timeoutMs ?? 120000,
+        }
+      );
+
+      if (!createResponse.ok) {
+        const body = await createResponse.text();
+        const httpMeta: HttpMeta = { response: createResponse, request: new Request(createResponse.url), body };
+        const httpError = createHttpError(createResponse.status, httpMeta);
+        throw new ProviderError(`Replicate: ${httpError.message}`, this.providerId, createResponse.status);
       }
-    );
 
-    if (!createResponse.ok) {
-      const error = await createResponse.text();
-      throw new ProviderError(`Replicate error: ${error}`, this.providerId, createResponse.status);
-    }
+      const prediction = await createResponse.json() as any;
+      const latencyMs = Date.now() - start;
 
-    const prediction = await createResponse.json();
-    const latencyMs = Date.now() - start;
+      // If prediction is still processing, poll for completion
+      if (prediction.status !== 'succeeded') {
+        const result = await this.pollPrediction(prediction.id, options?.timeoutMs ?? 120000);
+        return {
+          modality: 'diffusion',
+          requestId: prediction.id,
+          providerId: this.providerId,
+          modelId: model,
+          images: [{ url: result.output?.[0] }],
+          latencyMs: Date.now() - start,
+        };
+      }
 
-    // If prediction is still processing, poll for completion
-    if (prediction.status !== 'succeeded') {
-      const result = await this.pollPrediction(prediction.id, options?.timeoutMs ?? 120000);
       return {
         modality: 'diffusion',
         requestId: prediction.id,
         providerId: this.providerId,
         modelId: model,
-        images: [{ url: result.output?.[0] }],
-        latencyMs: Date.now() - start,
+        images: [{ url: prediction.output?.[0] }],
+        latencyMs,
       };
+    } catch (err) {
+      throw this.handleAdapterError(err);
     }
-
-    return {
-      modality: 'diffusion',
-      requestId: prediction.id,
-      providerId: this.providerId,
-      modelId: model,
-      images: [{ url: prediction.output?.[0] }],
-      latencyMs,
-    };
   }
 
   private async pollPrediction(predictionId: string, timeoutMs: number): Promise<any> {
@@ -108,7 +118,10 @@ export class ReplicateAdapter extends BaseAdapter {
       );
 
       if (!response.ok) {
-        throw new ProviderError(`Replicate poll error: ${response.status}`, this.providerId);
+        const body = await response.text();
+        const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+        const httpError = createHttpError(response.status, httpMeta);
+        throw new ProviderError(`Replicate poll: ${httpError.message}`, this.providerId, response.status);
       }
 
       const prediction = await response.json() as { status: string; error?: string; output?: unknown };
@@ -148,7 +161,10 @@ export class ReplicateAdapter extends BaseAdapter {
     );
 
     if (!response.ok) {
-      throw new ProviderError(`Model not found: ${model}`, this.providerId, 404);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new ProviderError(`Replicate: Model not found (${model}): ${httpError.message}`, this.providerId, response.status);
     }
 
     const data = await response.json() as { latest_version?: { id: string } };

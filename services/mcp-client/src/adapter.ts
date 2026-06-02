@@ -210,8 +210,9 @@ export class MCPToolAdapter implements ProviderAdapter {
         let args: Record<string, unknown> = {};
         try {
           args = JSON.parse(tc.function.arguments);
-        } catch {
+        } catch (parseErr) {
           // If arguments is not valid JSON, pass as-is
+          logger.debug({ toolName: tc.function.name }, 'Non-JSON tool arguments, passing raw');
           args = { raw: tc.function.arguments };
         }
         return {

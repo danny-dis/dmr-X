@@ -1,4 +1,4 @@
-import type { CandidateSet, ProviderModel } from '@dmr-x/core';
+import type { CandidateSet, ProviderModel, FreeTierStrategy } from '@dmr-x/core';
 import type { Specialization, SpecializationProfile } from '@dmr-x/core';
 import type { SubTask } from './task-decomposer.js';
 import {
@@ -62,16 +62,31 @@ export class SpecialistRouter {
   routeAllSubTasks(
     subTasks: SubTask[],
     candidates: CandidateSet,
-    qualityTarget: 'frontier' | 'balanced' | 'economy' = 'balanced'
+    qualityTarget: 'frontier' | 'balanced' | 'economy' = 'balanced',
+    freeTierStrategy?: FreeTierStrategy
   ): Map<string, ProviderModel> {
     const assignments = new Map<string, ProviderModel>();
+
+    // Apply free-tier strategy to candidates before routing
+    let filteredCandidates = candidates;
+    if (freeTierStrategy === 'prioritize') {
+      // Prefer free models, but keep paid as fallback
+      const freeModels = candidates.filter(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0);
+      const paidModels = candidates.filter(c => c.costPerInputToken > 0 || c.costPerOutputToken > 0);
+      filteredCandidates = freeModels.length > 0 ? [...freeModels, ...paidModels] : candidates;
+    } else if (freeTierStrategy === 'fallback') {
+      // Prefer paid models, free as fallback
+      const freeModels = candidates.filter(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0);
+      const paidModels = candidates.filter(c => c.costPerInputToken > 0 || c.costPerOutputToken > 0);
+      filteredCandidates = paidModels.length > 0 ? [...paidModels, ...freeModels] : candidates;
+    }
 
     // Sort sub-tasks by priority (highest first)
     const sorted = [...subTasks].sort((a, b) => b.priority - a.priority);
 
     for (const subTask of sorted) {
       // Filter candidates by modality
-      const modalityCandidates = candidates.filter((c) => c.modality === subTask.modality);
+      const modalityCandidates = filteredCandidates.filter((c) => c.modality === subTask.modality);
 
       // Filter by required capabilities (if any)
       const capableCandidates = modalityCandidates.filter((c) =>

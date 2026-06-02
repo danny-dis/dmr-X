@@ -6,8 +6,9 @@ export { runPipeline, type PipelineInput, type PipelineOutput } from './pipeline
 export { capabilityFilter } from './pipeline/capability-filter.js';
 export { availabilityFilter } from './pipeline/availability-filter.js';
 export { costLatencyScorer } from './pipeline/cost-latency-scorer.js';
-export { finalSelector } from './pipeline/final-selector.js';
+export { finalSelector, type ThompsonSamplerLike } from './pipeline/final-selector.js';
 export { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
 export { TaskDecomposer, SpecialistRouter, CompositeExecutor, type SubTask, type DecomposedTask, type CompositeResult } from './decomposer/index.js';
 export { ThompsonSampler, calculateReward } from './bandit/thompson-sampler.js';
 export { RewardUpdater, type RequestRecord } from './bandit/reward-updater.js';
+export { META_MODELS, isMetaModel, resolveMetaModel, type MetaModelDefinition } from './meta-models.js';

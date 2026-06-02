@@ -1,92 +1,236 @@
-import { getPool } from '@dmr-x/db';
+import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
-import { PROVIDER_CATALOG, getProviderTemplate, type ProviderTemplate, type ModelTemplate } from './provider-catalog.js';
+import { PROVIDER_CATALOG } from './provider-catalog.js';
+import { discoverOpenAIModels, type DiscoveredModel } from './model-discovery.js';
+import crypto from 'node:crypto';
+
+/**
+ * Insert a batch of model profiles for a provider.
+ * Centralized so both auto-register and the backfill can share it.
+ */
+function insertModelProfiles(
+  providerId: string,
+  models: DiscoveredModel[],
+  isActive: boolean,
+): number {
+  const db = getDb();
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO model_profiles (
+      id, provider_id, model_id, display_name, modality, intelligence_layer,
+      supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
+      context_window, max_output_tokens,
+      input_cost_per_1k, output_cost_per_1k, cost_per_image,
+      quality_score, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  let count = 0;
+  for (const m of models) {
+    if (!m.modelId) continue;
+    const caps = new Set(m.capabilities);
+    const result = insert.run(
+      crypto.randomUUID(),
+      providerId,
+      m.modelId,
+      m.displayName || m.modelId,
+      m.modality || 'llm',
+      'executor',
+      caps.has('streaming') ? 1 : 0,
+      caps.has('vision') ? 1 : 0,
+      caps.has('tool_use') ? 1 : 0,
+      caps.has('json_mode') ? 1 : 0,
+      caps.has('function_call') ? 1 : 0,
+      caps.has('reasoning') ? 1 : 0,
+      m.contextWindow,
+      m.maxOutputTokens,
+      m.inputCostPer1M / 1000,
+      m.outputCostPer1M / 1000,
+      m.costPerImage,
+      0.5,
+      isActive ? 1 : 0,
+    );
+    if (result.changes > 0) count += 1;
+  }
+  return count;
+}
 
 /**
  * Auto-register providers from environment variables
  *
  * Scans env for known API keys and auto-creates provider + model entries.
+ * For catalog entries with empty `models` arrays (e.g. Pollinations), the
+ * model list is fetched live from the provider's `/v1/models` endpoint.
  */
 export async function autoRegisterProviders(): Promise<string[]> {
   const registered: string[] = [];
-  const pool = getPool();
+  const db = getDb();
 
   for (const template of PROVIDER_CATALOG) {
-    const apiKey = process.env[template.envKey];
-
-    if (!apiKey && template.category !== 'local') {
-      continue; // No API key = skip (except local providers)
-    }
+    const apiKey = template.envKey ? process.env[template.envKey] : undefined;
+    const hasKey = !!apiKey;
 
     // Check if provider already exists
-    const existing = await pool.query(
-      'SELECT id FROM providers WHERE name = $1',
-      [template.id]
-    );
+    const existing = db.prepare(
+      'SELECT id FROM providers WHERE name = ?'
+    ).get(template.id);
 
-    if (existing.rows.length > 0) {
-      logger.debug({ provider: template.id }, 'Provider already registered');
+    if (existing) {
+      // If provider exists but now has a key, activate it and its models
+      if (hasKey && template.envKey) {
+        const currentConfig = db.prepare('SELECT config FROM providers WHERE id = ?').get(existing.id) as { config: string } | undefined;
+        const cfg = JSON.parse(currentConfig?.config || '{}');
+        if (!cfg.hasKey) {
+          // Key was just added — activate provider and its models
+          cfg.hasKey = true;
+          db.prepare(
+            `UPDATE providers SET is_healthy = 1, config = ?, updated_at = datetime('now') WHERE id = ?`
+          ).run(JSON.stringify(cfg), existing.id);
+          db.prepare(
+            `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now') WHERE provider_id = ?`
+          ).run(existing.id);
+          logger.info({ provider: template.id }, 'Activated provider — API key now available');
+        }
+      }
       continue;
     }
 
     try {
       // Create provider
-      const providerResult = await pool.query(
-        `INSERT INTO providers (name, adapter_type, base_url, api_key_ref, config)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id`,
-        [
-          template.id,
-          template.id,
-          template.baseUrl,
-          template.envKey,
-          JSON.stringify({
-            authMethod: template.authMethod,
-            authHeader: template.authHeader,
-            apiFormat: template.apiFormat,
-            streaming: template.streaming,
-            toolCalling: template.toolCalling,
-          }),
-        ]
+      const providerId = crypto.randomUUID();
+      const isActive = hasKey || template.envKey === '';
+      
+      db.prepare(
+        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, is_healthy, config)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        providerId,
+        template.id,
+        template.id,
+        template.baseUrl,
+        template.envKey || '',
+        isActive ? 1 : 0,
+        JSON.stringify({
+          authMethod: template.authMethod,
+          authHeader: template.authHeader,
+          apiFormat: template.apiFormat,
+          streaming: template.streaming,
+          toolCalling: template.toolCalling,
+          signupUrl: template.signupUrl,
+          hasKey,
+          category: template.category,
+          region: template.region,
+          description: template.description,
+        })
       );
 
-      const providerId = providerResult.rows[0].id;
+      // Resolve model list: static catalog OR live /v1/models discovery
+      let modelsForInsert: Array<{
+        modelId: string;
+        displayName: string;
+        modality: string;
+        contextWindow: number | null;
+        maxOutputTokens: number | null;
+        inputCostPer1M: number;
+        outputCostPer1M: number;
+        costPerImage: number;
+        capabilities: string[];
+        specializations: string[];
+        rateLimits?: { rpm?: number; rpd?: number; tpm?: number; tpd?: number };
+        monthlyTokenBudget?: number;
+        intelligenceRank?: number;
+        speedRank?: number;
+      }> = [];
 
-      // Create model profiles
-      for (const model of template.models) {
-        await pool.query(
-          `INSERT INTO model_profiles (
-            provider_id, model_id, display_name, modality, intelligence_layer,
-            supports_streaming, supports_vision, supports_tool_use, supports_json_mode,
-            context_window, max_output_tokens,
-            input_cost_per_1k, output_cost_per_1k, cost_per_image,
-            quality_score, is_active
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-          [
-            providerId,
-            model.id,
-            model.id,
-            model.modalities[0] || 'llm',
-            'executor',
-            model.capabilities.includes('streaming'),
-            model.capabilities.includes('vision'),
-            model.capabilities.includes('tool_use'),
-            model.capabilities.includes('json_mode'),
-            model.contextWindow,
-            model.maxOutputTokens,
-            (model.inputCostPer1M || 0) / 1000,  // Convert from per-1M to per-1K
-            (model.outputCostPer1M || 0) / 1000,
-            model.costPerImage || 0,
-            0.5, // Default quality score
-            true,
-          ]
+      if (template.models.length > 0) {
+        for (const m of template.models) {
+          modelsForInsert.push({
+            modelId: m.id,
+            displayName: m.id,
+            modality: m.modalities[0] || 'llm',
+            contextWindow: m.contextWindow ?? null,
+            maxOutputTokens: m.maxOutputTokens ?? null,
+            inputCostPer1M: m.inputCostPer1M ?? 0,
+            outputCostPer1M: m.outputCostPer1M ?? 0,
+            costPerImage: m.costPerImage ?? 0,
+            capabilities: m.capabilities,
+            specializations: m.specializations,
+            rateLimits: m.freeTier?.rateLimits,
+            monthlyTokenBudget: m.freeTier?.monthlyTokenBudget,
+            intelligenceRank: m.freeTier?.intelligenceRank,
+            speedRank: m.freeTier?.speedRank,
+          });
+        }
+      } else if (template.apiFormat === 'openai' && template.baseUrl) {
+        // Live discovery for catalog entries that don't pre-declare models
+        try {
+          const discovered = await discoverOpenAIModels({
+            baseUrl: template.baseUrl,
+            apiKey: apiKey || '',
+          });
+          if (discovered.length > 0) {
+            modelsForInsert = discovered;
+            logger.info(
+              { provider: template.id, count: discovered.length },
+              'Discovered models from provider /v1/models',
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            { err, provider: template.id },
+            'Model discovery failed during first register; provider will have no models',
+          );
+        }
+      }
+
+      // Create model profiles (rich variant with rate-limit / rank fields)
+      const insert = db.prepare(
+        `INSERT INTO model_profiles (
+          id, provider_id, model_id, display_name, modality, intelligence_layer,
+          supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
+          context_window, max_output_tokens,
+          input_cost_per_1k, output_cost_per_1k, cost_per_image,
+          quality_score, is_active,
+          rate_limit_rpm, rate_limit_rpd, rate_limit_tpm, rate_limit_tpd,
+          monthly_token_budget, intelligence_rank, speed_rank
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const m of modelsForInsert) {
+        if (!m.modelId) continue;
+        const caps = new Set(m.capabilities);
+        insert.run(
+          crypto.randomUUID(),
+          providerId,
+          m.modelId,
+          m.displayName || m.modelId,
+          m.modality || 'llm',
+          'executor',
+          caps.has('streaming') ? 1 : 0,
+          caps.has('vision') ? 1 : 0,
+          caps.has('tool_use') ? 1 : 0,
+          caps.has('json_mode') ? 1 : 0,
+          caps.has('function_call') ? 1 : 0,
+          caps.has('reasoning') ? 1 : 0,
+          m.contextWindow,
+          m.maxOutputTokens,
+          m.inputCostPer1M / 1000,
+          m.outputCostPer1M / 1000,
+          m.costPerImage,
+          0.5,
+          isActive ? 1 : 0,
+          m.rateLimits?.rpm ?? null,
+          m.rateLimits?.rpd ?? null,
+          m.rateLimits?.tpm ?? null,
+          m.rateLimits?.tpd ?? null,
+          m.monthlyTokenBudget ?? null,
+          m.intelligenceRank ?? null,
+          m.speedRank ?? null,
         );
       }
 
       registered.push(template.id);
       logger.info(
-        { provider: template.id, models: template.models.length },
-        'Auto-registered provider'
+        { provider: template.id, models: modelsForInsert.length, hasKey },
+        hasKey ? 'Auto-registered provider (key found)' : 'Registered provider (no key — add one to activate)'
       );
     } catch (error) {
       logger.error({ err: error, provider: template.id }, 'Failed to auto-register provider');
@@ -97,114 +241,58 @@ export async function autoRegisterProviders(): Promise<string[]> {
 }
 
 /**
- * Register a single provider from the catalog
+ * Backfill model profiles for providers whose catalog entry was empty
+ * (`template.models: []`) but whose DB row exists with no model_profiles
+ * yet — e.g. databases created before the live-discovery logic existed.
+ *
+ * Idempotent: if a provider already has any model_profiles, it is skipped.
+ * Returns the total number of new model rows inserted.
  */
-export async function registerProvider(
-  providerId: string,
-  overrides?: Partial<ProviderTemplate>
-): Promise<string> {
-  const template = getProviderTemplate(providerId);
-  if (!template) {
-    throw new Error(`Unknown provider: ${providerId}. Use 'dmrx providers list' to see available providers.`);
-  }
+export async function discoverMissingModels(): Promise<number> {
+  const db = getDb();
+  let totalInserted = 0;
 
-  const merged = { ...template, ...overrides };
-  const pool = getPool();
+  for (const template of PROVIDER_CATALOG) {
+    if (template.apiFormat !== 'openai' || !template.baseUrl) continue;
 
-  // Check if already exists
-  const existing = await pool.query(
-    'SELECT id FROM providers WHERE name = $1',
-    [merged.id]
-  );
+    const row = db
+      .prepare('SELECT id FROM providers WHERE name = ?')
+      .get(template.id) as { id: string } | undefined;
+    if (!row) continue;
 
-  if (existing.rows.length > 0) {
-    throw new Error(`Provider '${merged.id}' is already registered.`);
-  }
+    const hasAny = db
+      .prepare('SELECT 1 FROM model_profiles WHERE provider_id = ? LIMIT 1')
+      .get(row.id);
+    if (hasAny) continue;
 
-  // Create provider
-  const result = await pool.query(
-    `INSERT INTO providers (name, adapter_type, base_url, api_key_ref, config)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id`,
-    [
-      merged.id,
-      merged.id,
-      merged.baseUrl,
-      merged.envKey,
-      JSON.stringify({
-        authMethod: merged.authMethod,
-        apiFormat: merged.apiFormat,
-        streaming: merged.streaming,
-        toolCalling: merged.toolCalling,
-      }),
-    ]
-  );
+    try {
+      const discovered = await discoverOpenAIModels({
+        baseUrl: template.baseUrl,
+        apiKey: '',
+      });
+      if (discovered.length === 0) {
+        logger.warn(
+          { provider: template.id },
+          'discoverMissingModels: /v1/models returned empty; provider will stay without models',
+        );
+        continue;
+      }
 
-  const providerId_result = result.rows[0].id;
-
-  // Create models
-  for (const model of merged.models) {
-    await pool.query(
-      `INSERT INTO model_profiles (
-        provider_id, model_id, display_name, modality, intelligence_layer,
-        supports_streaming, supports_vision, supports_tool_use,
-        context_window, input_cost_per_1k, output_cost_per_1k, cost_per_image,
-        quality_score, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [
-        providerId_result,
-        model.id,
-        model.id,
-        model.modalities[0] || 'llm',
-        'executor',
-        model.capabilities.includes('streaming'),
-        model.capabilities.includes('vision'),
-        model.capabilities.includes('tool_use'),
-        model.contextWindow,
-        (model.inputCostPer1M || 0) / 1000,
-        (model.outputCostPer1M || 0) / 1000,
-        model.costPerImage || 0,
-        0.5,
-        true,
-      ]
-    );
-  }
-
-  logger.info({ provider: merged.id, models: merged.models.length }, 'Registered provider');
-  return providerId_result;
-}
-
-/**
- * List all available providers from catalog
- */
-export function listAvailableProviders(): ProviderTemplate[] {
-  return PROVIDER_CATALOG;
-}
-
-/**
- * Discover models from a Hugging Face task
- */
-export async function discoverHuggingFaceModels(
-  task: string,
-  limit: number = 20
-): Promise<{ id: string; downloads: number; pipeline_tag: string }[]> {
-  try {
-    const response = await fetch(
-      `https://huggingface.co/api/models?pipeline_tag=${task}&sort=downloads&direction=-1&limit=${limit}`
-    );
-
-    if (!response.ok) {
-      throw new Error(`HF API error: ${response.status}`);
+      const isActive = 1; // backfill targets already-active providers
+      const inserted = insertModelProfiles(row.id, discovered, Boolean(isActive));
+      totalInserted += inserted;
+      logger.info(
+        { provider: template.id, inserted },
+        'Backfilled model profiles via discovery',
+      );
+    } catch (err) {
+      logger.warn(
+        { err, provider: template.id },
+        'discoverMissingModels: discovery failed',
+      );
     }
-
-    const models = await response.json() as any[];
-    return models.map((m) => ({
-      id: m.id,
-      downloads: m.downloads || 0,
-      pipeline_tag: m.pipeline_tag || task,
-    }));
-  } catch (error) {
-    logger.error({ err: error, task }, 'Failed to discover HF models');
-    return [];
   }
+
+  return totalInserted;
 }
+

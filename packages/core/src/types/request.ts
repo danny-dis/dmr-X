@@ -1,4 +1,5 @@
 import { Modality, QualityTarget } from './modality.js';
+import type { ProviderPreferences } from './provider-preferences.js';
 
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -102,5 +103,7 @@ export interface UnifiedRequest {
   // Common
   stream: boolean;
   user?: string;
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown> & {
+    providerPreferences?: ProviderPreferences;
+  };
 }

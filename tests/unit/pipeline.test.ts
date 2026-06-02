@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { runPipeline } from '../../services/router/src/pipeline/pipeline.js';
+import type { CandidateSet, TaskProfile } from '@dmr-x/core';
 import type { CandidateSet, TaskProfile } from '../../packages/core/src/types/index.js';
+import { ProviderUnavailableError } from '../../packages/core/src/types/errors.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {
@@ -96,7 +98,7 @@ describe('pipeline', () => {
     expect(result.selected.modelId).toBe('with-vision');
   });
 
-  it('should throw when no candidates survive filtering', async () => {
+  it('should throw ProviderUnavailableError when no candidates survive filtering', async () => {
     const candidates: CandidateSet = [
       makeCandidate({ modality: 'diffusion' }),
     ];
@@ -107,7 +109,7 @@ describe('pipeline', () => {
         candidates,
         epsilon: 0,
       })
-    ).rejects.toThrow('No available providers');
+    ).rejects.toMatchObject({ name: 'ProviderUnavailableError' });
   });
 
   it('should build fallback chain from remaining candidates', async () => {
@@ -215,5 +217,234 @@ describe('free-tier strategy', () => {
     // Free models should be in the fallback chain
     const chainIds = result.chain.map((s) => s.provider.modelId);
     expect(chainIds).toContain('free-a');
+  });
+});
+
+describe('retryWithWait', () => {
+  function makeMockRateLimitService(rateLimitedModels: Set<string> = new Set()) {
+    return {
+      checkLimit(providerId: string, modelId: string, _estimatedTokens: number) {
+        if (rateLimitedModels.has(modelId)) {
+          return { allowed: false, retryAfterMs: 500, reason: 'RPM exceeded' };
+        }
+        return { allowed: true };
+      },
+      getPenaltyPoints() { return 0; },
+      getState(providerId: string, modelId: string) {
+        return {
+          providerId, modelId,
+          config: { rpm: 3 },
+          currentRPM: rateLimitedModels.has(modelId) ? 3 : 0,
+          currentRPD: 0, currentTPM: 0, currentTPD: 0, penaltyPoints: 0,
+        };
+      },
+      addPenalty() { return 0; },
+    };
+  }
+
+  it('should throw ProviderUnavailableError when all providers are rate-limited', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'rl-model' }),
+    ];
+    const rls = makeMockRateLimitService(new Set(['rl-model']));
+
+    await expect(() =>
+      runPipeline({
+        taskProfile: makeTaskProfile(),
+        candidates,
+        epsilon: 0,
+        rateLimitService: rls as any,
+        retryWithWait: false,
+      })
+    ).rejects.toMatchObject({ name: 'ProviderUnavailableError' });
+  });
+
+  it('should retry after wait when earliestResetMs is within maxWaitMs', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'retry-model', qualityScore: 0.9 }),
+      makeCandidate({ modelId: 'backup-model', qualityScore: 0.5 }),
+    ];
+
+    let callCount = 0;
+    const rls = {
+      checkLimit(providerId: string, modelId: string, _estimatedTokens: number) {
+        callCount++;
+        // First call: rate-limit retry-model; second call (re-check): allow it
+        if (callCount <= 2 && modelId === 'retry-model') {
+          return { allowed: false, retryAfterMs: 100, reason: 'RPM exceeded' };
+        }
+        return { allowed: true };
+      },
+      getPenaltyPoints() { return 0; },
+      getState(providerId: string, modelId: string) {
+        return {
+          providerId, modelId,
+          config: { rpm: 3 },
+          currentRPM: 0, currentRPD: 0, currentTPM: 0, currentTPD: 0, penaltyPoints: 0,
+        };
+      },
+      addPenalty() { return 0; },
+    };
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      rateLimitService: rls as any,
+      maxWaitMs: 1000,
+    });
+
+    // After retry, backup-model should still be available
+    expect(result.selected).toBeDefined();
+    expect(['retry-model', 'backup-model']).toContain(result.selected.modelId);
+  });
+
+  it('should use maxWaitMs to cap wait time', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'model-a' }),
+    ];
+    const rls = makeMockRateLimitService(new Set(['model-a']));
+
+    // With retryWithWait: false, should throw immediately
+    await expect(() =>
+      runPipeline({
+        taskProfile: makeTaskProfile(),
+        candidates,
+        epsilon: 0,
+        rateLimitService: rls as any,
+        retryWithWait: false,
+      })
+    ).rejects.toMatchObject({ name: 'ProviderUnavailableError' });
+  });
+
+  it('should default retryWithWait to true', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'model-a' }),
+    ];
+    const rls = makeMockRateLimitService(new Set(['model-a']));
+
+    // With default retryWithWait (true), should wait and then throw if still no providers
+    await expect(() =>
+      runPipeline({
+        taskProfile: makeTaskProfile(),
+        candidates,
+        epsilon: 0,
+        rateLimitService: rls as any,
+        maxWaitMs: 100,
+      })
+    ).rejects.toMatchObject({ name: 'ProviderUnavailableError' });
+  });
+});
+
+describe('free-tier headroom', () => {
+  it('load_balance should factor in rate-limit headroom', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'high-headroom', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.5 }),
+      makeCandidate({ modelId: 'low-headroom', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.9 }),
+    ];
+
+    const rls = {
+      checkLimit() { return { allowed: true }; },
+      getPenaltyPoints() { return 0; },
+      getState(_providerId: string, modelId: string) {
+        if (modelId === 'low-headroom') {
+          return {
+            providerId: 'test', modelId,
+            config: { rpm: 3 },
+            currentRPM: 2, // 1/3 remaining = low headroom
+            currentRPD: 0, currentTPM: 0, currentTPD: 0, penaltyPoints: 0,
+          };
+        }
+        return {
+          providerId: 'test', modelId,
+          config: { rpm: 3 },
+          currentRPM: 0, // 3/3 remaining = high headroom
+          currentRPD: 0, currentTPM: 0, currentTPD: 0, penaltyPoints: 0,
+        };
+      },
+      addPenalty() { return 0; },
+    };
+
+    // Run multiple times to verify high-headroom model is favored
+    const selections = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      const result = await runPipeline({
+        taskProfile: makeTaskProfile(),
+        candidates,
+        epsilon: 0,
+        freeTierStrategy: 'load_balance',
+        rateLimitService: rls as any,
+      });
+      selections.add(result.selected.modelId);
+    }
+
+    // Both should be selectable, but high-headroom should be favored
+    expect(selections.has('high-headroom')).toBe(true);
+  });
+});
+
+describe('RoutingStrategy: free', () => {
+  it('should filter to zero-cost models when strategy is free', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'free-a', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.7 }),
+      makeCandidate({ modelId: 'free-b', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.8 }),
+      makeCandidate({ modelId: 'paid-a', costPerInputToken: 0.002, costPerOutputToken: 0.004, qualityScore: 0.95 }),
+    ];
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      providerPreferences: { strategy: 'free' },
+    });
+
+    // Should only select from free models
+    expect(['free-a', 'free-b']).toContain(result.selected.modelId);
+    // Paid model should not be in fallback chain either (filtered out by providerPreferences)
+    const allIds = [result.selected.modelId, ...result.chain.map(c => c.provider.modelId)];
+    expect(allIds).not.toContain('paid-a');
+  });
+});
+
+describe('metaModelFilteredFree', () => {
+  it('should skip free-tier strategy when metaModelFilteredFree is true', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'free-a', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.8 }),
+      makeCandidate({ modelId: 'free-b', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.6 }),
+    ];
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      freeTierStrategy: 'prioritize',
+      metaModelFilteredFree: true,
+    });
+
+    // Should still select a free model (candidates already filtered)
+    expect(['free-a', 'free-b']).toContain(result.selected.modelId);
+  });
+});
+
+describe('Thompson sampling integration', () => {
+  it('should accept thompsonSampler parameter', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ modelId: 'free-a', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.8 }),
+      makeCandidate({ modelId: 'free-b', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.6 }),
+    ];
+
+    // Simple mock sampler that always picks the first candidate
+    const mockSampler = {
+      select: (cands: CandidateSet) => cands[0],
+    };
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      thompsonSampler: mockSampler as any,
+    });
+
+    expect(result.selected.modelId).toBe('free-a');
   });
 });

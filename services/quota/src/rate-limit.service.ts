@@ -1,15 +1,23 @@
-import { getRedis } from '@dmr-x/db';
+import { createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 import type { RateLimitConfig, RateLimitCheckResult, RateLimitState } from '@dmr-x/core';
 
+const cache = createNamespacedCache('rl');
+
+interface WindowData {
+  count?: number;
+  total?: number;
+  windowStart: number;
+}
+
 /**
- * Rate-limit tracking service using Redis sorted sets for sliding windows.
+ * Rate-limit tracking service using in-memory cache for sliding windows.
  *
  * Tracks RPM, RPD, TPM, TPD per (providerId, modelId) pair.
  * Used by free-tier providers with tight limits (e.g., 3 RPM, 500K TPD).
  *
  * Key pattern: rl:{providerId}:{modelId}:{window}
- * Score: timestamp (ms), Member: request UUID
+ * Value: JSON string of { count, windowStart } or { total, windowStart }
  */
 export class RateLimitService {
   private configs = new Map<string, RateLimitConfig>();
@@ -32,20 +40,20 @@ export class RateLimitService {
   }
 
   /**
-   * Get the Redis key for a window.
+   * Get the cache key for a window.
    */
-  private redisKey(providerId: string, modelId: string, window: string): string {
-    return `rl:${providerId}:${modelId}:${window}`;
+  private cacheKey(providerId: string, modelId: string, window: string): string {
+    return `${providerId}:${modelId}:${window}`;
   }
 
   /**
    * Check if a request would exceed rate limits.
    */
-  async checkLimit(
+  checkLimit(
     providerId: string,
     modelId: string,
     estimatedTokens: number = 0
-  ): Promise<RateLimitCheckResult> {
+  ): RateLimitCheckResult {
     const key = this.configKey(providerId, modelId);
     const config = this.configs.get(key);
 
@@ -53,35 +61,34 @@ export class RateLimitService {
       return { allowed: true }; // No config = no limits
     }
 
-    const redis = getRedis();
     const now = Date.now();
 
     // Check RPM
     if (config.rpm) {
-      const rpmKey = this.redisKey(providerId, modelId, 'rpm');
-      const count = await this.countWindow(redis, rpmKey, now, 60_000);
+      const rpmKey = this.cacheKey(providerId, modelId, 'rpm');
+      const count = this.getCount(rpmKey, now, 60_000);
       if (count >= config.rpm) {
-        const oldest = await this.oldestInWindow(redis, rpmKey, now, 60_000);
-        const retryAfterMs = oldest ? 60_000 - (now - oldest) : 60_000;
+        const windowStart = this.getWindowStart(rpmKey, now, 60_000);
+        const retryAfterMs = windowStart ? 60_000 - (now - windowStart) : 60_000;
         return { allowed: false, retryAfterMs, reason: `RPM limit (${config.rpm}) exceeded` };
       }
     }
 
     // Check RPD
     if (config.rpd) {
-      const rpdKey = this.redisKey(providerId, modelId, 'rpd');
-      const count = await this.countWindow(redis, rpdKey, now, 86_400_000);
+      const rpdKey = this.cacheKey(providerId, modelId, 'rpd');
+      const count = this.getCount(rpdKey, now, 86_400_000);
       if (count >= config.rpd) {
-        const oldest = await this.oldestInWindow(redis, rpdKey, now, 86_400_000);
-        const retryAfterMs = oldest ? 86_400_000 - (now - oldest) : 86_400_000;
+        const windowStart = this.getWindowStart(rpdKey, now, 86_400_000);
+        const retryAfterMs = windowStart ? 86_400_000 - (now - windowStart) : 86_400_000;
         return { allowed: false, retryAfterMs, reason: `RPD limit (${config.rpd}) exceeded` };
       }
     }
 
     // Check TPM
     if (config.tpm && estimatedTokens > 0) {
-      const tpmKey = this.redisKey(providerId, modelId, 'tpm');
-      const tokens = await this.sumWindow(redis, tpmKey, now, 60_000);
+      const tpmKey = this.cacheKey(providerId, modelId, 'tpm');
+      const tokens = this.getTokenSum(tpmKey, now, 60_000);
       if (tokens + estimatedTokens > config.tpm) {
         return { allowed: false, retryAfterMs: 60_000, reason: `TPM limit (${config.tpm}) would be exceeded` };
       }
@@ -89,8 +96,8 @@ export class RateLimitService {
 
     // Check TPD
     if (config.tpd && estimatedTokens > 0) {
-      const tpdKey = this.redisKey(providerId, modelId, 'tpd');
-      const tokens = await this.sumWindow(redis, tpdKey, now, 86_400_000);
+      const tpdKey = this.cacheKey(providerId, modelId, 'tpd');
+      const tokens = this.getTokenSum(tpdKey, now, 86_400_000);
       if (tokens + estimatedTokens > config.tpd) {
         return { allowed: false, retryAfterMs: 86_400_000, reason: `TPD limit (${config.tpd}) would be exceeded` };
       }
@@ -102,31 +109,29 @@ export class RateLimitService {
   /**
    * Record usage after a successful or failed request.
    */
-  async recordUsage(
+  recordUsage(
     providerId: string,
     modelId: string,
     tokens: number = 0
-  ): Promise<void> {
-    const redis = getRedis();
+  ): void {
     const now = Date.now();
-    const requestId = `req_${now}_${Math.random().toString(36).slice(2, 8)}`;
 
     // Record in RPM window
-    const rpmKey = this.redisKey(providerId, modelId, 'rpm');
-    await this.addToWindow(redis, rpmKey, requestId, now, 120_000); // 2 min TTL
+    const rpmKey = this.cacheKey(providerId, modelId, 'rpm');
+    this.addToCountWindow(rpmKey, now, 120_000);
 
     // Record in RPD window
-    const rpdKey = this.redisKey(providerId, modelId, 'rpd');
-    await this.addToWindow(redis, rpdKey, `rpd_${requestId}`, now, 172_800_000); // 2 day TTL
+    const rpdKey = this.cacheKey(providerId, modelId, 'rpd');
+    this.addToCountWindow(rpdKey, now, 172_800_000);
 
     // Record tokens in TPM window
     if (tokens > 0) {
-      const tpmKey = this.redisKey(providerId, modelId, 'tpm');
-      await this.addToWindow(redis, tpmKey, `tpm_${requestId}:${tokens}`, now, 120_000);
+      const tpmKey = this.cacheKey(providerId, modelId, 'tpm');
+      this.addToTokenWindow(tpmKey, now, tokens, 120_000);
 
       // Record tokens in TPD window
-      const tpdKey = this.redisKey(providerId, modelId, 'tpd');
-      await this.addToWindow(redis, tpdKey, `tpd_${requestId}:${tokens}`, now, 172_800_000);
+      const tpdKey = this.cacheKey(providerId, modelId, 'tpd');
+      this.addToTokenWindow(tpdKey, now, tokens, 172_800_000);
     }
   }
 
@@ -181,18 +186,23 @@ export class RateLimitService {
   /**
    * Get current state for a provider/model.
    */
-  async getState(providerId: string, modelId: string): Promise<RateLimitState> {
+  getState(providerId: string, modelId: string): RateLimitState {
     const key = this.configKey(providerId, modelId);
     const config = this.configs.get(key) || {};
-    const redis = getRedis();
     const now = Date.now();
 
-    const [currentRPM, currentRPD, currentTPM, currentTPD] = await Promise.all([
-      config.rpm ? this.countWindow(redis, this.redisKey(providerId, modelId, 'rpm'), now, 60_000) : 0,
-      config.rpd ? this.countWindow(redis, this.redisKey(providerId, modelId, 'rpd'), now, 86_400_000) : 0,
-      config.tpm ? this.sumWindow(redis, this.redisKey(providerId, modelId, 'tpm'), now, 60_000) : 0,
-      config.tpd ? this.sumWindow(redis, this.redisKey(providerId, modelId, 'tpd'), now, 86_400_000) : 0,
-    ]);
+    const currentRPM = config.rpm
+      ? this.getCount(this.cacheKey(providerId, modelId, 'rpm'), now, 60_000)
+      : 0;
+    const currentRPD = config.rpd
+      ? this.getCount(this.cacheKey(providerId, modelId, 'rpd'), now, 86_400_000)
+      : 0;
+    const currentTPM = config.tpm
+      ? this.getTokenSum(this.cacheKey(providerId, modelId, 'tpm'), now, 60_000)
+      : 0;
+    const currentTPD = config.tpd
+      ? this.getTokenSum(this.cacheKey(providerId, modelId, 'tpd'), now, 86_400_000)
+      : 0;
 
     return {
       providerId,
@@ -206,70 +216,79 @@ export class RateLimitService {
     };
   }
 
-  /**
-   * Count entries in a sliding window using Redis sorted set.
-   */
-  private async countWindow(
-    redis: ReturnType<typeof getRedis>,
-    key: string,
-    now: number,
-    windowMs: number
-  ): Promise<number> {
-    const minScore = now - windowMs;
-    return redis.zCount(key, minScore.toString(), '+inf');
-  }
+  // -- Private helpers --
 
   /**
-   * Sum token counts from a sliding window.
-   * Member format: tpm_{requestId}:{tokens} or tpd_{requestId}:{tokens}
+   * Parse a cached window data entry.
    */
-  private async sumWindow(
-    redis: ReturnType<typeof getRedis>,
-    key: string,
-    now: number,
-    windowMs: number
-  ): Promise<number> {
-    const minScore = now - windowMs;
-    const members = await redis.zRangeByScore(key, minScore.toString(), '+inf');
-    let sum = 0;
-    for (const member of members) {
-      const lastColon = member.lastIndexOf(':');
-      if (lastColon !== -1) {
-        const tokenCount = parseInt(member.slice(lastColon + 1), 10);
-        if (!isNaN(tokenCount)) sum += tokenCount;
-      }
+  private parseWindowData(key: string): WindowData | null {
+    const raw = cache.get(key);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as WindowData;
+    } catch {
+      return null;
     }
-    return sum;
   }
 
   /**
-   * Get the oldest entry timestamp in a window.
+   * Get request count from a sliding window.
+   * If the window has expired, returns 0.
    */
-  private async oldestInWindow(
-    redis: ReturnType<typeof getRedis>,
-    key: string,
-    now: number,
-    windowMs: number
-  ): Promise<number | null> {
-    const minScore = now - windowMs;
-    const members = await redis.zRangeByScore(key, minScore.toString(), '+inf', { LIMIT: { offset: 0, count: 1 } });
-    if (members.length === 0) return null;
-    const score = await redis.zScore(key, members[0]);
-    return score ? Number(score) : null;
+  private getCount(key: string, now: number, windowMs: number): number {
+    const data = this.parseWindowData(key);
+    if (!data || !data.count) return 0;
+    if (now - data.windowStart > windowMs) return 0;
+    return data.count;
   }
 
   /**
-   * Add an entry to a sliding window with auto-expiry.
+   * Get the window start timestamp.
    */
-  private async addToWindow(
-    redis: ReturnType<typeof getRedis>,
-    key: string,
-    member: string,
-    score: number,
-    ttlMs: number
-  ): Promise<void> {
-    await redis.zAdd(key, { score, value: member });
-    await redis.expire(key, Math.ceil(ttlMs / 1000));
+  private getWindowStart(key: string, now: number, windowMs: number): number | null {
+    const data = this.parseWindowData(key);
+    if (!data) return null;
+    if (now - data.windowStart > windowMs) return null;
+    return data.windowStart;
+  }
+
+  /**
+   * Get token sum from a sliding window.
+   */
+  private getTokenSum(key: string, now: number, windowMs: number): number {
+    const data = this.parseWindowData(key);
+    if (!data || !data.total) return 0;
+    if (now - data.windowStart > windowMs) return 0;
+    return data.total;
+  }
+
+  /**
+   * Add a request count entry to a sliding window with auto-expiry.
+   * Uses a simple counter with window reset approach.
+   */
+  private addToCountWindow(key: string, now: number, ttlMs: number): void {
+    const existing = this.parseWindowData(key);
+    const ttlSeconds = Math.ceil(ttlMs / 1000);
+
+    if (!existing || now - existing.windowStart > ttlMs) {
+      cache.set(key, JSON.stringify({ count: 1, windowStart: now }), ttlSeconds);
+    } else {
+      cache.set(key, JSON.stringify({ count: (existing.count || 0) + 1, windowStart: existing.windowStart }), ttlSeconds);
+    }
+  }
+
+  /**
+   * Add token count to a sliding window with auto-expiry.
+   */
+  private addToTokenWindow(key: string, now: number, tokens: number, ttlMs: number): void {
+    const existing = this.parseWindowData(key);
+    const ttlSeconds = Math.ceil(ttlMs / 1000);
+
+    if (!existing || now - existing.windowStart > ttlMs) {
+      cache.set(key, JSON.stringify({ total: tokens, windowStart: now }), ttlSeconds);
+    } else {
+      cache.set(key, JSON.stringify({ total: (existing.total || 0) + tokens, windowStart: existing.windowStart }), ttlSeconds);
+    }
   }
 }
 

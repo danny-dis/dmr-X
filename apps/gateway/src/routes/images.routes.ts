@@ -16,7 +16,7 @@ const ImageRequestSchema = z.object({
 });
 
 export async function imagesRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/images/generations', async (request, reply) => {
+  server.post('/images/generations', async (request) => {
     const parsed = ImageRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
@@ -45,18 +45,14 @@ export async function imagesRoutes(server: FastifyInstance): Promise<void> {
       },
     };
 
-    try {
-      const { response } = await router.route(unifiedRequest, {
-        path: '/v1/images/generations',
-        qualityTarget: 'balanced',
-      });
+    const { response } = await router.route(unifiedRequest, {
+      path: '/v1/images/generations',
+      qualityTarget: 'balanced',
+    });
 
-      return {
-        created: Math.floor(Date.now() / 1000),
-        data: response.images || [],
-      };
-    } catch (error) {
-      throw error;
-    }
+    return {
+      created: Math.floor(Date.now() / 1000),
+      data: response.images || [],
+    };
   });
 }

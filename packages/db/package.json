@@ -12,18 +12,16 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -b",
     "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "db:migrate": "node --loader ts-node/esm src/migrations/run.ts"
+    "clean": "rm -rf dist"
   },
   "dependencies": {
-    "pg": "^8.12.0",
-    "redis": "^4.6.0",
-    "@dmr-x/utils": "*"
+    "@dmr-x/utils": "*",
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.0",
+    "@types/sql.js": "^1.4.11",
     "typescript": "^5.4.0"
   }
 }

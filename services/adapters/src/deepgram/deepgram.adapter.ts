@@ -2,6 +2,7 @@ import { BaseAdapter } from '../base.adapter.js';
 import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
+import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 
 export class DeepgramAdapter extends BaseAdapter {
   readonly providerId = 'deepgram';
@@ -26,7 +27,10 @@ export class DeepgramAdapter extends BaseAdapter {
       }
     );
     if (!response.ok) {
-      throw new Error(`Deepgram health check failed: ${response.status}`);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new Error(`Deepgram health check failed: ${httpError.message}`);
     }
   }
 
@@ -62,8 +66,10 @@ export class DeepgramAdapter extends BaseAdapter {
     );
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`Deepgram error: ${error}`, this.providerId, response.status);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new ProviderError(`Deepgram: ${httpError.message}`, this.providerId, response.status);
     }
 
     const data = await response.json() as Record<string, unknown>;

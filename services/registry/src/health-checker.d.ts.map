@@ -1,1 +1,0 @@
-{"version":3,"file":"health-checker.d.ts","sourceRoot":"","sources":["health-checker.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,iBAAiB,CAAC;AAEvD,qBAAa,aAAa;IAItB,OAAO,CAAC,eAAe;IACvB,OAAO,CAAC,eAAe;IAJzB,OAAO,CAAC,QAAQ,CAA+C;gBAGrD,eAAe,EAAE,eAAe,EAChC,eAAe,GAAE,MAAc;IAGzC,KAAK,IAAI,IAAI;IAYb,IAAI,IAAI,IAAI;YAQE,QAAQ;CAuBvB"}

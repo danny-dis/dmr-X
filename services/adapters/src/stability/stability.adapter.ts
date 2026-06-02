@@ -2,6 +2,7 @@ import { BaseAdapter } from '../base.adapter.js';
 import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
+import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 
 export class StabilityAdapter extends BaseAdapter {
   readonly providerId = 'stability';
@@ -26,7 +27,10 @@ export class StabilityAdapter extends BaseAdapter {
       }
     );
     if (!response.ok) {
-      throw new Error(`Stability health check failed: ${response.status}`);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new Error(`Stability health check failed: ${httpError.message}`);
     }
   }
 
@@ -69,8 +73,10 @@ export class StabilityAdapter extends BaseAdapter {
     );
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new ProviderError(`Stability error: ${error}`, this.providerId, response.status);
+      const body = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new ProviderError(`Stability: ${httpError.message}`, this.providerId, response.status);
     }
 
     const data = await response.json() as { artifacts?: Array<{ base64: string; finishReason: string }> };

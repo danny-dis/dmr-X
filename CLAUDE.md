@@ -1,7 +1,129 @@
+# DMR-X — Project Instructions
+
+## What This Is
+
+DMR-X is a universal AI routing and orchestration platform. A single Fastify gateway accepts requests in OpenAI, Anthropic, and Gemini wire formats, routes them through a multi-stage pipeline to select the best provider, and returns responses in the original format. SQLite for persistence, Bun as primary runtime, zero external dependencies.
+
+## Runtime
+
+- **Primary:** Bun 1.0+ — use `bun run` for all scripts
+- **Also works:** Node.js 18+ (but Bun is preferred)
+- **Package manager:** Bun (see `package.json` `packageManager` field)
+- **Monorepo:** npm workspaces managed by Turbo
+
+## Key Commands
+
+```bash
+bun install              # Install dependencies
+bun run dev:gateway      # Start gateway dev server (:3000)
+bun run dev:ui           # Start UI dev server (Vite at :4200)
+bun run build            # Build all packages + UI
+bun run start            # Start production gateway
+bun run test             # Run unit tests (vitest)
+bun run lint             # Lint all packages
+```
+
+**Do NOT use `bun --watch`** — it crashes sql.js on DB save. Use `bun run dev:gateway` which handles watch mode correctly.
+
+**Build quirk:** `turbo build` can fail on Windows. Build each package individually with `bun run build` if needed.
+
+## Project Structure
+
+| Path | What It Is |
+|------|-----------|
+| `apps/gateway/src/server.ts` | Fastify server setup, plugin registration, route mounting |
+| `apps/gateway/src/main.ts` | Entry point — init SQLite, start server |
+| `apps/gateway/src/routes/` | Route handlers (chat, admin, models, anthropic, gemini, etc.) |
+| `apps/gateway/src/middleware/` | Auth, request-id, rate limiting |
+| `apps/gateway/src/converters/` | Wire format ↔ UnifiedRequest converters |
+| `apps/ui/src/pages/` | React pages (Dashboard, Providers, Models, Tenants, Settings, etc.) |
+| `packages/core/src/` | Shared types (UnifiedRequest, UnifiedResponse, provider types) |
+| `packages/db/src/` | SQLite client, migrations, cache |
+| `packages/utils/src/` | Logging (pino), retries, streams, crypto, errors |
+| `packages/cli/src/` | CLI tool commands (init, add-provider, status, test) |
+| `services/adapters/src/` | Provider adapters (openai, anthropic, ollama, generic-openai, etc.) |
+| `services/router/src/` | Routing pipeline, classifier, fallback, bandit |
+| `services/mcp-server/src/` | MCP tool server (tools.ts has tool definitions) |
+| `tests/unit/` | Unit test suites (20 files) |
+
+## Coding Conventions
+
+- **TypeScript ESM** — all packages use `"type": "module"`, import with `.js` extensions in relative imports
+- **No `.ts` extensions in imports** — TypeScript resolves `.js` to `.ts` automatically
+- **Stale `.js` in source** — Bun resolves `.js` before `.ts`. If you see stale `.js`/`.d.ts`/`.js.map` files alongside `.ts` source, they are build artifacts that should be deleted. They cause the runtime to execute old code.
+- **Package barrels** — each package exports from `src/index.ts`
+- **No `@ts-nocheck`** — fix type errors properly
+- **Zod schemas** — use Zod for input validation on admin endpoints
+- **Parameterized SQL** — never interpolate user input into SQL strings
+- **`?? null` for nullable** — sql.js rejects `undefined` bindings; use `?? null` for nullable columns, `?? 0` for NOT NULL DEFAULT columns
+
+## Architecture Rules
+
+- `packages/*` never depends on `services/*` or `apps/*`
+- `services/*` never depends on `apps/*`
+- `apps/gateway` is the only entry point that wires everything together
+- Shared types live in `packages/core`, not duplicated across services
+- Provider adapters implement the interface in `services/adapters/src/adapter.interface.ts`
+
+## Database
+
+- SQLite via `sql.js` (WebAssembly, no native deps)
+- Data stored at `~/.dmr-x/data.db` (configurable via `DMRX_DATA_DIR`)
+- Migrations in `packages/db/src/migrations/` run on startup
+- **Debounced save** — 100ms window, `flush()` for shutdown
+- **`CREATE TABLE IF NOT EXISTS`** — migration runner catches duplicate column errors gracefully
+
+## Common Gotchas
+
+- **Adapter UUID vs Name** — the router passes DB UUIDs to `adapterRegistry.get()` which is keyed by name. The registry resolves UUID → name internally.
+- **HTTP 204 breaks `res.json()`** — DELETE endpoints return 204 No Content. The `request()` helper must check status before calling `.json()`.
+- **`pino-pretty` crashes Bun** — disabled at runtime when Bun is detected.
+- **Local mode** — `DMRX_LOCAL_MODE=true` skips tenant API key auth. Admin routes are open when LOCAL_MODE=true OR no admin key is set.
+- **Turbo concurrency** — `turbo dev` fails at default concurrency 10 with 16 persistent tasks. Use `--concurrency=20`.
+- **Meta-model fallback** — router throws 503 when meta-model resolution fails, never silently falls back to paid models.
+- **Provider seeding** — autoRegister runs before provider loading at startup. Keyless providers (ollama, vllm, llamacpp) are re-activated at startup if health checker marked them unhealthy.
+
+## Environment
+
+Copy `.env.example` to `.env`. Key variables:
+
+- `DMRX_LOCAL_MODE=true` — local dev, skip auth
+- `DMRX_ADMIN_API_KEY` — admin route auth (required in production)
+- `DMRX_ENCRYPTION_KEY` — AES-256-GCM key for provider key encryption
+- `PORT=3000` — gateway port
+- `VITE_API_BASE=` — empty for same-origin UI API calls
+
+See `docs/CONFIGURATION.md` for the full reference.
+
+## Testing
+
+```bash
+bun run test                                    # All unit tests
+DMRX_RUN_E2E=true bun run test -- tests/e2e/   # E2E (requires running gateway)
+```
+
+Unit tests cover: routing pipeline, anthropic converter/stream, API contracts, auth middleware, task classifier, tool orchestrator, SQLite client, memory cache, crypto, meta-models, event streams, HTTP errors.
+
+**Vitest issue on Windows + Node v24:** vitest/tinypool spawn fails with UNKNOWN. Use `npx tsc` directly for type checking instead.
+
+## Documentation
+
+When updating docs, keep them accurate to the actual codebase state. The authoritative docs are:
+
+- `README.md` — project overview and quickstart
+- `docs/ARCHITECTURE.md` — technical architecture
+- `docs/API_USAGE_GUIDE.md` — API usage with SDK examples
+- `docs/CONFIGURATION.md` — environment variable reference
+- `docs/DEPLOYMENT.md` — deployment guide
+- `docs/DISTRIBUTION.md` — binary packaging
+- `docs/MCP.md` — MCP server documentation
+- `docs/TESTING.md` — testing guide
+- `AGENTS.md` — GitNexus code intelligence instructions
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dmr-X** (4675 symbols, 8969 relationships, 185 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dmr-X** (7194 symbols, 14977 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
