@@ -3,9 +3,10 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { logger, decryptConfigApiKey } from '@dmr-x/utils';
+import { logger, decryptConfigApiKey, encrypt, decrypt } from '@dmr-x/utils';
 import { Router } from '@dmr-x/router';
 import { getTelemetryService } from '@dmr-x/telemetry';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter } from '@dmr-x/adapters';
@@ -20,6 +21,7 @@ import { imagesRoutes } from './routes/images.routes.js';
 import { embeddingsRoutes } from './routes/embeddings.routes.js';
 import { audioRoutes } from './routes/audio.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
+import { geminiRoutes } from './routes/gemini.routes.js';
 import { adminRoutes } from './routes/admin.routes.js';
 import { toolsRoutes, registerToolHandler } from './routes/tools.routes.js';
 import { agenticRoutes } from './routes/agentic.routes.js';
@@ -43,15 +45,16 @@ export async function createServer() {
     genReqId: () => crypto.randomUUID(),
   });
 
-  // Local mode: ensure a default tenant exists
+  // Ensure a default tenant exists
+  const tenantDb = getDb();
+  const defaultTenantName = LOCAL_MODE ? 'local' : 'default';
+  const existing = tenantDb.prepare("SELECT id FROM tenants WHERE name = ?").get(defaultTenantName) as { id: string } | undefined;
+  if (!existing) {
+    tenantDb.prepare("INSERT INTO tenants (id, name) VALUES (?, ?)").run(crypto.randomUUID(), defaultTenantName);
+    logger.info({ tenant: defaultTenantName }, 'Created default tenant');
+  }
   if (LOCAL_MODE) {
-    logger.info('Running in local mode -- skipping strict auth, creating default tenant');
-    const db = getDb();
-    const existing = db.prepare("SELECT id FROM tenants WHERE name = 'local'").get() as { id: string } | undefined;
-    if (!existing) {
-      db.prepare("INSERT INTO tenants (id, name) VALUES (?, 'local')").run(crypto.randomUUID());
-      logger.info('Created default local tenant');
-    }
+    logger.info('Running in local mode -- skipping strict auth');
   }
 
   // Initialize adapters
@@ -148,7 +151,54 @@ export async function createServer() {
 
     const adapter = adapterRegistry.get(row.name);
     const baseUrl = row.base_url || template?.baseUrl;
-    if (adapter && baseUrl && (apiKey || !template?.envKey)) {
+    const authMethod = row.auth_method || 'api_key';
+
+    // OAuth token initialization
+    if (authMethod === 'oauth' && row.oauth_access_token && adapter && baseUrl) {
+      let accessToken: string;
+      try {
+        accessToken = decrypt(row.oauth_access_token);
+      } catch {
+        accessToken = row.oauth_access_token; // already plaintext
+      }
+
+      // Check if token is expired — try to refresh
+      if (row.oauth_token_expires_at && new Date(row.oauth_token_expires_at) < new Date(Date.now() + 60000)) {
+        if (row.oauth_refresh_token && template?.oauthConfig) {
+          try {
+            const { OAuthService } = await import('@dmr-x/oauth');
+            const oauthService = new OAuthService();
+            let refreshToken: string;
+            try {
+              refreshToken = decrypt(row.oauth_refresh_token);
+            } catch {
+              refreshToken = row.oauth_refresh_token;
+            }
+            const newTokens = await oauthService.refreshAccessToken(template.oauthConfig, refreshToken);
+            accessToken = newTokens.accessToken;
+            const encAccess = encrypt(newTokens.accessToken);
+            const encRefresh = newTokens.refreshToken ? encrypt(newTokens.refreshToken) : row.oauth_refresh_token;
+            db.prepare(
+              `UPDATE providers SET oauth_access_token = ?, oauth_refresh_token = ?, oauth_token_expires_at = ?, updated_at = datetime('now') WHERE id = ?`
+            ).run(encAccess, encRefresh, newTokens.expiresAt?.toISOString() || null, row.id);
+            logger.info({ providerId: row.name }, 'Refreshed OAuth token on startup');
+          } catch (err) {
+            logger.warn({ providerId: row.name, err }, 'Failed to refresh OAuth token on startup');
+          }
+        }
+      }
+
+      try {
+        await adapterRegistry.initialize(row.name, {
+          baseUrl,
+          accessToken,
+          authMethod: 'oauth',
+        });
+        logger.info({ providerId: row.name }, 'Initialized adapter with OAuth token');
+      } catch (err) {
+        logger.warn({ providerId: row.name, err }, 'Failed to initialize adapter with OAuth token');
+      }
+    } else if (adapter && baseUrl && (apiKey || !template?.envKey)) {
       try {
         await adapterRegistry.initialize(row.name, {
           baseUrl,
@@ -157,6 +207,35 @@ export async function createServer() {
         logger.info({ providerId: row.name }, 'Initialized adapter from DB/Env');
       } catch (err) {
         logger.warn({ providerId: row.name, err }, 'Failed to initialize adapter on startup');
+      }
+    }
+  }
+
+  // Activate models for providers that have keys or don't need one
+  const allProviders = db.prepare(
+    `SELECT id, name, config, is_healthy, auth_method, oauth_access_token FROM providers`
+  ).all() as any[];
+  for (const p of allProviders) {
+    const cfg = JSON.parse(p.config || '{}');
+    const template = PROVIDER_CATALOG.find(t => t.id === p.name);
+    const needsNoKey = template?.envKey === '';
+
+    // Ensure keyless providers (like Pollinations) are always healthy
+    if (needsNoKey && !p.is_healthy) {
+      db.prepare(
+        `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`
+      ).run(p.id);
+      logger.info({ provider: p.name }, 'Re-activated keyless provider');
+    }
+
+    const hasOAuthToken = p.auth_method === 'oauth' && !!p.oauth_access_token;
+    if (cfg.hasKey || hasOAuthToken || needsNoKey) {
+      const updated = db.prepare(
+        `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+         WHERE provider_id = ? AND is_active = 0`
+      ).run(p.id);
+      if (updated.changes > 0) {
+        logger.info({ provider: p.name, models: updated.changes }, 'Activated models for provider');
       }
     }
   }
@@ -210,10 +289,82 @@ export async function createServer() {
     logger.warn({ err }, 'Could not load candidates from registry (DB may not be ready)');
   }
 
+  // Expose candidate refresh for admin routes (after provider activation/key updates)
+  server.decorate('refreshCandidates', async () => {
+    try {
+      const candidates = await registryService.getCandidates();
+      router.setCandidates(candidates);
+      logger.info({ count: candidates.length }, 'Refreshed routing candidates');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to refresh routing candidates');
+    }
+  });
+
   // Start health checker — delay initial run to allow all adapters (including
   // those loaded from DB and auto-registered) to fully initialise.
   const healthChecker = new HealthChecker(adapterRegistry, 30000);
   setTimeout(() => healthChecker.start(), 5000);
+
+  // Background OAuth token refresh — check every 5 minutes
+  const OAUTH_REFRESH_INTERVAL = 5 * 60 * 1000;
+  const oauthRefreshTimer = setInterval(async () => {
+    try {
+      const rows = db.prepare(
+        `SELECT id, name, oauth_refresh_token, oauth_token_expires_at
+         FROM providers
+         WHERE auth_method = 'oauth'
+         AND oauth_token_expires_at IS NOT NULL
+         AND oauth_refresh_token IS NOT NULL`
+      ).all() as any[];
+
+      for (const row of rows) {
+        const expiresAt = new Date(row.oauth_token_expires_at);
+        const bufferMs = 5 * 60 * 1000; // refresh 5 minutes before expiry
+        if (expiresAt.getTime() < Date.now() + bufferMs) {
+          const template = PROVIDER_CATALOG.find(t => t.id === row.name);
+          if (!template?.oauthConfig) continue;
+
+          try {
+            const { OAuthService } = await import('@dmr-x/oauth');
+            const oauthService = new OAuthService();
+            let refreshToken: string;
+            try {
+              refreshToken = decrypt(row.oauth_refresh_token);
+            } catch {
+              refreshToken = row.oauth_refresh_token;
+            }
+            const newTokens = await oauthService.refreshAccessToken(template.oauthConfig, refreshToken);
+
+            const encAccess = encrypt(newTokens.accessToken);
+            const encRefresh = newTokens.refreshToken ? encrypt(newTokens.refreshToken) : row.oauth_refresh_token;
+            db.prepare(
+              `UPDATE providers SET oauth_access_token = ?, oauth_refresh_token = ?, oauth_token_expires_at = ?, updated_at = datetime('now') WHERE id = ?`
+            ).run(encAccess, encRefresh, newTokens.expiresAt?.toISOString() || null, row.id);
+
+            // Re-initialize adapter
+            const adapter = adapterRegistry.get(row.name);
+            if (adapter) {
+              const providerRow = db.prepare('SELECT base_url FROM providers WHERE id = ?').get(row.id) as any;
+              if (providerRow?.base_url) {
+                await adapterRegistry.initialize(row.name, {
+                  baseUrl: providerRow.base_url,
+                  accessToken: newTokens.accessToken,
+                  authMethod: 'oauth',
+                });
+              }
+            }
+
+            logger.info({ provider: row.name }, 'Refreshed OAuth token (background)');
+          } catch (err) {
+            logger.warn({ provider: row.name, err }, 'Failed to refresh OAuth token (background)');
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'OAuth token refresh check failed');
+    }
+  }, OAUTH_REFRESH_INTERVAL);
+  oauthRefreshTimer.unref();
 
   // Start telemetry service (fire-and-forget — must not crash the server)
   try {
@@ -256,8 +407,17 @@ export async function createServer() {
   });
 
   // Serve UI static files
+  // In compiled binaries (bun build --compile), import.meta.url is a virtual path.
+  // Resolve relative to the actual executable, then fall back to source-relative path.
+  const exeDir = path.dirname(process.execPath);
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const uiDir = process.env.DMRX_UI_DIR || path.join(__dirname, '..', 'public');
+  const candidateDirs = [
+    process.env.DMRX_UI_DIR,
+    path.join(exeDir, 'public'),
+    path.join(__dirname, '..', 'public'),
+  ].filter(Boolean) as string[];
+  const uiDir = candidateDirs.find(d => { try { return fs.existsSync(d); } catch { return false; } })
+    || candidateDirs[candidateDirs.length - 1];
   try {
     await server.register(fastifyStatic, {
       root: uiDir,
@@ -337,6 +497,7 @@ export async function createServer() {
   // Routes
   await server.register(chatRoutes, { prefix: '/v1' });
   await server.register(anthropicRoutes, { prefix: '/v1' });
+  await server.register(geminiRoutes, { prefix: '/v1' });
   await server.register(modelsRoutes, { prefix: '/v1' });
   await server.register(imagesRoutes, { prefix: '/v1' });
   await server.register(embeddingsRoutes, { prefix: '/v1' });
@@ -350,7 +511,8 @@ export async function createServer() {
     if (request.url.startsWith('/v1/') || request.url.startsWith('/health')) {
       return reply.code(404).send({ error: 'Not Found' });
     }
-    return reply.type('text/html').sendFile('index.html');
+    const indexHtml = await fs.promises.readFile(path.join(uiDir, 'index.html'), 'utf8');
+    return reply.type('text/html').send(indexHtml);
   });
 
   // Error handler
@@ -376,6 +538,7 @@ export async function createServer() {
 
   // Cleanup on close
   server.addHook('onClose', async () => {
+    clearInterval(oauthRefreshTimer);
     healthChecker.stop();
     await adapterRegistry.disposeAll();
   });

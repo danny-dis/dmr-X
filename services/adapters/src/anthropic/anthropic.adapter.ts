@@ -30,9 +30,13 @@ export class AnthropicAdapter extends BaseAdapter {
 
   private apiKey = '';
 
+  private getBaseUrl(): string {
+    return (this.config.baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '').replace(/\/v1$/, '');
+  }
+
   async initialize(config: ProviderConfig): Promise<void> {
     await super.initialize(config);
-    this.apiKey = (config.apiKey as string) || '';
+    this.apiKey = (config.accessToken as string) || (config.apiKey as string) || '';
     if (!this.apiKey) {
       throw new Error('Anthropic API key is required');
     }
@@ -41,7 +45,7 @@ export class AnthropicAdapter extends BaseAdapter {
   protected async checkHealth(): Promise<void> {
     // Anthropic doesn't have a simple health endpoint, so we just check if the API responds
     const response = await this.fetchWithTimeout(
-      `${this.config.baseUrl || 'https://api.anthropic.com'}/v1/messages`,
+      `${this.getBaseUrl()}/v1/messages`,
       {
         method: 'POST',
         headers: {
@@ -73,7 +77,7 @@ export class AnthropicAdapter extends BaseAdapter {
       throw new Error(`Anthropic only supports LLM modality, got: ${request.modality}`);
     }
 
-    const baseUrl = this.config.baseUrl || 'https://api.anthropic.com';
+    const baseUrl = this.getBaseUrl();
     const start = Date.now();
 
     // Convert internal messages to Anthropic ClaudeMessageParam format
@@ -134,7 +138,7 @@ export class AnthropicAdapter extends BaseAdapter {
   async *executeStream(request: UnifiedRequest, options?: ExecuteOptions): AsyncIterable<StreamChunk> {
     this.assertInitialized();
 
-    const baseUrl = this.config.baseUrl || 'https://api.anthropic.com';
+    const baseUrl = this.getBaseUrl();
     const { system, messages } = this.convertMessages(request.messages || []);
 
     let response: Response;

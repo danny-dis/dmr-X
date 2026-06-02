@@ -7,3 +7,6 @@ export async function requestIdMiddleware(server: FastifyInstance): Promise<void
     }
   });
 }
+
+// Ensure middleware is not encapsulated
+(requestIdMiddleware as any)[Symbol.for('skip-override')] = true;

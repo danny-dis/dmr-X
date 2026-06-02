@@ -22,7 +22,22 @@ export async function autoRegisterProviders(): Promise<string[]> {
     ).get(template.id);
 
     if (existing) {
-      logger.debug({ provider: template.id }, 'Provider already registered');
+      // If provider exists but now has a key, activate it and its models
+      if (hasKey && template.envKey) {
+        const currentConfig = db.prepare('SELECT config FROM providers WHERE id = ?').get(existing.id) as { config: string } | undefined;
+        const cfg = JSON.parse(currentConfig?.config || '{}');
+        if (!cfg.hasKey) {
+          // Key was just added — activate provider and its models
+          cfg.hasKey = true;
+          db.prepare(
+            `UPDATE providers SET is_healthy = 1, config = ?, updated_at = datetime('now') WHERE id = ?`
+          ).run(JSON.stringify(cfg), existing.id);
+          db.prepare(
+            `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now') WHERE provider_id = ?`
+          ).run(existing.id);
+          logger.info({ provider: template.id }, 'Activated provider — API key now available');
+        }
+      }
       continue;
     }
 

@@ -1,3 +1,46 @@
+import type {
+  ApiProvider, ApiModel, ApiTenant, ApiKey, ApiRouteDecision, ApiQuotaState,
+  ApiBillingSummary, ApiAlert, ApiAuditEvent, ApiTelemetryEvent, ApiBenchmarkResult,
+  ApiPolicyRule, ApiMemoryItem, ApiSandboxJob, ApiWorker, ApiFederationNode,
+  ApiDashboardStats,
+} from './api';
+
+export type {
+  ApiProvider, ApiModel, ApiTenant, ApiKey, ApiRouteDecision, ApiQuotaState,
+  ApiBillingSummary, ApiAlert, ApiAuditEvent, ApiTelemetryEvent, ApiBenchmarkResult,
+  ApiPolicyRule, ApiMemoryItem, ApiSandboxJob, ApiWorker, ApiFederationNode,
+  ApiDashboardStats,
+} from './api';
+
+export type CostTier = 'free' | 'low' | 'medium' | 'high' | 'premium';
+export type ProviderHealth = 'healthy' | 'degraded' | 'unavailable' | 'maintenance';
+
+export interface Provider extends ApiProvider {
+  logo: string;
+  baseUrl: string;
+  region: string;
+  costTier: CostTier;
+  models: string[];
+  rateLimit: { requests: number; window: string };
+  failoverStatus: 'active' | 'standby' | 'failed';
+  lastHealthCheck: string;
+  avgLatency: number;
+  successRate: number;
+  isFree?: boolean;
+  capabilities?: string[];
+}
+
+export interface Model extends ApiModel {
+  name: string;
+  provider: string;
+  providerId: string;
+  capabilities: { streaming: boolean; vision: boolean; tool_use: boolean; reasoning: boolean; function_call: boolean; json_mode: boolean };
+  inputCost: number;
+  outputCost: number;
+  qualityScore: number;
+  tags: string[];
+}
+
 export interface Tenant {
   id: string;
   name: string;
@@ -8,69 +51,7 @@ export interface Tenant {
   status: 'active' | 'suspended' | 'pending';
   createdAt: string;
   region: string;
-}
-
-export interface User {
-  id: string;
-  name: string;
-  email: string;
-  role: 'admin' | 'operator' | 'viewer';
-  tenantId: string;
-  lastActive: string;
-  apiKeys: number;
-  status: 'active' | 'inactive';
-}
-
-export interface APIKey {
-  id: string;
-  name: string;
-  key?: string;
-  tenantId: string;
-  providerId?: string;
-  scopes: string[];
-  lastUsed: string;
-  createdAt: string;
-  expiresAt?: string;
-  status: 'active' | 'revoked' | 'expired';
-  usageThisMonth: number;
-}
-
-export interface Provider {
-  id: string;
-  name: string;
-  logo: string;
-  baseUrl: string;
-  region: string;
-  costTier: 'low' | 'medium' | 'high' | 'premium';
-  status: 'healthy' | 'degraded' | 'unavailable' | 'maintenance';
-  models: string[];
-  rateLimit: { requests: number; window: string };
-  failoverStatus: 'active' | 'standby' | 'failed';
-  lastHealthCheck: string;
-  avgLatency: number;
-  successRate: number;
-  signupUrl?: string;
-  hasKey?: boolean;
-}
-
-export interface Model {
-  id: string;
-  name: string;
-  provider: string;
-  providerId: string;
-  modality: string[];
-  contextWindow: number;
-  inputCost: number;
-  outputCost: number;
-  qualityScore: number;
-  speedClass: 'fast' | 'balanced' | 'slow' | 'batch';
-  reliability: number;
-  toolSupport: boolean;
-  streamingSupport: boolean;
-  status: 'enabled' | 'disabled' | 'beta';
-  tags: string[];
-  benchmarkTrend: number[];
-  description: string;
+  keyCount?: number;
 }
 
 export interface RouteDecision {
@@ -89,49 +70,7 @@ export interface RouteDecision {
   outputTokens: number;
   status: 'success' | 'fallback' | 'error' | 'retry';
   userAgent?: string | null;
-}
-
-export interface UsageRecord {
-  id: string;
-  timestamp: string;
-  tenantId: string;
-  modelId: string;
-  providerId: string;
-  tokensIn: number;
-  tokensOut: number;
-  cost: number;
-  latency: number;
-  modality: string;
-  status: 'success' | 'error';
-}
-
-export interface MemoryItem {
-  id: string;
-  content: string;
-  namespace: string;
-  confidence: number;
-  createdAt: string;
-  retrievedAt?: string;
-  source: string;
-  metadata: Record<string, unknown>;
-  redactionStatus: 'clean' | 'redacted' | 'flagged';
-  retentionDays: number;
-  embeddingModel: string;
-}
-
-export interface BenchmarkResult {
-  id: string;
-  modelId: string;
-  modelName: string;
-  benchmarkName: string;
-  score: number;
-  latency: number;
-  cost: number;
-  taskType: string;
-  runDate: string;
-  regression: boolean;
-  previousScore?: number;
-  comparisonScores?: Record<string, number>;
+  tenantId?: string;
 }
 
 export interface QuotaState {
@@ -174,6 +113,18 @@ export interface Invoice {
   paidDate?: string;
 }
 
+export interface Alert {
+  id: string;
+  timestamp: string;
+  type: 'quota' | 'provider_outage' | 'spend_anomaly' | 'latency_spike' | 'benchmark_regression' | 'auth_failure' | 'sandbox_failure' | 'info';
+  severity: 'warning' | 'critical' | 'info';
+  message: string;
+  source: string;
+  acknowledged: boolean;
+  resolved: boolean;
+  details: Record<string, unknown>;
+}
+
 export interface AuditEvent {
   id: string;
   timestamp: string;
@@ -186,16 +137,59 @@ export interface AuditEvent {
   ipAddress?: string | null;
 }
 
-export interface Alert {
+export interface TelemetryEvent {
   id: string;
   timestamp: string;
-  type: 'quota' | 'provider_outage' | 'spend_anomaly' | 'latency_spike' | 'benchmark_regression' | 'auth_failure' | 'sandbox_failure';
-  severity: 'warning' | 'critical' | 'info';
+  level: 'info' | 'warning' | 'error' | 'debug';
+  service: string;
   message: string;
+  traceId?: string;
+  spanId?: string;
+  duration?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BenchmarkResult {
+  id: string;
+  modelId: string;
+  modelName: string;
+  benchmarkName: string;
+  score: number;
+  latency: number;
+  cost: number;
+  taskType: string;
+  runDate: string;
+  regression: boolean;
+  previousScore?: number;
+  comparisonScores?: Record<string, number>;
+}
+
+export interface PolicyRule {
+  id: string;
+  name: string;
+  tenantId?: string;
+  tenantName?: string;
+  type: 'provider_allow' | 'provider_deny' | 'model_allow' | 'model_deny' | 'cost_cap' | 'modality_restriction' | 'residency' | 'tool_permission';
+  target: string[];
+  action: 'allow' | 'deny' | 'redirect';
+  conditions?: Record<string, unknown>;
+  priority: number;
+  enabled: boolean;
+  createdAt: string;
+}
+
+export interface MemoryItem {
+  id: string;
+  content: string;
+  namespace: string;
+  confidence: number;
+  createdAt: string;
+  retrievedAt?: string;
   source: string;
-  acknowledged: boolean;
-  resolved: boolean;
-  details: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  redactionStatus: 'clean' | 'redacted' | 'flagged';
+  retentionDays: number;
+  embeddingModel: string;
 }
 
 export interface SandboxJob {
@@ -228,31 +222,6 @@ export interface TemporaryWorker {
   spawnTime: string;
 }
 
-export interface PolicyRule {
-  id: string;
-  name: string;
-  tenantId?: string;
-  type: 'provider_allow' | 'provider_deny' | 'model_allow' | 'model_deny' | 'cost_cap' | 'modality_restriction' | 'residency' | 'tool_permission';
-  target: string[];
-  action: 'allow' | 'deny' | 'redirect';
-  conditions?: Record<string, unknown>;
-  priority: number;
-  enabled: boolean;
-  createdAt: string;
-}
-
-export interface TelemetryEvent {
-  id: string;
-  timestamp: string;
-  level: 'info' | 'warning' | 'error' | 'debug';
-  service: string;
-  message: string;
-  traceId?: string;
-  spanId?: string;
-  duration?: number;
-  metadata?: Record<string, unknown>;
-}
-
 export interface FederationNode {
   id: string;
   name: string;
@@ -275,13 +244,5 @@ export interface DashboardStats {
   providerHealth: number;
   fallbackRate: number;
   workerUtilization: number;
-  systemStatus: 'operational' | 'degraded' | 'maintenance' | 'outage';
-}
-
-export interface NavItem {
-  id: string;
-  label: string;
-  icon: string;
-  path: string;
-  badge?: number;
+  systemStatus: 'operational' | 'degraded' | 'maintenance' | 'outage' | 'no_providers';
 }

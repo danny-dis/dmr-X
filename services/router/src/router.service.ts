@@ -199,11 +199,46 @@ export class Router {
         if (request.model === 'free' || request.model.startsWith('free-')) {
           metaModelFilteredFree = true;
         }
+      } else {
+        logger.warn({ metaModel: request.model, totalCandidates: this.candidates.length }, 'Meta-model resolved to zero candidates');
+        throw new ProviderUnavailableError(
+          this.candidates.map(c => `${c.providerId}/${c.modelId}`),
+          0
+        );
+      }
+    }
+
+    // Step 1.6: Direct model selection — if the user picked a specific model, route to it
+    const tenantId = (request as any).metadata?.tenant?.id;
+    if (request.model && !isMetaModel(request.model)) {
+      const directMatch = pipelineCandidates.find(
+        (c) => c.modelId === request.model && c.isHealthy
+      );
+      if (directMatch) {
+        logger.info({ model: request.model, provider: directMatch.providerName }, 'Direct model selection');
+        const plan: RoutingPlan = {
+          primary: { providerId: directMatch.providerId, modelId: directMatch.modelId, adapterType: directMatch.providerName, score: 1 },
+          chain: [],
+          timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
+          maxRetries: 1,
+        };
+        if (options.planOnly) {
+          return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
+        }
+        if (!this.adapterExecutor) throw new Error('No adapter executor configured');
+        const response = await executeWithFallback(plan, request, this.adapterExecutor, {
+          rateLimitService: this.config.rateLimitService,
+          quotaService: this.config.quotaService,
+          tenantId,
+          requestId,
+          onSuccess: this.config.onProviderSuccess,
+          onFailure: this.config.onProviderFailure,
+        });
+        return { plan, response };
       }
     }
 
     // Step 2: Run the routing pipeline
-    const tenantId = (request as any).metadata?.tenant?.id;
     const providerPreferences: ProviderPreferences | undefined = request.metadata?.providerPreferences;
 
     // If strategy is 'direct' and an order list exists, force the first provider
@@ -362,6 +397,12 @@ export class Router {
       if (resolution) {
         logger.info({ metaModel: request.model, candidateCount: resolution.resolved.length }, 'Resolved meta-model for composite');
         compositeCandidates = resolution.resolved;
+      } else {
+        logger.warn({ metaModel: request.model, totalCandidates: this.candidates.length }, 'Meta-model resolved to zero candidates (composite)');
+        throw new ProviderUnavailableError(
+          this.candidates.map(c => `${c.providerId}/${c.modelId}`),
+          0
+        );
       }
     }
 

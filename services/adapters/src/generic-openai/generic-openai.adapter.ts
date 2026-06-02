@@ -40,7 +40,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
   async initialize(config: ProviderConfig): Promise<void> {
     await super.initialize(config);
-    this.apiKey = (config.apiKey as string) || '';
+    this.apiKey = (config.accessToken as string) || (config.apiKey as string) || '';
     // Some free providers (e.g., Pollinations) don't need an API key
   }
 

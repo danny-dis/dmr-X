@@ -5,6 +5,10 @@ import crypto from 'node:crypto';
 import { ValidationError } from '@dmr-x/core';
 import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey } from '@dmr-x/utils';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
+import { memoryService, retentionManager } from '@dmr-x/memory';
+import { sandboxService } from '@dmr-x/sandbox';
+import { workersService } from '@dmr-x/workers';
+import { federationService } from '@dmr-x/federation';
 
 const CreateProviderSchema = z.object({
   name: z.string().min(1),
@@ -39,6 +43,11 @@ const TestProviderSchema = z.object({
 const ActivateProviderSchema = z.object({
   template_id: z.string().min(1),
   api_key: z.string().optional(),
+  oauth_access_token: z.string().optional(),
+  oauth_refresh_token: z.string().optional(),
+  oauth_token_expires_at: z.string().datetime().optional(),
+  auth_method: z.enum(['api_key', 'oauth']).optional(),
+  name: z.string().optional(),
 });
 
 const UpdateProviderSchema = z.object({
@@ -46,6 +55,10 @@ const UpdateProviderSchema = z.object({
   adapter_type: z.string().min(1).optional(),
   base_url: z.string().url().optional().nullable(),
   api_key_ref: z.string().optional().nullable(),
+  auth_method: z.enum(['api_key', 'oauth']).optional(),
+  oauth_access_token: z.string().optional(),
+  oauth_refresh_token: z.string().optional().nullable(),
+  oauth_token_expires_at: z.string().datetime().optional().nullable(),
   config: z.record(z.unknown()).optional(),
 });
 
@@ -60,6 +73,12 @@ const CreateTenantSchema = z.object({
 const CreateApiKeySchema = z.object({
   tenant_id: z.string().uuid(),
   name: z.string().max(255).optional(),
+  scopes: z.array(z.string()).optional(),
+});
+
+const CreateTenantApiKeySchema = z.object({
+  name: z.string().max(255).optional(),
+  scopes: z.array(z.string()).optional(),
 });
 
 const UpdateModelSchema = z.object({
@@ -172,9 +191,45 @@ function validateBaseUrlForSSRF(urlStr: string): void {
 }
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
+  async function createApiKeyForTenant(tenantId: string, name: string | undefined) {
+    const db = getDb();
+
+    const tenant = db.prepare('SELECT id FROM tenants WHERE id = ?').get(tenantId);
+    if (!tenant) {
+      throw new ValidationError('Tenant not found');
+    }
+
+    const { generateApiKey, hashApiKey } = await import('@dmr-x/utils');
+    const apiKey = generateApiKey();
+    const keyHash = hashApiKey(apiKey);
+    const id = crypto.randomUUID();
+
+    db.prepare(
+      'INSERT INTO api_keys (id, tenant_id, key_hash, name) VALUES (?, ?, ?, ?)'
+    ).run(id, tenantId, keyHash, name);
+
+    const row = db.prepare(
+      'SELECT id, tenant_id, name, created_at FROM api_keys WHERE id = ?'
+    ).get(id);
+
+    return {
+      ...row,
+      key: apiKey,
+    };
+  }
+
   // List provider catalog
   server.get('/admin/catalog', async () => {
-    return { catalog: PROVIDER_CATALOG };
+    const catalog = PROVIDER_CATALOG.map(t => ({
+      ...t,
+      oauthConfig: t.oauthConfig ? {
+        flow: t.oauthConfig.flow,
+        scopes: t.oauthConfig.scopes,
+        usePKCE: t.oauthConfig.usePKCE,
+        tokenResponseType: t.oauthConfig.tokenResponseType,
+      } : undefined,
+    }));
+    return { catalog };
   });
 
   // Activate provider from catalog
@@ -184,19 +239,36 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
-    const { template_id, api_key } = parsed.data;
+    const {
+      template_id,
+      api_key,
+      oauth_access_token,
+      oauth_refresh_token,
+      oauth_token_expires_at,
+      auth_method,
+      name: custom_name,
+    } = parsed.data;
     const template = PROVIDER_CATALOG.find(t => t.id === template_id);
     if (!template) {
       throw new ValidationError(`Template not found: ${template_id}`);
     }
 
     const db = getDb();
-    let provider = db.prepare('SELECT * FROM providers WHERE name = ?').get(template_id) as any;
+    const providerName = custom_name || template_id;
+    let provider = db.prepare('SELECT * FROM providers WHERE name = ?').get(providerName) as any;
 
     // SSRF validation for base URL
     if (template.baseUrl) {
       validateBaseUrlForSSRF(template.baseUrl);
     }
+
+    const hasApiKey = !!api_key;
+    const hasOAuthToken = !!oauth_access_token;
+    const requestedAuthMethod = auth_method || (hasOAuthToken ? 'oauth' : 'api_key');
+    const needsNoKey = template.envKey === '';
+    const shouldActivateModels = hasApiKey || hasOAuthToken || needsNoKey;
+    const encryptedOAuthAccessToken = oauth_access_token ? encrypt(oauth_access_token) : null;
+    const encryptedOAuthRefreshToken = oauth_refresh_token ? encrypt(oauth_refresh_token) : null;
 
     if (provider) {
       // Update existing — encrypt API key before storing
@@ -204,11 +276,36 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       db.prepare(
         `UPDATE providers SET
           base_url = ?,
-          config = json_set(config, '$.apiKey', ?),
+          config = json_set(json_set(config, '$.apiKey', ?), '$.hasKey', ?),
+          oauth_access_token = COALESCE(?, oauth_access_token),
+          oauth_refresh_token = COALESCE(?, oauth_refresh_token),
+          oauth_token_expires_at = COALESCE(?, oauth_token_expires_at),
+          auth_method = ?,
           is_healthy = 1,
+          consecutive_failures = 0,
           updated_at = datetime('now')
          WHERE id = ?`
-      ).run(template.baseUrl, encKey, provider.id);
+      ).run(
+        template.baseUrl,
+        encKey,
+        hasApiKey ? 1 : 0,
+        encryptedOAuthAccessToken,
+        encryptedOAuthRefreshToken,
+        oauth_token_expires_at ?? null,
+        requestedAuthMethod,
+        provider.id,
+      );
+
+      // Activate models for this provider
+      if (shouldActivateModels) {
+        const activated = db.prepare(
+          `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+           WHERE provider_id = ? AND is_active = 0`
+        ).run(provider.id);
+        if (activated.changes > 0) {
+          logger.info({ provider: providerName, models: activated.changes }, 'Activated models after provider re-activation');
+        }
+      }
     } else {
       // Create new — encrypt API key before storing
       const id = crypto.randomUUID();
@@ -218,18 +315,26 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         description: template.description,
         signupUrl: template.signupUrl,
         apiKey: api_key ? encrypt(api_key) : '',
+        hasKey: hasApiKey,
         isHealthy: true
       };
       db.prepare(
-        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO providers (
+          id, name, adapter_type, base_url, api_key_ref, config,
+          oauth_access_token, oauth_refresh_token, oauth_token_expires_at, auth_method
+        )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
-        template.id,
+        providerName,
         template.id,
         template.baseUrl,
         template.envKey || '',
-        JSON.stringify(configObj)
+        JSON.stringify(configObj),
+        encryptedOAuthAccessToken,
+        encryptedOAuthRefreshToken,
+        oauth_token_expires_at ?? null,
+        requestedAuthMethod,
       );
       provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
 
@@ -259,27 +364,35 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           (model.outputCostPer1M || 0) / 1000,
           model.costPerImage || 0,
           0.5,
-          1
+          shouldActivateModels ? 1 : 0
         );
       }
     }
 
+    provider = db.prepare('SELECT * FROM providers WHERE name = ?').get(providerName) as any;
+
     // Initialize/Update adapter in registry
     const adapterRegistry = (server as any).adapterRegistry;
-    let adapter = adapterRegistry.get(template_id);
+    let adapter = adapterRegistry.get(providerName);
 
     if (!adapter && template.apiFormat === 'openai') {
       const { GenericOpenAIAdapter } = await import('@dmr-x/adapters');
-      adapter = new GenericOpenAIAdapter(template_id);
+      adapter = new GenericOpenAIAdapter(providerName);
       adapterRegistry.register(adapter);
     }
 
     if (adapter) {
-      await adapterRegistry.initialize(template_id, {
+      await adapterRegistry.initialize(providerName, {
         baseUrl: template.baseUrl,
-        apiKey: api_key || '',
+        apiKey: requestedAuthMethod === 'api_key' ? api_key || '' : '',
+        accessToken: requestedAuthMethod === 'oauth' ? oauth_access_token || '' : undefined,
+        authMethod: requestedAuthMethod,
       });
     }
+
+    // Refresh router candidates so new provider is routable immediately
+    const refreshCandidates = (server as any).refreshCandidates;
+    if (refreshCandidates) await refreshCandidates();
 
     reply.status(200);
     const providerConfig = JSON.parse(provider.config || '{}');
@@ -303,7 +416,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         ...row,
         config: safeConfig,
         status: row.is_healthy ? 'healthy' : 'unavailable',
-        hasKey: !!config.apiKey,
+        hasKey: !!config.apiKey || !!row.oauth_access_token,
+        hasOAuthToken: !!row.oauth_access_token,
+        authMethod: row.auth_method || 'api_key',
+        oauthTokenExpiresAt: row.oauth_token_expires_at || null,
         signupUrl: config.signupUrl || undefined,
         description: config.description || undefined,
         category: config.category || [],
@@ -335,8 +451,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     config.hasKey = !!api_key;
 
     db.prepare(
-      `UPDATE providers SET config = ?, is_healthy = 1, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE providers SET config = ?, is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`
     ).run(JSON.stringify(config), id);
+
+    // Activate models for this provider now that it has a key
+    const activated = db.prepare(
+      `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+       WHERE provider_id = ? AND is_active = 0`
+    ).run(id);
+    if (activated.changes > 0) {
+      logger.info({ provider: provider.name, models: activated.changes }, 'Activated models after API key update');
+    }
 
     // Re-initialize adapter with new key
     const adapterRegistry = (server as any).adapterRegistry;
@@ -360,6 +485,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       }
     }
 
+    // Refresh router candidates so updated provider is routable immediately
+    const refreshCandidates = (server as any).refreshCandidates;
+    if (refreshCandidates) await refreshCandidates();
+
     const updatedRow = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
     const updatedConfig = JSON.parse(updatedRow.config || '{}');
     return {
@@ -369,6 +498,476 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         config: { ...updatedConfig, apiKey: undefined, hasKey: !!updatedConfig.apiKey },
       },
     };
+  });
+
+  // ─── OAuth Endpoints ───────────────────────────────────────────────
+
+  const OAuthAuthorizeSchema = z.object({
+    redirect_uri: z.string().url().optional(),
+  });
+
+  const OAuthCallbackSchema = z.object({
+    code: z.string().min(1),
+    state: z.string().min(1),
+  });
+
+  // Initiate OAuth authorization flow
+  server.post('/admin/providers/:id/oauth/authorize', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = OAuthAuthorizeSchema.safeParse(request.body || {});
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const db = getDb();
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+
+    const template = PROVIDER_CATALOG.find(t => t.id === provider.name || t.name === provider.name);
+    if (!template?.oauthConfig) {
+      reply.status(400);
+      return { error: { message: 'Provider does not support OAuth', type: 'validation', code: 'oauth_not_supported' } };
+    }
+
+    const oauthConfig = template.oauthConfig;
+
+    // Client credentials flow: exchange immediately, no browser redirect needed
+    if (oauthConfig.flow === 'client_credentials') {
+      try {
+        const { OAuthService } = await import('@dmr-x/oauth');
+        const oauthService = new OAuthService();
+        const tokens = await oauthService.handleClientCredentials(provider.name, oauthConfig);
+
+        const encAccess = encrypt(tokens.accessToken);
+        const encRefresh = tokens.refreshToken ? encrypt(tokens.refreshToken) : null;
+
+        db.prepare(
+          `UPDATE providers SET
+            oauth_access_token = ?,
+            oauth_refresh_token = ?,
+            oauth_token_expires_at = ?,
+            auth_method = 'oauth',
+            is_healthy = 1,
+            consecutive_failures = 0,
+            updated_at = datetime('now')
+          WHERE id = ?`
+        ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
+
+        // Activate models
+        db.prepare(
+          `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+           WHERE provider_id = ? AND is_active = 0`
+        ).run(id);
+
+        // Re-initialize adapter with OAuth token
+        const adapterRegistry = (server as any).adapterRegistry;
+        if (adapterRegistry && provider.base_url) {
+          try {
+            await adapterRegistry.initialize(provider.name, {
+              baseUrl: provider.base_url,
+              accessToken: tokens.accessToken,
+              authMethod: 'oauth',
+            });
+          } catch (err) {
+            logger.warn({ err, provider: provider.name }, 'Adapter re-init failed after OAuth');
+          }
+        }
+
+        const refreshCandidates = (server as any).refreshCandidates;
+        if (refreshCandidates) await refreshCandidates();
+
+        return { success: true, flow: 'client_credentials', expiresAt: tokens.expiresAt?.toISOString() || null };
+      } catch (err) {
+        logger.error({ err, provider: provider.name }, 'OAuth client_credentials failed');
+        reply.status(502);
+        return { error: { message: `OAuth failed: ${err instanceof Error ? err.message : String(err)}`, type: 'oauth_error', code: 'oauth_exchange_failed' } };
+      }
+    }
+
+    // Authorization code flow: return URL for browser redirect
+    if (oauthConfig.flow === 'authorization_code') {
+      try {
+        const { OAuthService } = await import('@dmr-x/oauth');
+        const oauthService = new OAuthService();
+        const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.DMRX_PORT || 3000}`;
+        const result = oauthService.generateAuthorizationUrl(provider.name, oauthConfig, gatewayBaseUrl);
+        return { authorizationUrl: result.authorizationUrl, state: result.state, flow: 'authorization_code' };
+      } catch (err) {
+        logger.error({ err, provider: provider.name }, 'OAuth authorize URL generation failed');
+        reply.status(502);
+        return { error: { message: `OAuth failed: ${err instanceof Error ? err.message : String(err)}`, type: 'oauth_error', code: 'oauth_authorize_failed' } };
+      }
+    }
+
+    // Device code flow
+    if (oauthConfig.flow === 'device_code') {
+      try {
+        const { OAuthService } = await import('@dmr-x/oauth');
+        const oauthService = new OAuthService();
+        const result = await oauthService.handleDeviceCode(provider.name, oauthConfig);
+        return { ...result, flow: 'device_code' };
+      } catch (err) {
+        logger.error({ err, provider: provider.name }, 'OAuth device code failed');
+        reply.status(502);
+        return { error: { message: `OAuth failed: ${err instanceof Error ? err.message : String(err)}`, type: 'oauth_error', code: 'oauth_device_code_failed' } };
+      }
+    }
+
+    reply.status(400);
+    return { error: { message: 'Unsupported OAuth flow', type: 'validation', code: 'unsupported_oauth_flow' } };
+  });
+
+  // OAuth callback — exchanges authorization code for tokens
+  server.post('/admin/providers/:id/oauth/callback', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = OAuthCallbackSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const { code, state } = parsed.data;
+
+    const db = getDb();
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+
+    const template = PROVIDER_CATALOG.find(t => t.id === provider.name || t.name === provider.name);
+    if (!template?.oauthConfig || template.oauthConfig.flow !== 'authorization_code') {
+      reply.status(400);
+      return { error: { message: 'Provider does not support authorization_code OAuth flow', type: 'validation', code: 'oauth_not_supported' } };
+    }
+
+    try {
+      const { OAuthService } = await import('@dmr-x/oauth');
+      const oauthService = new OAuthService();
+      const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.DMRX_PORT || 3000}`;
+      const tokens = await oauthService.handleAuthorizationCode(provider.name, template.oauthConfig, code, state, gatewayBaseUrl);
+
+      const encAccess = encrypt(tokens.accessToken);
+      const encRefresh = tokens.refreshToken ? encrypt(tokens.refreshToken) : null;
+
+      db.prepare(
+        `UPDATE providers SET
+          oauth_access_token = ?,
+          oauth_refresh_token = ?,
+          oauth_token_expires_at = ?,
+          auth_method = 'oauth',
+          is_healthy = 1,
+          consecutive_failures = 0,
+          updated_at = datetime('now')
+        WHERE id = ?`
+      ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
+
+      // Activate models
+      db.prepare(
+        `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+         WHERE provider_id = ? AND is_active = 0`
+      ).run(id);
+
+      // Re-initialize adapter
+      const adapterRegistry = (server as any).adapterRegistry;
+      if (adapterRegistry && provider.base_url) {
+        try {
+          await adapterRegistry.initialize(provider.name, {
+            baseUrl: provider.base_url,
+            accessToken: tokens.accessToken,
+            authMethod: 'oauth',
+          });
+        } catch (err) {
+          logger.warn({ err, provider: provider.name }, 'Adapter re-init failed after OAuth callback');
+        }
+      }
+
+      const refreshCandidates = (server as any).refreshCandidates;
+      if (refreshCandidates) await refreshCandidates();
+
+      return {
+        success: true,
+        provider: {
+          ...provider,
+          auth_method: 'oauth',
+          oauth_token_expires_at: tokens.expiresAt?.toISOString() || null,
+        },
+      };
+    } catch (err) {
+      logger.error({ err, provider: provider.name }, 'OAuth callback failed');
+      reply.status(502);
+      return { error: { message: `OAuth callback failed: ${err instanceof Error ? err.message : String(err)}`, type: 'oauth_error', code: 'oauth_callback_failed' } };
+    }
+  });
+
+  // OAuth callback via GET — handles browser redirects from OAuth providers
+  // OAuth providers redirect the browser via GET with ?code=xxx&state=yyy
+  server.get('/admin/providers/:id/oauth/callback', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { code, state } = request.query as { code?: string; state?: string };
+
+    if (!code || !state) {
+      return reply.type('text/html').send(`
+        <html><body style="font-family:system-ui;background:#0F0F12;color:#F8F9FC;display:flex;align-items:center;justify-content:center;height:100vh">
+          <div style="text-align:center"><h2>Missing Parameters</h2><p>The OAuth callback is missing required parameters.</p></div>
+        </body></html>
+      `);
+    }
+
+    const db = getDb();
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      return reply.type('text/html').send(`
+        <html><body style="font-family:system-ui;background:#0F0F12;color:#F8F9FC;display:flex;align-items:center;justify-content:center;height:100vh">
+          <div style="text-align:center"><h2>Provider Not Found</h2><script>setTimeout(() => window.close(), 2000)</script></div>
+        </body></html>
+      `);
+    }
+
+    const template = PROVIDER_CATALOG.find(t => t.id === provider.name || t.name === provider.name);
+    if (!template?.oauthConfig || template.oauthConfig.flow !== 'authorization_code') {
+      return reply.type('text/html').send(`
+        <html><body style="font-family:system-ui;background:#0F0F12;color:#F8F9FC;display:flex;align-items:center;justify-content:center;height:100vh">
+          <div style="text-align:center"><h2>OAuth Not Supported</h2><script>setTimeout(() => window.close(), 2000)</script></div>
+        </body></html>
+      `);
+    }
+
+    try {
+      const { OAuthService } = await import('@dmr-x/oauth');
+      const oauthService = new OAuthService();
+      const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.DMRX_PORT || 3000}`;
+      const tokens = await oauthService.handleAuthorizationCode(provider.name, template.oauthConfig, code, state, gatewayBaseUrl);
+
+      const encAccess = encrypt(tokens.accessToken);
+      const encRefresh = tokens.refreshToken ? encrypt(tokens.refreshToken) : null;
+
+      db.prepare(
+        `UPDATE providers SET
+          oauth_access_token = ?,
+          oauth_refresh_token = ?,
+          oauth_token_expires_at = ?,
+          auth_method = 'oauth',
+          is_healthy = 1,
+          consecutive_failures = 0,
+          updated_at = datetime('now')
+        WHERE id = ?`
+      ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
+
+      db.prepare(
+        `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+         WHERE provider_id = ? AND is_active = 0`
+      ).run(id);
+
+      const adapterRegistry = (server as any).adapterRegistry;
+      if (adapterRegistry && provider.base_url) {
+        try {
+          await adapterRegistry.initialize(provider.name, {
+            baseUrl: provider.base_url,
+            accessToken: tokens.accessToken,
+            authMethod: 'oauth',
+          });
+        } catch (err) {
+          logger.warn({ err, provider: provider.name }, 'Adapter re-init failed after OAuth GET callback');
+        }
+      }
+
+      const refreshCandidates = (server as any).refreshCandidates;
+      if (refreshCandidates) await refreshCandidates();
+
+      return reply.type('text/html').send(`
+        <html><body style="font-family:system-ui;background:#0F0F12;color:#F8F9FC;display:flex;align-items:center;justify-content:center;height:100vh">
+          <div style="text-align:center">
+            <h2 style="color:#00FFB2">Connected!</h2>
+            <p>${provider.name} has been connected via OAuth.</p>
+            <p style="color:#595962;font-size:14px">This window will close automatically...</p>
+            <script>setTimeout(() => window.close(), 1500)</script>
+          </div>
+        </body></html>
+      `);
+    } catch (err) {
+      logger.error({ err, provider: provider.name }, 'OAuth GET callback failed');
+      return reply.type('text/html').send(`
+        <html><body style="font-family:system-ui;background:#0F0F12;color:#F8F9FC;display:flex;align-items:center;justify-content:center;height:100vh">
+          <div style="text-align:center">
+            <h2 style="color:#FF4D6A">Connection Failed</h2>
+            <p>${err instanceof Error ? err.message : 'OAuth exchange failed'}</p>
+            <script>setTimeout(() => window.close(), 3000)</script>
+          </div>
+        </body></html>
+      `);
+    }
+  });
+
+  // Refresh OAuth token
+  server.post('/admin/providers/:id/oauth/refresh', async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    const db = getDb();
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+
+    if (!provider.oauth_refresh_token) {
+      reply.status(400);
+      return { error: { message: 'No refresh token available', type: 'validation', code: 'no_refresh_token' } };
+    }
+
+    const template = PROVIDER_CATALOG.find(t => t.id === provider.name || t.name === provider.name);
+    if (!template?.oauthConfig) {
+      reply.status(400);
+      return { error: { message: 'Provider does not support OAuth', type: 'validation', code: 'oauth_not_supported' } };
+    }
+
+    try {
+      const { OAuthService } = await import('@dmr-x/oauth');
+      const oauthService = new OAuthService();
+      const refreshToken = decrypt(provider.oauth_refresh_token);
+      const tokens = await oauthService.refreshAccessToken(template.oauthConfig, refreshToken);
+
+      const encAccess = encrypt(tokens.accessToken);
+      const encRefresh = tokens.refreshToken ? encrypt(tokens.refreshToken) : provider.oauth_refresh_token;
+
+      db.prepare(
+        `UPDATE providers SET
+          oauth_access_token = ?,
+          oauth_refresh_token = ?,
+          oauth_token_expires_at = ?,
+          updated_at = datetime('now')
+        WHERE id = ?`
+      ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
+
+      // Re-initialize adapter
+      const adapterRegistry = (server as any).adapterRegistry;
+      if (adapterRegistry && provider.base_url) {
+        try {
+          await adapterRegistry.initialize(provider.name, {
+            baseUrl: provider.base_url,
+            accessToken: tokens.accessToken,
+            authMethod: 'oauth',
+          });
+        } catch (err) {
+          logger.warn({ err, provider: provider.name }, 'Adapter re-init failed after OAuth refresh');
+        }
+      }
+
+      return { success: true, expiresAt: tokens.expiresAt?.toISOString() || null };
+    } catch (err) {
+      logger.error({ err, provider: provider.name }, 'OAuth token refresh failed');
+      reply.status(502);
+      return { error: { message: `Refresh failed: ${err instanceof Error ? err.message : String(err)}`, type: 'oauth_error', code: 'oauth_refresh_failed' } };
+    }
+  });
+
+  // OAuth status for a provider
+  server.get('/admin/providers/:id/oauth/status', async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    const db = getDb();
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+
+    const template = PROVIDER_CATALOG.find(t => t.id === provider.name || t.name === provider.name);
+    const hasOAuth = !!template?.oauthConfig;
+    const authMethod = provider.auth_method || 'api_key';
+    const tokenExpiresAt = provider.oauth_token_expires_at || null;
+    const isExpired = tokenExpiresAt ? new Date(tokenExpiresAt) < new Date() : false;
+
+    return {
+      hasOAuth,
+      authMethod,
+      tokenExpiresAt,
+      isExpired,
+      oauthFlow: template?.oauthConfig?.flow || null,
+    };
+  });
+
+  // Poll device code — checks if user has authorized
+  server.post('/admin/providers/:id/oauth/device-code/poll', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { device_code } = request.body as { device_code?: string };
+
+    if (!device_code) {
+      reply.status(400);
+      return { error: { message: 'Missing device_code', type: 'validation', code: 'missing_device_code' } };
+    }
+
+    const db = getDb();
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+
+    const template = PROVIDER_CATALOG.find(t => t.id === provider.name || t.name === provider.name);
+    if (!template?.oauthConfig || template.oauthConfig.flow !== 'device_code') {
+      reply.status(400);
+      return { error: { message: 'Provider does not support device_code flow', type: 'validation', code: 'oauth_not_supported' } };
+    }
+
+    try {
+      const { OAuthService } = await import('@dmr-x/oauth');
+      const oauthService = new OAuthService();
+      const tokens = await oauthService.pollDeviceCode(provider.name, template.oauthConfig, device_code);
+
+      const encAccess = encrypt(tokens.accessToken);
+      const encRefresh = tokens.refreshToken ? encrypt(tokens.refreshToken) : null;
+
+      db.prepare(
+        `UPDATE providers SET
+          oauth_access_token = ?,
+          oauth_refresh_token = ?,
+          oauth_token_expires_at = ?,
+          auth_method = 'oauth',
+          is_healthy = 1,
+          consecutive_failures = 0,
+          updated_at = datetime('now')
+        WHERE id = ?`
+      ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
+
+      db.prepare(
+        `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+         WHERE provider_id = ? AND is_active = 0`
+      ).run(id);
+
+      const adapterRegistry = (server as any).adapterRegistry;
+      if (adapterRegistry && provider.base_url) {
+        try {
+          await adapterRegistry.initialize(provider.name, {
+            baseUrl: provider.base_url,
+            accessToken: tokens.accessToken,
+            authMethod: 'oauth',
+          });
+        } catch (err) {
+          logger.warn({ err, provider: provider.name }, 'Adapter re-init failed after device code poll');
+        }
+      }
+
+      const refreshCandidates = (server as any).refreshCandidates;
+      if (refreshCandidates) await refreshCandidates();
+
+      return { success: true, status: 'authorized', expiresAt: tokens.expiresAt?.toISOString() || null };
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Device code pending — user hasn't authorized yet
+      if (msg.includes('authorization_pending') || msg.includes('slow_down')) {
+        return { success: false, status: 'pending' };
+      }
+      // Device code expired or denied
+      if (msg.includes('expired') || msg.includes('denied')) {
+        return { success: false, status: msg.includes('expired') ? 'expired' : 'denied' };
+      }
+      logger.error({ err, provider: provider.name }, 'Device code poll failed');
+      reply.status(502);
+      return { error: { message: `Poll failed: ${msg}`, type: 'oauth_error', code: 'device_code_poll_failed' } };
+    }
   });
 
   // Test provider connection with a given API key
@@ -1106,23 +1705,145 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return { events: rows };
   });
 
-  // Stub endpoints for "Coming Soon" features
-  // These return empty arrays so hooks fall back to mock data gracefully
-
-  server.get('/admin/memory/items', async () => {
-    return { items: [] };
+  // Memory endpoints
+  server.get('/admin/memory', async (request) => {
+    const { tenantId, limit } = request.query as { tenantId?: string; limit?: number };
+    const items = memoryService.list(tenantId, limit);
+    return { items };
   });
 
-  server.get('/admin/sandbox/jobs', async () => {
-    return { jobs: [] };
+  server.post('/admin/memory', async (request, reply) => {
+    const { tenantId, content, namespace, source, retentionDays, metadata } = request.body as any;
+    if (!content) {
+      reply.status(400);
+      return { error: { message: 'content is required', type: 'validation', code: 'missing_content' } };
+    }
+    const item = await memoryService.create({
+      tenantId: tenantId || 'local',
+      content,
+      namespace,
+      source,
+      retentionDays,
+      metadata,
+    });
+    reply.status(201);
+    return item;
   });
 
-  server.get('/admin/scheduler/workers', async () => {
-    return { workers: [] };
+  server.post('/admin/memory/search', async (request) => {
+    const { tenantId, query, namespace, limit, minScore } = request.body as any;
+    const results = await memoryService.search({ tenantId, query, namespace, limit, minScore });
+    return { items: results };
   });
 
-  server.get('/admin/federation/nodes', async () => {
-    return { nodes: [] };
+  server.delete('/admin/memory/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    memoryService.delete(id);
+    reply.status(204);
+    return null;
+  });
+
+  server.get('/admin/memory/stats', async () => {
+    return retentionManager.getStats();
+  });
+
+  // Sandbox endpoints
+  server.get('/admin/sandbox/jobs', async (request) => {
+    const { limit } = request.query as { limit?: number };
+    const jobs = sandboxService.list(limit);
+    return { jobs };
+  });
+
+  server.post('/admin/sandbox/jobs', async (request, reply) => {
+    const { tenantId, language, code, timeoutMs, maxRetries } = request.body as any;
+    if (!code) {
+      reply.status(400);
+      return { error: { message: 'code is required', type: 'validation', code: 'missing_code' } };
+    }
+    const job = await sandboxService.submit({ tenantId, language, code, timeoutMs, maxRetries });
+    reply.status(201);
+    return job;
+  });
+
+  server.post('/admin/sandbox/jobs/:id/cancel', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const cancelled = sandboxService.cancel(id);
+    if (!cancelled) {
+      reply.status(404);
+      return { error: { message: 'Job not found or already completed', type: 'not_found', code: 'job_not_found' } };
+    }
+    return { ok: true };
+  });
+
+  // Workers endpoints
+  server.get('/admin/workers', async () => {
+    const workers = workersService.list();
+    return { workers };
+  });
+
+  server.post('/admin/workers', async (request, reply) => {
+    const { name, type } = request.body as any;
+    if (!name) {
+      reply.status(400);
+      return { error: { message: 'name is required', type: 'validation', code: 'missing_name' } };
+    }
+    const worker = workersService.register({ name, type });
+    reply.status(201);
+    return worker;
+  });
+
+  server.post('/admin/workers/:id/heartbeat', async (request) => {
+    const { id } = request.params as { id: string };
+    const ok = workersService.heartbeat(id);
+    return { ok };
+  });
+
+  server.post('/admin/workers/:id/drain', async (request) => {
+    const { id } = request.params as { id: string };
+    const worker = workersService.drain(id);
+    return worker;
+  });
+
+  server.post('/admin/workers/:id/resume', async (request) => {
+    const { id } = request.params as { id: string };
+    const worker = workersService.resume(id);
+    return worker;
+  });
+
+  // Federation endpoints
+  server.get('/admin/federation', async () => {
+    const nodes = federationService.list();
+    return { nodes };
+  });
+
+  server.post('/admin/federation', async (request, reply) => {
+    const { name, url, region, apiKey, privacyLevel } = request.body as any;
+    if (!name || !url) {
+      reply.status(400);
+      return { error: { message: 'name and url are required', type: 'validation', code: 'missing_fields' } };
+    }
+    const node = federationService.register({ name, url, region, apiKey, privacyLevel });
+    reply.status(201);
+    return node;
+  });
+
+  server.delete('/admin/federation/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    federationService.unregister(id);
+    reply.status(204);
+    return null;
+  });
+
+  server.post('/admin/federation/:id/health', async (request) => {
+    const { id } = request.params as { id: string };
+    const node = await federationService.healthCheck(id);
+    return node;
+  });
+
+  server.post('/admin/federation/:id/sync', async (request) => {
+    const { id } = request.params as { id: string };
+    const ok = await federationService.syncBenchmark(id);
+    return { ok };
   });
 
   // --- DELETE endpoints ---
@@ -1149,7 +1870,25 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.delete('/admin/tenants/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     const db = getDb();
-    db.prepare('DELETE FROM tenants WHERE id = ?').run(id);
+
+    const tenant = db.prepare('SELECT id, name FROM tenants WHERE id = ?').get(id) as any;
+    if (!tenant) {
+      reply.status(404);
+      return { error: { message: 'Tenant not found', type: 'not_found', code: 'tenant_not_found' } };
+    }
+
+    // Protect default/local tenant
+    if (tenant.name === 'default' || tenant.name === 'local') {
+      throw new ValidationError(`Cannot delete the "${tenant.name}" tenant`);
+    }
+
+    try {
+      db.prepare('DELETE FROM tenants WHERE id = ?').run(id);
+    } catch (err: any) {
+      logger.error({ err, tenantId: id }, 'Failed to delete tenant');
+      throw new ValidationError('Cannot delete tenant — it still has associated records (billing, usage, etc.)');
+    }
+
     reply.status(204);
     return null;
   });
@@ -1181,7 +1920,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { name, adapter_type, base_url, api_key_ref, config } = parsed.data;
+    const {
+      name,
+      adapter_type,
+      base_url,
+      api_key_ref,
+      config,
+      auth_method,
+      oauth_access_token,
+      oauth_refresh_token,
+      oauth_token_expires_at,
+    } = parsed.data;
 
     // Issue #9: SSRF validation on base_url
     if (base_url) {
@@ -1190,6 +1939,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     // Issue #2: Encrypt any apiKey in config before storing
     const configToStore = config ? encryptConfigApiKey({ ...config }) : null;
+    const encryptedOAuthAccessToken = oauth_access_token ? encrypt(oauth_access_token) : null;
+    const encryptedOAuthRefreshToken = oauth_refresh_token ? encrypt(oauth_refresh_token) : null;
 
     const db = getDb();
     db.prepare(
@@ -1199,16 +1950,67 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         base_url = COALESCE(?, base_url),
         api_key_ref = COALESCE(?, api_key_ref),
         config = COALESCE(?, config),
+        oauth_access_token = COALESCE(?, oauth_access_token),
+        oauth_refresh_token = COALESCE(?, oauth_refresh_token),
+        oauth_token_expires_at = COALESCE(?, oauth_token_expires_at),
+        auth_method = COALESCE(?, auth_method),
+        is_healthy = CASE WHEN ? IS NULL THEN is_healthy ELSE 1 END,
+        consecutive_failures = CASE WHEN ? IS NULL THEN consecutive_failures ELSE 0 END,
         updated_at = datetime('now')
       WHERE id = ?`
-    ).run(name ?? null, adapter_type ?? null, base_url ?? null, api_key_ref ?? null, configToStore ? JSON.stringify(configToStore) : null, id);
+    ).run(
+      name ?? null,
+      adapter_type ?? null,
+      base_url ?? null,
+      api_key_ref ?? null,
+      configToStore ? JSON.stringify(configToStore) : null,
+      encryptedOAuthAccessToken,
+      encryptedOAuthRefreshToken,
+      oauth_token_expires_at ?? null,
+      auth_method ?? (oauth_access_token ? 'oauth' : null),
+      oauth_access_token ?? null,
+      oauth_access_token ?? null,
+      id,
+    );
     const updated = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
     if (!updated) {
       reply.status(404);
       return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
     }
+    if (oauth_access_token) {
+      const activated = db.prepare(
+        `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+         WHERE provider_id = ? AND is_active = 0`
+      ).run(updated.id);
+      if (activated.changes > 0) {
+        logger.info({ provider: updated.name, models: activated.changes }, 'Activated models after OAuth token update');
+      }
+
+      const template = PROVIDER_CATALOG.find(t => t.id === updated.name || t.name === updated.name);
+      const adapterRegistry = (server as any).adapterRegistry;
+      let adapter = adapterRegistry.get(updated.name);
+      if (!adapter && template?.apiFormat === 'openai') {
+        const { GenericOpenAIAdapter } = await import('@dmr-x/adapters');
+        adapter = new GenericOpenAIAdapter(updated.name);
+        adapterRegistry.register(adapter);
+      }
+      if (adapter && updated.base_url) {
+        try {
+          await adapterRegistry.initialize(updated.name, {
+            baseUrl: updated.base_url,
+            accessToken: oauth_access_token,
+            authMethod: 'oauth',
+          });
+        } catch (err) {
+          logger.warn({ err, provider: updated.name }, 'Adapter initialization failed after OAuth token update');
+        }
+      }
+
+      const refreshCandidates = (server as any).refreshCandidates;
+      if (refreshCandidates) await refreshCandidates();
+    }
     const uCfg = JSON.parse(updated.config || '{}');
-    return { ...updated, config: { ...uCfg, apiKey: undefined, hasKey: !!uCfg.apiKey } };
+    return { ...updated, config: { ...uCfg, apiKey: undefined, hasKey: !!uCfg.apiKey || !!updated.oauth_access_token } };
   });
 
   // Update model

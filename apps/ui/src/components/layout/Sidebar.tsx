@@ -1,123 +1,94 @@
-import { useNavigate, useLocation } from 'react-router';
-import { useStore } from '@/store/useStore';
+import * as React from 'react';
+import { NavLink, useLocation } from 'react-router';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import {
-  LayoutDashboard, Route, Database, Gauge,
-  CreditCard, Brain, BarChart3, Radio, Globe,
-  Box, Timer, ShieldCheck, Users, ScrollText,
-  Bell, Settings, Key, Layers, ChevronLeft, ChevronRight,
-  MessageSquare, Sparkles
-} from 'lucide-react';
+import { Button } from '@/components/primitives/Button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/primitives/Tooltip';
+import { useUIStore } from '@/store/useUIStore';
+import { useMediaQuery } from '@/hooks/useMisc';
+import { NAV_GROUPS } from '@/constants/nav';
+import { BrandMark, BrandWordmark } from '@/icons/SidebarIcons';
 
-const navItems = [
-  { id: 'overview', label: 'Overview', icon: LayoutDashboard, path: '/' },
-  { id: 'routing', label: 'Routing Console', icon: Route, path: '/routing' },
-  { id: 'models', label: 'Model Catalog', icon: Brain, path: '/models' },
-  { id: 'providers', label: 'Provider Registry', icon: Database, path: '/providers' },
-  { id: 'free-tier', label: 'Free Tier', icon: Sparkles, path: '/free-tier' },
-  { id: 'quota', label: 'Quota Manager', icon: Gauge, path: '/quota' },
-  { id: 'billing', label: 'Billing Center', icon: CreditCard, path: '/billing' },
-  { id: 'memory', label: 'Memory Center', icon: Layers, path: '/memory' },
-  { id: 'benchmarks', label: 'Benchmark Lab', icon: BarChart3, path: '/benchmarks' },
-  { id: 'telemetry', label: 'Telemetry', icon: Radio, path: '/telemetry' },
-  { id: 'federation', label: 'Federation', icon: Globe, path: '/federation' },
-  { id: 'playground', label: 'Playground', icon: MessageSquare, path: '/playground' },
-  { id: 'sandbox', label: 'Sandbox', icon: Box, path: '/sandbox' },
-  { id: 'scheduler', label: 'Scheduler', icon: Timer, path: '/scheduler' },
-  { id: 'policies', label: 'Policy Engine', icon: ShieldCheck, path: '/policies' },
-  { id: 'tenants', label: 'Tenants', icon: Users, path: '/tenants' },
-  { id: 'audit', label: 'Audit Logs', icon: ScrollText, path: '/audit' },
-  { id: 'alerts', label: 'Alerts', icon: Bell, path: '/alerts' },
-  { id: 'keys', label: 'Provider Keys', icon: Key, path: '/keys' },
-  { id: 'settings', label: 'Settings', icon: Settings, path: '/settings' },
-];
-
-export default function Sidebar() {
-  const { sidebarCollapsed, toggleSidebar, setCurrentPage } = useStore();
-  const navigate = useNavigate();
+export function Sidebar() {
+  const collapsed = useUIStore((s) => s.sidebarCollapsed);
+  const toggle = useUIStore((s) => s.toggleSidebar);
   const location = useLocation();
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
+  const expanded = !collapsed && isDesktop;
 
   return (
     <aside
       className={cn(
-        'fixed left-0 top-0 h-screen bg-[#0A0A0C] border-r border-[#27272E] z-40 flex flex-col transition-all duration-300 ease-[cubic-bezier(0.165,0.84,0.44,1)]',
-        sidebarCollapsed ? 'w-[80px]' : 'w-[260px]'
+        'hidden h-full shrink-0 flex-col border-r border-border bg-surface-1/60 backdrop-blur transition-[width] duration-200 ease-out sm:flex',
+        collapsed ? 'w-16' : 'w-16 lg:w-60'
       )}
     >
-      {/* Logo */}
-      <div className="h-14 flex items-center px-4 border-b border-[#27272E] relative">
-        <div className="flex items-center gap-3 overflow-hidden">
-          <div className="w-8 h-8 rounded bg-[#F7A51C] flex items-center justify-center flex-shrink-0">
-            <Route className="w-4 h-4 text-[#060608]" />
-          </div>
-          {!sidebarCollapsed && (
-            <div className="transition-opacity duration-200">
-              <div className="text-[#F8F9FC] font-semibold text-sm tracking-tight">DMR-X</div>
-              <div className="text-[#595962] text-[10px] font-mono-data">v2.4.1</div>
-            </div>
-          )}
-        </div>
-        <button
-          onClick={toggleSidebar}
-          className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 bg-[#1A1A20] border border-[#27272E] rounded-full flex items-center justify-center hover:border-[#F7A51C] transition-colors"
-        >
-          {sidebarCollapsed ? (
-            <ChevronRight className="w-3 h-3 text-[#A6A6B0]" />
-          ) : (
-            <ChevronLeft className="w-3 h-3 text-[#A6A6B0]" />
-          )}
-        </button>
+      <div className={cn('flex items-center gap-2.5 border-b border-border', expanded ? 'justify-start px-4 py-4' : 'justify-center px-2 py-4')}>
+        <BrandMark size={28} className="shrink-0" />
+        {expanded && <BrandWordmark height={20} className="shrink-0" />}
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-3 px-2">
-        <div className="space-y-0.5">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = location.pathname === item.path;
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  setCurrentPage(item.id);
-                  navigate(item.path);
-                }}
-                className={cn(
-                  'w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group relative',
-                  isActive
-                    ? 'text-[#F7A51C] bg-[#F7A51C]/10'
-                    : 'text-[#A6A6B0] hover:text-[#F8F9FC] hover:bg-[#1A1A20]'
-                )}
-              >
-                {isActive && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-[#F7A51C] rounded-r" />
-                )}
-                <Icon className={cn('w-4 h-4 flex-shrink-0', isActive && 'text-[#F7A51C]')} />
-                {!sidebarCollapsed && (
-                  <span className="truncate transition-opacity duration-200">{item.label}</span>
-                )}
-                {!sidebarCollapsed && item.badge && (
-                  <span className="ml-auto bg-[#FF4D6A]/20 text-[#FF4D6A] text-[10px] font-semibold px-1.5 py-0.5 rounded-full">
-                    {item.badge}
-                  </span>
-                )}
-                {sidebarCollapsed && item.badge && (
-                  <span className="absolute top-1 right-1 w-2 h-2 bg-[#FF4D6A] rounded-full" />
-                )}
-              </button>
-            );
-          })}
-        </div>
+      <nav className="flex-1 overflow-y-auto px-2 py-3">
+        {NAV_GROUPS.map((group, gi) => (
+          <div key={group.label} className={cn(gi > 0 ? 'mt-3' : '', 'mb-2')}>
+            {expanded && (
+              <div className="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
+                {group.label}
+              </div>
+            )}
+            <ul className="flex flex-col gap-0.5">
+              {group.items.map((item) => {
+                const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
+                const link = (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    end={item.path === '/'}
+                    className={cn(
+                      'group/nav flex items-center gap-2.5 rounded-md transition-all relative text-xs',
+                      expanded ? 'h-8 justify-start px-2.5' : 'h-9 justify-center px-2',
+                      isActive
+                        ? 'bg-primary/[0.08] text-primary'
+                        : 'text-fg-muted hover:text-fg hover:bg-surface-2'
+                    )}
+                  >
+                    {isActive && (
+                      <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r-full bg-primary" />
+                    )}
+                    <item.icon className="size-4 shrink-0" />
+                    {expanded && <span className="truncate">{item.label}</span>}
+                    {expanded && item.badge && (
+                      <span className="ml-auto text-[9px] text-fg-subtle">{item.badge}</span>
+                    )}
+                  </NavLink>
+                );
+                if (!expanded) {
+                  return (
+                    <li key={item.path}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>{link}</TooltipTrigger>
+                        <TooltipContent side="right">{item.label}</TooltipContent>
+                      </Tooltip>
+                    </li>
+                  );
+                }
+                return <li key={item.path}>{link}</li>;
+              })}
+            </ul>
+          </div>
+        ))}
       </nav>
 
-      {/* Bottom Status */}
-      <div className="p-3 border-t border-[#27272E]">
-        <div className={cn('flex items-center gap-2', sidebarCollapsed && 'justify-center')}>
-          <div className="w-2 h-2 rounded-full bg-[#00FFB2] pulse-ring-amber" />
-          {!sidebarCollapsed && (
-            <span className="text-[11px] text-[#A6A6B0] font-mono-data">SYSTEM ONLINE</span>
-          )}
-        </div>
+      <div className="border-t border-border p-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          className={cn('w-full', expanded ? 'justify-start' : 'justify-center')}
+          onClick={toggle}
+        >
+          {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronLeft className="size-3.5" />}
+          {expanded && <span>Collapse</span>}
+        </Button>
       </div>
     </aside>
   );

@@ -1,30 +1,22 @@
-import path from "path"
-import react from "@vitejs/plugin-react"
-import { defineConfig } from "vite"
+import type { Config } from 'vite';
+import react from '@vitejs/plugin-react';
+import path from 'node:path';
 
-export default defineConfig({
-  base: './',
+export default {
   plugins: [react()],
-  server: {
-    port: 5173,
-    proxy: {
-      '/v1': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/health': 'http://localhost:3000',
-      '/healthz': 'http://localhost:3000',
-      '/ready': 'http://localhost:3000',
-      '/livez': 'http://localhost:3000',
-    },
-  },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      '@': path.resolve(__dirname, './src'),
     },
   },
-  build: {
-    outDir: '../gateway/public',
-    emptyOutDir: true,
+  server: {
+    port: 4200,
+    host: true,
+    proxy: {
+      '/v1': {
+        target: process.env.VITE_GATEWAY_URL || 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
   },
-});
+} satisfies Config;

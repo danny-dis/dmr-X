@@ -1,18 +1,39 @@
 import { Link } from 'react-router';
-import { ArrowLeft } from 'lucide-react';
+import { Compass, ArrowLeft, Sparkles } from 'lucide-react';
+import { PageContainer } from '@/components/layout';
+import { Button } from '@/components/primitives/Button';
+import { EmptyState } from '@/components/primitives/EmptyState';
+import { Card } from '@/components/primitives/Card';
 
-export default function NotFound() {
+export function NotFoundPage() {
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
-      <h1 className="text-6xl font-black text-[#F7A51C] mb-4">404</h1>
-      <p className="text-lg text-[#A6A6B0] mb-6">Page not found</p>
-      <Link
-        to="/"
-        className="flex items-center gap-2 px-4 py-2 bg-[#F7A51C] text-[#060608] rounded-md text-sm font-semibold hover:bg-[#F7A51C]/90 transition-colors"
-      >
-        <ArrowLeft className="w-4 h-4" />
-        Back to Dashboard
-      </Link>
-    </div>
+    <PageContainer>
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Card padding="lg" className="max-w-md">
+          <EmptyState
+            size="lg"
+            icon={<Compass className="size-10 text-fg-subtle" />}
+            title="Page not found"
+            description="The page you're looking for doesn't exist or has been moved."
+            action={
+              <div className="flex items-center gap-2 mt-2">
+                <Button variant="ghost" asChild>
+                  <Link to="/">
+                    <ArrowLeft className="size-3" />
+                    Back to dashboard
+                  </Link>
+                </Button>
+                <Button asChild>
+                  <Link to="/playground">
+                    <Sparkles className="size-3" />
+                    Try playground
+                  </Link>
+                </Button>
+              </div>
+            }
+          />
+        </Card>
+      </div>
+    </PageContainer>
   );
 }

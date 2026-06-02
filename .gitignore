@@ -25,3 +25,6 @@ coverage/
 apps/gateway/public/
 cla/*.md
 !cla/README.md
+release/
+*.png
+test-request*.json

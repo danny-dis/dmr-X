@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.3.0 — Documentation Overhaul & Gemini API (2026-06-01)
+
+### Documentation
+- Rewrote `README.md` with accurate Bun-first quickstart, architecture diagram, full API endpoint reference, meta-model aliases, and distribution section.
+- Rewrote `docs/ARCHITECTURE.md` with accurate technology stack (SQLite, Bun, Fastify — no Redis/Postgres), detailed request flow diagram, package boundaries, adapter architecture, router pipeline stages, and security model.
+- Rewrote `CLAUDE.md` as proper Claude Code project instructions (coding conventions, common gotchas, key files, architecture rules).
+- Rewrote `docs/DEPLOYMENT.md` with Bun, Docker, binary, and reverse proxy configurations plus production checklist.
+- Rewrote `docs/CONFIGURATION.md` with complete environment variable reference, all provider keys, and security notes.
+- Created `docs/DISTRIBUTION.md` — binary packaging, install scripts, CI/CD release workflow.
+- Created `docs/MCP.md` — MCP server setup, all 8 tools documented, client integration examples.
+- Created `docs/TESTING.md` — test suites, running tests, type checking, known issues.
+- Created `CONTRIBUTING.md` — contribution guidelines, branch naming, PR checklist.
+- Moved historical audit reports to `docs/archive/` (PHASE1_AUDIT, QA_SECURITY_REPORT, REFACTOR_REPORT, agents checklist).
+- Updated `docs/CHANGELOG.md` (this file).
+
+### API
+- Added Google Gemini native endpoint (`POST /v1/gemini/generateContent`) with streaming, tools, and thought tokens.
+- Added meta-model aliases: `free`, `free-fast`, `free-smart`, `free-agentic`, `free-coding` for dynamic provider routing.
+- Added OAuth provider authentication endpoints for Google, GitHub, HuggingFace, MiniMax.
+
+### Routing
+- Fixed `getCandidates()` to map `context_window` for meta-model resolution (free-agentic/free-coding always got 0 candidates).
+- Router now throws 503 instead of silently falling back to paid models when meta-model resolution fails.
+- Router direct model selection — matches `request.model` to candidate `modelId`.
+
+### Adapters
+- Added `PollinationsAdapter` for keyless image generation.
+- Dynamic model loading with 5 bug fixes: activation, refresh, routing, consecutive_failures, hasKey.
+- Startup sweep now covers ALL providers including keyless providers.
+
+### UI
+- Consolidated 20 routes into 10 tabbed pages.
+- Settings page with 11 sections using left-nav pattern.
+- ProviderKeys page rewritten with inline key editing, test, and save.
+- Overview page fully dynamic — all data from API hooks, no hardcoded values.
+- Deleted 85 stale `.js`/`.js.map` build artifacts from UI source.
+
+### Infrastructure
+- Cross-compile outputs use platform-specific names (`dmrx-linux`, `dmrx-darwin`, `dmrx-windows`).
+- CI/CD release workflow triggers on `v*` tags, builds all platforms, publishes GitHub Release.
+- Install scripts for Linux/macOS (`.tar.gz`) and Windows (`.zip`).
+
+### Bug Fixes
+- `billing_records` table now has `ON DELETE CASCADE` (was the only FK table without it).
+- HTTP 204 No Content no longer crashes `res.json()` in request helper.
+- Local mode admin auth — admin routes open when `LOCAL_MODE=true` OR no admin key set.
+- Adapter UUID/name mismatch — router passes DB UUIDs, registry resolves to names.
+
 ## v0.2.0 — Production Hardening (2026-05-30)
 
 ### Security

@@ -23,9 +23,13 @@ export class OpenAIAdapter extends BaseAdapter {
 
   private apiKey = '';
 
+  private getBaseUrl(): string {
+    return (this.config.baseUrl || 'https://api.openai.com').replace(/\/+$/, '').replace(/\/v1$/, '');
+  }
+
   async initialize(config: ProviderConfig): Promise<void> {
     await super.initialize(config);
-    this.apiKey = (config.apiKey as string) || '';
+    this.apiKey = (config.accessToken as string) || (config.apiKey as string) || '';
     if (!this.apiKey) {
       throw new Error('OpenAI API key is required');
     }
@@ -33,7 +37,7 @@ export class OpenAIAdapter extends BaseAdapter {
 
   protected async checkHealth(): Promise<void> {
     // fetchWithTimeout throws HttpError on non-OK responses; base healthCheck() catches it
-    await this.fetchWithTimeout(`${this.config.baseUrl || 'https://api.openai.com'}/v1/models`, {
+    await this.fetchWithTimeout(`${this.getBaseUrl()}/v1/models`, {
       headers: { Authorization: `Bearer ${this.apiKey}` },
       timeoutMs: 5000,
     });
@@ -42,7 +46,7 @@ export class OpenAIAdapter extends BaseAdapter {
   async execute(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {
     this.assertInitialized();
 
-    const baseUrl = this.config.baseUrl || 'https://api.openai.com';
+    const baseUrl = this.getBaseUrl();
     const start = Date.now();
 
     try {
@@ -199,7 +203,7 @@ export class OpenAIAdapter extends BaseAdapter {
   async *executeStream(request: UnifiedRequest, options?: ExecuteOptions): AsyncIterable<StreamChunk> {
     this.assertInitialized();
 
-    const baseUrl = this.config.baseUrl || 'https://api.openai.com';
+    const baseUrl = this.getBaseUrl();
     let response: Response;
     try {
       response = await this.fetchWithTimeout(`${baseUrl}/v1/chat/completions`, {
@@ -228,7 +232,7 @@ export class OpenAIAdapter extends BaseAdapter {
 
   async listModels(): Promise<ModelInfo[]> {
     this.assertInitialized();
-    const baseUrl = this.config.baseUrl || 'https://api.openai.com';
+    const baseUrl = this.getBaseUrl();
     let response: Response;
     try {
       response = await this.fetchWithTimeout(`${baseUrl}/v1/models`, {

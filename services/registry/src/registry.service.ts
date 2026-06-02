@@ -30,6 +30,7 @@ export class RegistryService {
         mp.supports_function_call,
         mp.supports_reasoning,
         mp.max_output_tokens as "maxOutputTokens",
+        mp.context_window as "contextWindow",
         mp.rate_limit_rpm as "rateLimitRpm",
         mp.rate_limit_rpd as "rateLimitRpd",
         mp.rate_limit_tpm as "rateLimitTpm",
@@ -61,6 +62,7 @@ export class RegistryService {
       avgLatencyMs: row.avgLatencyMs || 1000,
       qualityScore: parseFloat(row.qualityScore) || 0.5,
       maxOutputTokens: row.maxOutputTokens || undefined,
+      contextLength: row.contextWindow || undefined,
       isHealthy: row.isHealthy === 1 || row.isHealthy === true,
       freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
         intelligenceRank: row.intelligenceRank ?? 0,

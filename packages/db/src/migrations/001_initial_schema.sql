@@ -192,7 +192,7 @@ CREATE INDEX IF NOT EXISTS idx_health_checks_provider ON health_checks(provider_
 -- Billing Records
 CREATE TABLE IF NOT EXISTS billing_records (
   id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   request_id TEXT,
   amount REAL NOT NULL,
   currency TEXT NOT NULL DEFAULT 'USD',

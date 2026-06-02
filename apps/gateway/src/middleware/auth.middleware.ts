@@ -4,21 +4,56 @@ import { getDb } from '@dmr-x/db';
 import { hashApiKey, logger } from '@dmr-x/utils';
 import { AuthenticationError } from '@dmr-x/core';
 
-// Routes that don't require auth
+// Routes that don't require auth.
 const PUBLIC_ROUTES = new Set(['/health', '/healthz', '/livez', '/ready', '/v1/models']);
+const PUBLIC_PREFIXES = ['/assets/'];
+const PUBLIC_FILE_EXTENSIONS = new Set([
+  '.css',
+  '.html',
+  '.ico',
+  '.js',
+  '.json',
+  '.map',
+  '.png',
+  '.svg',
+  '.txt',
+  '.webmanifest',
+  '.woff',
+  '.woff2',
+]);
 
 // WARNING: Local mode disables all authentication. Never enable in production.
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
+logger.info({ localMode: LOCAL_MODE, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY }, 'Auth middleware status');
 
 function extractApiKey(request: FastifyRequest): string | undefined {
   const authHeader = request.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) {
-    return authHeader.slice(7);
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const bearerToken = authHeader.slice(7).trim();
+    return bearerToken.length > 0 ? bearerToken : undefined;
   }
-  if (request.headers['x-api-key']) {
-    return request.headers['x-api-key'] as string;
+
+  const headerApiKey = request.headers['x-api-key'];
+  if (Array.isArray(headerApiKey)) {
+    const apiKey = headerApiKey.find(value => value.trim().length > 0)?.trim();
+    return apiKey || undefined;
   }
+  if (typeof headerApiKey === 'string') {
+    const apiKey = headerApiKey.trim();
+    return apiKey.length > 0 ? apiKey : undefined;
+  }
+
   return undefined;
+}
+
+function isPublicPath(pathname: string, method: string): boolean {
+  if (PUBLIC_ROUTES.has(pathname)) return true;
+  if (PUBLIC_PREFIXES.some(prefix => pathname.startsWith(prefix))) return true;
+  if (pathname === '/') return true;
+  if (method === 'GET' && !pathname.startsWith('/v1/')) return true;
+
+  const extension = pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')).toLowerCase() : '';
+  return PUBLIC_FILE_EXTENSIONS.has(extension);
 }
 
 export async function authMiddleware(server: FastifyInstance): Promise<void> {
@@ -27,14 +62,16 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
   server.addHook('onRequest', async (request) => {
     // Skip auth for public routes (strip query string so /v1/models?limit=10 still matches)
     const pathname = request.url.split('?')[0];
-    if (PUBLIC_ROUTES.has(pathname)) {
+    if (isPublicPath(pathname, request.method)) {
       return;
     }
 
-    // Admin routes ALWAYS require admin API key — even in local mode
+    // Admin routes: skip auth in local mode for UI access
     if (pathname.startsWith('/v1/admin')) {
-      if (!adminApiKey) {
-        throw new AuthenticationError('Admin API not configured');
+      if (LOCAL_MODE) return;
+      if (!adminApiKey || adminApiKey === 'replace-with-admin-key') {
+        logger.error('Admin API accessed but DMRX_ADMIN_API_KEY is not set or default. Blocking for safety.');
+        throw new AuthenticationError('Admin API is disabled (no secure key configured)');
       }
       const apiKey = extractApiKey(request);
       if (!apiKey) {
@@ -93,3 +130,6 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     ).run(row.id);
   });
 }
+
+// Ensure middleware is not encapsulated so hooks apply to all routes
+(authMiddleware as any)[Symbol.for('skip-override')] = true;

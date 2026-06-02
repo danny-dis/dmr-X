@@ -5,6 +5,20 @@
  * Users can add any of these via: dmrx add-provider <provider-id>
  */
 
+export interface OAuthProviderConfig {
+  flow: 'authorization_code' | 'client_credentials' | 'device_code';
+  authorizationUrl?: string;
+  tokenUrl: string;
+  deviceCodeUrl?: string;
+  clientIdEnvKey: string;
+  clientSecretEnvKey?: string;
+  scopes: string[];
+  audience?: string;
+  usePKCE?: boolean;
+  redirectPath: string;
+  tokenResponseType: 'access_token' | 'access_refresh';
+}
+
 export interface ProviderTemplate {
   id: string;
   name: string;
@@ -22,6 +36,7 @@ export interface ProviderTemplate {
   description: string;
   region?: string; // 'us' | 'eu' | 'cn' | 'kr' | 'in' | 'global' | 'local' | 'self'
   signupUrl?: string;
+  oauthConfig?: OAuthProviderConfig;
 }
 
 export interface ModelTemplate {
@@ -139,6 +154,16 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'Gemini models. 1M+ context, fast, cheap. (Using OpenAI-compatible endpoint)',
     region: 'us',
     signupUrl: 'https://aistudio.google.com/',
+    oauthConfig: {
+      flow: 'authorization_code',
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      clientIdEnvKey: 'GOOGLE_OAUTH_CLIENT_ID',
+      scopes: ['https://www.googleapis.com/auth/generative-language'],
+      usePKCE: true,
+      redirectPath: '/v1/admin/providers/:id/oauth/callback',
+      tokenResponseType: 'access_refresh',
+    },
   },
 
   {
@@ -336,6 +361,16 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'HF Inference Providers. Access 20+ backends with one token.',
     region: 'global',
     signupUrl: 'https://huggingface.co/settings/tokens',
+    oauthConfig: {
+      flow: 'authorization_code',
+      authorizationUrl: 'https://huggingface.co/oauth/authorize',
+      tokenUrl: 'https://huggingface.co/oauth/token',
+      clientIdEnvKey: 'HF_OAUTH_CLIENT_ID',
+      clientSecretEnvKey: 'HF_OAUTH_CLIENT_SECRET',
+      scopes: ['inference-api'],
+      redirectPath: '/v1/admin/providers/:id/oauth/callback',
+      tokenResponseType: 'access_refresh',
+    },
   },
 
   // ═══════════════════════════════════════════════════════════
@@ -693,6 +728,16 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'GitHub Models. GPT-4o, Llama 3.3, DeepSeek R1. Rate-limited free.',
     region: 'global',
     signupUrl: 'https://github.com/settings/tokens',
+    oauthConfig: {
+      flow: 'authorization_code',
+      authorizationUrl: 'https://github.com/login/oauth/authorize',
+      tokenUrl: 'https://github.com/login/oauth/access_token',
+      clientIdEnvKey: 'GITHUB_OAUTH_CLIENT_ID',
+      clientSecretEnvKey: 'GITHUB_OAUTH_CLIENT_SECRET',
+      scopes: ['models:read'],
+      redirectPath: '/v1/admin/providers/:id/oauth/callback',
+      tokenResponseType: 'access_refresh',
+    },
   },
 
   {
@@ -1157,6 +1202,15 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'MiniMax. 200K context. Music gen. $5 free credits.',
     region: 'us',
     signupUrl: 'https://platform.minimaxi.com/',
+    oauthConfig: {
+      flow: 'client_credentials',
+      tokenUrl: 'https://api.minimaxi.chat/oauth/token',
+      clientIdEnvKey: 'MINIMAX_OAUTH_CLIENT_ID',
+      clientSecretEnvKey: 'MINIMAX_OAUTH_CLIENT_SECRET',
+      scopes: [],
+      redirectPath: '/v1/admin/providers/:id/oauth/callback',
+      tokenResponseType: 'access_token',
+    },
   },
 
   {

@@ -22,6 +22,7 @@ export type QualityTarget = 'frontier' | 'balanced' | 'economy';
 export const MODALITY_ENDPOINTS: Record<string, Modality> = {
   '/v1/chat/completions': 'llm',
   '/v1/messages': 'llm',
+  '/v1/gemini/generateContent': 'llm',
   '/v1/completions': 'llm',
   '/v1/embeddings': 'embedding',
   '/v1/images/generations': 'diffusion',

@@ -6,7 +6,9 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
     const rows = getDb().prepare(
       `SELECT mp.model_id, mp.display_name, mp.modality, p.name as provider_name,
               mp.context_window, mp.max_output_tokens, mp.supports_streaming, mp.supports_vision,
-              mp.supports_tool_use, mp.supports_json_mode, mp.supports_function_call, mp.supports_reasoning, mp.created_at
+              mp.supports_tool_use, mp.supports_json_mode, mp.supports_function_call, mp.supports_reasoning,
+              mp.input_cost_per_1k, mp.output_cost_per_1k, mp.cost_per_image, mp.cost_per_1k_chars,
+              mp.created_at
        FROM model_profiles mp
        JOIN providers p ON p.id = mp.provider_id
        WHERE mp.is_active = 1 AND p.is_healthy = 1
@@ -31,6 +33,10 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
           supports_json_mode: row.supports_json_mode,
           supports_function_call: row.supports_function_call,
           supports_reasoning: row.supports_reasoning,
+          input_cost_per_1k: row.input_cost_per_1k,
+          output_cost_per_1k: row.output_cost_per_1k,
+          cost_per_image: row.cost_per_image,
+          cost_per_1k_chars: row.cost_per_1k_chars,
         },
       })),
     };

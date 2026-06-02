@@ -14,11 +14,20 @@ import { timingSafeEqual } from 'node:crypto';
 function extractApiKey(request: { headers: Record<string, string | string[] | undefined> }): string | undefined {
   const authHeader = request.headers.authorization;
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    return authHeader.slice(7);
+    const bearerToken = authHeader.slice(7).trim();
+    return bearerToken.length > 0 ? bearerToken : undefined;
   }
-  if (request.headers['x-api-key']) {
-    return request.headers['x-api-key'] as string;
+
+  const headerApiKey = request.headers['x-api-key'];
+  if (Array.isArray(headerApiKey)) {
+    const apiKey = headerApiKey.find(value => value.trim().length > 0)?.trim();
+    return apiKey || undefined;
   }
+  if (typeof headerApiKey === 'string') {
+    const apiKey = headerApiKey.trim();
+    return apiKey.length > 0 ? apiKey : undefined;
+  }
+
   return undefined;
 }
 
@@ -92,6 +101,16 @@ describe('Auth: extractApiKey', () => {
   it('should handle empty Authorization header', () => {
     const request = { headers: { authorization: '' } };
     expect(extractApiKey(request)).toBeUndefined();
+  });
+
+  it('should reject an empty Bearer token', () => {
+    const request = { headers: { authorization: 'Bearer   ' } };
+    expect(extractApiKey(request)).toBeUndefined();
+  });
+
+  it('should handle x-api-key arrays by using the first non-empty value', () => {
+    const request = { headers: { 'x-api-key': [' ', ' array-key '] } };
+    expect(extractApiKey(request)).toBe('array-key');
   });
 });
 

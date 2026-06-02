@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { MIGRATIONS } from './migrations-data.js';
 
 // Use console for logging since @dmr-x/utils may depend on @dmr-x/db (avoid circular)
 const log = {
@@ -195,61 +196,89 @@ export async function initDb(): Promise<DatabaseWrapper> {
   if (fs.existsSync(dbPath)) {
     const buffer = fs.readFileSync(dbPath);
     db = new SQL.Database(buffer);
-  } else {
+  }
+  {
     db = new SQL.Database();
   }
-
-  // Run migrations from the migrations directory
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  const migrationsDir = path.join(__dirname, 'migrations');
 
   // Enable foreign key enforcement (SQLite has it off by default)
   db.exec('PRAGMA foreign_keys = ON;');
 
-  if (fs.existsSync(migrationsDir)) {
-    // Create schema_version table if it doesn't exist (first-run)
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS schema_version (
-        version INTEGER PRIMARY KEY,
-        filename TEXT NOT NULL,
-        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-    `);
+  // Create schema_version table if it doesn't exist (first-run)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version INTEGER PRIMARY KEY,
+      filename TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
 
-    // Get already-applied migration versions
-    const applied = new Set<number>();
-    try {
-      const rows = db.exec('SELECT version FROM schema_version');
-      if (rows.length > 0 && rows[0].values) {
-        for (const row of rows[0].values) {
-          applied.add(row[0] as number);
-        }
+  // Get already-applied migration versions
+  const applied = new Set<number>();
+  try {
+    const rows = db.exec('SELECT version FROM schema_version');
+    if (rows.length > 0 && rows[0].values) {
+      for (const row of rows[0].values) {
+        applied.add(row[0] as number);
       }
-    } catch {
-      // schema_version table doesn't yet exist; first migration will create it
     }
+  } catch {
+    // schema_version table doesn't yet exist; first migration will create it
+  }
 
+  // Load migrations from disk when present, then backfill any missing versions
+  // from embedded SQL. Some dev/dist layouts can have a partial migrations
+  // directory, so a filesystem-only load would silently skip newer migrations.
+  const migrations = new Map<number, { version: number; filename: string; sql: string }>();
+
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const migrationsDir = path.join(__dirname, 'migrations');
+
+  if (fs.existsSync(migrationsDir)) {
     const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
     for (const file of files) {
-      // Extract version number from filename (e.g., "001_initial_schema.sql" → 1)
       const versionMatch = file.match(/^(\d+)_/);
       if (!versionMatch) continue;
       const version = parseInt(versionMatch[1], 10);
+      migrations.set(version, {
+        version,
+        filename: file,
+        sql: fs.readFileSync(path.join(migrationsDir, file), 'utf-8'),
+      });
+    }
+  }
 
-      if (applied.has(version)) {
-        continue; // Already applied — skip
-      }
+  {
+    // Compiled binary — use embedded migration SQL
+    for (const [ver, mig] of Object.entries(MIGRATIONS)) {
+      const version = parseInt(ver, 10);
+      if (migrations.has(version)) continue;
+      migrations.set(version, {
+        version,
+        filename: mig.filename,
+        sql: mig.sql,
+      });
+    }
+  }
 
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-      try {
-        db.exec(sql);
-        // Record successful migration
+  for (const mig of [...migrations.values()].sort((a, b) => a.version - b.version)) {
+    if (applied.has(mig.version)) continue;
+
+    try {
+      db.exec(mig.sql);
+      db.exec(
+        `INSERT OR IGNORE INTO schema_version (version, filename) VALUES (${mig.version}, '${mig.filename}')`
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('duplicate column name')) {
+        log.info(`Migration ${mig.filename}: column already exists, skipping`);
         db.exec(
-          `INSERT OR IGNORE INTO schema_version (version, filename) VALUES (${version}, '${file}')`
+          `INSERT OR IGNORE INTO schema_version (version, filename) VALUES (${mig.version}, '${mig.filename}')`
         );
-      } catch (err) {
-        log.error(`Migration ${file} failed:`, err);
+      } else {
+        log.error(`Migration ${mig.filename} failed:`, err);
         throw err;
       }
     }

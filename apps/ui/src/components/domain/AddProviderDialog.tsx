@@ -39,6 +39,7 @@ interface FormState {
   adapterType: string;
   baseUrl: string;
   apiKey: string;
+  oauthAccessToken: string;
   region: string;
   priority: string;
 }
@@ -48,6 +49,7 @@ const EMPTY: FormState = {
   adapterType: 'openai',
   baseUrl: '',
   apiKey: '',
+  oauthAccessToken: '',
   region: '',
   priority: '0',
 };
@@ -74,6 +76,7 @@ export function AddProviderDialog({
           adapterType: preset?.id ?? template.id,
           baseUrl: template.baseUrl ?? preset?.baseUrl ?? '',
           apiKey: '',
+          oauthAccessToken: '',
           region: '',
           priority: '0',
         });
@@ -117,15 +120,24 @@ export function AddProviderDialog({
     if (!validate()) return;
     setSubmitting(true);
     try {
-      const created = await Admin.createProvider({
-        name: form.name.trim(),
-        adapterType: form.adapterType.trim(),
-        baseUrl: form.baseUrl.trim() || null,
-        apiKeyRef: form.apiKey.trim() || null,
-        region: form.region.trim() || undefined,
-        priority: Number(form.priority) || 0,
-        enabled: true,
-      });
+      const oauthAccessToken = form.oauthAccessToken.trim();
+      const apiKey = form.apiKey.trim();
+      const created = template
+        ? (await Admin.activateProvider({
+            template_id: template.id,
+            api_key: apiKey || undefined,
+            oauth_access_token: oauthAccessToken || undefined,
+            auth_method: oauthAccessToken ? 'oauth' : 'api_key',
+          })).provider
+        : await Admin.createProvider({
+            name: form.name.trim(),
+            adapterType: form.adapterType.trim(),
+            baseUrl: form.baseUrl.trim() || null,
+            apiKeyRef: apiKey || null,
+            region: form.region.trim() || undefined,
+            priority: Number(form.priority) || 0,
+            enabled: true,
+          });
       toast.success('Provider created', { description: created.name });
       onCreated?.();
       onOpenChange(false);
@@ -220,6 +232,25 @@ export function AddProviderDialog({
               />
               <FieldDescription>
                 Stored as a key reference; the gateway resolves the actual secret at request time.
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel>
+                <span className="inline-flex items-center gap-1.5">
+                  <KeyRound className="size-3" />
+                  OAuth access token
+                </span>
+              </FieldLabel>
+              <Input
+                type="password"
+                value={form.oauthAccessToken}
+                onChange={(e) => update('oauthAccessToken', e.target.value)}
+                placeholder="Bearer token"
+                autoComplete="off"
+              />
+              <FieldDescription>
+                Use this when the provider account gives you an OAuth bearer token instead of an API key.
               </FieldDescription>
             </Field>
 

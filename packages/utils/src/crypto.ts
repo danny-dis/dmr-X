@@ -103,3 +103,37 @@ export function decryptConfigApiKey(config: Record<string, unknown>): Record<str
   }
   return config;
 }
+
+/**
+ * Encrypt OAuth tokens (access + refresh) stored in provider config (in-place).
+ */
+export function encryptOAuthTokens(config: Record<string, unknown>): Record<string, unknown> {
+  if (typeof config.oauthAccessToken === 'string' && config.oauthAccessToken.length > 0) {
+    config.oauthAccessToken = encrypt(config.oauthAccessToken);
+  }
+  if (typeof config.oauthRefreshToken === 'string' && config.oauthRefreshToken.length > 0) {
+    config.oauthRefreshToken = encrypt(config.oauthRefreshToken);
+  }
+  return config;
+}
+
+/**
+ * Decrypt OAuth tokens (access + refresh) stored in provider config (in-place).
+ */
+export function decryptOAuthTokens(config: Record<string, unknown>): Record<string, unknown> {
+  if (typeof config.oauthAccessToken === 'string' && config.oauthAccessToken.length > 0) {
+    try {
+      config.oauthAccessToken = decrypt(config.oauthAccessToken);
+    } catch (err) {
+      console.warn(`[dmr-x] Failed to decrypt oauthAccessToken, treating as plaintext: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  if (typeof config.oauthRefreshToken === 'string' && config.oauthRefreshToken.length > 0) {
+    try {
+      config.oauthRefreshToken = decrypt(config.oauthRefreshToken);
+    } catch (err) {
+      console.warn(`[dmr-x] Failed to decrypt oauthRefreshToken, treating as plaintext: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  return config;
+}

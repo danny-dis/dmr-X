@@ -74,6 +74,11 @@ export class MemoryCache {
     this.hashTTLs.delete(key);
   }
 
+  /** Alias for del(key) */
+  delete(key: string): void {
+    this.del(key);
+  }
+
   incrBy(key: string, amount: number): number {
     const current = this.get(key);
     const num = current ? parseInt(current, 10) : 0;
@@ -217,6 +222,7 @@ export interface NamespacedCache {
   get(key: string): string | null;
   set(key: string, value: string, ttlSeconds?: number): void;
   del(key: string): void;
+  delete(key: string): void;
   incrBy(key: string, amount: number): number;
   hGet(key: string, field: string): string | null;
   hSet(key: string, field: string, value: string, ttlSeconds?: number): void;
@@ -237,6 +243,7 @@ export function createNamespacedCache(
     get:        (key)                     => backingCache.get(p(key)),
     set:        (key, value, ttl?)        => backingCache.set(p(key), value, ttl),
     del:        (key)                     => backingCache.del(p(key)),
+    delete:     (key)                     => backingCache.del(p(key)),
     incrBy:     (key, amount)             => backingCache.incrBy(p(key), amount),
     hGet:       (key, field)              => backingCache.hGet(p(key), field),
     hSet:       (key, field, value, ttl?) => backingCache.hSet(p(key), field, value, ttl),

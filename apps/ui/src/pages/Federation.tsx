@@ -1,103 +1,116 @@
-import { useFederationNodes } from '@/hooks/useApiData';
-import { Globe } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { ErrorBanner } from '@/components/ErrorBanner';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import * as React from 'react';
+import { Network, Plus, Globe, ArrowRight, ChevronRight, Trash2 } from 'lucide-react';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Button } from '@/components/primitives/Button';
+import { Badge } from '@/components/primitives/Badge';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { EmptyState } from '@/components/primitives/EmptyState';
+import { StatusPill } from '@/components/primitives/StatusPill';
+import { TopologyGraph } from '@/components/charts/TopologyGraph';
+import { useApiData } from '@/hooks/useApiData';
+import { Admin } from '@/lib/admin';
+import { formatDuration, timeAgo } from '@/lib/formatters';
+import type { ApiFederationNode } from '@/types/api';
 
-export default function Federation() {
-  const { nodes: federationNodes, error } = useFederationNodes();
+export function FederationPage() {
+  const nodes = useApiData<ApiFederationNode[]>(
+    () => Admin.listFederation(),
+    [],
+    { refetchInterval: 10000 }
+  );
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-[#F8F9FC]">Federation</h1>
-          <p className="text-xs text-[#595962] mt-0.5">Cross-node benchmark sharing and federated learning</p>
-        </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-[#1A1A20] rounded-md border border-[#27272E]">
-          <Globe className="w-3.5 h-3.5 text-[#00E0FF]" />
-          <span className="text-[11px] text-[#00E0FF] font-mono-data">{federationNodes.length} nodes</span>
-        </div>
-      </div>
+    <PageContainer>
+      <PageHeader
+        title="Federation"
+        description="Peer gateway nodes and cross-cluster routing"
+        icon={<Network className="size-5" />}
+        actions={
+          <Button size="sm">
+            <Plus className="size-3" />
+            Register peer
+          </Button>
+        }
+      />
 
-      <ErrorBanner error={error} />
+      <Card padding="md" className="mt-5">
+        <CardHeader className="px-0 pt-0">
+          <CardTitle>Cluster topology</CardTitle>
+          <p className="text-[10px] text-fg-muted mt-0.5">Local + peer gateway nodes</p>
+        </CardHeader>
+        <CardContent className="px-0 pb-0">
+          <TopologyGraph
+            nodes={[
+              { id: 'local', label: 'Local', type: 'gateway', status: 'online' },
+              ...(nodes.data ?? []).map((n) => ({
+                id: n.id,
+                label: n.name ?? n.id,
+                type: 'gateway' as const,
+                status: (n.status ?? 'unknown') as 'online' | 'degraded' | 'offline' | 'unknown',
+              })),
+            ]}
+            edges={(nodes.data ?? []).map((n) => ({
+              source: 'local',
+              target: n.id,
+              active: n.status === 'online',
+              weight: 2,
+            }))}
+            height={300}
+          />
+        </CardContent>
+      </Card>
 
-      {/* Nodes Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {federationNodes.map((node) => (
-          <div key={node.id} className="glass-card rounded-xl p-4">
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-[#00E0FF]/10 flex items-center justify-center">
-                  <Globe className="w-4 h-4 text-[#00E0FF]" />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold text-[#F8F9FC]">{node.name}</div>
-                  <div className="text-[11px] text-[#595962] font-mono-data">{node.region}</div>
-                </div>
-              </div>
-              <span className={cn(
-                'text-[10px] px-2 py-0.5 rounded-full font-medium',
-                node.status === 'synced' && 'bg-[#00FFB2]/10 text-[#00FFB2]',
-                node.status === 'syncing' && 'bg-[#00E0FF]/10 text-[#00E0FF]',
-                node.status === 'stale' && 'bg-[#F7A51C]/10 text-[#F7A51C]',
-                node.status === 'offline' && 'bg-[#FF4D6A]/10 text-[#FF4D6A]',
-              )}>
-                {node.status}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <div className="bg-[#1A1A20] rounded p-2">
-                <div className="text-[10px] text-[#595962]">Global Score</div>
-                <div className="text-xs font-semibold text-[#F8F9FC] font-mono-data">{node.benchmarkSummary.globalScore}</div>
-              </div>
-              <div className="bg-[#1A1A20] rounded p-2">
-                <div className="text-[10px] text-[#595962]">Local Score</div>
-                <div className="text-xs font-semibold text-[#00E0FF] font-mono-data">{node.benchmarkSummary.localScore}</div>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-[#595962]">Variance</span>
-                <span className={cn(
-                  'font-mono-data',
-                  node.benchmarkSummary.variance > 1.5 ? 'text-[#FF4D6A]' : 'text-[#A6A6B0]'
-                )}>{node.benchmarkSummary.variance}%</span>
-              </div>
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-[#595962]">Anonymized Updates</span>
-                <span className="text-[#A6A6B0] font-mono-data">{node.anonymizedUpdates.toLocaleString()}</span>
-              </div>
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-[#595962]">Privacy Level</span>
-                <span className="text-[#A6A6B0]">{node.privacyLevel}</span>
-              </div>
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-[#595962]">Last Sync</span>
-                <span className="text-[#595962] font-mono-data">{new Date(node.lastSync).toLocaleTimeString()}</span>
-              </div>
-            </div>
+      <div className="mt-3">
+        <Card padding="none">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-fg">Peer nodes</h3>
+            <Badge tone="muted" size="sm">{(nodes.data ?? []).length}</Badge>
           </div>
-        ))}
-      </div>
-
-      {/* Comparison Chart */}
-      <div className="glass-card rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-[#F8F9FC] mb-4">Global vs Local Scores</h3>
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={federationNodes}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272E" />
-            <XAxis dataKey="region" stroke="#595962" tick={{ fontSize: 11, fill: '#A6A6B0' }} />
-            <YAxis stroke="#595962" tick={{ fontSize: 11, fill: '#595962' }} domain={[80, 100]} />
-            <Tooltip
-              contentStyle={{ background: '#0F0F12', border: '1px solid #27272E', borderRadius: '8px', fontSize: '12px' }}
+          {nodes.isLoading ? (
+            <div className="p-3 flex flex-col gap-1.5">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-14 w-full" />
+              ))}
+            </div>
+          ) : nodes.data && nodes.data.length > 0 ? (
+            <div className="p-1">
+              {nodes.data.map((n) => (
+                <div
+                  key={n.id}
+                  className="flex items-center gap-3 px-3 py-3 rounded-lg hover:bg-surface-2"
+                >
+                  <div className="flex size-9 items-center justify-center rounded-lg bg-surface-2 text-fg-muted">
+                    <Globe className="size-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-fg truncate">{n.name ?? n.id}</p>
+                    <p className="text-[10px] text-fg-muted font-mono truncate">{n.url}</p>
+                  </div>
+                  <div className="flex items-center gap-3 text-[10px] text-fg-muted">
+                    {n.latencyMs != null && (
+                      <span className="tabular-nums">{formatDuration(n.latencyMs)}</span>
+                    )}
+                    {n.lastSeenAt && <span>{timeAgo(n.lastSeenAt)}</span>}
+                  </div>
+                  <StatusPill
+                    status={(n.status ?? 'unknown') as 'online' | 'degraded' | 'offline' | 'unknown'}
+                    size="sm"
+                  />
+                  <Button size="icon-sm" variant="ghost" aria-label="Remove">
+                    <Trash2 className="size-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No peer nodes"
+              description="Register another DMR-X gateway to enable cross-cluster routing."
             />
-            <Bar dataKey="benchmarkSummary.globalScore" fill="#F7A51C" name="Global" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="benchmarkSummary.localScore" fill="#00E0FF" name="Local" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+          )}
+        </Card>
       </div>
-    </div>
+    </PageContainer>
   );
 }

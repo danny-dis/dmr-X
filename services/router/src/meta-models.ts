@@ -16,7 +16,7 @@ export const META_MODELS: MetaModelDefinition[] = [
     alias: 'free',
     description: 'Any free model. Filters to zero-cost providers without re-ranking — the normal pipeline scoring decides the best choice.',
     ranker: (candidates) => {
-      return candidates.filter(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0);
+      return candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
     },
   },
   {
@@ -24,7 +24,7 @@ export const META_MODELS: MetaModelDefinition[] = [
     description: 'Fastest free model. Explicitly prioritizes low latency.',
     ranker: (candidates) => {
       return [...candidates]
-        .filter(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0)
+        .filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0)
         .sort((a, b) => a.avgLatencyMs - b.avgLatencyMs);
     },
   },
@@ -33,7 +33,7 @@ export const META_MODELS: MetaModelDefinition[] = [
     description: 'Most capable free model. Explicitly prioritizes intelligence.',
     ranker: (candidates) => {
       return [...candidates]
-        .filter(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0)
+        .filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0)
         .sort((a, b) => b.qualityScore - a.qualityScore);
     },
   },
@@ -44,8 +44,8 @@ export const META_MODELS: MetaModelDefinition[] = [
       const MIN_CONTEXT = 64000;
       const scored = candidates
         .filter(c =>
-          c.costPerInputToken === 0 &&
-          c.costPerOutputToken === 0 &&
+          (c.costPerInputToken ?? 0) <= 0 &&
+          (c.costPerOutputToken ?? 0) <= 0 &&
           c.capabilities.includes('tool_use') &&
           (c.contextLength ?? 0) >= MIN_CONTEXT
         )
@@ -70,8 +70,8 @@ export const META_MODELS: MetaModelDefinition[] = [
 
       const scored = candidates
         .filter(c =>
-          c.costPerInputToken === 0 &&
-          c.costPerOutputToken === 0 &&
+          (c.costPerInputToken ?? 0) <= 0 &&
+          (c.costPerOutputToken ?? 0) <= 0 &&
           (c.contextLength ?? 0) >= MIN_CONTEXT
         )
         .map(c => {
