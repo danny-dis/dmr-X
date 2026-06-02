@@ -849,13 +849,11 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     authMethod: 'bearer',
     apiFormat: 'openai',
     modalities: ['llm'],
-    models: [
-      { id: 'openai-fast', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming', 'reasoning'], specializations: ['general'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
-    ],
+    models: [],
     streaming: true,
     toolCalling: true,
     envKey: '',
-    description: 'Pollinations free AI gateway. No API key needed. Premium models.',
+    description: 'Pollinations free AI gateway. No API key needed. Models discovered live from /v1/models.',
     region: 'global',
   },
 

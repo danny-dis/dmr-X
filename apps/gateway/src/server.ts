@@ -11,7 +11,7 @@ import { Router } from '@dmr-x/router';
 import { getTelemetryService } from '@dmr-x/telemetry';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter } from '@dmr-x/adapters';
 import type { UnifiedRequest } from '@dmr-x/core';
-import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { quotaService, keyRotationService, rateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
@@ -133,6 +133,19 @@ export async function createServer() {
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to auto-register providers');
+  }
+
+  // Backfill model_profiles for any OpenAI-compatible provider whose catalog
+  // entry was empty (e.g. Pollinations) but whose DB row already existed before
+  // the live-discovery logic shipped. Idempotent: providers that already have
+  // model profiles are skipped.
+  try {
+    const backfilled = await discoverMissingModels();
+    if (backfilled > 0) {
+      logger.info({ count: backfilled }, 'Backfilled missing model profiles via /v1/models discovery');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to backfill missing models');
   }
 
   // Load all registered providers from DB and initialize adapters

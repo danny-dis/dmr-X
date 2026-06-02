@@ -31,6 +31,7 @@ const ADAPTER_PRESETS: { id: string; label: string; baseUrl?: string }[] = [
   { id: 'mistral', label: 'Mistral', baseUrl: 'https://api.mistral.ai/v1' },
   { id: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1' },
   { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1' },
+  { id: 'pollinations', label: 'Pollinations (free, no key)', baseUrl: 'https://text.pollinations.ai/openai' },
   { id: 'generic-openai', label: 'OpenAI-compatible', baseUrl: '' },
 ];
 
