@@ -51,6 +51,12 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: FlaskConical,
         description: 'Test models & routing',
       },
+      {
+        label: 'Free Tier',
+        path: '/free-tier',
+        icon: SidebarIcons.FreeTierIcon,
+        description: 'Free providers & bonuses',
+      },
     ],
   },
   {

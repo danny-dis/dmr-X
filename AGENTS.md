@@ -1,7 +1,31 @@
+# DMR-X — Project Rules
+
+## Session start (required)
+
+1. `cd` to this directory (`C:\Users\pc\Documents\projects\DMR-X`).
+2. Run `npx -y gitnexus@latest status`. If status reports `stale`
+   or `missing`, run `npx -y gitnexus@latest analyze` before
+   answering any question or making any change.
+3. Honor the global rules in
+   `C:\Users\pc\.config\opencode\INSTRUCTIONS.md` for all
+   code-intelligence work (impact, detect_changes, query, context,
+   rename).
+4. If launching opencode from a fresh shell, prefer the `dmr`
+   wrapper (on PATH) which guarantees a refresh of the index.
+
+## Build / commit workflow (required)
+
+- Before editing any function, class, or method → run
+  `gitnexus_impact` first and surface the blast radius.
+- Before any commit → run `gitnexus_detect_changes` and confirm
+  only the expected symbols/flows are touched.
+- For renames / extractions / moves → use `gitnexus_rename`,
+  never find-and-replace.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dmr-X** (7194 symbols, 14977 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dmr-X** (11036 symbols, 21534 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

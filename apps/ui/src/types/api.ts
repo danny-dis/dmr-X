@@ -308,6 +308,13 @@ export interface ApiFederationRegister {
   authToken?: string;
 }
 
+export interface ApiFreeTierCatalogEntry extends ApiCatalogEntry {
+  models: ApiModel[];
+  freeModelCount?: number;
+  totalModelCount?: number;
+  signupUrl?: string;
+}
+
 export interface ApiBenchmarkRun {
   models: string[];
   promptSet: string;

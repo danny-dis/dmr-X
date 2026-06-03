@@ -196,13 +196,15 @@ export async function initDb(): Promise<DatabaseWrapper> {
   if (fs.existsSync(dbPath)) {
     const buffer = fs.readFileSync(dbPath);
     db = new SQL.Database(buffer);
-  }
-  {
+  } else {
     db = new SQL.Database();
   }
 
   // Enable foreign key enforcement (SQLite has it off by default)
   db.exec('PRAGMA foreign_keys = ON;');
+
+  // Enable Write-Ahead Logging for concurrent reads without blocking on writes
+  db.exec('PRAGMA journal_mode = WAL;');
 
   // Create schema_version table if it doesn't exist (first-run)
   db.exec(`
@@ -267,16 +269,22 @@ export async function initDb(): Promise<DatabaseWrapper> {
 
     try {
       db.exec(mig.sql);
-      db.exec(
-        `INSERT OR IGNORE INTO schema_version (version, filename) VALUES (${mig.version}, '${mig.filename}')`
+      const insertStmt = db.prepare(
+        'INSERT OR IGNORE INTO schema_version (version, filename) VALUES (?, ?)'
       );
+      insertStmt.bind([mig.version, mig.filename]);
+      insertStmt.step();
+      insertStmt.free();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('duplicate column name')) {
         log.info(`Migration ${mig.filename}: column already exists, skipping`);
-        db.exec(
-          `INSERT OR IGNORE INTO schema_version (version, filename) VALUES (${mig.version}, '${mig.filename}')`
+        const retryStmt = db.prepare(
+          'INSERT OR IGNORE INTO schema_version (version, filename) VALUES (?, ?)'
         );
+        retryStmt.bind([mig.version, mig.filename]);
+        retryStmt.step();
+        retryStmt.free();
       } else {
         log.error(`Migration ${mig.filename} failed:`, err);
         throw err;
@@ -321,6 +329,8 @@ function registerCrashHandlers(): void {
   process.on('SIGTERM', () => { void emergencyFlush(); });
   process.on('SIGINT', () => { void emergencyFlush(); });
   process.on('beforeExit', () => { void emergencyFlush(); });
+  process.on('uncaughtException', () => { void emergencyFlush(); });
+  process.on('unhandledRejection', () => { void emergencyFlush(); });
 }
 
 registerCrashHandlers();

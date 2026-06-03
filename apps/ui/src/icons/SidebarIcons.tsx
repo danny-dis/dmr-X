@@ -209,6 +209,16 @@ export function FederationIcon(props: IconProps) {
   );
 }
 
+export function FreeTierIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 12h8M12 8v8" strokeLinecap="round" />
+      <path d="M9.5 9.5l5 5M14.5 9.5l-5 5" strokeLinecap="round" strokeOpacity="0.5" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
 export function ObservabilityIcon(props: IconProps) {
   return (
     <svg {...base(props)}>
@@ -265,6 +275,7 @@ export const SidebarIcons = {
   RoutingIcon,
   QuotaIcon,
   ProvidersIcon,
+  FreeTierIcon,
   ModelsIcon,
   TenantsIcon,
   PoliciesIcon,

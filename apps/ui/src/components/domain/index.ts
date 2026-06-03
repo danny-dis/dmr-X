@@ -1,4 +1,6 @@
 export * from './ProviderCard';
+export * from './FreeProviderCard';
+export * from './FreeTierDrawer';
 export * from './RouteDecisionRow';
 export * from './QuotaGauge';
 export * from './ApiKeyCard';

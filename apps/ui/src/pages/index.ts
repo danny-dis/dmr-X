@@ -5,6 +5,7 @@ export { RoutingPage } from './Routing';
 export { QuotaPage } from './Quota';
 export { ProvidersPage } from './Providers';
 export { ModelsPage } from './Models';
+export { FreeTierPage } from './FreeTier';
 export { TenantsPage } from './Tenants';
 export { PoliciesPage } from './Policies';
 export { UsagePage } from './Usage';

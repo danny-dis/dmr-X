@@ -8,6 +8,7 @@ import {
   QuotaPage,
   ProvidersPage,
   ModelsPage,
+  FreeTierPage,
   TenantsPage,
   PoliciesPage,
   UsagePage,
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/quota" element={<QuotaPage />} />
           <Route path="/providers" element={<ProvidersPage />} />
           <Route path="/models" element={<ModelsPage />} />
+          <Route path="/free-tier" element={<FreeTierPage />} />
           <Route path="/tenants" element={<TenantsPage />} />
           <Route path="/policies" element={<PoliciesPage />} />
           <Route path="/usage" element={<UsagePage />} />
