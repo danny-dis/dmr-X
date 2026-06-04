@@ -19,8 +19,35 @@ export class JinaAdapter extends BaseAdapter {
   }
 
   protected async checkHealth(): Promise<void> {
-    // Jina doesn't have a simple health endpoint
-    return;
+    // Jina health: try to access the embeddings endpoint with a minimal request
+    // A 401/403 means auth is broken; any other response means the service is up
+    try {
+      const response = await this.fetchWithTimeout(
+        'https://api.jina.ai/v1/embeddings',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'jina-embeddings-v3',
+            input: ['health'],
+          }),
+          timeoutMs: 10000,
+        }
+      );
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`Jina auth error: HTTP ${response.status}`);
+      }
+      // Any other status (200, 400, 429, 5xx) means the service is reachable
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Jina auth error')) {
+        throw err;
+      }
+      // Network errors = unhealthy
+      throw new Error(`Jina health check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async execute(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {

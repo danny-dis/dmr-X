@@ -24,9 +24,6 @@ function isRateLimitError(error: unknown): boolean {
   if (error instanceof ProviderError) {
     return error.statusCode === 429;
   }
-  if (error instanceof Error) {
-    return error.message.includes('429') || error.message.toLowerCase().includes('rate limit');
-  }
   return false;
 }
 
@@ -65,8 +62,8 @@ export async function executeWithFallback(
     }
     tried.push(plan.primary.providerId);
     const response = await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
-    // Record circuit breaker success
-    options?.onSuccess?.(plan.primary.providerId);
+    // Record circuit breaker success (wrapped in try/catch)
+    try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
     // Record successful usage (fire-and-forget, never fail the request)
     try {
       if (rls) {
@@ -83,8 +80,8 @@ export async function executeWithFallback(
     }
     return response;
   } catch (error) {
-    // Record circuit breaker failure
-    options?.onFailure?.(plan.primary.providerId);
+    // Record circuit breaker failure (wrapped in try/catch to prevent callback errors from breaking fallback chain)
+    try { options?.onFailure?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
     if (!isRateLimitError(error)) {
       allRateLimited = false;
     }
@@ -128,8 +125,8 @@ export async function executeWithFallback(
       }
       tried.push(step.provider.providerId);
       const response = await executor.execute(step.provider.providerId, step.provider.modelId, request);
-      // Record circuit breaker success
-      options?.onSuccess?.(step.provider.providerId);
+      // Record circuit breaker success (wrapped in try/catch)
+      try { options?.onSuccess?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
       // Record successful usage (fire-and-forget, never fail the request)
       try {
         if (rls) {
@@ -146,8 +143,8 @@ export async function executeWithFallback(
       }
       return response;
     } catch (error) {
-      // Record circuit breaker failure
-      options?.onFailure?.(step.provider.providerId);
+      // Record circuit breaker failure (wrapped in try/catch)
+      try { options?.onFailure?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
       if (!isRateLimitError(error)) {
         allRateLimited = false;
       }

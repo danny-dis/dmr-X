@@ -1,0 +1,8 @@
+export default function App() {
+  return (
+    <div style={{ padding: 100, color: 'white', background: '#0A0B10', height: '100vh' }}>
+      <h1>DMR-X Minimal Boot</h1>
+      <p>If you see this, React is rendering correctly.</p>
+    </div>
+  );
+}

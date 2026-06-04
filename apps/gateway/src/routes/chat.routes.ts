@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ValidationError, ProviderUnavailableError, type UnifiedRequest } from '@dmr-x/core';
 import { generateRequestId, logger } from '@dmr-x/utils';
 import type { Router } from '@dmr-x/router';
+import type { RateLimitService, QuotaService } from '@dmr-x/quota';
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 
 const ChatRequestSchema = z.object({
@@ -59,99 +60,122 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       },
     };
 
-    // Route through Router
+    // Streaming: route through pipeline for plan, enforce rate-limit/quota, then stream
     if (body.stream) {
-        // Streaming: get routing plan only, then stream from adapter
-        const { plan } = await router.route(unifiedRequest, {
-          path: '/v1/chat/completions',
-          qualityTarget: 'balanced',
-          planOnly: true,
-        });
-
-        if (!plan.primary) {
-          reply.raw.writeHead(503, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-          reply.raw.write(`data: ${JSON.stringify({ error: { message: 'No available providers for this request', type: 'service_unavailable' } })}\n\n`);
-          reply.raw.write('data: [DONE]\n\n');
-          reply.raw.end();
-          return;
-        }
-
-        const streamHeaders: Record<string, string> = {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        };
-        if (unifiedRequest.metadata?.freeTierStrategy) {
-          streamHeaders['X-Free-Tier-Strategy'] = String(unifiedRequest.metadata.freeTierStrategy);
-        }
-        reply.raw.writeHead(200, streamHeaders);
-
-        const adapter = (server as any).getAdapter(plan.primary.providerId);
-        if (adapter) {
-          try {
-            const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
-            const stream = adapter.executeStream(routedRequest);
-            for await (const chunk of stream) {
-              if (chunk.type === 'token') {
-                reply.raw.write(`data: ${JSON.stringify({
-                  id: requestId,
-                  object: 'chat.completion.chunk',
-                  choices: [{ index: 0, delta: chunk.data, finish_reason: null }],
-                })}\n\n`);
-              } else if (chunk.type === 'done') {
-                reply.raw.write(`data: ${JSON.stringify({
-                  id: requestId,
-                  object: 'chat.completion.chunk',
-                  choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-                })}\n\n`);
-              } else if (chunk.type === 'error') {
-                logger.error({ requestId, chunkError: chunk.data }, 'Adapter stream error chunk');
-                reply.raw.write(`data: ${JSON.stringify({
-                  error: { message: 'Stream error', type: 'stream_error' },
-                })}\n\n`);
-              }
-            }
-          } catch (streamError) {
-            logger.error({ err: streamError, requestId }, 'Streaming error');
-            reply.raw.write(`data: ${JSON.stringify({
-              error: { message: 'Stream failed', type: 'stream_error' },
-            })}\n\n`);
-          }
-        } else {
-          reply.raw.write(`data: ${JSON.stringify({
-            error: { message: 'No adapter available for provider', type: 'routing_error' },
-          })}\n\n`);
-        }
-        reply.raw.write('data: [DONE]\n\n');
-        reply.raw.end();
-        return reply;
-      }
-
-      // Non-streaming: route and execute
-      const { plan, response } = await router.route(unifiedRequest, {
+      // Get routing plan (runs full pipeline: capability, availability, rate-limit, policy, quota filters)
+      const { plan } = await router.route(unifiedRequest, {
         path: '/v1/chat/completions',
         qualityTarget: 'balanced',
+        planOnly: true,
       });
+
       if (!plan.primary) {
         throw new ProviderUnavailableError([]);
       }
+
+      // Enforce rate limits and quotas before streaming (same checks as executeWithFallback)
+      const rls = (server as any).rateLimitService as RateLimitService | undefined;
+      const qs = (server as any).quotaService as QuotaService | undefined;
+      const tenantId = (request as any).tenant?.id;
+
+      if (rls) {
+        const limitCheck = rls.checkLimit(plan.primary.providerId, plan.primary.modelId, 0);
+        if (!limitCheck.allowed) {
+          throw new ProviderUnavailableError([plan.primary.providerId], limitCheck.retryAfterMs ? Math.ceil(limitCheck.retryAfterMs / 1000) : 30);
+        }
+      }
+      if (qs && tenantId) {
+        await qs.checkQuota(tenantId, plan.primary.providerId, 0, 0);
+      }
+
       if (unifiedRequest.metadata?.freeTierStrategy) {
         reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
       }
 
-      return {
-        id: requestId,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: response.modelId,
-        choices: [
-          {
-            index: 0,
-            message: response.message,
-            finish_reason: response.finishReason,
-          },
-        ],
-        usage: response.usage,
+      const streamHeaders: Record<string, string> = {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
       };
+      reply.raw.writeHead(200, streamHeaders);
+
+      const adapter = (server as any).getAdapter(plan.primary.providerId);
+      if (adapter) {
+        try {
+          const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
+          const stream = adapter.executeStream(routedRequest);
+          for await (const chunk of stream) {
+            if (chunk.type === 'token') {
+              reply.raw.write(`data: ${JSON.stringify({
+                id: requestId,
+                object: 'chat.completion.chunk',
+                choices: [{ index: 0, delta: chunk.data, finish_reason: null }],
+              })}\n\n`);
+            } else if (chunk.type === 'done') {
+              reply.raw.write(`data: ${JSON.stringify({
+                id: requestId,
+                object: 'chat.completion.chunk',
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+              })}\n\n`);
+            } else if (chunk.type === 'error') {
+              logger.error({ requestId, chunkError: chunk.data }, 'Adapter stream error chunk');
+              reply.raw.write(`data: ${JSON.stringify({
+                error: { message: 'Stream error', type: 'stream_error' },
+              })}\n\n`);
+            }
+          }
+          // Record usage after successful stream completion (fire-and-forget)
+          try {
+            if (rls) {
+              await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0);
+            }
+            if (qs && tenantId) {
+              await qs.recordUsage(tenantId, plan.primary.providerId, 0, 0);
+            }
+          } catch (usageErr) {
+            logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record streaming usage');
+          }
+        } catch (streamError) {
+          logger.error({ err: streamError, requestId }, 'Streaming error');
+          reply.raw.write(`data: ${JSON.stringify({
+            error: { message: 'Stream failed', type: 'stream_error' },
+          })}\n\n`);
+        }
+      } else {
+        reply.raw.write(`data: ${JSON.stringify({
+          error: { message: 'No adapter available for provider', type: 'routing_error' },
+        })}\n\n`);
+      }
+      reply.raw.write('data: [DONE]\n\n');
+      reply.raw.end();
+      return reply;
+    }
+
+    // Non-streaming: route and execute through full pipeline with fallback
+    const { plan, response } = await router.route(unifiedRequest, {
+      path: '/v1/chat/completions',
+      qualityTarget: 'balanced',
+    });
+    if (!plan.primary) {
+      throw new ProviderUnavailableError([]);
+    }
+    if (unifiedRequest.metadata?.freeTierStrategy) {
+      reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
+    }
+
+    return {
+      id: requestId,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: response.modelId,
+      choices: [
+        {
+          index: 0,
+          message: response.message,
+          finish_reason: response.finishReason,
+        },
+      ],
+      usage: response.usage,
+    };
   });
 }

@@ -22,12 +22,14 @@ export async function rateLimitFilter(
   rateLimitService: RateLimitService,
   estimatedTokens: number = 0
 ): Promise<RateLimitFilterResult> {
+  // Ensure at least 1 token for TPM/TPD checks to prevent bypass
+  const tokensForCheck = Math.max(estimatedTokens, 1);
   const results = await Promise.all(
     candidates.map(async (candidate) => {
       const result = rateLimitService.checkLimit(
         candidate.providerId,
         candidate.modelId,
-        estimatedTokens
+        tokensForCheck
       );
       return { candidate, result };
     })

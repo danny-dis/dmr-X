@@ -16,8 +16,26 @@ const QualityTarget = z.enum(['frontier', 'balanced', 'economy']).optional()
 const ResponseFormat = z.enum(['text', 'json_object']).optional()
   .describe('Response format type');
 
+const ProviderPreference = z.array(z.string()).optional()
+  .describe('Ordered list of preferred provider IDs (e.g., ["openai", "anthropic"])');
+
+const ProviderBlacklist = z.array(z.string()).optional()
+  .describe('List of provider IDs to exclude from routing');
+
+const LatencyTarget = z.union([z.number(), z.string()]).optional()
+  .describe('Maximum acceptable latency in ms (number or string like "100ms")');
+
+const CostTarget = z.union([z.number(), z.string()]).optional()
+  .describe('Maximum acceptable cost per 1M output tokens (number or string like "$0.50")');
+
+const LocalFirst = z.boolean().optional()
+  .describe('Prefer local models (e.g., Ollama) when available');
+
+const RequirePrivacy = z.boolean().optional()
+  .describe('Force use of privacy-preserving providers only');
+
 // ---------------------------------------------------------------------------
-// dmrx_chat — Chat completions (LLM modality)
+// Shared message/tool schemas
 // ---------------------------------------------------------------------------
 
 export const ChatMessageSchema = z.object({
@@ -65,6 +83,10 @@ export const ToolChoiceSchema = z.union([
   }),
 ]);
 
+// ---------------------------------------------------------------------------
+// dmrx_chat — Chat completions (LLM modality)
+// ---------------------------------------------------------------------------
+
 export const dmrxChatParams = {
   messages: z.array(ChatMessageSchema).describe('Array of chat messages'),
   model: z.string().optional().describe('Preferred model (DMR-X will route to best available if omitted)'),
@@ -81,6 +103,12 @@ export const dmrxChatParams = {
   tool_choice: ToolChoiceSchema.optional().describe('Tool choice strategy'),
   quality_target: QualityTarget,
   user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  latency_target: LatencyTarget,
+  cost_target: CostTarget,
+  local_first: LocalFirst,
+  require_privacy: RequirePrivacy,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -100,6 +128,10 @@ export const dmrxGenerateImageParams = {
   n: z.number().int().positive().optional().describe('Number of images to generate'),
   quality_target: QualityTarget,
   user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
+  require_privacy: RequirePrivacy,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -113,6 +145,10 @@ export const dmrxEmbedParams = {
   encoding_format: z.enum(['float', 'base64']).optional().describe('Output encoding format'),
   quality_target: QualityTarget,
   user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
+  require_privacy: RequirePrivacy,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -126,6 +162,9 @@ export const dmrxTranscribeParams = {
   language: z.string().optional().describe('Language code (e.g. "en", "es")'),
   quality_target: QualityTarget,
   user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -141,6 +180,9 @@ export const dmrxSpeakParams = {
   language: z.string().optional().describe('Language code'),
   quality_target: QualityTarget,
   user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -154,6 +196,9 @@ export const dmrxRerankParams = {
   top_n: z.number().int().positive().optional().describe('Number of top results to return'),
   quality_target: QualityTarget,
   user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -178,6 +223,79 @@ export const dmrxStatusParams = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// dmrx_batch — Batch operations
+// ---------------------------------------------------------------------------
+
+export const dmrxBatchParams = {
+  calls: z.array(z.object({
+    tool: z.string().describe('Tool name (e.g., dmrx_chat, dmrx_embed)'),
+    parameters: z.record(z.unknown()).describe('Tool parameters'),
+  })).describe('Array of tool calls to execute'),
+  continue_on_fail: z.boolean().optional().describe('Continue executing on failure (default true)'),
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_context_* — Context management
+// ---------------------------------------------------------------------------
+
+export const dmrxContextSaveParams = {
+  id: z.string().optional().describe('Context ID (auto-generated if omitted)'),
+  messages: z.array(ChatMessageSchema).describe('Conversation messages to save'),
+  ttl_seconds: z.number().int().positive().optional().describe('Time-to-live in seconds (default 86400)'),
+  user: z.string().optional().describe('Owner user ID'),
+} as const;
+
+export const dmrxContextLoadParams = {
+  id: z.string().describe('Context ID to load'),
+} as const;
+
+export const dmrxContextListParams = {
+  user: z.string().optional().describe('Filter by owner user ID'),
+  limit: z.number().int().positive().optional().describe('Max results (default 20)'),
+} as const;
+
+export const dmrxContextSummarizeParams = {
+  id: z.string().describe('Context ID to summarize'),
+} as const;
+
+export const dmrxContextCompressParams = {
+  id: z.string().describe('Context ID to compress'),
+  target_tokens: z.number().int().positive().optional().describe('Target token count after compression'),
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_chat_stream — Streaming chat
+// ---------------------------------------------------------------------------
+
+export const dmrxChatStreamParams = {
+  ...dmrxChatParams,
+} as const;
+
+export const dmrxGenerateImageStreamParams = {
+  ...dmrxGenerateImageParams,
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_workflow — Workflow orchestration
+// ---------------------------------------------------------------------------
+
+export const dmrxWorkflowParams = {
+  steps: z.array(z.object({
+    id: z.string().describe('Step identifier'),
+    tool: z.string().describe('Tool name to execute'),
+    parameters: z.record(z.unknown()).describe('Tool parameters'),
+    input_mapping: z.record(z.string()).optional().describe('Map previous step outputs to this step inputs'),
+    condition: z.string().optional().describe('Expression to evaluate for conditional execution'),
+    retry_policy: z.object({
+      max_retries: z.number().int().nonnegative().optional(),
+      backoff_ms: z.number().int().positive().optional(),
+    }).optional(),
+  })).describe('Ordered workflow steps'),
+  fail_fast: z.boolean().optional().describe('Stop on first error (default true)'),
+  persist: z.boolean().optional().describe('Persist workflow state for resumption'),
+} as const;
+
+// ---------------------------------------------------------------------------
 // Tool name constants
 // ---------------------------------------------------------------------------
 
@@ -190,6 +308,15 @@ export const TOOL_NAMES = {
   RERANK: 'dmrx_rerank',
   MODELS: 'dmrx_models',
   STATUS: 'dmrx_status',
+  BATCH: 'dmrx_batch',
+  CONTEXT_SAVE: 'dmrx_context_save',
+  CONTEXT_LOAD: 'dmrx_context_load',
+  CONTEXT_LIST: 'dmrx_context_list',
+  CONTEXT_SUMMARIZE: 'dmrx_context_summarize',
+  CONTEXT_COMPRESS: 'dmrx_context_compress',
+  CHAT_STREAM: 'dmrx_chat_stream',
+  GENERATE_IMAGE_STREAM: 'dmrx_generate_image_stream',
+  WORKFLOW: 'dmrx_workflow',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -223,4 +350,25 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   dmrx_status:
     'Get DMR-X system status including router health, provider availability, and configuration. ' +
     'Useful for diagnostics and monitoring.',
+  dmrx_batch:
+    'Execute multiple MCP tool calls atomically. Returns aggregated results with individual outcomes. ' +
+    'Supports partial failure modes (continue-on-fail vs fail-fast).',
+  dmrx_context_save:
+    'Save conversation context with a persistent ID. Enables stateful agent interactions across sessions. ' +
+    'Accepts TTL for automatic expiry.',
+  dmrx_context_load:
+    'Load a previously saved conversation context by ID. Returns messages and metadata.',
+  dmrx_context_list:
+    'List saved conversation contexts, optionally filtered by user. Supports pagination.',
+  dmrx_context_summarize:
+    'Generate a contextual summary of a saved conversation. Reduces token cost for long conversations.',
+  dmrx_context_compress:
+    'Compress a saved conversation context while preserving meaning. Reduces storage and token usage.',
+  dmrx_chat_stream:
+    'Streaming chat completion through DMR-X. Returns token-by-token output via streaming response.',
+  dmrx_generate_image_stream:
+    'Streaming image generation through DMR-X. Returns progressive generation updates.',
+  dmrx_workflow:
+    'Define and execute multi-step workflows. Supports conditional branching, looping, parallel execution, ' +
+    'error handling, and retry policies. Enables complex agent behaviors in a single MCP call.',
 };

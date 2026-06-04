@@ -1,0 +1,89 @@
+import { logger } from '@dmr-x/utils';
+import { registryService } from './registry.service.js';
+import { getDb } from '@dmr-x/db';
+export class HealthChecker {
+    adapterRegistry;
+    checkIntervalMs;
+    interval = null;
+    providerIdMap = new Map(); // adapter ID -> DB UUID
+    constructor(adapterRegistry, checkIntervalMs = 30000) {
+        this.adapterRegistry = adapterRegistry;
+        this.checkIntervalMs = checkIntervalMs;
+    }
+    start() {
+        logger.info({ intervalMs: this.checkIntervalMs }, 'Health checker started');
+        // Run immediately
+        this.checkAll();
+        // Then run on interval
+        this.interval = setInterval(() => {
+            this.checkAll();
+        }, this.checkIntervalMs);
+    }
+    stop() {
+        if (this.interval) {
+            clearInterval(this.interval);
+            this.interval = null;
+        }
+        logger.info('Health checker stopped');
+    }
+    loadProviderIdMap() {
+        try {
+            const db = getDb();
+            const rows = db.prepare('SELECT id, name FROM providers').all();
+            for (const row of rows) {
+                this.providerIdMap.set(row.name.toLowerCase(), row.id);
+            }
+        }
+        catch (error) {
+            logger.error({ err: error }, 'Failed to load provider ID map');
+        }
+    }
+    getProviderUuid(adapterId) {
+        // Try to find by name (case-insensitive)
+        const uuid = this.providerIdMap.get(adapterId.toLowerCase());
+        if (uuid)
+            return uuid;
+        // If not found, reload the map and try again
+        this.loadProviderIdMap();
+        return this.providerIdMap.get(adapterId.toLowerCase()) || null;
+    }
+    async checkAll() {
+        // Ensure we have the provider ID mapping
+        if (this.providerIdMap.size === 0) {
+            this.loadProviderIdMap();
+        }
+        const adapters = this.adapterRegistry.list();
+        for (const adapterId of adapters) {
+            try {
+                const adapter = this.adapterRegistry.get(adapterId);
+                if (!adapter)
+                    continue;
+                const providerUuid = this.getProviderUuid(adapterId);
+                if (!providerUuid) {
+                    logger.warn({ adapterId }, 'Provider not found in database, skipping health check');
+                    continue;
+                }
+                const status = await adapter.healthCheck();
+                registryService.updateHealth(providerUuid, status.healthy, status.latencyMs);
+                // Sync circuit breaker state with health check result
+                if (status.healthy) {
+                    this.adapterRegistry.recordSuccess(adapterId);
+                }
+                else {
+                    this.adapterRegistry.recordFailure(adapterId);
+                    logger.warn({ adapterId, providerUuid, error: status.error }, 'Provider unhealthy');
+                }
+            }
+            catch (error) {
+                logger.error({ err: error, adapterId }, 'Health check failed');
+                // Record circuit breaker failure on exception
+                this.adapterRegistry.recordFailure(adapterId);
+                const providerUuid = this.getProviderUuid(adapterId);
+                if (providerUuid) {
+                    registryService.updateHealth(providerUuid, false);
+                }
+            }
+        }
+    }
+}
+//# sourceMappingURL=health-checker.js.map

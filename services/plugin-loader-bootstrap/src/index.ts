@@ -1,0 +1,1 @@
+export { main } from './bootstrap.js';

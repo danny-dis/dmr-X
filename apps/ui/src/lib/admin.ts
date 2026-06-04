@@ -32,7 +32,7 @@ import { api, apiGet, apiPost, apiPut, apiDelete } from './api';
 export const Admin = {
   // Health & dashboard
   health: () => apiGet<ApiHealthResponse>('/health'),
-  dashboard: () => apiGet<ApiDashboardStats>('/admin/dashboard'),
+  dashboard: () => apiGet<ApiDashboardStats>('/admin/dashboard/stats'),
 
   // Providers
   listProviders: () => apiGet<ApiProvider[]>('/admin/providers'),
@@ -57,7 +57,7 @@ export const Admin = {
   updateProvider: (id: string, body: Partial<ApiProvider>) =>
     apiPut<ApiProvider>(`/admin/providers/${id}`, body),
   deleteProvider: (id: string) => apiDelete<{ ok: true }>(`/admin/providers/${id}`),
-  testProvider: (id: string) => apiPost<ApiProviderTestResult>(`/admin/providers/${id}/test`),
+  testProvider: (id: string) => apiPost<ApiProviderTestResult>('/admin/providers/test', { provider_id: id }),
   startProviderOAuth: (id: string) =>
     apiPost<ApiProviderOAuthStart>(`/admin/providers/${id}/oauth/authorize`),
   completeProviderOAuth: (id: string, code: string, state: string) =>
@@ -92,35 +92,35 @@ export const Admin = {
   updateTenant: (id: string, body: Partial<ApiTenant>) =>
     apiPut<ApiTenant>(`/admin/tenants/${id}`, body),
   deleteTenant: (id: string) => apiDelete<{ ok: true }>(`/admin/tenants/${id}`),
-  listApiKeys: async (tenantId: string) => {
-    const res = await apiGet<ApiKey[] | { api_keys: ApiKey[] }>(`/admin/tenants/${tenantId}/keys`);
+  listApiKeys: async () => {
+    const res = await apiGet<ApiKey[] | { api_keys: ApiKey[] }>('/admin/api-keys');
     return Array.isArray(res) ? res : res.api_keys;
   },
-  createApiKey: (tenantId: string, body: Partial<ApiKey>) =>
-    apiPost<ApiKey>(`/admin/tenants/${tenantId}/keys`, body),
-  revokeApiKey: (tenantId: string, keyId: string) =>
-    apiDelete<{ ok: true }>(`/admin/tenants/${tenantId}/keys/${keyId}`),
+  createApiKey: (body: { tenant_id: string; name?: string }) =>
+    apiPost<ApiKey & { key: string }>('/admin/api-keys', body),
+  revokeApiKey: (id: string) =>
+    apiDelete<{ ok: true }>(`/admin/api-keys/${id}`),
 
   // Routing & quota
-  listRouteDecisions: (query?: { tenantId?: string; limit?: number }) =>
-    apiGet<ApiRouteDecision[]>('/admin/routing/decisions', query),
-  getQuota: (tenantId: string) => apiGet<ApiQuotaState>(`/admin/tenants/${tenantId}/quota`),
+  listRouteDecisions: () =>
+    apiGet<{ decisions: ApiRouteDecision[] }>('/admin/routing/decisions').then(r => r.decisions),
+  getQuota: () => apiGet<{ quotas: ApiQuotaState[] }>('/admin/quota').then(r => r.quotas),
 
   // Billing & usage
-  getBilling: (query?: { tenantId?: string; period?: 'day' | 'week' | 'month' }) =>
-    apiGet<ApiBillingSummary>('/admin/billing/summary', query),
-  getUsage: (query?: { tenantId?: string; from?: string; to?: string; granularity?: 'minute' | 'hour' | 'day' }) =>
-    apiGet<{ points: ApiUsagePoint[]; total: number }>('/admin/usage', query),
+  getBilling: () =>
+    apiGet<ApiBillingSummary>('/admin/billing/summary'),
+  getUsage: () =>
+    apiGet<{ history: ApiUsagePoint[] }>('/admin/billing/usage-history').then(r => ({ points: r.history, total: r.history.length })),
 
   // Observability
-  listAlerts: (query?: { severity?: string; status?: string }) =>
-    apiGet<ApiAlert[]>('/admin/alerts', query),
+  listAlerts: () =>
+    apiGet<{ alerts: ApiAlert[] }>('/admin/alerts').then(r => r.alerts),
   acknowledgeAlert: (id: string) => apiPost<ApiAlert>(`/admin/alerts/${id}/ack`),
   resolveAlert: (id: string) => apiPost<ApiAlert>(`/admin/alerts/${id}/resolve`),
-  listAudit: (query?: { limit?: number; actor?: string }) =>
-    apiGet<ApiAuditEvent[]>('/admin/audit', query),
-  listTelemetry: (query?: { since?: string; kind?: string; limit?: number }) =>
-    apiGet<ApiTelemetryEvent[]>('/admin/telemetry', query),
+  listAudit: () =>
+    apiGet<{ events: ApiAuditEvent[] }>('/admin/audit/events').then(r => r.events),
+  listTelemetry: () =>
+    apiGet<{ events: ApiTelemetryEvent[] }>('/admin/telemetry/events').then(r => r.events),
   streamTelemetry: (signal: AbortSignal, onEvent: (e: ApiTelemetryEvent) => void) => {
     const url = '/admin/telemetry/stream';
     const ev = new EventSource(buildSseUrl(url));

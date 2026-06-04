@@ -28,6 +28,7 @@
     "@dmr-x/registry": "*",
     "@dmr-x/router": "*",
     "@dmr-x/sandbox": "*",
+    "@dmr-x/telemetry": "*",
     "@dmr-x/utils": "*",
     "@dmr-x/workers": "*",
     "@fastify/cors": "^9.0.1",

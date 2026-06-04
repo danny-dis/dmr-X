@@ -94,9 +94,9 @@ export function CreateApiKeyDialog({
     if (!validate()) return;
     setSubmitting(true);
     try {
-      const created = await Admin.createApiKey(tenantId, {
+      const created = await Admin.createApiKey({
+        tenant_id: tenantId,
         name: form.name.trim(),
-        scopes: form.scopes,
       });
       setCreatedKey(created.key);
       toast.success('API key created', { description: form.name });

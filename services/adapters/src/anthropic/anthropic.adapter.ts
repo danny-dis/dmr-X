@@ -61,12 +61,16 @@ export class AnthropicAdapter extends BaseAdapter {
         timeoutMs: 10000,
       }
     );
-    // We expect 200 or 400 (bad request), not 401/403 (auth issues)
+    // Accept 200 (success) or 400 (bad request = endpoint exists but params wrong)
+    // Reject 401/403 (auth), 429 (rate limited = degraded), 5xx (service down)
     if (response.status === 401 || response.status === 403) {
       const body = await response.text();
       const httpMeta: HttpMeta = { response, request: new Request(response.url), body };
       const httpError = createHttpError(response.status, httpMeta);
       throw new Error(`Anthropic auth error: ${httpError.message}`);
+    }
+    if (response.status === 429 || response.status >= 500) {
+      throw new Error(`Anthropic health check failed: HTTP ${response.status}`);
     }
   }
 

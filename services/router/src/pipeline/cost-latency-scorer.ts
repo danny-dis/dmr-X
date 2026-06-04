@@ -35,13 +35,17 @@ export function costLatencyScorer(
     ? SORT_WEIGHT_OVERRIDES[sortStrategy]
     : WEIGHT_PRESETS[qualityTarget];
 
-  // Find max values for normalization
-  const maxCost = Math.max(...candidates.map((m) => m.costPerInputToken || m.costPerImage || 1));
+  // Find max values for normalization (use combined input+output cost for fair comparison)
+  const maxCost = Math.max(...candidates.map((m) => {
+    const combined = (m.costPerInputToken || 0) + (m.costPerOutputToken || 0);
+    return combined || m.costPerImage || 1;
+  }));
   const maxLatency = Math.max(...candidates.map((m) => m.avgLatencyMs || 1000));
 
   return candidates
     .map((model) => {
-      const costScore = 1 - (model.costPerInputToken || model.costPerImage || 0) / maxCost;
+      const combinedCost = (model.costPerInputToken || 0) + (model.costPerOutputToken || 0);
+      const costScore = 1 - (combinedCost || model.costPerImage || 0) / maxCost;
       const latencyScore = 1 - (model.avgLatencyMs || 0) / maxLatency;
 
       // For free models with catalog metadata, blend runtime quality with curated rankings

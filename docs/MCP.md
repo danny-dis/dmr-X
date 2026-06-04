@@ -114,6 +114,119 @@ Get DMR-X system status.
 
 **Parameters:** None.
 
+### Routing Parameters (All Tools)
+
+Most tools accept additional routing control parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `provider_preference` | `string[]` | Ordered list of preferred provider IDs |
+| `provider_blacklist` | `string[]` | Provider IDs to exclude from routing |
+| `latency_target` | `number \| string` | Maximum acceptable latency (e.g. `100` or `"100ms"`) |
+| `cost_target` | `number \| string` | Max cost per 1M output tokens (e.g. `0.50` or `"$0.50"`) |
+| `local_first` | `boolean` | Prefer local models (Ollama) when available |
+| `require_privacy` | `boolean` | Force privacy-preserving providers only |
+
+### `dmrx_batch`
+
+Execute multiple tool calls atomically.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `calls` | `Array<{ tool: string, parameters: object }>` | Yes | Tool calls to execute |
+| `continue_on_fail` | `boolean` | No | Continue on error (default true) |
+
+### `dmrx_context_save`
+
+Save conversation context for later use.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `messages` | `ChatMessage[]` | Yes | Conversation messages |
+| `id` | `string` | No | Context ID (auto-generated if omitted) |
+| `ttl_seconds` | `number` | No | Time-to-live in seconds (default 86400) |
+| `user` | `string` | No | Owner user ID |
+
+### `dmrx_context_load`
+
+Load a saved conversation context.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Context ID to load |
+
+### `dmrx_context_list`
+
+List saved conversation contexts.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `user` | `string` | No | Filter by user ID |
+| `limit` | `number` | No | Max results (default 20) |
+
+### `dmrx_context_summarize`
+
+Generate a contextual summary of a saved conversation.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Context ID to summarize |
+
+### `dmrx_context_compress`
+
+Compress a saved conversation context.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | Yes | Context ID to compress |
+| `target_tokens` | `number` | No | Target token count after compression |
+
+### `dmrx_chat_stream`
+
+Streaming chat completions through DMR-X.
+
+**Parameters:** Same as `dmrx_chat`.
+
+### `dmrx_generate_image_stream`
+
+Streaming image generation through DMR-X.
+
+**Parameters:** Same as `dmrx_generate_image`.
+
+### `dmrx_workflow`
+
+Define and execute multi-step workflows.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `steps` | `Array<WorkflowStep>` | Yes | Ordered workflow steps |
+| `fail_fast` | `boolean` | No | Stop on first error (default true) |
+| `persist` | `boolean` | No | Persist workflow state for resumption |
+
+**WorkflowStep:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Step identifier |
+| `tool` | `string` | Tool name to execute |
+| `parameters` | `object` | Tool parameters |
+| `input_mapping` | `object` | Map previous step outputs to this step inputs |
+| `retry_policy` | `object` | Retry configuration (`max_retries`, `backoff_ms`) |
+
 ## Usage Examples
 
 ### Claude Desktop (stdio)

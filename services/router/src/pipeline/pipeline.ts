@@ -86,15 +86,25 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     if (waitMs > 0) {
       logger.info({ waitMs, rateLimitedCount: rateLimitResult.rateLimited.length }, 'All providers rate-limited, waiting for reset');
       await new Promise(resolve => setTimeout(resolve, waitMs));
-      // Re-run only Stage 3 with candidates that existed before rate-limit filtering
+      // Re-run rate-limit + policy + quota with candidates that existed before rate-limit filtering
       const recheck = await rateLimitFilter(preRateLimitCandidates, rateLimitService!, estimatedTokens);
       filtered = recheck.allowed;
+      // Re-apply policy filter
+      if (policyService && tenantId) {
+        filtered = await policyService.filterByPolicy(filtered, tenantId, taskProfile);
+      }
+      // Re-apply quota filter
+      if (quotaService && tenantId) {
+        filtered = await quotaService.filterByQuota(filtered, tenantId);
+      }
     }
   }
 
   if (filtered.length === 0) {
     const tried = candidates.map(c => `${c.providerId}/${c.modelId}`);
-    throw new ProviderUnavailableError(tried, rateLimitResult?.earliestResetMs ?? 30000);
+    // Convert earliestResetMs to seconds for ProviderUnavailableError
+    const retryAfterSeconds = rateLimitResult?.earliestResetMs ? Math.ceil(rateLimitResult.earliestResetMs / 1000) : 30;
+    throw new ProviderUnavailableError(tried, retryAfterSeconds);
   }
 
   // Determine sort strategy from preferences or quality target
@@ -183,6 +193,25 @@ function applyProviderPreferences(
     result = result.filter((m) => {
       if (!m.quantization) return true; // allow unknown quantization
       return allowed.has(m.quantization);
+    });
+  }
+
+  // Filter by max latency
+  if (prefs.preferredMaxLatencyMs !== undefined) {
+    const maxLatency = prefs.preferredMaxLatencyMs;
+    result = result.filter((m) => {
+      if (!m.avgLatencyMs) return true; // allow unknown latency
+      return m.avgLatencyMs <= maxLatency;
+    });
+  }
+
+  // Filter by min throughput (tokens/sec) — uses p50 from throughputPercentiles
+  if (prefs.preferredMinThroughputTps !== undefined) {
+    const minThroughput = prefs.preferredMinThroughputTps;
+    result = result.filter((m) => {
+      const tps = m.throughputPercentiles?.p50;
+      if (tps === undefined) return true; // allow unknown throughput
+      return tps >= minThroughput;
     });
   }
 

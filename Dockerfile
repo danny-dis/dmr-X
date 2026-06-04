@@ -1,5 +1,5 @@
 # ─── Build Stage ─────────────────────────────────────────────────────────────
-FROM oven/bun:1-alpine AS builder
+FROM oven/bun:1.2.0-alpine AS builder
 
 WORKDIR /app
 
@@ -19,6 +19,11 @@ COPY services/benchmark/package.json services/benchmark/
 COPY services/telemetry/package.json services/telemetry/
 COPY services/mcp-client/package.json services/mcp-client/
 COPY services/mcp-server/package.json services/mcp-server/
+COPY services/workers/package.json services/workers/
+COPY services/sandbox/package.json services/sandbox/
+COPY services/memory/package.json services/memory/
+COPY services/federation/package.json services/federation/
+COPY services/oauth/package.json services/oauth/
 COPY apps/gateway/package.json apps/gateway/
 COPY apps/ui/package.json apps/ui/
 
@@ -39,7 +44,7 @@ COPY apps/ui/ apps/ui/
 RUN bun run build
 
 # ─── Production Stage ────────────────────────────────────────────────────────
-FROM oven/bun:1-alpine AS production
+FROM oven/bun:1.2.0-alpine AS production
 
 WORKDIR /app
 
@@ -62,6 +67,11 @@ COPY services/benchmark/package.json services/benchmark/
 COPY services/telemetry/package.json services/telemetry/
 COPY services/mcp-client/package.json services/mcp-client/
 COPY services/mcp-server/package.json services/mcp-server/
+COPY services/workers/package.json services/workers/
+COPY services/sandbox/package.json services/sandbox/
+COPY services/memory/package.json services/memory/
+COPY services/federation/package.json services/federation/
+COPY services/oauth/package.json services/oauth/
 COPY apps/gateway/package.json apps/gateway/
 COPY apps/ui/package.json apps/ui/
 

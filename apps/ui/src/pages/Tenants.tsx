@@ -24,7 +24,7 @@ export function TenantsPage() {
 
   const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 15000 });
   const keys = useApiData<ApiKey[]>(
-    () => (selectedTenant ? Admin.listApiKeys(selectedTenant) : Promise.resolve([] as ApiKey[])),
+    () => Admin.listApiKeys().then(allKeys => allKeys.filter(k => k.tenant_id === selectedTenant)),
     [selectedTenant],
     { enabled: !!selectedTenant, refetchInterval: 15000 }
   );
@@ -163,7 +163,17 @@ export function TenantsPage() {
                   ) : keys.data && keys.data.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                       {keys.data.map((k) => (
-                        <ApiKeyCard key={k.id} apiKey={k} />
+                        <ApiKeyCard
+                          key={k.id}
+                          apiKey={k}
+                          onRevoke={async (id) => {
+                            if (confirm('Are you sure you want to revoke this API key?')) {
+                              await Admin.revokeApiKey(id);
+                              toast.success('API key revoked');
+                              void keys.refetch();
+                            }
+                          }}
+                        />
                       ))}
                     </div>
                   ) : (

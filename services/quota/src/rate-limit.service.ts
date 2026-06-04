@@ -118,20 +118,20 @@ export class RateLimitService {
 
     // Record in RPM window
     const rpmKey = this.cacheKey(providerId, modelId, 'rpm');
-    this.addToCountWindow(rpmKey, now, 120_000);
+    this.addToCountWindow(rpmKey, now, 60_000);
 
     // Record in RPD window
     const rpdKey = this.cacheKey(providerId, modelId, 'rpd');
-    this.addToCountWindow(rpdKey, now, 172_800_000);
+    this.addToCountWindow(rpdKey, now, 86_400_000);
 
     // Record tokens in TPM window
     if (tokens > 0) {
       const tpmKey = this.cacheKey(providerId, modelId, 'tpm');
-      this.addToTokenWindow(tpmKey, now, tokens, 120_000);
+      this.addToTokenWindow(tpmKey, now, tokens, 60_000);
 
       // Record tokens in TPD window
       const tpdKey = this.cacheKey(providerId, modelId, 'tpd');
-      this.addToTokenWindow(tpdKey, now, tokens, 172_800_000);
+      this.addToTokenWindow(tpdKey, now, tokens, 86_400_000);
     }
   }
 

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Eye, EyeOff, Copy, RefreshCw, KeyRound, Calendar, Activity } from 'lucide-react';
+import { Eye, EyeOff, Copy, RefreshCw, KeyRound, Calendar, Activity, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
@@ -17,7 +17,7 @@ export interface ApiKeyCardProps {
 
 export function ApiKeyCard({ apiKey, onRotate, onRevoke, className }: ApiKeyCardProps) {
   const [revealed, setRevealed] = React.useState(false);
-  const isActive = !apiKey.revokedAt;
+  const isActive = apiKey.is_active !== 0;
   return (
     <div
       className={cn(
@@ -33,13 +33,13 @@ export function ApiKeyCard({ apiKey, onRotate, onRevoke, className }: ApiKeyCard
           <div className="min-w-0">
             <h4 className="text-sm font-semibold text-fg truncate">{apiKey.name}</h4>
             <p className="text-[10px] text-fg-muted truncate">
-              {apiKey.tenantId}
+              {apiKey.tenant_id}
             </p>
           </div>
         </div>
         <StatusPill
           status={isActive ? 'online' : 'offline'}
-          label={isActive ? 'Active' : 'Revoked'}
+          label={isActive ? 'Active' : 'Inactive'}
           size="sm"
           pulse={isActive}
         />
@@ -47,7 +47,7 @@ export function ApiKeyCard({ apiKey, onRotate, onRevoke, className }: ApiKeyCard
 
       <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2 py-1.5">
         <code className="font-mono text-[11px] text-fg-muted flex-1 truncate">
-          {revealed ? apiKey.key : maskKey(apiKey.key)}
+          {revealed ? (apiKey.key ?? '********') : maskKey(apiKey.key ?? '********')}
         </code>
         <Button
           size="icon-sm"
@@ -57,33 +57,34 @@ export function ApiKeyCard({ apiKey, onRotate, onRevoke, className }: ApiKeyCard
         >
           {revealed ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
         </Button>
-        <CopyButton value={apiKey.key} />
+        <CopyButton value={apiKey.key ?? ''} />
       </div>
 
       <div className="flex items-center justify-between text-[10px] text-fg-muted">
         <div className="flex items-center gap-3">
-          {apiKey.scopes?.length > 0 && (
-            <span className="flex items-center gap-1">
-              <Activity className="size-2.5" />
-              {apiKey.scopes.length} scopes
-            </span>
-          )}
-          {apiKey.lastUsedAt && (
+          {apiKey.created_at && (
             <span className="flex items-center gap-1">
               <Calendar className="size-2.5" />
-              {timeAgo(apiKey.lastUsedAt)}
+              {timeAgo(apiKey.created_at)}
+            </span>
+          )}
+          {apiKey.last_used_at && (
+            <span className="flex items-center gap-1">
+              <Activity className="size-2.5" />
+              {timeAgo(apiKey.last_used_at)}
             </span>
           )}
         </div>
         <div className="flex items-center gap-1">
-          {onRotate && isActive && (
+          {onRevoke && (
             <Button
               size="icon-sm"
               variant="ghost"
-              onClick={() => onRotate(apiKey.id)}
-              aria-label="Rotate key"
+              onClick={() => onRevoke(apiKey.id)}
+              aria-label="Delete key"
+              className="hover:text-danger"
             >
-              <RefreshCw className="size-3" />
+              <Trash2 className="size-3" />
             </Button>
           )}
         </div>

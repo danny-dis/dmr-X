@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "dev": "turbo dev",
-    "dev:gateway": "bun run --cwd apps/gateway dev",
+"dev:gateway": "bun --watch apps/gateway/src/main.ts",
     "dev:ui": "bun run --cwd apps/ui dev",
     "build": "turbo build && bun run --cwd apps/ui build",
     "build:ui": "bun run --cwd apps/ui build",

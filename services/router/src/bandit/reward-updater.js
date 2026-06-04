@@ -1,0 +1,71 @@
+import { getDb } from '@dmr-x/db';
+import { logger } from '@dmr-x/utils';
+import { calculateReward } from './thompson-sampler.js';
+export class RewardUpdater {
+    sampler;
+    constructor(sampler) {
+        this.sampler = sampler;
+    }
+    /**
+     * Update the bandit after a request completes
+     */
+    async updateFromRequest(record) {
+        const costPerToken = record.costPerInputToken + record.costPerOutputToken;
+        const qualityScore = record.qualityScore ?? 0.5;
+        const reward = calculateReward(qualityScore, record.latencyMs, costPerToken, record.success);
+        // Update the sampler
+        this.sampler.update({
+            providerId: record.providerId,
+            providerName: record.providerId,
+            modelId: record.modelId,
+            modality: 'llm', // Will be updated with actual modality
+            intelligenceLayer: 'executor',
+            capabilities: [],
+            costPerInputToken: record.costPerInputToken,
+            costPerOutputToken: record.costPerOutputToken,
+            costPerImage: 0,
+            avgLatencyMs: record.latencyMs,
+            qualityScore,
+            isHealthy: true,
+        }, reward);
+        logger.debug({ providerId: record.providerId, modelId: record.modelId, reward }, 'Updated bandit reward');
+    }
+    /**
+     * Periodically recompute rewards from request logs
+     */
+    async recomputeFromLogs(daysBack = 7) {
+        const db = getDb();
+        const rows = db.prepare(`SELECT
+        selected_provider as "providerId",
+        selected_model as "modelId",
+        AVG(latency_ms) as "avgLatency",
+        AVG(quality_score) as "avgQuality",
+        COUNT(*) as "totalRequests",
+        SUM(CASE WHEN error_code IS NULL THEN 1 ELSE 0 END) as "successfulRequests"
+      FROM request_logs
+      WHERE timestamp > datetime('now', '-' || ? || ' days')
+        AND selected_provider IS NOT NULL
+      GROUP BY selected_provider, selected_model`).all(daysBack);
+        for (const row of rows) {
+            const successRate = row.successfulRequests / row.totalRequests;
+            const reward = calculateReward(parseFloat(row.avgQuality) || 0.5, parseInt(row.avgLatency) || 1000, 0.001, // Default cost
+            successRate > 0.5);
+            this.sampler.update({
+                providerId: row.providerId,
+                providerName: row.providerId,
+                modelId: row.modelId,
+                modality: 'llm',
+                intelligenceLayer: 'executor',
+                capabilities: [],
+                costPerInputToken: 0.001,
+                costPerOutputToken: 0.002,
+                costPerImage: 0,
+                avgLatencyMs: parseInt(row.avgLatency) || 1000,
+                qualityScore: parseFloat(row.avgQuality) || 0.5,
+                isHealthy: true,
+            }, reward);
+        }
+        logger.info({ models: rows.length }, 'Recomputed bandit rewards from logs');
+    }
+}
+//# sourceMappingURL=reward-updater.js.map

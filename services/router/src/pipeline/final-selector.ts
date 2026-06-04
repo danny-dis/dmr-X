@@ -36,7 +36,9 @@ export function finalSelector(
     // Epsilon-greedy: with probability epsilon, explore top-3 instead of always picking top-1
     let selectedIndex = 0;
     if (Math.random() < epsilon && candidates.length > 1) {
-      selectedIndex = Math.floor(Math.random() * Math.min(3, candidates.length));
+      // Uniformly pick from top-3 (not biased toward index 0)
+      const explorePool = Math.min(3, candidates.length);
+      selectedIndex = Math.floor(Math.random() * explorePool);
     }
     selectedModel = candidates[selectedIndex];
   }

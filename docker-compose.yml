@@ -10,6 +10,9 @@ services:
       PORT: 3000
       LOG_LEVEL: info
       DMRX_LOCAL_MODE: "false"
+      DMRX_ADMIN_API_KEY: ${DMRX_ADMIN_API_KEY}
+      DMRX_ENCRYPTION_KEY: ${DMRX_ENCRYPTION_KEY}
+      DMRX_CORS_ORIGIN: ${DMRX_CORS_ORIGIN}
     volumes:
       - dmr-x-data:/home/dmrx/.dmr-x
     restart: unless-stopped

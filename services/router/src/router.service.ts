@@ -168,16 +168,21 @@ export class Router {
               return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
             }
 
-            const response = await executeWithFallback(plan, request, this.adapterExecutor, {
-              rateLimitService: this.config.rateLimitService,
-              quotaService: this.config.quotaService,
-              tenantId: (request as any).metadata?.tenant?.id,
-              requestId,
-              onSuccess: this.config.onProviderSuccess,
-              onFailure: this.config.onProviderFailure,
-            });
-
-            return { plan, response };
+            try {
+              const response = await executeWithFallback(plan, request, this.adapterExecutor, {
+                rateLimitService: this.config.rateLimitService,
+                quotaService: this.config.quotaService,
+                tenantId: (request as any).metadata?.tenant?.id,
+                requestId,
+                onSuccess: this.config.onProviderSuccess,
+                onFailure: this.config.onProviderFailure,
+              });
+              return { plan, response };
+            } catch (error) {
+              // Break sticky session on provider failure
+              await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
+              throw error;
+            }
           }
         }
       }
@@ -448,7 +453,7 @@ export class Router {
       return false;
     }
 
-    // Check for multiple task indicators
+    // Check for multiple task indicators (use word boundaries to avoid false positives)
     const taskIndicators = [
       'frontend', 'backend', 'database', 'api', 'ui', 'server',
       'test', 'deploy', 'docker', 'component', 'schema',
@@ -456,7 +461,10 @@ export class Router {
     ];
 
     const lowerPrompt = prompt.toLowerCase();
-    const matchCount = taskIndicators.filter((ind) => lowerPrompt.includes(ind)).length;
+    const matchCount = taskIndicators.filter((ind) => {
+      const regex = new RegExp(`\\b${ind}\\b`, 'i');
+      return regex.test(lowerPrompt);
+    }).length;
 
     // If 2+ task types mentioned, it's a composite task
     return matchCount >= 2;

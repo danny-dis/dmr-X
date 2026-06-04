@@ -42,15 +42,10 @@ export class AdapterRegistry {
       try {
         const status = await adapter.healthCheck();
         results.set(id, status.healthy);
-        if (status.healthy) {
-          this.circuitBreakers.get(id)?.recordSuccess();
-        } else {
-          this.circuitBreakers.get(id)?.recordFailure();
-        }
+        // Note: circuit breaker recording is handled by HealthChecker to avoid double-counting
       } catch (error) {
         logger.warn({ err: error, providerId: id }, 'Health check threw, marking unhealthy');
         results.set(id, false);
-        this.circuitBreakers.get(id)?.recordFailure();
       }
     }
     return results;

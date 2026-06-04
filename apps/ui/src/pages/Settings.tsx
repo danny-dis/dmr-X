@@ -1,5 +1,8 @@
 import * as React from 'react';
-import { Settings as SettingsIcon, Save, RotateCcw, Server, Shield, Brain, Cpu } from 'lucide-react';
+import {
+  Settings as SettingsIcon, Save, RotateCcw, Server, Shield, Brain, Cpu,
+  Bell, Webhook, Trophy, Clock,
+} from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Button } from '@/components/primitives/Button';
@@ -14,20 +17,56 @@ import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { toast } from '@/components/primitives/Toast';
 
+/* -------------------------------------------------------------------------- */
+/*  Form type + defaults                                                      */
+/* -------------------------------------------------------------------------- */
+
 interface SettingsForm {
+  // Routing
   routingStrategy: 'auto' | 'cost' | 'latency' | 'round-robin' | 'priority';
   costOptimization: boolean;
   latencyBudgetMs: number;
   autoFallback: boolean;
+  routingTimeout: number;
+  qualityWeight: number;
+  costWeight: number;
+  latencyWeight: number;
+  // Defaults
   defaultModel: string;
   maxContextWindow: number;
   defaultTemperature: number;
+  platformName: string;
+  timezone: string;
+  // Security
   requireAuth: boolean;
   corsOrigins: string;
   rateLimitRpm: number;
+  autoKeyRotation: boolean;
+  maxRequestSizeMb: number;
+  // Performance
   cacheTtlSec: number;
   streamingChunkSize: number;
   workerConcurrency: number;
+  requestTimeout: number;
+  // Alerts
+  slackWebhookUrl: string;
+  emailRecipients: string;
+  latencyAlertThreshold: number;
+  quotaAlertThreshold: number;
+  alertWebhook: string;
+  routeDecisionWebhook: string;
+  // Webhooks
+  webhookMaxRetries: number;
+  webhookRetryBackoff: number;
+  // Benchmarks
+  autoBenchmarkRuns: boolean;
+  benchmarkFrequency: string;
+  regressionThreshold: number;
+  // Data Retention
+  requestLogRetentionDays: number;
+  memoryRetentionDays: number;
+  benchmarkHistoryDays: number;
+  logRetention: number;
 }
 
 const DEFAULTS: SettingsForm = {
@@ -35,33 +74,88 @@ const DEFAULTS: SettingsForm = {
   costOptimization: true,
   latencyBudgetMs: 2000,
   autoFallback: true,
+  routingTimeout: 30000,
+  qualityWeight: 0.4,
+  costWeight: 0.25,
+  latencyWeight: 0.2,
   defaultModel: 'free',
   maxContextWindow: 128000,
   defaultTemperature: 0.7,
+  platformName: 'DMR-X',
+  timezone: 'UTC',
   requireAuth: true,
   corsOrigins: '*',
   rateLimitRpm: 600,
+  autoKeyRotation: false,
+  maxRequestSizeMb: 10,
   cacheTtlSec: 300,
   streamingChunkSize: 64,
   workerConcurrency: 8,
+  requestTimeout: 30000,
+  slackWebhookUrl: '',
+  emailRecipients: '',
+  latencyAlertThreshold: 5000,
+  quotaAlertThreshold: 80,
+  alertWebhook: '',
+  routeDecisionWebhook: '',
+  webhookMaxRetries: 3,
+  webhookRetryBackoff: 1000,
+  autoBenchmarkRuns: false,
+  benchmarkFrequency: 'daily',
+  regressionThreshold: 10,
+  requestLogRetentionDays: 30,
+  memoryRetentionDays: 90,
+  benchmarkHistoryDays: 30,
+  logRetention: 30,
 };
+
+/* -------------------------------------------------------------------------- */
+/*  Server ↔ form mapping                                                    */
+/* -------------------------------------------------------------------------- */
 
 function fromServer(s: Record<string, unknown> | null): SettingsForm {
   if (!s) return { ...DEFAULTS };
+  const num = (k: string, d: number) => typeof s[k] === 'number' ? s[k] as number : d;
+  const str = (k: string, d: string) => typeof s[k] === 'string' ? s[k] as string : d;
+  const bool = (k: string, d: boolean) => s[k] != null ? Boolean(s[k]) : d;
   return {
     routingStrategy: (s.routingStrategy as SettingsForm['routingStrategy']) ?? DEFAULTS.routingStrategy,
-    costOptimization: s.costOptimization != null ? Boolean(s.costOptimization) : DEFAULTS.costOptimization,
-    latencyBudgetMs: typeof s.latencyBudgetMs === 'number' ? s.latencyBudgetMs : DEFAULTS.latencyBudgetMs,
-    autoFallback: s.autoFallback != null ? Boolean(s.autoFallback) : DEFAULTS.autoFallback,
-    defaultModel: typeof s.defaultModel === 'string' ? s.defaultModel : DEFAULTS.defaultModel,
-    maxContextWindow: typeof s.maxContextWindow === 'number' ? s.maxContextWindow : DEFAULTS.maxContextWindow,
-    defaultTemperature: typeof s.defaultTemperature === 'number' ? s.defaultTemperature : DEFAULTS.defaultTemperature,
-    requireAuth: s.requireAuth != null ? Boolean(s.requireAuth) : DEFAULTS.requireAuth,
-    corsOrigins: typeof s.corsOrigins === 'string' ? s.corsOrigins : DEFAULTS.corsOrigins,
-    rateLimitRpm: typeof s.rateLimitRpm === 'number' ? s.rateLimitRpm : DEFAULTS.rateLimitRpm,
-    cacheTtlSec: typeof s.cacheTtlSec === 'number' ? s.cacheTtlSec : DEFAULTS.cacheTtlSec,
-    streamingChunkSize: typeof s.streamingChunkSize === 'number' ? s.streamingChunkSize : DEFAULTS.streamingChunkSize,
-    workerConcurrency: typeof s.workerConcurrency === 'number' ? s.workerConcurrency : DEFAULTS.workerConcurrency,
+    costOptimization: bool('costOptimization', DEFAULTS.costOptimization),
+    latencyBudgetMs: num('latencyBudgetMs', DEFAULTS.latencyBudgetMs),
+    autoFallback: bool('autoFallback', DEFAULTS.autoFallback),
+    routingTimeout: num('routingTimeout', DEFAULTS.routingTimeout),
+    qualityWeight: num('qualityWeight', DEFAULTS.qualityWeight),
+    costWeight: num('costWeight', DEFAULTS.costWeight),
+    latencyWeight: num('latencyWeight', DEFAULTS.latencyWeight),
+    defaultModel: str('defaultModel', DEFAULTS.defaultModel),
+    maxContextWindow: num('maxContextWindow', DEFAULTS.maxContextWindow),
+    defaultTemperature: num('defaultTemperature', DEFAULTS.defaultTemperature),
+    platformName: str('platformName', DEFAULTS.platformName),
+    timezone: str('timezone', DEFAULTS.timezone),
+    requireAuth: bool('requireAuth', DEFAULTS.requireAuth),
+    corsOrigins: str('corsOrigins', DEFAULTS.corsOrigins),
+    rateLimitRpm: num('rateLimitRpm', DEFAULTS.rateLimitRpm),
+    autoKeyRotation: bool('autoKeyRotation', DEFAULTS.autoKeyRotation),
+    maxRequestSizeMb: num('maxRequestSizeMb', DEFAULTS.maxRequestSizeMb),
+    cacheTtlSec: num('cacheTtlSec', DEFAULTS.cacheTtlSec),
+    streamingChunkSize: num('streamingChunkSize', DEFAULTS.streamingChunkSize),
+    workerConcurrency: num('workerConcurrency', DEFAULTS.workerConcurrency),
+    requestTimeout: num('requestTimeout', DEFAULTS.requestTimeout),
+    slackWebhookUrl: str('slackWebhookUrl', DEFAULTS.slackWebhookUrl),
+    emailRecipients: str('emailRecipients', DEFAULTS.emailRecipients),
+    latencyAlertThreshold: num('latencyAlertThreshold', DEFAULTS.latencyAlertThreshold),
+    quotaAlertThreshold: num('quotaAlertThreshold', DEFAULTS.quotaAlertThreshold),
+    alertWebhook: str('alertWebhook', DEFAULTS.alertWebhook),
+    routeDecisionWebhook: str('routeDecisionWebhook', DEFAULTS.routeDecisionWebhook),
+    webhookMaxRetries: num('webhookMaxRetries', DEFAULTS.webhookMaxRetries),
+    webhookRetryBackoff: num('webhookRetryBackoff', DEFAULTS.webhookRetryBackoff),
+    autoBenchmarkRuns: bool('autoBenchmarkRuns', DEFAULTS.autoBenchmarkRuns),
+    benchmarkFrequency: str('benchmarkFrequency', DEFAULTS.benchmarkFrequency),
+    regressionThreshold: num('regressionThreshold', DEFAULTS.regressionThreshold),
+    requestLogRetentionDays: num('requestLogRetentionDays', DEFAULTS.requestLogRetentionDays),
+    memoryRetentionDays: num('memoryRetentionDays', DEFAULTS.memoryRetentionDays),
+    benchmarkHistoryDays: num('benchmarkHistoryDays', DEFAULTS.benchmarkHistoryDays),
+    logRetention: num('logRetention', DEFAULTS.logRetention),
   };
 }
 
@@ -71,17 +165,45 @@ function toServer(f: SettingsForm): Record<string, unknown> {
     costOptimization: f.costOptimization,
     latencyBudgetMs: f.latencyBudgetMs,
     autoFallback: f.autoFallback,
+    routingTimeout: f.routingTimeout,
+    qualityWeight: f.qualityWeight,
+    costWeight: f.costWeight,
+    latencyWeight: f.latencyWeight,
     defaultModel: f.defaultModel,
     maxContextWindow: f.maxContextWindow,
     defaultTemperature: f.defaultTemperature,
+    platformName: f.platformName,
+    timezone: f.timezone,
     requireAuth: f.requireAuth,
     corsOrigins: f.corsOrigins,
     rateLimitRpm: f.rateLimitRpm,
+    autoKeyRotation: f.autoKeyRotation,
+    maxRequestSizeMb: f.maxRequestSizeMb,
     cacheTtlSec: f.cacheTtlSec,
     streamingChunkSize: f.streamingChunkSize,
     workerConcurrency: f.workerConcurrency,
+    requestTimeout: f.requestTimeout,
+    slackWebhookUrl: f.slackWebhookUrl,
+    emailRecipients: f.emailRecipients,
+    latencyAlertThreshold: f.latencyAlertThreshold,
+    quotaAlertThreshold: f.quotaAlertThreshold,
+    alertWebhook: f.alertWebhook,
+    routeDecisionWebhook: f.routeDecisionWebhook,
+    webhookMaxRetries: f.webhookMaxRetries,
+    webhookRetryBackoff: f.webhookRetryBackoff,
+    autoBenchmarkRuns: f.autoBenchmarkRuns,
+    benchmarkFrequency: f.benchmarkFrequency,
+    regressionThreshold: f.regressionThreshold,
+    requestLogRetentionDays: f.requestLogRetentionDays,
+    memoryRetentionDays: f.memoryRetentionDays,
+    benchmarkHistoryDays: f.benchmarkHistoryDays,
+    logRetention: f.logRetention,
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Component                                                                 */
+/* -------------------------------------------------------------------------- */
 
 export function SettingsPage() {
   const settings = useApiData<Record<string, unknown>>(
@@ -125,7 +247,7 @@ export function SettingsPage() {
     <PageContainer>
       <PageHeader
         title="Settings"
-        description="Gateway configuration — routing, defaults, security, performance"
+        description="Gateway configuration — routing, defaults, security, performance, alerts, webhooks"
         icon={<SettingsIcon className="size-5" />}
         actions={
           <>
@@ -165,9 +287,22 @@ export function SettingsPage() {
                 <TabsTrigger value="performance" variant="pills" className="justify-start">
                   <Server className="size-3" /> Performance
                 </TabsTrigger>
+                <TabsTrigger value="alerts" variant="pills" className="justify-start">
+                  <Bell className="size-3" /> Alerts
+                </TabsTrigger>
+                <TabsTrigger value="webhooks" variant="pills" className="justify-start">
+                  <Webhook className="size-3" /> Webhooks
+                </TabsTrigger>
+                <TabsTrigger value="benchmarks" variant="pills" className="justify-start">
+                  <Trophy className="size-3" /> Benchmarks
+                </TabsTrigger>
+                <TabsTrigger value="retention" variant="pills" className="justify-start">
+                  <Clock className="size-3" /> Data Retention
+                </TabsTrigger>
               </TabsList>
 
               <div>
+                {/* ==================== ROUTING ==================== */}
                 <TabsContent value="routing">
                   <Card padding="md">
                     <CardHeader className="px-0 pt-0">
@@ -214,10 +349,55 @@ export function SettingsPage() {
                           onCheckedChange={(v) => update('autoFallback', v)}
                         />
                       </SettingRow>
+                      <SettingRow label="Routing timeout" description="Max time to wait for router decision (ms)">
+                        <Input
+                          type="number"
+                          value={form.routingTimeout}
+                          onChange={(e) => update('routingTimeout', Number(e.target.value) || DEFAULTS.routingTimeout)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Quality weight" description="Weight for quality in routing score (0–1)">
+                        <div className="w-48 space-y-2">
+                          <Slider
+                            value={[form.qualityWeight]}
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            onValueChange={(v) => update('qualityWeight', v[0] ?? DEFAULTS.qualityWeight)}
+                          />
+                          <p className="text-[10px] text-fg-muted text-right">{form.qualityWeight.toFixed(2)}</p>
+                        </div>
+                      </SettingRow>
+                      <SettingRow label="Cost weight" description="Weight for cost in routing score (0–1)">
+                        <div className="w-48 space-y-2">
+                          <Slider
+                            value={[form.costWeight]}
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            onValueChange={(v) => update('costWeight', v[0] ?? DEFAULTS.costWeight)}
+                          />
+                          <p className="text-[10px] text-fg-muted text-right">{form.costWeight.toFixed(2)}</p>
+                        </div>
+                      </SettingRow>
+                      <SettingRow label="Latency weight" description="Weight for latency in routing score (0–1)">
+                        <div className="w-48 space-y-2">
+                          <Slider
+                            value={[form.latencyWeight]}
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            onValueChange={(v) => update('latencyWeight', v[0] ?? DEFAULTS.latencyWeight)}
+                          />
+                          <p className="text-[10px] text-fg-muted text-right">{form.latencyWeight.toFixed(2)}</p>
+                        </div>
+                      </SettingRow>
                     </CardContent>
                   </Card>
                 </TabsContent>
 
+                {/* ==================== DEFAULTS ==================== */}
                 <TabsContent value="defaults">
                   <Card padding="md">
                     <CardHeader className="px-0 pt-0">
@@ -248,10 +428,36 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
+                      <SettingRow label="Platform name" description="Display name shown in the UI">
+                        <Input
+                          value={form.platformName}
+                          onChange={(e) => update('platformName', e.target.value)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Timezone" description="System timezone for timestamps">
+                        <Select value={form.timezone} onValueChange={(v) => update('timezone', v)}>
+                          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="UTC">UTC</SelectItem>
+                            <SelectItem value="America/New_York">America/New_York</SelectItem>
+                            <SelectItem value="America/Chicago">America/Chicago</SelectItem>
+                            <SelectItem value="America/Denver">America/Denver</SelectItem>
+                            <SelectItem value="America/Los_Angeles">America/Los_Angeles</SelectItem>
+                            <SelectItem value="Europe/London">Europe/London</SelectItem>
+                            <SelectItem value="Europe/Berlin">Europe/Berlin</SelectItem>
+                            <SelectItem value="Asia/Tokyo">Asia/Tokyo</SelectItem>
+                            <SelectItem value="Asia/Shanghai">Asia/Shanghai</SelectItem>
+                            <SelectItem value="Asia/Kolkata">Asia/Kolkata</SelectItem>
+                            <SelectItem value="Australia/Sydney">Australia/Sydney</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </SettingRow>
                     </CardContent>
                   </Card>
                 </TabsContent>
 
+                {/* ==================== SECURITY ==================== */}
                 <TabsContent value="security">
                   <Card padding="md">
                     <CardHeader className="px-0 pt-0">
@@ -279,10 +485,25 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
+                      <SettingRow label="Auto key rotation" description="Automatically rotate API keys on schedule">
+                        <Switch
+                          checked={form.autoKeyRotation}
+                          onCheckedChange={(v) => update('autoKeyRotation', v)}
+                        />
+                      </SettingRow>
+                      <SettingRow label="Max request size (MB)" description="Maximum allowed request body size">
+                        <Input
+                          type="number"
+                          value={form.maxRequestSizeMb}
+                          onChange={(e) => update('maxRequestSizeMb', Number(e.target.value) || DEFAULTS.maxRequestSizeMb)}
+                          className="w-48"
+                        />
+                      </SettingRow>
                     </CardContent>
                   </Card>
                 </TabsContent>
 
+                {/* ==================== PERFORMANCE ==================== */}
                 <TabsContent value="performance">
                   <Card padding="md">
                     <CardHeader className="px-0 pt-0">
@@ -297,7 +518,7 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Streaming chunk size">
+                      <SettingRow label="Streaming chunk size" description="Tokens per streaming chunk">
                         <Input
                           type="number"
                           value={form.streamingChunkSize}
@@ -305,11 +526,215 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Worker concurrency">
+                      <SettingRow label="Worker concurrency" description="Max parallel worker threads">
                         <Input
                           type="number"
                           value={form.workerConcurrency}
                           onChange={(e) => update('workerConcurrency', Number(e.target.value) || DEFAULTS.workerConcurrency)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Request timeout (ms)" description="Per-request timeout to providers">
+                        <Input
+                          type="number"
+                          value={form.requestTimeout}
+                          onChange={(e) => update('requestTimeout', Number(e.target.value) || DEFAULTS.requestTimeout)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                {/* ==================== ALERTS ==================== */}
+                <TabsContent value="alerts">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Alert configuration</CardTitle>
+                      <p className="text-[10px] text-fg-muted mt-0.5">Configure alert thresholds and notification channels</p>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Slack webhook URL" description="Post alerts to a Slack channel">
+                        <Input
+                          value={form.slackWebhookUrl}
+                          onChange={(e) => update('slackWebhookUrl', e.target.value)}
+                          placeholder="https://hooks.slack.com/services/..."
+                          className="w-72"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Email recipients" description="Comma-separated email addresses">
+                        <Input
+                          value={form.emailRecipients}
+                          onChange={(e) => update('emailRecipients', e.target.value)}
+                          placeholder="ops@example.com, team@example.com"
+                          className="w-72"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Latency alert threshold (ms)" description="Alert when avg latency exceeds this">
+                        <div className="w-48 space-y-2">
+                          <Slider
+                            value={[form.latencyAlertThreshold]}
+                            min={500}
+                            max={30000}
+                            step={500}
+                            onValueChange={(v) => update('latencyAlertThreshold', v[0] ?? DEFAULTS.latencyAlertThreshold)}
+                          />
+                          <p className="text-[10px] text-fg-muted text-right">{form.latencyAlertThreshold}ms</p>
+                        </div>
+                      </SettingRow>
+                      <SettingRow label="Quota alert threshold (%)" description="Alert when tenant usage exceeds this percentage">
+                        <div className="w-48 space-y-2">
+                          <Slider
+                            value={[form.quotaAlertThreshold]}
+                            min={50}
+                            max={100}
+                            step={5}
+                            onValueChange={(v) => update('quotaAlertThreshold', v[0] ?? DEFAULTS.quotaAlertThreshold)}
+                          />
+                          <p className="text-[10px] text-fg-muted text-right">{form.quotaAlertThreshold}%</p>
+                        </div>
+                      </SettingRow>
+                      <SettingRow label="Alert webhook URL" description="Send alerts to a generic webhook endpoint">
+                        <Input
+                          value={form.alertWebhook}
+                          onChange={(e) => update('alertWebhook', e.target.value)}
+                          placeholder="https://example.com/webhooks/alerts"
+                          className="w-72"
+                        />
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                {/* ==================== WEBHOOKS ==================== */}
+                <TabsContent value="webhooks">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Webhook configuration</CardTitle>
+                      <p className="text-[10px] text-fg-muted mt-0.5">Configure webhook endpoints and retry behavior</p>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Route decision webhook" description="POST routing decisions to this URL">
+                        <Input
+                          value={form.routeDecisionWebhook}
+                          onChange={(e) => update('routeDecisionWebhook', e.target.value)}
+                          placeholder="https://example.com/webhooks/routing"
+                          className="w-72"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Alert webhook URL" description="POST alerts to this URL">
+                        <Input
+                          value={form.alertWebhook}
+                          onChange={(e) => update('alertWebhook', e.target.value)}
+                          placeholder="https://example.com/webhooks/alerts"
+                          className="w-72"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Max retries" description="Maximum webhook delivery retry attempts">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={10}
+                          value={form.webhookMaxRetries}
+                          onChange={(e) => update('webhookMaxRetries', Number(e.target.value) || DEFAULTS.webhookMaxRetries)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Retry backoff (ms)" description="Exponential backoff between retries">
+                        <Input
+                          type="number"
+                          min={100}
+                          value={form.webhookRetryBackoff}
+                          onChange={(e) => update('webhookRetryBackoff', Number(e.target.value) || DEFAULTS.webhookRetryBackoff)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                {/* ==================== BENCHMARKS ==================== */}
+                <TabsContent value="benchmarks">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Benchmark configuration</CardTitle>
+                      <p className="text-[10px] text-fg-muted mt-0.5">Automated model performance comparisons</p>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Auto-run benchmarks" description="Schedule periodic benchmark runs">
+                        <Switch
+                          checked={form.autoBenchmarkRuns}
+                          onCheckedChange={(v) => update('autoBenchmarkRuns', v)}
+                        />
+                      </SettingRow>
+                      <SettingRow label="Benchmark frequency" description="How often to run benchmarks">
+                        <Select value={form.benchmarkFrequency} onValueChange={(v) => update('benchmarkFrequency', v)}>
+                          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="hourly">Hourly</SelectItem>
+                            <SelectItem value="daily">Daily</SelectItem>
+                            <SelectItem value="weekly">Weekly</SelectItem>
+                            <SelectItem value="monthly">Monthly</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </SettingRow>
+                      <SettingRow label="Regression threshold (%)" description="Alert when score drops more than this">
+                        <div className="w-48 space-y-2">
+                          <Slider
+                            value={[form.regressionThreshold]}
+                            min={1}
+                            max={50}
+                            step={1}
+                            onValueChange={(v) => update('regressionThreshold', v[0] ?? DEFAULTS.regressionThreshold)}
+                          />
+                          <p className="text-[10px] text-fg-muted text-right">{form.regressionThreshold}%</p>
+                        </div>
+                      </SettingRow>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                {/* ==================== DATA RETENTION ==================== */}
+                <TabsContent value="retention">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Data retention</CardTitle>
+                      <p className="text-[10px] text-fg-muted mt-0.5">How long to keep historical data before automatic cleanup</p>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow label="Request log retention (days)" description="Keep request logs for this many days">
+                        <Input
+                          type="number"
+                          min={1}
+                          value={form.requestLogRetentionDays}
+                          onChange={(e) => update('requestLogRetentionDays', Number(e.target.value) || DEFAULTS.requestLogRetentionDays)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Memory retention (days)" description="Keep memory items for this many days">
+                        <Input
+                          type="number"
+                          min={1}
+                          value={form.memoryRetentionDays}
+                          onChange={(e) => update('memoryRetentionDays', Number(e.target.value) || DEFAULTS.memoryRetentionDays)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="Benchmark history (days)" description="Keep benchmark results for this many days">
+                        <Input
+                          type="number"
+                          min={1}
+                          value={form.benchmarkHistoryDays}
+                          onChange={(e) => update('benchmarkHistoryDays', Number(e.target.value) || DEFAULTS.benchmarkHistoryDays)}
+                          className="w-48"
+                        />
+                      </SettingRow>
+                      <SettingRow label="General log retention (days)" description="Keep general logs for this many days">
+                        <Input
+                          type="number"
+                          min={1}
+                          value={form.logRetention}
+                          onChange={(e) => update('logRetention', Number(e.target.value) || DEFAULTS.logRetention)}
                           className="w-48"
                         />
                       </SettingRow>
@@ -324,6 +749,10 @@ export function SettingsPage() {
     </PageContainer>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Helper component                                                          */
+/* -------------------------------------------------------------------------- */
 
 function SettingRow({
   label,

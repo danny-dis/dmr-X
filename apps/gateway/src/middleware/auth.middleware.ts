@@ -24,7 +24,7 @@ const PUBLIC_FILE_EXTENSIONS = new Set([
 
 // WARNING: Local mode disables all authentication. Never enable in production.
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
-logger.info({ localMode: LOCAL_MODE, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY }, 'Auth middleware status');
+logger.info({ localMode: LOCAL_MODE, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY, envValue: process.env.DMRX_LOCAL_MODE }, 'Auth middleware status');
 
 function extractApiKey(request: FastifyRequest): string | undefined {
   const authHeader = request.headers.authorization;
@@ -79,7 +79,13 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       }
       const keyBuf = Buffer.from(apiKey);
       const adminBuf = Buffer.from(adminApiKey);
-      if (keyBuf.length !== adminBuf.length || !timingSafeEqual(keyBuf, adminBuf)) {
+      // Pad both buffers to the same length to prevent timing leakage of key length
+      const maxLen = Math.max(keyBuf.length, adminBuf.length);
+      const paddedKey = Buffer.alloc(maxLen, 0);
+      const paddedAdmin = Buffer.alloc(maxLen, 0);
+      keyBuf.copy(paddedKey);
+      adminBuf.copy(paddedAdmin);
+      if (!timingSafeEqual(paddedKey, paddedAdmin)) {
         throw new AuthenticationError('Invalid admin API key');
       }
       return;
@@ -124,10 +130,16 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       apiKeyId: row.id,
     };
 
-    // Update last_used_at
-    db.prepare(
-      "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
-    ).run(row.id);
+    // Debounced last_used_at update: only update if >5 minutes since last update
+    // to avoid SQLite write contention on the hot path
+    const now = Date.now();
+    const lastUsed = (request as any).tenant?.lastUsedAt;
+    if (!lastUsed || now - lastUsed > 5 * 60 * 1000) {
+      db.prepare(
+        "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
+      ).run(row.id);
+      (request as any).tenant.lastUsedAt = now;
+    }
   });
 }
 

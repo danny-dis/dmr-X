@@ -7,7 +7,6 @@ node_modules
 .env
 .env.*
 .turbo
-proto ui
 .claude
 .openclaude
 *.md

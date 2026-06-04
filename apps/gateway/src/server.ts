@@ -13,7 +13,7 @@ import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, Replic
 import type { UnifiedRequest } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
-import { quotaService, keyRotationService, rateLimitService } from '@dmr-x/quota';
+import { quotaService, rateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import { chatRoutes } from './routes/chat.routes.js';
 import { modelsRoutes } from './routes/models.routes.js';
@@ -274,6 +274,8 @@ export async function createServer() {
   server.decorate('router', router);
   server.decorate('adapterRegistry', adapterRegistry);
   server.decorate('registerToolHandler', registerToolHandler);
+  server.decorate('rateLimitService', rateLimitService);
+  server.decorate('quotaService', quotaService);
 
   // Helper to get adapter by provider ID (UUID or name)
   server.decorate('getAdapter', (providerId: string) => {
@@ -316,7 +318,8 @@ export async function createServer() {
   // Start health checker — delay initial run to allow all adapters (including
   // those loaded from DB and auto-registered) to fully initialise.
   const healthChecker = new HealthChecker(adapterRegistry, 30000);
-  setTimeout(() => healthChecker.start(), 5000);
+  const healthCheckStartTimer = setTimeout(() => healthChecker.start(), 5000);
+  healthCheckStartTimer.unref();
 
   // Background OAuth token refresh — check every 5 minutes
   const OAUTH_REFRESH_INTERVAL = 5 * 60 * 1000;
@@ -435,7 +438,7 @@ export async function createServer() {
     await server.register(fastifyStatic, {
       root: uiDir,
       prefix: '/',
-      wildcard: false,
+      wildcard: true,
       decorateReply: false,
     });
     logger.info({ dir: uiDir }, 'Serving UI from static directory');
@@ -456,7 +459,7 @@ export async function createServer() {
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     reply.header(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: *; connect-src 'self'"
     );
     if (process.env.NODE_ENV === 'production') {
       reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
@@ -551,6 +554,7 @@ export async function createServer() {
 
   // Cleanup on close
   server.addHook('onClose', async () => {
+    clearTimeout(healthCheckStartTimer);
     clearInterval(oauthRefreshTimer);
     healthChecker.stop();
     await adapterRegistry.disposeAll();
