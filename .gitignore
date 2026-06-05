@@ -1,42 +1,81 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
 node_modules/
-.turbo/
-.claude/worktrees/
-.openclaude/
-*.exe
-.env
-.env.*
-!.env.example
-*.log
-.DS_Store
-Thumbs.db
-__pycache__/
-*.pyc
-*.egg-info/
+**/node_modules/
+
+# ─── Build artifacts ────────────────────────────────────────────────────────
 dist/
+**/dist/
 build/
 coverage/
 *.tsbuildinfo
+**/tsconfig.tsbuildinfo
+
+# ─── Compiled TypeScript output (alongside source .ts files) ───────────────
+# Note: legitimate JS-only configs (postcss/tailwind) are whitelisted below.
+*.js
 *.js.map
-*.d.ts.map
 *.d.ts
+*.d.ts.map
+
+# ─── Legitimate JS config files (not compiled from .ts) ────────────────────
+!apps/ui/postcss.config.js
+!apps/ui/tailwind.config.js
+
+# ─── Turbo cache ────────────────────────────────────────────────────────────
+.turbo/
+**/.turbo/
+
+# ─── Per-package UI build output ───────────────────────────────────────────
+apps/gateway/public/
+
+# ─── Environment / secrets ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Logs ───────────────────────────────────────────────────────────────────
+*.log
+*.err.log
+
+# ─── Local data / cache ─────────────────────────────────────────────────────
 *.db
 *.db-wal
 *.db-shm
-apps/gateway/public/
-cla/*.md
-!.claude/README.md
+
+# ─── Release artifacts (reproducible from scripts/package-release.sh) ──────
 release/
+
+# ─── Signed CLAs are not committed as plain text; only the template is ─────
+cla/*.md
+
+# ─── OS / IDE metadata ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.exe
 *.png
+
+# ─── Ad-hoc test fixtures ──────────────────────────────────────────────────
 test-request*.json
 
-# Dev / debug artifacts
+# ─── Dev / debug artifacts (these are personal local scripts) ─────────────
 .dbg/
 scratch/
 .tmp-*
+*.bak
+*.minimal
 apply-schema-fix.ts
 check-db-state.ts
 sync-pollinations.ts
 debug-*.md
-*.bak
-*.minimal
-*.err.log
+
+# ─── Python (not used in this repo, but defensive) ─────────────────────────
+__pycache__/
+*.pyc
+*.egg-info/
+
+# ─── AI-tool / IDE caches (regenerated on demand) ──────────────────────────
+.claude/worktrees/
+.kilo/
+.opencode/
+.openclaude/
+.gitnexus/

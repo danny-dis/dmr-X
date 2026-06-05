@@ -1,14 +1,42 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
 node_modules
 **/node_modules
+
+# ─── Build artifacts ────────────────────────────────────────────────────────
 **/dist
 **/.turbo
+**/tsconfig.tsbuildinfo
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+
+# ─── Source control and IDE state ──────────────────────────────────────────
 .git
 .gitnexus
+.claude
+.kilo
+.opencode
+.openclaude
+
+# ─── Environment files (real secrets) ──────────────────────────────────────
 .env
 .env.*
-.turbo
-.claude
-.openclaude
+
+# ─── Local data, logs, and fixtures ────────────────────────────────────────
+*.log
+*.db
+*.db-wal
+*.db-shm
+test-request*.json
+
+# ─── Ad-hoc dev artifacts ──────────────────────────────────────────────────
+*.bak
+*.minimal
+scratch/
+.tmp-*
+
+# ─── Docs (not needed in container; root README is fine) ──────────────────
 *.md
 agents checklist.md
 p0-integration-checklist.md
@@ -16,3 +44,6 @@ ARCHITECTURE.md
 AGENTS.md
 CLAUDE.md
 README.md
+
+# ─── Release artifacts (rebuilt inside the container) ──────────────────────
+release/
