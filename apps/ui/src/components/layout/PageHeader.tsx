@@ -2,7 +2,7 @@ import * as React from 'react';
 import { ChevronRight } from 'lucide-react';
 import { Link, useLocation } from 'react-router';
 import { cn } from '@/lib/utils';
-import { findGroup, findNavItem } from '@/constants/nav';
+import { findGroup } from '@/constants/nav';
 
 export interface PageHeaderProps {
   title: string;
