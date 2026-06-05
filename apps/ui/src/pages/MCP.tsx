@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Cpu, Server, Tool, Shield, Play, RotateCcw, Network, Globe, Lock } from 'lucide-react';
+import { Cpu, Server, Hammer as Tool, Shield, Play, RotateCcw, Network, Globe, Lock } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Button } from '@/components/primitives/Button';
