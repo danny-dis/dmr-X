@@ -291,5 +291,3 @@ export const SidebarIcons = {
   AlertsIcon,
   SettingsIcon,
 };
-
-export type SidebarIconName = keyof typeof SidebarIcons;

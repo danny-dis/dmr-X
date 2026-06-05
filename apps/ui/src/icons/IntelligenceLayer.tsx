@@ -59,15 +59,13 @@ export function TempWorkerIcon(props: IconProps) {
   );
 }
 
-export const IntelligenceLayerIcons = {
+const IntelligenceLayerIcons = {
   brain: BrainIcon,
   thinker: ThinkerIcon,
   executor: ExecutorIcon,
   worker: WorkerIcon,
   temp_worker: TempWorkerIcon,
 };
-
-export type IntelligenceLayerName = keyof typeof IntelligenceLayerIcons;
 
 export function IntelligenceBadge({ layer, size = 18, className = '' }: { layer: keyof typeof IntelligenceLayerIcons; size?: number; className?: string }) {
   const Icon = IntelligenceLayerIcons[layer] || WorkerIcon;

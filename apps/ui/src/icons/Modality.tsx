@@ -83,7 +83,7 @@ export function RerankingIcon(props: IconProps) {
   );
 }
 
-export const ModalityIcons = {
+const ModalityIcons = {
   llm: TextIcon,
   text: TextIcon,
   code: CodeIcon,
@@ -102,8 +102,6 @@ export const ModalityIcons = {
   image_upscaling: ImageIcon,
   image_inpainting: ImageIcon,
 } as const;
-
-export type ModalityName = keyof typeof ModalityIcons;
 
 function ShieldCheckIcon(props: IconProps) {
   return (
