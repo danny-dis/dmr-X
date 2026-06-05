@@ -75,20 +75,3 @@ export function useApiData<T>(
     setData,
   };
 }
-
-export function usePolling<T>(
-  fetcher: () => Promise<T>,
-  intervalMs: number,
-  deps: ReadonlyArray<unknown> = [],
-): UseApiDataResult<T> {
-  const result = useApiData(fetcher, deps);
-  useEffect(() => {
-    if (intervalMs <= 0) return;
-    const t = setInterval(() => {
-      void result.refetch();
-    }, intervalMs);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intervalMs, ...deps]);
-  return result;
-}
