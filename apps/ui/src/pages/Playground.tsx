@@ -19,9 +19,9 @@ import { Admin } from '@/lib/admin';
 import { formatDuration, formatTokens } from '@/lib/formatters';
 import type { ApiModel } from '@/types/api';
 import { toast } from '@/components/primitives/Toast';
-import { AgenticChatTab } from '@/components/domain/AgenticChatTab';
-import { AnthropicChatTab } from '@/components/domain/AnthropicChatTab';
-import { GeminiChatTab } from '@/components/domain/GeminiChatTab';
+import { AgenticChatTab } from '@/components/domain/playground/AgenticChatTab';
+import { AnthropicChatTab } from '@/components/domain/playground/AnthropicChatTab';
+import { GeminiChatTab } from '@/components/domain/playground/GeminiChatTab';
 
 /* -------------------------------------------------------------------------- */
 /*  Samples                                                                   */
