@@ -1,7 +1,0 @@
-# This file is deprecated. Use the root docker-compose.yml instead.
-# Kept for reference.
-#
-# To run DMR-X with Docker:
-#   docker compose up -d
-#
-# Data is persisted in the dmr-x-data volume at ~/.dmr-x/data.db
