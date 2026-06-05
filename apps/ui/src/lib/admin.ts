@@ -13,8 +13,10 @@ import type {
   ApiBenchmarkResult,
   ApiPolicyRule,
   ApiMemoryItem,
+  ApiMemoryCreate,
   ApiSandboxJob,
   ApiWorker,
+  ApiWorkerRegister,
   ApiFederationNode,
   ApiDashboardStats,
   ApiCatalogEntry,
@@ -149,6 +151,7 @@ export const Admin = {
   searchMemory: (body: ApiMemorySearch) => apiPost<ApiMemoryItem[]>('/admin/memory/search', body),
   listMemory: (query?: { tenantId?: string; limit?: number }) =>
     apiGet<ApiMemoryItem[]>('/admin/memory', query),
+  createMemory: (body: ApiMemoryCreate) => apiPost<ApiMemoryItem>('/admin/memory', body),
   deleteMemory: (id: string) => apiDelete<{ ok: true }>(`/admin/memory/${id}`),
 
   // Sandbox
@@ -158,6 +161,7 @@ export const Admin = {
 
   // Workers
   listWorkers: () => apiGet<ApiWorker[]>('/admin/workers'),
+  registerWorker: (body: ApiWorkerRegister) => apiPost<ApiWorker>('/admin/workers', body),
   drainWorker: (id: string) => apiPost<ApiWorker>(`/admin/workers/${id}/drain`),
   resumeWorker: (id: string) => apiPost<ApiWorker>(`/admin/workers/${id}/resume`),
 

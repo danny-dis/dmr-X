@@ -11,6 +11,8 @@ import { ReplicateAdapter, StabilityAdapter } from '@dmr-x/adapters';
 import { logger } from '@dmr-x/utils';
 import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter } from '@dmr-x/adapters';
+import { MCPClient } from '@dmr-x/mcp-client';
+import { z } from 'zod';
 import type {
   UnifiedRequest,
   UnifiedResponse,
@@ -55,6 +57,13 @@ export interface DMRXMcpServerConfig {
   adapterConfigs?: Record<string, { baseUrl: string; apiKey?: string }>;
   /** Enable task decomposition for complex prompts */
   enableDecomposition?: boolean;
+  /**
+   * Already-connected MCP client. If provided, the server will re-expose
+   * every tool from every connected external MCP server in the same MCP
+   * tool list as dmrx_*, namespaced as `<serverId>__<toolName>`.
+   * Use MCPClient.connect({ servers }) before passing it in.
+   */
+  externalMcpClient?: MCPClient;
 }
 
 interface ServerState {
@@ -66,6 +75,10 @@ interface ServerState {
   lastError: string | null;
   /** SDK tool definitions for programmatic access and discovery */
   sdkTools: Array<{ name: string; description: string; params: unknown }>;
+  /** External MCP client (aggregator mode), if provided */
+  externalMcpClient?: MCPClient;
+  /** Number of external tools registered from the aggregator */
+  externalToolCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +347,70 @@ function formatRoutingInfo(response: UnifiedResponse): string {
   return `\n\n---\nRouted via: ${response.providerId} / ${response.modelId} (${response.latencyMs}ms)`;
 }
 
+/**
+ * Register every tool from every connected external MCP server into the
+ * given McpServer, namespaced as `<serverId>__<toolName>`.
+ *
+ * Example: a tool named `create_issue` on server `github` becomes
+ * `github__create_issue` in the aggregated tool list.
+ */
+function registerExternalTools(server: McpServer, client: MCPClient, state: ServerState): void {
+  const registry = client.getRegistry();
+  const allServers = registry.listAll();
+
+  for (const connected of allServers) {
+    const serverId = connected.config.id;
+    for (const tool of connected.tools) {
+      const namespacedName = `${serverId}__${tool.name}`;
+      const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
+
+      // Use a passthrough Zod schema for args; the underlying MCP server
+      // validates the actual input shape via its own JSON Schema.
+      const passthroughSchema = {
+        args: z.record(z.unknown()).optional().describe(
+          `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+        ),
+      };
+
+      server.tool(
+        namespacedName,
+        description,
+        passthroughSchema as any,
+        async (params: any) => {
+          state.requestCount++;
+          const args = (params?.args ?? {}) as Record<string, unknown>;
+          try {
+            // Use the registry's 3-arg form so we route to a specific
+            // serverId, not by tool-name lookup (which can be ambiguous
+            // when multiple external servers host a same-named tool).
+            const result = await registry.callTool(serverId, tool.name, args);
+            const text = typeof result === 'string'
+              ? result
+              : JSON.stringify(result, null, 2);
+            return {
+              content: [{ type: 'text' as const, text }],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            state.lastError = message;
+            return {
+              content: [{ type: 'text' as const, text: `Error: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      );
+
+      state.externalToolCount++;
+      state.sdkTools.push({
+        name: namespacedName,
+        description,
+        params: passthroughSchema,
+      });
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
@@ -375,6 +452,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     requestCount: 0,
     lastError: null,
     sdkTools: [],
+    externalMcpClient: config.externalMcpClient,
+    externalToolCount: 0,
   };
 
   // SDK tool definitions for programmatic access and discovery
@@ -715,11 +794,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           return {
             content: [{
               type: 'text' as const,
-              text: JSON.stringify({
-                source: 'adapters',
-                count: adapterModels.length,
-                models: adapterModels,
-              }, null, 2),
+              text: JSON.stringify({ source: 'adapters', count: adapterModels.length, models: adapterModels }, null, 2),
             }],
           };
         }
@@ -790,6 +865,15 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               enableDecomposition: state.router['config']?.enableDecomposition ?? false,
             },
           },
+        };
+
+        // Aggregator status (always included; zeros when aggregator is off)
+        status.aggregator = {
+          enabled: !!state.externalMcpClient,
+          externalServerCount: state.externalMcpClient
+            ? state.externalMcpClient.listServers().length
+            : 0,
+          externalToolCount: state.externalToolCount,
         };
 
         // Include provider health if requested
@@ -1289,6 +1373,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       }
     }
   );
+
+  // Register external MCP aggregator tools (if a client was provided)
+  if (config.externalMcpClient) {
+    try {
+      registerExternalTools(server, config.externalMcpClient, state);
+      logger.info(
+        { externalToolCount: state.externalToolCount },
+        'External MCP aggregator tools registered'
+      );
+    } catch (error) {
+      logger.error({ err: error }, 'Failed to register external MCP aggregator tools');
+    }
+  }
 
   return { server, state };
 }

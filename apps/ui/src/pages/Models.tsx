@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Database, Search, Cpu, Filter, ChevronRight, Hash, DollarSign, Zap } from 'lucide-react';
+import { Database, Search, Cpu, Filter, ChevronRight, Hash, DollarSign, Zap, RefreshCw } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
@@ -43,9 +43,19 @@ export function ModelsPage() {
         description="Model registry — all models available across all providers"
         icon={<Database className="size-5" />}
         actions={
-          <Badge tone="muted" size="md" icon={<Cpu className="size-3" />}>
-            {filtered.length} models
-          </Badge>
+          <>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void models.refetch()}
+              leftIcon={<RefreshCw className="size-3" />}
+            >
+              Discover models
+            </Button>
+            <Badge tone="muted" size="md" icon={<Cpu className="size-3" />}>
+              {filtered.length} models
+            </Badge>
+          </>
         }
       />
 

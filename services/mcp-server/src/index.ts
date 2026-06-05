@@ -27,6 +27,7 @@
  */
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
+import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 
 // Re-export for programmatic use
 export { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
@@ -45,6 +46,46 @@ function getEnvInt(key: string, fallback: number): number {
   if (!val) return fallback;
   const parsed = parseInt(val, 10);
   return isNaN(parsed) ? fallback : parsed;
+}
+
+/**
+ * Parses the DMRX_MCP_CLIENT_SERVERS env var (a JSON array of MCPServerConfig).
+ * Returns an empty array if the var is unset, empty, or invalid JSON.
+ */
+function parseExternalMcpServers(): MCPServerConfig[] {
+  const raw = process.env.DMRX_MCP_CLIENT_SERVERS;
+  if (!raw || raw.trim() === '') return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    console.error('Failed to parse DMRX_MCP_CLIENT_SERVERS as JSON — aggregator disabled:', error);
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    console.error('DMRX_MCP_CLIENT_SERVERS must be a JSON array — aggregator disabled');
+    return [];
+  }
+
+  // Minimal validation
+  const valid: MCPServerConfig[] = [];
+  for (const item of parsed) {
+    if (
+      item &&
+      typeof item === 'object' &&
+      typeof (item as any).id === 'string' &&
+      typeof (item as any).name === 'string' &&
+      ((item as any).transport === 'stdio' || (item as any).transport === 'sse')
+    ) {
+      valid.push(item as MCPServerConfig);
+    } else {
+      console.error('Skipping invalid MCP server config entry:', item);
+    }
+  }
+
+  return valid;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +116,12 @@ function checkAuth(req: { headers: Record<string, string | string[] | undefined>
 // Build server config from environment
 // ---------------------------------------------------------------------------
 
-function buildConfig(): DMRXMcpServerConfig {
+interface BuiltConfig {
+  mcpConfig: DMRXMcpServerConfig;
+  externalMcpClient: MCPClient | null;
+}
+
+async function buildConfig(): Promise<BuiltConfig> {
   const adapterConfigs: Record<string, { baseUrl: string; apiKey?: string }> = {};
 
   // OpenAI
@@ -147,13 +193,31 @@ function buildConfig(): DMRXMcpServerConfig {
     };
   }
 
+  const externalServers = parseExternalMcpServers();
+
+  let externalMcpClient: MCPClient | null = null;
+  if (externalServers.length > 0) {
+    externalMcpClient = new MCPClient();
+    try {
+      await externalMcpClient.connect({ servers: externalServers });
+    } catch (error) {
+      // The MCPClient.connect method is resilient — it logs and continues
+      // connecting other servers. So we don't bail out on individual failures.
+      console.error('External MCPClient.connect() reported errors (see logs above)');
+    }
+  }
+
   return {
-    router: {
-      epsilon: 0.05,
-      defaultQualityTarget: 'balanced',
-      enableDecomposition: false,
+    mcpConfig: {
+      router: {
+        epsilon: 0.05,
+        defaultQualityTarget: 'balanced',
+        enableDecomposition: false,
+      },
+      adapterConfigs,
+      externalMcpClient: externalMcpClient ?? undefined,
     },
-    adapterConfigs,
+    externalMcpClient,
   };
 }
 
@@ -303,33 +367,53 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 // Main
 // ---------------------------------------------------------------------------
 
+async function disposeAndExit(client: MCPClient | null, code: number): Promise<void> {
+  if (client) {
+    try {
+      await client.dispose();
+    } catch (err) {
+      console.error('Error disposing external MCP client:', err);
+    }
+  }
+  process.exit(code);
+}
+
 async function main(): Promise<void> {
   const transport = getEnv('DMRX_MCP_TRANSPORT', 'stdio').toLowerCase();
-  const config = buildConfig();
+  const { mcpConfig, externalMcpClient } = await buildConfig();
 
   if (transport !== 'stdio' && !MCP_API_KEY) {
     if (process.env.NODE_ENV === 'production') {
       console.error('FATAL: DMRX_MCP_API_KEY must be set in production. Refusing to start without authentication.');
-      process.exit(1);
+      await disposeAndExit(externalMcpClient, 1);
+      return;
     }
     console.warn('WARNING: MCP server running without authentication — set DMRX_MCP_API_KEY to secure it');
   }
 
+  // Register shutdown handlers
+  const shutdown = async (signal: string) => {
+    console.error(`\nReceived ${signal}, shutting down...`);
+    await disposeAndExit(externalMcpClient, 0);
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
   switch (transport) {
     case 'stdio':
-      await startStdio(config);
+      await startStdio(mcpConfig);
       break;
     case 'sse':
-      await startSSE(config);
+      await startSSE(mcpConfig);
       break;
     case 'http':
     case 'streamable':
     case 'streamable-http':
-      await startStreamableHTTP(config);
+      await startStreamableHTTP(mcpConfig);
       break;
     default:
       console.error(`Unknown transport: ${transport}. Use "stdio", "sse", or "http".`);
-      process.exit(1);
+      await disposeAndExit(externalMcpClient, 1);
   }
 }
 

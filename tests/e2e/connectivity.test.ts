@@ -12,7 +12,7 @@ describeE2E('Gateway Connectivity', () => {
 
   it('should be reachable and return models', async () => {
     try {
-      const models = await client.getModels();
+      const models: any = await client.getModels();
       expect(models).toBeDefined();
       expect(Array.isArray(models.data)).toBe(true);
     } catch (error: any) {

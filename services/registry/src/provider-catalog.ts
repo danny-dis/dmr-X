@@ -24,7 +24,7 @@ export interface ProviderTemplate {
   name: string;
   category: 'cloud_llm' | 'cloud_diffusion' | 'cloud_audio' | 'cloud_video' | 'cloud_embedding' | 'local' | 'hosting' | 'specialized';
   baseUrl: string;
-  authMethod: 'bearer' | 'x-api-key' | 'api-key-param' | 'xi-api-key' | 'custom';
+  authMethod: 'bearer' | 'x-api-key' | 'api-key-param' | 'xi-api-key' | 'custom' | 'none';
   authHeader?: string;
   authParam?: string;
   apiFormat: 'openai' | 'anthropic' | 'google' | 'custom';
@@ -849,11 +849,37 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     authMethod: 'bearer',
     apiFormat: 'openai',
     modalities: ['llm'],
-    models: [],
+    models: [
+      { id: 'openai-fast', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'reasoning'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
+      { id: 'mistral-large', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
+      { id: 'flux', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
+    ],
     streaming: true,
     toolCalling: true,
     envKey: '',
     description: 'Pollinations free AI gateway. No API key needed. Models discovered live from /v1/models.',
+    region: 'global',
+  },
+
+  {
+    id: 'pollinations-images',
+    name: 'Pollinations Images',
+    category: 'cloud_diffusion',
+    baseUrl: 'https://image.pollinations.ai',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['diffusion'],
+    models: [
+      { id: 'flux', modalities: ['diffusion'], costPerImage: 0, capabilities: ['text2img'], specializations: ['creative'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
+      { id: 'flux-realism', modalities: ['diffusion'], costPerImage: 0, capabilities: ['text2img'], specializations: ['creative'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
+      { id: 'any-dark', modalities: ['diffusion'], costPerImage: 0, capabilities: ['text2img'], specializations: ['creative'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'flux-anime', modalities: ['diffusion'], costPerImage: 0, capabilities: ['text2img'], specializations: ['creative'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
+      { id: 'flux-3d', modalities: ['diffusion'], costPerImage: 0, capabilities: ['text2img'], specializations: ['creative'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
+    ],
+    envKey: '',
+    streaming: false,
+    toolCalling: false,
+    description: 'Pollinations free image generation. No API key needed.',
     region: 'global',
   },
 

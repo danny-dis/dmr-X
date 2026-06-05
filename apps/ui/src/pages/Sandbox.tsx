@@ -8,6 +8,14 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Code as CodeBlock } from '@/components/primitives/Code';
 import { StatusPill } from '@/components/primitives/StatusPill';
+import {
+  Dialog, DialogContent, DialogHeader,
+  DialogTitle, DialogDescription, DialogBody, DialogFooter,
+  DialogClose,
+} from '@/components/primitives/Dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Textarea } from '@/components/primitives/Textarea';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatDuration, timeAgo } from '@/lib/formatters';
@@ -20,6 +28,33 @@ export function SandboxPage() {
     { refetchInterval: 5000 }
   );
 
+  const [open, setOpen] = React.useState(false);
+  const [language, setLanguage] = React.useState('python');
+  const [code, setCode] = React.useState('');
+  const [timeoutMs, setTimeoutMs] = React.useState('5000');
+  const [submitting, setSubmitting] = React.useState(false);
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    try {
+      await Admin.submitSandbox({
+        language,
+        code,
+        timeoutMs: Number(timeoutMs),
+      });
+      toast.success('Job submitted successfully');
+      setOpen(false);
+      setCode('');
+      setLanguage('python');
+      setTimeoutMs('5000');
+      jobs.refetch();
+    } catch {
+      toast.error('Failed to submit job');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <PageContainer>
       <PageHeader
@@ -27,7 +62,7 @@ export function SandboxPage() {
         description="Ephemeral execution environment for tool and code testing"
         icon={<Terminal className="size-5" />}
         actions={
-          <Button size="sm">
+          <Button size="sm" onClick={() => setOpen(true)}>
             <Plus className="size-3" />
             New job
           </Button>
@@ -103,6 +138,62 @@ export function SandboxPage() {
           )}
         </Card>
       </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>New sandbox job</DialogTitle>
+            <DialogDescription>Run code in a sandboxed worker</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <div className="flex flex-col gap-4">
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Language</label>
+                <Select value={language} onValueChange={setLanguage}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="python">Python</SelectItem>
+                    <SelectItem value="javascript">JavaScript</SelectItem>
+                    <SelectItem value="typescript">TypeScript</SelectItem>
+                    <SelectItem value="rust">Rust</SelectItem>
+                    <SelectItem value="go">Go</SelectItem>
+                    <SelectItem value="ruby">Ruby</SelectItem>
+                    <SelectItem value="java">Java</SelectItem>
+                    <SelectItem value="bash">Bash</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Code</label>
+                <Textarea
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  rows={12}
+                  className="font-mono text-xs"
+                  placeholder="print('hello from sandbox')"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Timeout (ms)</label>
+                <input
+                  type="number"
+                  value={timeoutMs}
+                  onChange={(e) => setTimeoutMs(e.target.value)}
+                  className="flex h-8 w-36 rounded-md border border-input bg-surface px-2.5 py-1.5 text-xs text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-ring"
+                  placeholder="5000"
+                />
+              </div>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="secondary" size="sm" disabled={submitting}>Cancel</Button>
+            </DialogClose>
+            <Button size="sm" onClick={handleSubmit} disabled={submitting}>
+              {submitting ? 'Submitting...' : 'Submit'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageContainer>
   );
 }

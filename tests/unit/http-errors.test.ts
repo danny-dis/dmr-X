@@ -24,6 +24,8 @@ import {
   ConnectionError,
   HttpErrorMap,
   createHttpError,
+  type HttpMeta,
+  type HttpErrorData,
 } from '../../packages/utils/src/http-errors.js';
 
 function makeHttpMeta(status = 500, body = '{}', contentType = 'application/json') {
@@ -54,7 +56,11 @@ describe('http-errors', () => {
   });
 
   describe('Typed error subclasses', () => {
-    const testCases: [number, string, typeof HttpError][] = [
+    // Subclass constructors take (httpMeta, data?) — different from HttpError(message, httpMeta, data?).
+    // Use a permissive constructor type so the tuple type-checks.
+    type HttpErrorSubclass = new (httpMeta: HttpMeta, data?: HttpErrorData) => HttpError;
+
+    const testCases: [number, string, HttpErrorSubclass][] = [
       [400, 'BadRequestError', BadRequestError],
       [401, 'UnauthorizedError', UnauthorizedError],
       [402, 'PaymentRequiredError', PaymentRequiredError],

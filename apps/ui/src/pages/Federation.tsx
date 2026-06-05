@@ -4,10 +4,18 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
+import {
+  Dialog, DialogContent, DialogHeader,
+  DialogTitle, DialogDescription, DialogBody, DialogFooter,
+  DialogClose,
+} from '@/components/primitives/Dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { TopologyGraph } from '@/components/charts/TopologyGraph';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatDuration, timeAgo } from '@/lib/formatters';
@@ -20,6 +28,42 @@ export function FederationPage() {
     { refetchInterval: 10000 }
   );
 
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [name, setName] = React.useState('');
+  const [url, setUrl] = React.useState('');
+  const [region, setRegion] = React.useState('');
+  const [authToken, setAuthToken] = React.useState('');
+  const [submitting, setSubmitting] = React.useState(false);
+
+  const handleRegister = async () => {
+    setSubmitting(true);
+    try {
+      await Admin.registerFederation({ name, url, region: region || undefined, authToken: authToken || undefined });
+      toast.success('Federation peer registered successfully');
+      setDialogOpen(false);
+      setName('');
+      setUrl('');
+      setRegion('');
+      setAuthToken('');
+      nodes.refetch();
+    } catch {
+      toast.error('Failed to register federation peer');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onRemove = async (id: string, peerName: string) => {
+    if (!window.confirm(`Remove federation peer "${peerName}"?`)) return;
+    try {
+      await Admin.unregisterFederation(id);
+      toast.success('Federation peer removed');
+      nodes.refetch();
+    } catch {
+      toast.error('Failed to remove federation peer');
+    }
+  };
+
   return (
     <PageContainer>
       <PageHeader
@@ -27,7 +71,7 @@ export function FederationPage() {
         description="Peer gateway nodes and cross-cluster routing"
         icon={<Network className="size-5" />}
         actions={
-          <Button size="sm">
+          <Button size="sm" onClick={() => setDialogOpen(true)}>
             <Plus className="size-3" />
             Register peer
           </Button>
@@ -97,7 +141,7 @@ export function FederationPage() {
                     status={(n.status ?? 'unknown') as 'online' | 'degraded' | 'offline' | 'unknown'}
                     size="sm"
                   />
-                  <Button size="icon-sm" variant="ghost" aria-label="Remove">
+                  <Button size="icon-sm" variant="ghost" aria-label="Remove" onClick={() => onRemove(n.id, n.name ?? n.id)}>
                     <Trash2 className="size-3" />
                   </Button>
                 </div>
@@ -111,6 +155,55 @@ export function FederationPage() {
           )}
         </Card>
       </div>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>Register peer</DialogTitle>
+            <DialogDescription>Connect another DMR-X gateway as a federation peer.</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Name</label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. us-east-peer" />
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">URL</label>
+                <Input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://gateway.example.com" />
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Region</label>
+                <Select value={region} onValueChange={setRegion}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select region" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="us-east">us-east</SelectItem>
+                    <SelectItem value="us-west">us-west</SelectItem>
+                    <SelectItem value="eu-west">eu-west</SelectItem>
+                    <SelectItem value="eu-central">eu-central</SelectItem>
+                    <SelectItem value="ap-southeast">ap-southeast</SelectItem>
+                    <SelectItem value="ap-northeast">ap-northeast</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Auth Token</label>
+                <Input type="password" value={authToken} onChange={(e) => setAuthToken(e.target.value)} placeholder="dmrx_..." />
+              </div>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost">Cancel</Button>
+            </DialogClose>
+            <Button onClick={handleRegister} loading={submitting}>
+              Register peer
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageContainer>
   );
 }

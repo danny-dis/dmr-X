@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Users, Plus, Search, KeyRound, Shield, Mail, Calendar } from 'lucide-react';
+import { Users, Plus, Search, KeyRound, Shield, Mail, Calendar, Save } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
@@ -7,7 +7,10 @@ import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
+import { Switch } from '@/components/primitives/Switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
+import { toast } from '@/components/primitives/Toast';
 import { ApiKeyCard } from '@/components/domain/ApiKeyCard';
 import { CreateTenantDialog } from '@/components/domain/CreateTenantDialog';
 import { CreateApiKeyDialog } from '@/components/domain/CreateApiKeyDialog';
@@ -34,6 +37,42 @@ export function TenantsPage() {
       setSelectedTenant(tenants.data[0].id);
     }
   }, [tenants.data, selectedTenant]);
+
+  const [settingsName, setSettingsName] = React.useState('');
+  const [settingsEmail, setSettingsEmail] = React.useState('');
+  const [settingsTier, setSettingsTier] = React.useState('free');
+  const [settingsSuspended, setSettingsSuspended] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    if (selected) {
+      setSettingsName(selected.name ?? '');
+      setSettingsEmail(selected.email ?? '');
+      setSettingsTier(selected.tier ?? 'free');
+      setSettingsSuspended(selected.suspended ?? false);
+    }
+  }, [selected]);
+
+  const saveSettings = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      await Admin.updateTenant(selected.id, {
+        name: settingsName,
+        email: settingsEmail || undefined,
+        tier: settingsTier,
+        suspended: settingsSuspended,
+      });
+      toast.success('Tenant updated');
+      void tenants.refetch();
+    } catch (err) {
+      toast.error('Failed to update tenant', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const filtered = (tenants.data ?? []).filter((t) =>
     query ? `${t.name} ${t.email ?? ''}`.toLowerCase().includes(query.toLowerCase()) : true
@@ -207,7 +246,71 @@ export function TenantsPage() {
                   </div>
                 </TabsContent>
                 <TabsContent value="settings" className="px-3 pb-3">
-                  <p className="text-fg-subtle text-sm">Settings coming soon</p>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Name</label>
+                      <Input
+                        value={settingsName}
+                        onChange={(e) => setSettingsName(e.target.value)}
+                        placeholder="Tenant name"
+                        size="sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Email</label>
+                      <Input
+                        type="email"
+                        value={settingsEmail}
+                        onChange={(e) => setSettingsEmail(e.target.value)}
+                        placeholder="tenant@example.com"
+                        size="sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Tier</label>
+                      <Select value={settingsTier} onValueChange={setSettingsTier}>
+                        <SelectTrigger size="sm" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="free">Free</SelectItem>
+                          <SelectItem value="starter">Starter</SelectItem>
+                          <SelectItem value="pro">Pro</SelectItem>
+                          <SelectItem value="enterprise">Enterprise</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="rounded-lg border border-border p-3 space-y-2">
+                      <p className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">Rate limits</p>
+                      <div className="grid grid-cols-3 gap-2 text-[11px]">
+                        <div>
+                          <p className="text-fg-subtle">Tokens</p>
+                          <p className="text-fg tabular-nums">{formatNumber(selected.tokensUsed ?? 0, true)} / {formatNumber(selected.tokensLimit ?? 0, true)}</p>
+                        </div>
+                        <div>
+                          <p className="text-fg-subtle">Requests</p>
+                          <p className="text-fg tabular-nums">{formatNumber(selected.requestsUsed ?? 0, true)} / {formatNumber(selected.requestsLimit ?? 0, true)}</p>
+                        </div>
+                        <div>
+                          <p className="text-fg-subtle">Cost</p>
+                          <p className="text-fg tabular-nums">${(selected.costUsed ?? 0).toFixed(2)} / ${(selected.costLimit ?? 0).toFixed(2)}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-fg">Suspended</p>
+                        <p className="text-[10px] text-fg-muted">Block all API access for this tenant</p>
+                      </div>
+                      <Switch
+                        checked={settingsSuspended}
+                        onCheckedChange={setSettingsSuspended}
+                      />
+                    </div>
+                    <Button onClick={saveSettings} loading={saving} leftIcon={<Save className="size-3" />}>
+                      Save
+                    </Button>
+                  </div>
                 </TabsContent>
               </Tabs>
             </Card>

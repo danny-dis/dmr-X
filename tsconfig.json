@@ -12,5 +12,15 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true
-  }
+  },
+  "exclude": [
+    "apps/ui",
+    "node_modules",
+    "dist",
+    ".turbo",
+    "check-schema.ts",
+    "list-keys.ts",
+    "list-providers.ts",
+    "list-providers-v2.ts"
+  ]
 }

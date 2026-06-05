@@ -6,6 +6,13 @@ import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import {
+  Dialog, DialogContent, DialogHeader,
+  DialogTitle, DialogDescription, DialogBody, DialogFooter,
+  DialogClose,
+} from '@/components/primitives/Dialog';
+import { Input } from '@/components/primitives/Input';
+import { toast } from '@/components/primitives/Toast';
 import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
 import { LatencyChart } from '@/components/charts/LatencyChart';
 import { useApiData } from '@/hooks/useApiData';
@@ -22,6 +29,30 @@ export function BenchmarksPage() {
     { refetchInterval: 30000 }
   );
 
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [modelIds, setModelIds] = React.useState('');
+  const [promptSet, setPromptSet] = React.useState('');
+  const [concurrency, setConcurrency] = React.useState(1);
+  const [submitting, setSubmitting] = React.useState(false);
+
+  const handleRunBenchmark = async () => {
+    setSubmitting(true);
+    try {
+      await Admin.runBenchmark({
+        models: modelIds.split(',').map((s) => s.trim()).filter(Boolean),
+        promptSet,
+        concurrency,
+      });
+      toast.success('Benchmark started successfully');
+      setDialogOpen(false);
+      benchmarks.refetch();
+    } catch {
+      toast.error('Failed to start benchmark');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <PageContainer size="wide">
       <PageHeader
@@ -29,7 +60,7 @@ export function BenchmarksPage() {
         description="Performance comparisons across providers and models"
         icon={<Trophy className="size-5" />}
         actions={
-          <Button size="sm">
+          <Button size="sm" onClick={() => setDialogOpen(true)}>
             <Plus className="size-3" />
             New benchmark
           </Button>
@@ -85,7 +116,7 @@ export function BenchmarksPage() {
             title="No benchmarks yet"
             description="Run a benchmark to compare provider performance across prompts."
             action={
-              <Button>
+              <Button onClick={() => setDialogOpen(true)}>
                 <Play className="size-3" />
                 Run benchmark
               </Button>
@@ -93,6 +124,51 @@ export function BenchmarksPage() {
           />
         </Card>
       )}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>Run Benchmark</DialogTitle>
+            <DialogDescription>Configure and run a performance benchmark across models.</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Model IDs</label>
+                <Input
+                  value={modelIds}
+                  onChange={(e) => setModelIds(e.target.value)}
+                  placeholder="gpt-4o, claude-3-opus, llama-3-70b"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Prompt set</label>
+                <Input
+                  value={promptSet}
+                  onChange={(e) => setPromptSet(e.target.value)}
+                  placeholder="default"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Concurrency</label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={concurrency}
+                  onChange={(e) => setConcurrency(Number(e.target.value))}
+                />
+              </div>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost">Cancel</Button>
+            </DialogClose>
+            <Button onClick={handleRunBenchmark} loading={submitting}>
+              Run benchmark
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageContainer>
   );
 }

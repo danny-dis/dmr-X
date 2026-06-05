@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "dev": "turbo dev",
-"dev:gateway": "bun --watch apps/gateway/src/main.ts",
+    "dev:gateway": "bun --watch apps/gateway/src/main.ts",
     "dev:ui": "bun run --cwd apps/ui dev",
     "build": "turbo build && bun run --cwd apps/ui build",
     "build:ui": "bun run --cwd apps/ui build",
@@ -22,6 +22,7 @@
     "clean": "turbo clean"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@types/inquirer": "^9.0.9",
     "turbo": "2.5.0",
     "typescript": "^5.4.0",
@@ -31,5 +32,8 @@
   "engines": {
     "bun": ">=1.0.0"
   },
-  "packageManager": "bun@1.2.0"
+  "packageManager": "bun@1.2.0",
+  "dependencies": {
+    "@opentelemetry/context-async-hooks": "^2.7.1"
+  }
 }

@@ -8,7 +8,9 @@
 
 import { createServer } from '@dmr-x/gateway/src/server.js';     // gateway's createServer()
 import { PluginLoader } from '@dmr-x/plugin-loader';
-import { createMCPPlugin } from '@dmr-x/mcp-server/src/plugin-entry.js';
+// TODO(standalone-mode): plugin-entry.ts was removed when mcp-server switched
+// to standalone-only mode. Re-add a plugin entry when @dmr-x/plugin-loader
+// supports the full Plugin lifecycle (manifest, transports, custom methods).
 
 function parseArgs(args: string[]): { [key: string]: string } {
   const result: { [key: string]: string } = {};
@@ -60,25 +62,28 @@ function createInMemoryStateStore() {
   };
 }
 
-async function main() {
-  const args = parseArgs(Deno.args);
+export async function main() {
+  const args = parseArgs(process.argv.slice(2));
 
   // 1. Start the gateway (unchanged — no new deps)
   const gateway = await createServer();
 
   // 2. Extract gateway internals to inject into plugins
+  // Fastify decorators are set at runtime via server.decorate(); TS cannot see them
+  // on the typed FastifyInstance, so we cast to any for access.
+  const gw = gateway as any;
   const deps = {
-    router: gateway.router,                                        // Fastify-decorated
-    adapterRegistry: gateway.adapterRegistry,
+    router: gw.router,
+    adapterRegistry: gw.adapterRegistry,
     stateStore: createInMemoryStateStore(),
     logger: console,
-    config: { ...process.env },
+    config: { ...process.env } as Record<string, string | undefined>,
   };
 
   // 3. Load plugins
   const loader = new PluginLoader();
   await loader.load({
-    enabledPlugins: args.plugins ?? ['mcp-server'],
+    enabledPlugins: args.plugin ? [args.plugin] : ['mcp-server'],
     pluginOverrides: args.pluginOverrides ? JSON.parse(args.pluginOverrides) : undefined,
   });
 
@@ -90,7 +95,12 @@ async function main() {
   // The plugin loader's load() method already calls start() on plugins
 }
 
-main().catch((error) => {
-  console.error('Failed to start plugin bootstrap:', error);
-  process.exit(1);
-});
+// Only auto-run when executed directly (not when imported as a module)
+const isMainModule = import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('bootstrap.ts');
+if (isMainModule) {
+  main().catch((error) => {
+    console.error('Failed to start plugin bootstrap:', error);
+    process.exit(1);
+  });
+}

@@ -227,6 +227,93 @@ Define and execute multi-step workflows.
 | `input_mapping` | `object` | Map previous step outputs to this step inputs |
 | `retry_policy` | `object` | Retry configuration (`max_retries`, `backoff_ms`) |
 
+## Aggregating External MCP Servers
+
+DMR-X can act as an **MCP aggregator**: when configured, it connects to one or more external MCP servers in the background and re-exposes all of their tools through the same MCP connection. Every external tool is registered under the name `<serverId>__<toolName>`, so a single agent connection to DMR-X gets access to DMR-X's own `dmrx_*` tools plus the full tool surface of every connected upstream server.
+
+### Configuration
+
+External servers are configured via the `DMRX_MCP_CLIENT_SERVERS` environment variable, which is a JSON array of `MCPServerConfig` objects:
+
+```ts
+{
+  "id": string;          // unique ID
+  "name": string;        // human-readable name
+  "transport": "stdio" | "sse";
+  "command"?: string;    // for stdio
+  "args"?: string[];
+  "env"?: Record<string, string>;
+  "url"?: string;        // for sse
+}
+```
+
+- `stdio` transports spawn the external server as a subprocess using `command` + `args` + `env`.
+- `sse` transports connect to a remote MCP endpoint over Server-Sent Events using `url`.
+
+Example with two stdio servers (GitHub and a local filesystem server):
+
+```bash
+DMRX_MCP_CLIENT_SERVERS='[
+  {
+    "id": "github",
+    "name": "GitHub",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-github"],
+    "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."}
+  },
+  {
+    "id": "filesystem",
+    "name": "Filesystem",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"]
+  }
+]'
+```
+
+Malformed entries (invalid JSON, missing required fields, unknown transport) are logged and skipped — the DMR-X MCP server still starts with whatever subset of the configuration parsed successfully.
+
+### Tool Naming
+
+External tools appear in the same `listTools()` response as DMR-X's built-in `dmrx_*` tools. To prevent collisions when multiple upstream servers expose tools with the same name, every external tool is registered under the name:
+
+```
+<serverId>__<toolName>
+```
+
+For example, a GitHub server's `create_issue` tool is exposed as `github__create_issue`, and a filesystem server's `read_file` tool is exposed as `filesystem__read_file`.
+
+The tool's `description` is prefixed with `[Proxied via MCP server '<id>']` so the source of each aggregated tool is obvious when browsing the tool list.
+
+The `inputSchema` for aggregated tools is a passthrough — DMR-X exposes an empty object schema (`{ type: "object", properties: {} }`) and does not translate upstream JSON Schema into Zod in v1. The upstream MCP server is responsible for validating the real call arguments; the [Example Call](#example-call) section below shows the required argument shape.
+
+### Example Call
+
+Invoke an aggregated tool through the standard MCP `callTool` API. Because the proxied `inputSchema` is an empty object, the per-tool arguments must be wrapped in a single `args` field:
+
+```ts
+const result = await client.callTool({
+  name: "github__create_issue",
+  arguments: {
+    args: {
+      owner: "octocat",
+      repo: "hello-world",
+      title: "Found a bug"
+    }
+  },
+});
+```
+
+The contents of `args` are forwarded verbatim to the upstream MCP server, which performs the actual schema validation.
+
+### Operational Notes
+
+- The aggregator connects to all configured external servers at startup. Individual connection failures are logged but do not prevent the DMR-X MCP server from starting.
+- The `dmrx_status` tool reports an `aggregator` object with `enabled`, `externalServerCount`, and `externalToolCount` fields, so operators can verify how many upstream servers connected and how many tools were successfully aggregated.
+- To add or remove external servers, update the `DMRX_MCP_CLIENT_SERVERS` env var and restart the DMR-X MCP server. There is no hot-reload in v1.
+- There is no per-server authentication or authorization model in v1 — all aggregated tools are exposed to anyone who can talk to DMR-X. When using `sse` or `http` transports, set `DMRX_MCP_API_KEY` to gate access to the DMR-X endpoint as a whole.
+
 ## Usage Examples
 
 ### Claude Desktop (stdio)

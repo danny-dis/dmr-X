@@ -1893,6 +1893,41 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return null;
   });
 
+  // Update tenant
+  server.put('/admin/tenants/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const updates = request.body as Record<string, unknown>;
+
+    const db = getDb();
+    const existing = db.prepare('SELECT id FROM tenants WHERE id = ?').get(id) as { id: string } | undefined;
+    if (!existing) {
+      reply.status(404);
+      return { error: { message: 'Tenant not found', type: 'not_found', code: 'tenant_not_found' } };
+    }
+
+    const allowedFields = ['name', 'email', 'tier', 'suspended'];
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        setClauses.push(`${field} = ?`);
+        values.push(updates[field]);
+      }
+    }
+
+    if (setClauses.length === 0) {
+      reply.status(400);
+      return { error: { message: 'No valid fields to update', type: 'validation', code: 'no_fields' } };
+    }
+
+    values.push(id);
+    db.prepare(`UPDATE tenants SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+
+    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
+    return tenant;
+  });
+
   // Delete API key
   server.delete('/admin/api-keys/:id', async (request, reply) => {
     const { id } = request.params as { id: string };

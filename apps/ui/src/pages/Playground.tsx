@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   Send, Sparkles, RotateCcw, Save, Settings2, Mic,
-  ArrowUpDown, ShieldAlert, ChevronDown, Volume2,
+  ArrowUpDown, ShieldAlert, ChevronDown, Volume2, Brain,
 } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
@@ -18,6 +18,10 @@ import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatDuration, formatTokens } from '@/lib/formatters';
 import type { ApiModel } from '@/types/api';
+import { toast } from '@/components/primitives/Toast';
+import { AgenticChatTab } from '@/components/domain/AgenticChatTab';
+import { AnthropicChatTab } from '@/components/domain/AnthropicChatTab';
+import { GeminiChatTab } from '@/components/domain/GeminiChatTab';
 
 /* -------------------------------------------------------------------------- */
 /*  Samples                                                                   */
@@ -53,6 +57,8 @@ const SAMPLES: Record<string, { label: string; prompt: string }[]> = {
   moderate: [
     { label: 'Test', prompt: 'This is a test message to check content moderation.' },
   ],
+  anthropic: [],
+  gemini: [],
 };
 
 /* -------------------------------------------------------------------------- */
@@ -86,6 +92,22 @@ const DEFAULT_ADVANCED: AdvancedParams = {
 };
 
 /* -------------------------------------------------------------------------- */
+/*  Presets                                                                   */
+/* -------------------------------------------------------------------------- */
+
+interface PresetEntry {
+  name: string;
+  tab: string;
+  model: string;
+  adv: AdvancedParams;
+  ttsVoice: string;
+  ttsSpeed: number;
+  ttsFormat: string;
+}
+
+const PRESETS_KEY = 'dmrx-playground-presets';
+
+/* -------------------------------------------------------------------------- */
 /*  Component                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -111,6 +133,46 @@ export function PlaygroundPage() {
   const [ttsSpeed, setTtsSpeed] = React.useState(1);
   const [ttsFormat, setTtsFormat] = React.useState('mp3');
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
+
+  // --- Presets ---
+  const [presets, setPresets] = React.useState<PresetEntry[]>([]);
+
+  React.useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PRESETS_KEY);
+      if (raw) setPresets(JSON.parse(raw));
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleSavePreset = () => {
+    const name = window.prompt('Preset name:');
+    if (!name) return;
+    const existing = presets.find((p) => p.name === name);
+    if (existing && !window.confirm(`Preset "${name}" already exists. Overwrite?`)) return;
+    const entry: PresetEntry = { name, tab, model, adv, ttsVoice, ttsSpeed, ttsFormat };
+    const next = existing ? presets.map((p) => (p.name === name ? entry : p)) : [...presets, entry];
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(next));
+    setPresets(next);
+    toast.success('Preset saved', { description: name });
+  };
+
+  const handleLoadPreset = (p: PresetEntry) => {
+    setTab(p.tab);
+    setModel(p.model);
+    setAdv(p.adv);
+    setTtsVoice(p.ttsVoice);
+    setTtsSpeed(p.ttsSpeed);
+    setTtsFormat(p.ttsFormat);
+    toast.success('Preset loaded', { description: p.name });
+  };
+
+  const handleDeletePreset = (e: React.MouseEvent, name: string) => {
+    e.stopPropagation();
+    const next = presets.filter((p) => p.name !== name);
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(next));
+    setPresets(next);
+    toast.success('Preset removed', { description: name });
+  };
 
   // --- STT state ---
   const [sttFile, setSttFile] = React.useState<File | null>(null);
@@ -358,8 +420,30 @@ export function PlaygroundPage() {
         }
       />
 
+      {/* --- Presets bar --- */}
+      {presets.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] text-fg-muted uppercase tracking-wider mr-1">Presets:</span>
+          {presets.map((p) => (
+            <span
+              key={p.name}
+              onClick={() => handleLoadPreset(p)}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-fg cursor-pointer hover:bg-surface-3 hover:border-border-strong transition-colors"
+            >
+              {p.name}
+              <button
+                onClick={(e) => handleDeletePreset(e, p.name)}
+                className="size-3.5 inline-flex items-center justify-center rounded-sm text-fg-muted hover:text-destructive hover:bg-destructive/10 transition-colors"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <Card padding="md" className="lg:col-span-2">
+        <Card padding="md" className={tab === 'agent' || tab === 'anthropic' || tab === 'gemini' ? 'lg:col-span-3' : 'lg:col-span-2'}>
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
               <TabsTrigger value="chat">Chat</TabsTrigger>
@@ -370,9 +454,13 @@ export function PlaygroundPage() {
               <TabsTrigger value="stt"><Mic className="size-3 mr-1" />STT</TabsTrigger>
               <TabsTrigger value="rerank"><ArrowUpDown className="size-3 mr-1" />Rerank</TabsTrigger>
               <TabsTrigger value="moderate"><ShieldAlert className="size-3 mr-1" />Moderate</TabsTrigger>
+              <TabsTrigger value="anthropic"><Brain className="size-3 mr-1" />Anthropic</TabsTrigger>
+              <TabsTrigger value="gemini"><Brain className="size-3 mr-1" />Gemini</TabsTrigger>
+              <TabsTrigger value="agent"><Brain className="size-3 mr-1" />Agent</TabsTrigger>
             </TabsList>
 
-            <TabsContent value={tab} className="mt-3 flex flex-col gap-3">
+            {!['agent', 'anthropic', 'gemini'].includes(tab) && (
+              <TabsContent value={tab} className="mt-3 flex flex-col gap-3">
               {/* ------- Model selector (all tabs) ------- */}
               {tab !== 'stt' && (
                 <div className="grid grid-cols-3 gap-2">
@@ -688,7 +776,7 @@ export function PlaygroundPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm">
+                  <Button variant="ghost" size="sm" onClick={handleSavePreset}>
                     <Save className="size-3" />
                     Save preset
                   </Button>
@@ -699,10 +787,22 @@ export function PlaygroundPage() {
                 </div>
               </div>
             </TabsContent>
+            )}
+
+            <TabsContent value="anthropic" className="mt-3">
+              <AnthropicChatTab models={models} modelsForTab={modelsForTab} />
+            </TabsContent>
+            <TabsContent value="gemini" className="mt-3">
+              <GeminiChatTab models={models} modelsForTab={modelsForTab} />
+            </TabsContent>
+            <TabsContent value="agent" className="mt-3">
+              <AgenticChatTab models={models} />
+            </TabsContent>
           </Tabs>
         </Card>
 
         {/* ------- Samples sidebar ------- */}
+        {tab !== 'agent' && tab !== 'anthropic' && tab !== 'gemini' && (
         <Card padding="md">
           <h3 className="text-sm font-semibold text-fg mb-2">Samples</h3>
           <p className="text-[10px] text-fg-muted mb-3">Click to load</p>
@@ -721,9 +821,11 @@ export function PlaygroundPage() {
             ))}
           </div>
         </Card>
+        )}
       </div>
 
       {/* ------- Response card ------- */}
+      {tab !== 'agent' && tab !== 'anthropic' && tab !== 'gemini' && (
       <div className="mt-3">
         <Card padding="md">
           <div className="flex items-center justify-between mb-3">
@@ -772,6 +874,7 @@ export function PlaygroundPage() {
           )}
         </Card>
       </div>
+      )}
     </PageContainer>
   );
 }

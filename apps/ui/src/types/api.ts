@@ -275,6 +275,20 @@ export interface ApiSandboxSubmit {
   input?: string;
 }
 
+export interface ApiWorkerRegister {
+  name: string;
+  type?: string;
+}
+
+export interface ApiMemoryCreate {
+  content: string;
+  tenantId?: string;
+  namespace?: string;
+  source?: string;
+  retentionDays?: number;
+  metadata?: Record<string, unknown>;
+}
+
 export interface ApiWorker {
   id: string;
   name?: string;
@@ -329,6 +343,12 @@ export interface ApiCatalogEntry {
   description?: string;
   baseUrl?: string;
   authMethod?: AuthMethod;
+  oauthConfig?: {
+    flow?: 'authorization_code' | 'pkce' | 'device_code' | 'client_credentials';
+    scopes?: string[];
+    usePKCE?: boolean;
+    tokenResponseType?: string;
+  };
   models?: { id: string; name: string; modality: Modality }[];
 }
 

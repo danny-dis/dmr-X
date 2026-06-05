@@ -8,6 +8,14 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Progress } from '@/components/primitives/Progress';
+import {
+  Dialog, DialogContent, DialogHeader,
+  DialogTitle, DialogDescription, DialogBody, DialogFooter,
+  DialogClose,
+} from '@/components/primitives/Dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Input } from '@/components/primitives/Input';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatNumber, formatDuration, timeAgo } from '@/lib/formatters';
@@ -20,6 +28,23 @@ export function WorkersPage() {
     { refetchInterval: 5000 }
   );
 
+  const [open, setOpen] = React.useState(false);
+  const [name, setName] = React.useState('');
+  const [type, setType] = React.useState('generic');
+
+  const handleRegister = async () => {
+    try {
+      await Admin.registerWorker({ name, type });
+      toast.success('Worker registered');
+      setOpen(false);
+      setName('');
+      setType('generic');
+      workers.refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to register worker');
+    }
+  };
+
   return (
     <PageContainer>
       <PageHeader
@@ -27,7 +52,7 @@ export function WorkersPage() {
         description="Background job workers — quota, telemetry, billing, garbage collection"
         icon={<Cpu className="size-5" />}
         actions={
-          <Button size="sm">
+          <Button size="sm" onClick={() => setOpen(true)}>
             <Plus className="size-3" />
             Register worker
           </Button>
@@ -113,6 +138,43 @@ export function WorkersPage() {
           </Card>
         )}
       </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>Register worker</DialogTitle>
+            <DialogDescription>Add a new background worker to the cluster.</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Name</label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. billing-worker-01" />
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Type</label>
+                <Select value={type} onValueChange={setType}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="generic">generic</SelectItem>
+                    <SelectItem value="quota">quota</SelectItem>
+                    <SelectItem value="telemetry">telemetry</SelectItem>
+                    <SelectItem value="billing">billing</SelectItem>
+                    <SelectItem value="gc">gc</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost">Cancel</Button>
+            </DialogClose>
+            <Button onClick={handleRegister}>Register</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageContainer>
   );
 }

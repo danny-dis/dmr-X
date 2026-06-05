@@ -1,5 +1,7 @@
 import * as React from 'react';
-import { Plus, KeyRound, Globe, Cpu, Server } from 'lucide-react';
+import {
+  Plus, KeyRound, Globe, Cpu, Server, ExternalLink, Loader2, CheckCircle2, AlertCircle, Clock,
+} from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -14,7 +16,7 @@ import { Input } from '@/components/primitives/Input';
 import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
-import type { ApiCatalogEntry } from '@/types/api';
+import type { ApiCatalogEntry, ApiProviderOAuthStart } from '@/types/api';
 
 export interface AddProviderDialogProps {
   open: boolean;
@@ -55,6 +57,27 @@ const EMPTY: FormState = {
   priority: '0',
 };
 
+type OAuthStep =
+  | 'idle'
+  | 'creating_provider'
+  | 'authorizing'
+  | 'waiting_for_auth'
+  | 'polling'
+  | 'completed'
+  | 'error';
+
+interface OAuthState {
+  step: OAuthStep;
+  providerId: string | null;
+  response: ApiProviderOAuthStart | null;
+  errorMessage: string;
+}
+
+const OAUTH_IDLE: OAuthState = { step: 'idle', providerId: null, response: null, errorMessage: '' };
+
+const DEVICE_CODE_POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const DEVICE_CODE_POLL_INTERVAL_MS = 3000; // 3 seconds
+
 export function AddProviderDialog({
   open,
   onOpenChange,
@@ -64,10 +87,48 @@ export function AddProviderDialog({
   const [form, setForm] = React.useState<FormState>(EMPTY);
   const [submitting, setSubmitting] = React.useState(false);
   const [errors, setErrors] = React.useState<Partial<Record<keyof FormState, string>>>({});
+  const [oauth, setOauth] = React.useState<OAuthState>(OAUTH_IDLE);
+
+  const popupRef = React.useRef<Window | null>(null);
+  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = React.useRef(true);
+
+  const hasOAuthConfig = !!(template?.authMethod === 'oauth' || template?.oauthConfig?.flow);
+  const oauthFlowType = hasOAuthConfig
+    ? (template!.oauthConfig?.flow ?? 'authorization_code')
+    : undefined;
+  const isOAuthFlowActive = oauth.step !== 'idle' && oauth.step !== 'completed' && oauth.step !== 'error';
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const stopPolling = React.useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (pollTimeoutRef.current) { clearTimeout(pollTimeoutRef.current); pollTimeoutRef.current = null; }
+  }, []);
+
+  const closePopup = React.useCallback(() => {
+    if (popupRef.current && !popupRef.current.closed) {
+      popupRef.current.close();
+    }
+    popupRef.current = null;
+  }, []);
+
+  React.useEffect(() => {
+    if (!open) {
+      stopPolling();
+      closePopup();
+      setOauth(OAUTH_IDLE);
+    }
+  }, [open, stopPolling, closePopup]);
 
   React.useEffect(() => {
     if (open) {
       setErrors({});
+      setOauth(OAUTH_IDLE);
       if (template) {
         const preset = ADAPTER_PRESETS.find(
           (p) => p.id === template.id || p.label.toLowerCase() === template.name.toLowerCase(),
@@ -91,6 +152,170 @@ export function AddProviderDialog({
     setForm((prev) => ({ ...prev, [key]: value }));
     if (errors[key]) {
       setErrors((prev) => ({ ...prev, [key]: undefined }));
+    }
+  };
+
+  const setOAuthStep = (partial: Partial<OAuthState>) => {
+    setOauth((prev) => ({ ...prev, ...partial }));
+  };
+
+  const triggerAuthorizeFlow = async () => {
+    if (!template) return;
+    setOAuthStep({ step: 'creating_provider', errorMessage: '' });
+    try {
+      const { provider } = await Admin.activateProvider({ template_id: template.id });
+      const providerId = provider.id;
+      setOAuthStep({ step: 'authorizing', providerId });
+
+      const oauthResp = await Admin.startProviderOAuth(providerId);
+      setOAuthStep({ step: 'waiting_for_auth', providerId, response: oauthResp });
+
+      const authUrl = oauthResp.authorizationUrl ?? oauthResp.authUrl;
+      if (!authUrl) {
+        throw new Error('No authorization URL returned from server');
+      }
+
+      popupRef.current = window.open(authUrl, 'oauth-popup', 'width=600,height=700');
+      if (!popupRef.current) {
+        throw new Error('Popup was blocked. Please allow popups for this site and try again.');
+      }
+
+      const checkPopupClosed = () => {
+        if (!popupRef.current || popupRef.current.closed) {
+          popupRef.current = null;
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          handleOAuthCallback(providerId);
+        }
+      };
+      pollRef.current = setInterval(checkPopupClosed, 1000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOAuthStep({ step: 'error', errorMessage: msg });
+      toast.error('OAuth authorization failed', { description: msg });
+    }
+  };
+
+  const handleOAuthCallback = async (providerId: string) => {
+    if (!mountedRef.current) return;
+    try {
+      const status = await Admin.getProviderOAuthStatus(providerId);
+      if (status.hasOAuth && !status.isExpired) {
+        setOAuthStep({ step: 'completed', providerId });
+        toast.success('Provider authorized successfully');
+        onCreated?.();
+        onOpenChange(false);
+      } else {
+        setOAuthStep({ step: 'error', providerId, errorMessage: 'Authorization was not completed. Please try again.' });
+        toast.error('OAuth not completed', { description: 'Authorization did not complete successfully.' });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOAuthStep({ step: 'error', providerId, errorMessage: msg });
+      toast.error('Failed to verify OAuth status', { description: msg });
+    }
+  };
+
+  const triggerDeviceCodeFlow = async () => {
+    if (!template) return;
+    setOAuthStep({ step: 'creating_provider', errorMessage: '' });
+    try {
+      const { provider } = await Admin.activateProvider({ template_id: template.id });
+      const providerId = provider.id;
+      setOAuthStep({ step: 'authorizing', providerId });
+
+      const oauthResp = await Admin.startProviderOAuth(providerId);
+      if (!oauthResp.deviceCode) {
+        throw new Error('No device code returned from server');
+      }
+      setOAuthStep({ step: 'waiting_for_auth', providerId, response: oauthResp });
+
+      const deviceCode = oauthResp.deviceCode;
+
+      pollTimeoutRef.current = setTimeout(() => {
+        if (!mountedRef.current) return;
+        stopPolling();
+        setOAuthStep({
+          step: 'error',
+          providerId,
+          errorMessage: 'Device code expired. Please try again.',
+        });
+        toast.error('Device code timed out', { description: 'Authorization took longer than 5 minutes.' });
+      }, DEVICE_CODE_POLL_TIMEOUT_MS);
+
+      const doPoll = async () => {
+        if (!mountedRef.current) return;
+        try {
+          const result = await Admin.pollProviderOAuthDeviceCode(providerId, deviceCode);
+          if (!mountedRef.current) return;
+
+          if (result.status === 'authorized') {
+            stopPolling();
+            setOAuthStep({ step: 'completed', providerId });
+            toast.success('Provider authorized successfully');
+            onCreated?.();
+            onOpenChange(false);
+          } else if (result.status === 'expired' || result.status === 'denied') {
+            stopPolling();
+            const msg = result.status === 'expired' ? 'Authorization expired.' : 'Authorization denied.';
+            setOAuthStep({ step: 'error', providerId, errorMessage: msg });
+            toast.error('Authorization failed', { description: msg });
+          }
+        } catch (err) {
+          if (!mountedRef.current) return;
+          const msg = err instanceof Error ? err.message : String(err);
+          setOAuthStep({ step: 'error', providerId, errorMessage: msg });
+          toast.error('Polling failed', { description: msg });
+          stopPolling();
+        }
+      };
+
+      pollRef.current = setInterval(doPoll, DEVICE_CODE_POLL_INTERVAL_MS);
+      doPoll();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOAuthStep({ step: 'error', errorMessage: msg });
+      toast.error('OAuth authorization failed', { description: msg });
+    }
+  };
+
+  const triggerClientCredentialsFlow = async () => {
+    if (!template) return;
+    setOAuthStep({ step: 'creating_provider', errorMessage: '' });
+    try {
+      const { provider } = await Admin.activateProvider({ template_id: template.id });
+      const providerId = provider.id;
+      setOAuthStep({ step: 'authorizing', providerId });
+
+      await Admin.startProviderOAuth(providerId);
+      setOAuthStep({ step: 'completed', providerId });
+      toast.success('Provider connected successfully');
+      onCreated?.();
+      onOpenChange(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOAuthStep({ step: 'error', errorMessage: msg });
+      toast.error('OAuth connection failed', { description: msg });
+    }
+  };
+
+  const handleOAuthCancel = () => {
+    stopPolling();
+    closePopup();
+    setOauth(OAUTH_IDLE);
+  };
+
+  const getOAuthActionLabel = (): string => {
+    switch (oauthFlowType) {
+      case 'authorization_code':
+      case 'pkce':
+        return 'Authorize with Provider';
+      case 'device_code':
+        return 'Connect Provider';
+      case 'client_credentials':
+        return 'Connect with OAuth';
+      default:
+        return 'Authorize';
     }
   };
 
@@ -118,9 +343,28 @@ export function AddProviderDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate()) return;
+    if (!validate() || isOAuthFlowActive) return;
+    if (oauth.step === 'completed') {
+      onCreated?.();
+      onOpenChange(false);
+      return;
+    }
     setSubmitting(true);
     try {
+      if (hasOAuthConfig) {
+        switch (oauthFlowType) {
+          case 'authorization_code':
+          case 'pkce':
+            await triggerAuthorizeFlow();
+            return;
+          case 'device_code':
+            await triggerDeviceCodeFlow();
+            return;
+          case 'client_credentials':
+            await triggerClientCredentialsFlow();
+            return;
+        }
+      }
       const oauthAccessToken = form.oauthAccessToken.trim();
       const apiKey = form.apiKey.trim();
       const created = template
@@ -236,24 +480,141 @@ export function AddProviderDialog({
               </FieldDescription>
             </Field>
 
-            <Field>
-              <FieldLabel>
-                <span className="inline-flex items-center gap-1.5">
-                  <KeyRound className="size-3" />
-                  OAuth access token
-                </span>
-              </FieldLabel>
-              <Input
-                type="password"
-                value={form.oauthAccessToken}
-                onChange={(e) => update('oauthAccessToken', e.target.value)}
-                placeholder="Bearer token"
-                autoComplete="off"
-              />
-              <FieldDescription>
-                Use this when the provider account gives you an OAuth bearer token instead of an API key.
-              </FieldDescription>
-            </Field>
+            {hasOAuthConfig ? (
+              <div className="space-y-3 rounded-lg border border-border bg-surface-2/30 p-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <KeyRound className="size-3.5 text-fg-muted" />
+                  <span className="text-[10px] text-fg-muted uppercase tracking-wider font-semibold">
+                    OAuth Authorization
+                  </span>
+                  {oauth.step === 'completed' && (
+                    <Badge variant="success" className="ml-auto text-[10px]">Connected</Badge>
+                  )}
+                </div>
+
+                {/* IDLE state — info text */}
+                {oauth.step === 'idle' && (
+                  <p className="text-[11px] text-fg-muted leading-relaxed">
+                    {oauthFlowType === 'authorization_code' || oauthFlowType === 'pkce'
+                      ? 'Authorize this provider via OAuth. Click "Authorize with Provider" below to start.'
+                      : oauthFlowType === 'device_code'
+                        ? 'Use a device code to authorize this provider. Click "Connect Provider" below to start.'
+                        : 'Connect this provider using client credentials OAuth flow.'}
+                  </p>
+                )}
+
+                {/* CREATING_PROVIDER / AUTHORIZING state — spinner */}
+                {(oauth.step === 'creating_provider' || oauth.step === 'authorizing') && (
+                  <div className="flex items-center gap-2.5 py-2">
+                    <Loader2 className="size-4 animate-spin text-primary" />
+                    <span className="text-[11px] text-fg-muted">
+                      {oauth.step === 'creating_provider' ? 'Creating provider...' : 'Initiating authorization...'}
+                    </span>
+                  </div>
+                )}
+
+                {/* WAITING_FOR_AUTH — device code or popup waiting */}
+                {oauth.step === 'waiting_for_auth' && oauthFlowType === 'device_code' && oauth.response && (
+                  <div className="rounded-lg border border-border bg-surface-2/50 p-3 space-y-2.5">
+                    <div className="flex items-start gap-2">
+                      <Clock className="size-3.5 text-fg-muted shrink-0 mt-0.5" />
+                      <div className="text-[11px] text-fg-muted leading-relaxed space-y-1">
+                        <p>
+                          <span className="text-fg font-medium">1.</span> Visit{' '}
+                          <code className="bg-surface-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-primary">
+                            {oauth.response.verificationUri ?? 'the provider\'s website'}
+                          </code>
+                        </p>
+                        <p>
+                          <span className="text-fg font-medium">2.</span> Enter code:{' '}
+                          <code className="bg-surface-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-primary font-bold select-all">
+                            {oauth.response.userCode ?? oauth.response.deviceCode}
+                          </code>
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] text-fg-muted">
+                      <Loader2 className="size-3 animate-spin" />
+                      <span>Waiting for you to authorize...</span>
+                    </div>
+                  </div>
+                )}
+
+                {oauth.step === 'waiting_for_auth' && (oauthFlowType === 'authorization_code' || oauthFlowType === 'pkce') && (
+                  <div className="flex items-center gap-2.5 py-2">
+                    <Loader2 className="size-4 animate-spin text-primary" />
+                    <span className="text-[11px] text-fg-muted">
+                      Please complete authorization in the popup window...
+                    </span>
+                  </div>
+                )}
+
+                {oauth.step === 'waiting_for_auth' && oauthFlowType === 'client_credentials' && (
+                  <div className="flex items-center gap-2.5 py-2">
+                    <Loader2 className="size-4 animate-spin text-primary" />
+                    <span className="text-[11px] text-fg-muted">Exchanging credentials...</span>
+                  </div>
+                )}
+
+                {/* POLLING state */}
+                {oauth.step === 'polling' && (
+                  <div className="flex items-center gap-2.5 py-2">
+                    <Loader2 className="size-4 animate-spin text-primary" />
+                    <span className="text-[11px] text-fg-muted">Completing authorization...</span>
+                  </div>
+                )}
+
+                {/* ERROR state */}
+                {oauth.step === 'error' && (
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="size-3.5 text-red-500 shrink-0 mt-0.5" />
+                      <p className="text-[11px] text-red-500 leading-relaxed">{oauth.errorMessage}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleOAuthCancel}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                )}
+
+                {/* Cancel button during active flow */}
+                {(oauth.step === 'waiting_for_auth' || oauth.step === 'polling') && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleOAuthCancel}
+                    className="text-fg-muted"
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <Field>
+                <FieldLabel>
+                  <span className="inline-flex items-center gap-1.5">
+                    <KeyRound className="size-3" />
+                    OAuth access token
+                  </span>
+                </FieldLabel>
+                <Input
+                  type="password"
+                  value={form.oauthAccessToken}
+                  onChange={(e) => update('oauthAccessToken', e.target.value)}
+                  placeholder="Bearer token"
+                  autoComplete="off"
+                />
+                <FieldDescription>
+                  Use this when the provider account gives you an OAuth bearer token instead of an API key.
+                </FieldDescription>
+              </Field>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <Field>
@@ -292,12 +653,27 @@ export function AddProviderDialog({
               type="button"
               variant="ghost"
               onClick={() => onOpenChange(false)}
-              disabled={submitting}
+              disabled={submitting || isOAuthFlowActive}
             >
               Cancel
             </Button>
-            <Button type="submit" loading={submitting} leftIcon={<Plus className="size-3.5" />}>
-              Create provider
+            <Button
+              type="submit"
+              loading={submitting || isOAuthFlowActive}
+              disabled={isOAuthFlowActive}
+              leftIcon={
+                oauth.step === 'completed'
+                  ? <CheckCircle2 className="size-3.5" />
+                  : hasOAuthConfig
+                    ? <ExternalLink className="size-3.5" />
+                    : <Plus className="size-3.5" />
+              }
+            >
+              {oauth.step === 'completed'
+                ? 'Done'
+                : hasOAuthConfig
+                  ? getOAuthActionLabel()
+                  : 'Create provider'}
             </Button>
           </DialogFooter>
         </form>

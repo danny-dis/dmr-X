@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Wallet, TrendingUp, DollarSign, Users, ChevronRight, ArrowUp, ArrowDown, Sparkles } from 'lucide-react';
+import { Wallet, TrendingUp, DollarSign, Users, ChevronRight, ArrowUp, ArrowDown, Sparkles, CreditCard } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { StatTile } from '@/components/primitives/StatTile';
@@ -9,6 +9,9 @@ import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
 import { WaterfallChart } from '@/components/charts/WaterfallChart';
 import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from '@/components/primitives/Dialog';
+import { Button } from '@/components/primitives/Button';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatCurrency, formatNumber, formatTokens } from '@/lib/formatters';
@@ -36,6 +39,7 @@ export function UsagePage() {
     { refetchInterval: 15000 }
   );
   const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 30000 });
+  const [selectedInvoice, setSelectedInvoice] = React.useState<NonNullable<ApiBillingSummary['invoices']>[number] | null>(null);
 
   const series = (usage.data?.points ?? []).map((p) => ({
     t: p.t,
@@ -181,9 +185,10 @@ export function UsagePage() {
           <CardContent className="px-0">
             <div className="flex flex-col gap-1">
               {(billing.data?.invoices ?? []).slice(0, 6).map((inv) => (
-                <div
+                <button
                   key={inv.id}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-2"
+                  onClick={() => setSelectedInvoice(inv)}
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-2 w-full text-left"
                 >
                   <div className="flex size-8 items-center justify-center rounded-lg bg-warning/10 text-warning">
                     <Wallet className="size-3.5" />
@@ -203,7 +208,7 @@ export function UsagePage() {
                       {inv.status}
                     </Badge>
                   </div>
-                </div>
+                </button>
               ))}
               {(!billing.data?.invoices || billing.data.invoices.length === 0) && (
                 <p className="py-8 text-center text-fg-subtle text-xs">No invoices yet</p>
@@ -212,6 +217,66 @@ export function UsagePage() {
           </CardContent>
         </Card>
       </div>
+      <Dialog open={selectedInvoice !== null} onOpenChange={(o) => { if (!o) setSelectedInvoice(null); }}>
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>Invoice Details</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            {selectedInvoice && (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-border bg-surface-2/40 px-3 divide-y divide-border/60">
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-[11px] text-fg-subtle uppercase tracking-wider">Invoice ID</span>
+                    <span className="text-xs text-fg font-mono">{selectedInvoice.id}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-[11px] text-fg-subtle uppercase tracking-wider">Tenant</span>
+                    <span className="text-xs text-fg">{selectedInvoice.tenantName ?? selectedInvoice.tenantId ?? '—'}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-[11px] text-fg-subtle uppercase tracking-wider">Period</span>
+                    <span className="text-xs text-fg">
+                      {new Date(selectedInvoice.periodStart).toLocaleDateString()} → {new Date(selectedInvoice.periodEnd).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-[11px] text-fg-subtle uppercase tracking-wider">Amount</span>
+                    <span className="text-sm font-semibold text-fg tabular-nums">{formatCurrency(selectedInvoice.amount ?? 0)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-[11px] text-fg-subtle uppercase tracking-wider">Status</span>
+                    <Badge
+                      tone={selectedInvoice.status === 'paid' ? 'success' : selectedInvoice.status === 'overdue' ? 'danger' : 'muted'}
+                      size="sm"
+                    >
+                      {selectedInvoice.status}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider mb-1">Usage breakdown</p>
+                  <p className="text-xs text-fg-muted">Line items will be available in a future update.</p>
+                </div>
+              </div>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            {selectedInvoice && (selectedInvoice.status === 'pending' || selectedInvoice.status === 'overdue') && (
+              <Button
+                variant="primary"
+                onClick={() => toast.success('Payment integration coming soon')}
+                leftIcon={<CreditCard className="size-3" />}
+              >
+                Pay invoice
+              </Button>
+            )}
+            <Button variant="ghost" onClick={() => setSelectedInvoice(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageContainer>
   );
 }

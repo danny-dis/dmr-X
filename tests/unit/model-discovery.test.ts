@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { discoverOpenAIModels } from '../../services/registry/src/model-discovery.js';
 
 function makeFetch(responses: Array<{ url: RegExp; status: number; body: unknown }>) {
-  return vi.fn(async (url: string) => {
+  return vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
     for (const r of responses) {
       if (r.url.test(url)) {
         return {
@@ -66,9 +67,9 @@ describe('discoverOpenAIModels', () => {
       json: async () => ({ data: [] }),
     }) as Response);
     await discoverOpenAIModels({ baseUrl: 'https://x.test/v1', apiKey: 'sk-test', fetchImpl });
-    const call = fetchImpl.mock.calls[0];
-    const headers = call[1]?.headers as Record<string, string>;
-    expect(headers.Authorization).toBe('Bearer sk-test');
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit] | undefined;
+    const headers = call?.[1]?.headers as Record<string, string> | undefined;
+    expect(headers?.Authorization).toBe('Bearer sk-test');
   });
 
   it('does NOT send Authorization header for keyless providers', async () => {
@@ -78,9 +79,9 @@ describe('discoverOpenAIModels', () => {
       json: async () => ({ data: [] }),
     }) as Response);
     await discoverOpenAIModels({ baseUrl: 'https://text.pollinations.ai/openai', apiKey: '', fetchImpl });
-    const call = fetchImpl.mock.calls[0];
-    const headers = call[1]?.headers as Record<string, string>;
-    expect(headers.Authorization).toBeUndefined();
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit] | undefined;
+    const headers = call?.[1]?.headers as Record<string, string> | undefined;
+    expect(headers?.Authorization).toBeUndefined();
   });
 
   it('strips trailing slash from baseUrl', async () => {
@@ -90,7 +91,7 @@ describe('discoverOpenAIModels', () => {
       json: async () => ({ data: [{ id: 'm1' }] }),
     }) as Response);
     await discoverOpenAIModels({ baseUrl: 'https://x.test/v1/', fetchImpl });
-    const calledUrl = fetchImpl.mock.calls[0][0] as string;
+    const calledUrl = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit] | undefined)?.[0];
     expect(calledUrl).toBe('https://x.test/v1/models');
   });
 

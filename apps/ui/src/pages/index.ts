@@ -12,6 +12,8 @@ export { UsagePage } from './Usage';
 export { BenchmarksPage } from './Benchmarks';
 export { MemoryPage } from './Memory';
 export { SandboxPage } from './Sandbox';
+export { ToolsPage } from './Tools';
+export { MCPPage } from './MCP';
 export { WorkersPage } from './Workers';
 export { FederationPage } from './Federation';
 export { ObservabilityPage } from './Observability';

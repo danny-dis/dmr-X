@@ -90,6 +90,7 @@ export function ProviderDetailDrawer({
 }: ProviderDetailDrawerProps) {
   const [toggling, setToggling] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
+  const [refreshing, setRefreshing] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
 
@@ -97,6 +98,7 @@ export function ProviderDetailDrawer({
     if (!open) {
       setToggling(false);
       setTesting(false);
+      setRefreshing(false);
       setDeleting(false);
       setConfirmDelete(false);
     }
@@ -135,6 +137,25 @@ export function ProviderDetailDrawer({
       });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const onRefreshModels = async () => {
+    if (!provider) return;
+    setRefreshing(true);
+    try {
+      const result = await Admin.testProvider(provider.id);
+      if (result.ok) {
+        toast.success('Provider connection verified', { description: 'Models will be auto-discovered on next health check.' });
+      } else {
+        toast.error('Connection test failed', { description: result.error });
+      }
+    } catch (err) {
+      toast.error('Connection test failed', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -316,6 +337,19 @@ export function ProviderDetailDrawer({
                 value={provider.modelCount ?? provider.models?.length ?? 0}
               />
             </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="mt-2 w-full"
+              onClick={onRefreshModels}
+              loading={refreshing}
+              leftIcon={<Activity className="size-3.5" />}
+            >
+              Refresh models
+            </Button>
+            <p className="text-[10px] text-fg-subtle mt-1 ml-0.5">
+              Tests connection &amp; schedules auto-discovery
+            </p>
           </section>
 
           <section>

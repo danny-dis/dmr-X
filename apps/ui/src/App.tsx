@@ -15,6 +15,8 @@ import {
   BenchmarksPage,
   MemoryPage,
   SandboxPage,
+  ToolsPage,
+  MCPPage,
   WorkersPage,
   FederationPage,
   ObservabilityPage,
@@ -42,6 +44,8 @@ export default function App() {
           <Route path="/benchmarks" element={<BenchmarksPage />} />
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/sandbox" element={<SandboxPage />} />
+          <Route path="/mcp" element={<MCPPage />} />
+          <Route path="/tools" element={<ToolsPage />} />
           <Route path="/workers" element={<WorkersPage />} />
           <Route path="/federation" element={<FederationPage />} />
           <Route path="/observability" element={<ObservabilityPage />} />

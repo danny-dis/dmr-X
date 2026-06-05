@@ -13,6 +13,7 @@ import {
   Trophy,
   MemoryStick,
   Terminal,
+  Hammer,
   Cpu,
   Network,
   Bell,
@@ -142,6 +143,18 @@ export const NAV_GROUPS: NavGroup[] = [
         path: '/sandbox',
         icon: Terminal,
         description: 'Ephemeral execution',
+      },
+      {
+        label: 'MCP Server',
+        path: '/mcp',
+        icon: Cpu,
+        description: 'Model Context Protocol server',
+      },
+      {
+        label: 'Tools',
+        path: '/tools',
+        icon: Hammer,
+        description: 'Test tool execution & loops',
       },
       {
         label: 'Workers',
