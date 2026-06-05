@@ -24,7 +24,19 @@ coverage/
 *.db-shm
 apps/gateway/public/
 cla/*.md
-!cla/README.md
+!.claude/README.md
 release/
 *.png
 test-request*.json
+
+# Dev / debug artifacts
+.dbg/
+scratch/
+.tmp-*
+apply-schema-fix.ts
+check-db-state.ts
+sync-pollinations.ts
+debug-*.md
+*.bak
+*.minimal
+*.err.log
