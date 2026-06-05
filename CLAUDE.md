@@ -1,5 +1,26 @@
 # DMR-X — Project Instructions
 
+## Session Start
+
+1. `cd` to this directory.
+2. Run `npx -y gitnexus@latest status`. If status reports `stale`
+   or `missing`, run `npx -y gitnexus@latest analyze` before
+   answering any question or making any change.
+3. Honor the global code-intelligence rules in your local opencode
+   config (`INSTRUCTIONS.md`) for all impact, detect_changes, query,
+   context, and rename work.
+4. If launching opencode from a fresh shell, prefer the `dmr` wrapper
+   (on PATH) which guarantees a refresh of the index.
+
+## Build / Commit Workflow
+
+- Before editing any function, class, or method → run `gitnexus_impact`
+  first and surface the blast radius to the user.
+- Before any commit → run `gitnexus_detect_changes` and confirm only
+  the expected symbols/flows are touched.
+- For renames / extractions / moves → use `gitnexus_rename`, never
+  find-and-replace.
+
 ## What This Is
 
 DMR-X is a universal AI routing and orchestration platform. A single Fastify gateway accepts requests in OpenAI, Anthropic, and Gemini wire formats, routes them through a multi-stage pipeline to select the best provider, and returns responses in the original format. SQLite for persistence, Bun as primary runtime, zero external dependencies.
@@ -118,12 +139,11 @@ When updating docs, keep them accurate to the actual codebase state. The authori
 - `docs/DISTRIBUTION.md` — binary packaging
 - `docs/MCP.md` — MCP server documentation
 - `docs/TESTING.md` — testing guide
-- `AGENTS.md` — GitNexus code intelligence instructions
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dmr-X** (10450 symbols, 20213 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dmr-X** (7024 symbols, 14445 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

@@ -275,3 +275,57 @@ Transports: stdio (default), SSE, HTTP. Configured via `DMRX_MCP_TRANSPORT`.
 Pages: Dashboard, Playground, Providers, Models, Tenants, Policies, Quotas, Requests, Routing, Benchmarks, Observability, Memory, Workers, Federation, Sandbox, Settings, Usage.
 
 The UI communicates with the gateway via the `/v1/admin/*` API endpoints. In development, Vite runs at `:4200` and proxies `/v1/*` to the gateway at `:3000`.
+
+## Design Philosophy
+
+These principles guide the architecture and the design decisions made
+throughout the codebase.
+
+### Core Principles
+
+- **Unified OpenAI-compatible API** — clients speak one wire format and
+  the gateway translates to/from provider-specific formats
+- **Local-first execution** — Ollama, vLLM, llama.cpp are first-class
+  alongside remote providers
+- **Dynamic routing** — clients never pick a provider directly; the
+  router decides at request time
+- **Multi-provider orchestration** — fan-out, fan-in, fallback chains
+  across heterogeneous providers
+- **Self-learning benchmarking** — Thompson Sampling bandit improves
+  selection based on observed quality
+- **Quota-aware execution** — every request is checked against tenant
+  and free-tier budgets
+- **Federated intelligence** — multiple instances can share learned
+  signals and provider health
+- **Multi-tenancy** — per-tenant API keys, quotas, policies, billing
+- **Multimodal support** — text, image, audio, video, music, embeddings
+  through the same routing fabric
+- **Single-binary distribution** — `bun build --compile` produces a
+  standalone executable with embedded UI
+
+### Intelligence Hierarchy (Vision)
+
+The router organises provider selection along a five-layer hierarchy,
+where each layer is a different way of resolving a request:
+
+1. **Brain** — the long-lived reasoning model that handles complex,
+   multi-step tasks
+2. **Thinkers** — specialised reasoning models selected by task type
+   (coding, math, planning)
+3. **Executers** — fast, instruction-following models for well-defined
+   tasks
+4. **Workers** — short-lived background processes spawned for parallel
+   subtasks
+5. **Temporary Workers** — ephemeral local models spun up just for a
+   single request and torn down
+
+The current router implements the Brain, Thinkers, and Executers
+layers. Workers and Temporary Workers are in-progress.
+
+### Operational Philosophy
+
+DMR-X acts as the intelligent execution fabric between clients and
+AI providers. Clients never directly select providers. The router
+dynamically determines the best execution path based on quality,
+cost, latency, quotas, modality, and policy — and learns from every
+request.
