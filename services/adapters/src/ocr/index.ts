@@ -1,0 +1,1 @@
+export { OcrAdapter, createOcrAdapter } from './ocr.adapter.js';

@@ -1,8 +1,8 @@
 import { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 
 export class TestClient {
-  private baseUrl: string;
-  private apiKey?: string;
+  public baseUrl: string;
+  public apiKey?: string;
 
   constructor(baseUrl: string = 'http://localhost:3000', apiKey?: string) {
     this.baseUrl = baseUrl;

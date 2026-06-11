@@ -66,7 +66,7 @@ export function DashboardPage() {
     { refetchInterval: 4000 }
   );
   const usage = useApiData<{ points: ApiUsagePoint[]; total: number }>(
-    () => Admin.getUsage({ granularity: 'hour' }),
+    () => Admin.getUsage('hour'),
     [],
     { refetchInterval: 10000 }
   );

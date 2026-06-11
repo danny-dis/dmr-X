@@ -266,6 +266,12 @@ export function ModelDetailDrawer({
                 value={model.intelligenceLayer ?? <Empty />}
               />
               <MetaRow
+                label="Capability"
+                value={model.capabilityTier ? (
+                  <Badge tone="muted" size="sm">{model.capabilityTier}</Badge>
+                ) : <Empty />}
+              />
+              <MetaRow
                 label="Tier"
                 value={model.tier ? <Badge tone="muted" size="sm">{model.tier}</Badge> : <Empty />}
               />

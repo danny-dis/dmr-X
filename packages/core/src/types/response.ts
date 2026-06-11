@@ -18,6 +18,9 @@ export interface GeneratedVideo {
   b64_json?: string;
   duration?: number;
   fps?: number;
+  resolution?: string;
+  audio_url?: string;       // native audio track (Seedance, Veo, Kling)
+  has_audio?: boolean;
 }
 
 export interface GeneratedAudio {
@@ -25,6 +28,40 @@ export interface GeneratedAudio {
   b64_json?: string;
   duration?: number;
   format?: string;
+}
+
+export interface Generated3D {
+  url?: string;
+  b64_json?: string;
+  format?: string;
+}
+
+export interface GeneratedFile {
+  filename: string;
+  mimeType: string;
+  url?: string;
+  b64_json?: string;
+  size?: number;
+}
+
+export interface AudioStem {
+  name: string;
+  url?: string;
+  b64_json?: string;
+  mimeType?: string;
+}
+
+export interface OcrText {
+  text: string;
+  confidence?: number;
+  boundingBox?: [number, number, number, number];
+  page?: number;
+}
+
+export interface OcrResult {
+  text: string;
+  ocrTexts?: OcrText[];
+  fullTextAnnotation?: string;
 }
 
 export interface RerankResult {
@@ -43,6 +80,21 @@ export interface QualitySignal {
   type: string;
   score: number;
   details?: Record<string, unknown>;
+}
+
+/**
+ * Async video generation job status.
+ * Video models (Sora 2, Veo 3.1, Kling, etc.) are inherently async.
+ */
+export interface VideoJobStatus {
+  jobId: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  progress?: number;         // 0-100
+  result?: GeneratedVideo[];
+  error?: string;
+  pollingUrl?: string;
+  createdAt?: string;
+  completedAt?: string;
 }
 
 export interface UnifiedResponse {
@@ -65,6 +117,9 @@ export interface UnifiedResponse {
   // Audio
   audio?: GeneratedAudio;
 
+  // 3D
+  models3d?: Generated3D[];
+
   // Embedding
   embeddings?: number[][];
 
@@ -76,6 +131,14 @@ export interface UnifiedResponse {
 
   // Code completion
   completion?: string;
+
+  // Audio Separation
+  stems?: AudioStem[];
+  stemArchive?: GeneratedFile; // ZIP file containing all stems
+
+  // OCR
+  ocr?: OcrResult;
+  files?: GeneratedFile[]; // For multi-page OCR or generated files
 
   // Timing
   latencyMs: number;

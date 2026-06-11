@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — Top-3 Improvement Sprint (2026-06-10)
+
+### Adapters
+- Re-exported the remaining adapter classes from `services/adapters/src/index.ts`:
+  `KokoroAdapter` (audio_tts), `PiperAdapter` (audio_tts), and `TeiAdapter`
+  (embedding + reranking). All three were already implemented on disk but
+  missing from the public surface.
+- Audited `services/adapters/src` against the docs and the README.
+  Confirmed 18 concrete adapter implementations present (not 10 as the
+  docs/README previously claimed).
+
+### Documentation
+- `docs/AI_PROVIDER_REFERENCE.md`: updated header to reflect the actual
+  adapter inventory (18 adapters + `GenericOpenAIAdapter`) with a
+  cross-reference to `services/adapters/src/index.ts`.
+- `README.md`: corrected the "70+ providers" line to enumerate the real
+  18 adapters, and updated the architecture diagram's provider block.
+- `docs/archive/agents checklist.md`: added **Phase 8 — Top-3 Improvement
+  Sprint** tracking 16 new sub-tasks across three workstreams
+  (adapter surface reconciliation, Intelligence Hierarchy Workers
+  layer, bandit learning from real outcomes).
+
 ## v0.3.0 — Documentation Overhaul & Gemini API (2026-06-01)
 
 ### Documentation

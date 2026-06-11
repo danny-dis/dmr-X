@@ -2,8 +2,7 @@ export const SUPPORTED_LANGUAGES: Record<string, { name: string; extension: stri
   python: { name: 'Python', extension: '.py', command: 'python3' },
   node: { name: 'Node.js', extension: '.js', command: 'node' },
   javascript: { name: 'JavaScript', extension: '.js', command: 'node' },
-  bash: { name: 'Bash', extension: '.sh', command: 'bash' },
-  sh: { name: 'Shell', extension: '.sh', command: 'sh' },
+  // SECURITY: bash/sh removed — they provide unrestricted OS access
   deno: { name: 'Deno', extension: '.ts', command: 'deno' },
   bun: { name: 'Bun', extension: '.ts', command: 'bun' },
 };

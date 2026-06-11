@@ -9,6 +9,7 @@ function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0
     modelId: 'test-model',
     modality: 'llm',
     intelligenceLayer: 'executor',
+    capabilityTier: 'executor',
     capabilities: [],
     costPerInputToken: 0,
     costPerOutputToken: 0,

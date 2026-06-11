@@ -23,7 +23,7 @@ export function QuotaPage() {
     }
   }, [tenants.data, selectedTenant]);
 
-  const quota = useApiData<ApiQuotaState>(
+  const quota = useApiData<ApiQuotaState[]>(
     () => Admin.getQuota(selectedTenant!),
     [selectedTenant],
     { enabled: !!selectedTenant, refetchInterval: 8000 }
@@ -56,42 +56,42 @@ export function QuotaPage() {
       <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatTile
           label="Tokens used"
-          value={quota.data ? formatTokens(quota.data.tokensUsed ?? 0) : '—'}
+          value={quota.data?.[0] ? formatTokens(quota.data[0].tokens_used ?? 0) : '—'}
           tone="primary"
           icon={<TrendingUp className="size-3.5" />}
-          hint={quota.data ? `of ${formatTokens(quota.data.tokensLimit ?? 0, true)} limit` : undefined}
+          hint={quota.data?.[0] ? `of ${formatTokens(quota.data[0].tokens_limit ?? 0, true)} limit` : undefined}
           loading={quota.isLoading}
         />
         <StatTile
           label="Requests"
-          value={quota.data ? formatNumber(quota.data.requestsUsed ?? 0) : '—'}
+          value={quota.data?.[0] ? formatNumber(quota.data[0].requests_used ?? 0) : '—'}
           tone="accent"
           icon={<Users className="size-3.5" />}
-          hint={quota.data ? `of ${formatNumber(quota.data.requestsLimit ?? 0, true)} limit` : undefined}
+          hint={quota.data?.[0] ? `of ${formatNumber(quota.data[0].requests_limit ?? 0, true)} limit` : undefined}
           loading={quota.isLoading}
         />
         <StatTile
           label="Cost"
-          value={quota.data ? formatCompactCurrency(quota.data.costUsed ?? 0) : '—'}
+          value={quota.data?.[0] ? formatCompactCurrency(quota.data[0].cost_used ?? 0) : '—'}
           tone="warning"
           icon={<TrendingUp className="size-3.5" />}
-          hint={quota.data ? `of ${formatCompactCurrency(quota.data.costLimit ?? 0)} limit` : undefined}
+          hint={quota.data?.[0] ? `of ${formatCompactCurrency(quota.data[0].cost_limit ?? 0)} limit` : undefined}
           loading={quota.isLoading}
         />
         <StatTile
           label="Status"
           value={
-            quota.data
-              ? quota.data.exceeded
+            quota.data?.[0]
+              ? quota.data[0].exceeded
                 ? 'Exceeded'
-                : quota.data.warnAt
+                : quota.data[0].warn_at
                   ? 'Warning'
                   : 'Healthy'
               : '—'
           }
-          tone={quota.data?.exceeded ? 'danger' : quota.data?.warnAt ? 'warning' : 'success'}
+          tone={quota.data?.[0]?.exceeded ? 'danger' : quota.data?.[0]?.warn_at ? 'warning' : 'success'}
           icon={
-            quota.data?.exceeded ? (
+            quota.data?.[0]?.exceeded ? (
               <ShieldAlert className="size-3.5" />
             ) : (
               <ShieldCheck className="size-3.5" />
@@ -112,8 +112,8 @@ export function QuotaPage() {
               <div className="flex justify-center">
                 <Skeleton className="size-32 rounded-full" />
               </div>
-            ) : quota.data ? (
-              <QuotaGauge quota={quota.data} />
+            ) : quota.data?.[0] ? (
+              <QuotaGauge quota={quota.data[0]} />
             ) : null}
           </CardContent>
         </Card>
@@ -124,10 +124,10 @@ export function QuotaPage() {
             <p className="text-[10px] text-fg-muted mt-0.5">Token consumption by model</p>
           </CardHeader>
           <CardContent className="px-0">
-            {quota.data?.byModel ? (
+            {quota.data?.[0]?.by_model ? (
               <div className="flex flex-col gap-3">
-                {Object.entries(quota.data.byModel).map(([model, used]) => {
-                  const limit = quota.data?.perModelLimit?.[model] ?? (quota.data.tokensLimit ?? 0) / 5;
+                {Object.entries(quota.data[0].by_model).map(([model, used]) => {
+                  const limit = quota.data?.[0]?.per_model_limit?.[model] ?? (quota.data?.[0]?.tokens_limit ?? 0) / 5;
                   const pct = (used / limit) * 100;
                   return (
                     <div key={model} className="flex flex-col gap-1">
@@ -179,7 +179,7 @@ export function QuotaPage() {
                       <p className="text-sm font-medium text-fg truncate">{t.name}</p>
                       <p className="text-[10px] text-fg-muted">{t.tier ?? 'free'} tier</p>
                     </div>
-                    <QuotaProgressBar quota={{ tokensUsed: t.tokensUsed, tokensLimit: t.tokensLimit } as ApiQuotaState} />
+                    <QuotaProgressBar quota={{ tokens_used: t.tokens_used, tokens_limit: t.tokens_limit } as ApiQuotaState} />
                   </div>
                 ))}
               </div>

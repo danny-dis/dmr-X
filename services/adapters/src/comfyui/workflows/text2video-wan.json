@@ -1,0 +1,46 @@
+{
+  "1": {
+    "class_type": "WanVideoTextEncode",
+    "inputs": {
+      "text": "__PROMPT__"
+    }
+  },
+  "2": {
+    "class_type": "WanVideoEmptyLatent",
+    "inputs": {
+      "width": __WIDTH__,
+      "height": __HEIGHT__,
+      "length": __DURATION__
+    }
+  },
+  "3": {
+    "class_type": "WanVideoSampler",
+    "inputs": {
+      "seed": __SEED__,
+      "steps": __STEPS__,
+      "cfg": __CFG_SCALE__,
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "positive": ["1", 0],
+      "latent": ["2", 0]
+    }
+  },
+  "4": {
+    "class_type": "WanVideoDecode",
+    "inputs": {
+      "samples": ["3", 0]
+    }
+  },
+  "5": {
+    "class_type": "VideoCombine",
+    "inputs": {
+      "frame_rate": __FPS__,
+      "loop_count": 1,
+      "filename_prefix": "dmrx_wan",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true,
+      "images": ["4", 0]
+    }
+  }
+}

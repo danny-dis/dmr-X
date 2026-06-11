@@ -4,6 +4,7 @@ import type { SpecialistRouter } from './specialist-router.js';
 import type { AdapterExecutor } from '../fallback/fallback-executor.js';
 import type { CandidateSet, ProviderModel } from '@dmr-x/core';
 import { logger } from '@dmr-x/utils';
+import type { WorkerPoolFanout } from './worker-pool-fanout.js';
 
 export interface CompositeResult {
   taskId: string;
@@ -26,7 +27,8 @@ export interface SubTaskResult {
 export class CompositeExecutor {
   constructor(
     private specialistRouter: SpecialistRouter,
-    private adapterExecutor: AdapterExecutor
+    private adapterExecutor: AdapterExecutor,
+    private readonly workerPool?: WorkerPoolFanout,
   ) {}
 
   /**
@@ -112,7 +114,11 @@ export class CompositeExecutor {
   }
 
   /**
-   * Execute sub-tasks in parallel
+   * Execute sub-tasks in parallel.
+   *
+   * If a `WorkerPoolFanout` was injected, delegate to it so each sub-task is
+   * also tracked as a `WorkerJob` (the "Workers" layer of the Intelligence
+   * Hierarchy). Otherwise fall back to plain in-process Promise.allSettled.
    */
   private async executeParallel(
     group: ExecutionGroup,
@@ -124,6 +130,18 @@ export class CompositeExecutor {
     const tasks = group.subTaskIds
       .map((id) => subTasks.find((t) => t.id === id))
       .filter((t): t is SubTask => t !== undefined);
+
+    if (this.workerPool) {
+      const fanoutResults = await this.workerPool.runParallel(
+        tasks,
+        assignments,
+        (subTask) => this.buildSubTaskRequest(subTask, originalRequest, results),
+      );
+      for (const [id, r] of fanoutResults) {
+        results.set(id, r);
+      }
+      return;
+    }
 
     const promises = tasks.map((subTask) =>
       this.executeSubTask(subTask, assignments, originalRequest, results)

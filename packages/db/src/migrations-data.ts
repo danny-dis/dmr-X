@@ -382,4 +382,47 @@ CREATE INDEX IF NOT EXISTS idx_policies_tenant ON policies(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_quota_allocations_tenant ON quota_allocations(tenant_id);
 `,
   },
+  10: {
+    filename: '010_add_capability_tier.sql',
+    sql: `-- Add capability_tier column to model_profiles
+-- This separates source classification (intelligence_layer) from actual capability (capability_tier)
+ALTER TABLE model_profiles ADD COLUMN capability_tier TEXT NOT NULL DEFAULT 'executor';
+
+-- Index for routing queries that filter by capability tier
+CREATE INDEX IF NOT EXISTS idx_model_profiles_capability_tier
+ON model_profiles(capability_tier)
+WHERE is_active = 1;
+`,
+},
+11: {
+filename: '011_elo_and_playground_feedback.sql',
+sql: `-- Phase 1: Add Elo Rating to Model Profiles
+ALTER TABLE model_profiles ADD COLUMN elo_rating REAL NOT NULL DEFAULT 1200;
+
+-- Phase 5: Playground Feedback table
+CREATE TABLE IF NOT EXISTS playground_feedback (
+id TEXT PRIMARY KEY,
+request_id TEXT NOT NULL,
+model_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
+user_id TEXT, -- Optional, for tracking specific users
+
+-- Explicit feedback
+rating INTEGER, -- 1 for thumbs up, -1 for thumbs down
+feedback_text TEXT,
+
+-- Implicit feedback (JSON flags)
+implicit_signals TEXT DEFAULT '{}', -- e.g. {"copied": true, "regenerated": true}
+
+-- Battle outcome (if comparison was used)
+is_winner INTEGER, -- 1 if this model won the comparison
+competitor_model_id TEXT REFERENCES model_profiles(id),
+
+created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_playground_feedback_model ON playground_feedback(model_id);
+CREATE INDEX IF NOT EXISTS idx_playground_feedback_request ON playground_feedback(request_id);
+`,
+},
 };
+

@@ -9,6 +9,7 @@ COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/utils/package.json packages/utils/
 COPY packages/cli/package.json packages/cli/
+COPY packages/plugin-loader/package.json packages/plugin-loader/
 COPY services/router/package.json services/router/
 COPY services/adapters/package.json services/adapters/
 COPY services/registry/package.json services/registry/
@@ -24,6 +25,7 @@ COPY services/sandbox/package.json services/sandbox/
 COPY services/memory/package.json services/memory/
 COPY services/federation/package.json services/federation/
 COPY services/oauth/package.json services/oauth/
+COPY services/plugin-loader-bootstrap/package.json services/plugin-loader-bootstrap/
 COPY apps/gateway/package.json apps/gateway/
 COPY apps/ui/package.json apps/ui/
 
@@ -57,6 +59,7 @@ COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/utils/package.json packages/utils/
 COPY packages/cli/package.json packages/cli/
+COPY packages/plugin-loader/package.json packages/plugin-loader/
 COPY services/router/package.json services/router/
 COPY services/adapters/package.json services/adapters/
 COPY services/registry/package.json services/registry/
@@ -72,6 +75,7 @@ COPY services/sandbox/package.json services/sandbox/
 COPY services/memory/package.json services/memory/
 COPY services/federation/package.json services/federation/
 COPY services/oauth/package.json services/oauth/
+COPY services/plugin-loader-bootstrap/package.json services/plugin-loader-bootstrap/
 COPY apps/gateway/package.json apps/gateway/
 COPY apps/ui/package.json apps/ui/
 

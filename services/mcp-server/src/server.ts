@@ -10,7 +10,8 @@ import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter } from 
 import { ReplicateAdapter, StabilityAdapter } from '@dmr-x/adapters';
 import { logger } from '@dmr-x/utils';
 import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
-import { CohereAdapter, JinaAdapter } from '@dmr-x/adapters';
+import { CohereAdapter, JinaAdapter, ComfyUIAdapter } from '@dmr-x/adapters';
+import { FalAdapter, VeoAdapter, RunwayAdapter } from '@dmr-x/adapters';
 import { MCPClient } from '@dmr-x/mcp-client';
 import { z } from 'zod';
 import type {
@@ -27,6 +28,8 @@ import {
   TOOL_DESCRIPTIONS,
   dmrxChatParams as chatParams,
   dmrxGenerateImageParams as imageParams,
+  dmrxGenerateVideoParams as videoParams,
+  dmrxGenerateMusicParams as musicParams,
   dmrxEmbedParams as embedParams,
   dmrxTranscribeParams as transcribeParams,
   dmrxSpeakParams as speakParams,
@@ -41,7 +44,9 @@ import {
   dmrxContextCompressParams as contextCompressParams,
   dmrxChatStreamParams as chatStreamParams,
   dmrxGenerateImageStreamParams as imageStreamParams,
+  dmrxGenerateVideoStreamParams as videoStreamParams,
   dmrxWorkflowParams as workflowParams,
+  dmrxGenerate3DParams as threeDParams,
 } from './tools.js';
 
 // ---------------------------------------------------------------------------
@@ -101,6 +106,8 @@ const MODALITY_TO_PATH: Record<Modality, string> = {
   code_completion: '/v1/completions',
   image_upscaling: '/v1/images/upscale',
   image_inpainting: '/v1/images/inpaint',
+  vision: '/v1/vision/detect',
+  '3d': '/v1/3d/generate',
 };
 
 function buildAdapterRegistry(): AdapterRegistry {
@@ -114,6 +121,10 @@ function buildAdapterRegistry(): AdapterRegistry {
   registry.register(new DeepgramAdapter());
   registry.register(new CohereAdapter());
   registry.register(new JinaAdapter());
+  registry.register(new ComfyUIAdapter());
+  registry.register(new FalAdapter());
+  registry.register(new VeoAdapter());
+  registry.register(new RunwayAdapter());
   return registry;
 }
 
@@ -241,6 +252,28 @@ function toUnifiedRequest(
       request.documents = params.documents as string[];
       request.top_n = params.top_n as number | undefined;
       break;
+
+    case 'video':
+      request.prompt = params.prompt as string;
+      request.image = params.image as string | undefined;
+      request.duration = params.duration as number | undefined;
+      request.fps = params.fps as number | undefined;
+      request.aspect_ratio = params.aspect_ratio as string | undefined;
+      break;
+
+    case 'music':
+      request.prompt = params.prompt as string;
+      request.genre = params.genre as string | undefined;
+      request.duration_seconds = params.duration_seconds as number | undefined;
+      request.instruments = params.instruments as string[] | undefined;
+      break;
+
+    case '3d':
+      request.prompt = params.prompt as string | undefined;
+      request.image = params.image as string | undefined;
+      request.texture_resolution = params.texture_resolution as number | undefined;
+      request.diffusion_seed = params.seed as number | undefined;
+      break;
   }
 
   return request;
@@ -337,6 +370,53 @@ function formatRerankResponse(response: UnifiedResponse): string {
       index: r.index,
       relevance_score: r.relevance_score,
       document: r.document,
+    })) || [],
+  };
+
+  return JSON.stringify(result, null, 2);
+}
+
+function formatVideoResponse(response: UnifiedResponse): string {
+  const result: Record<string, unknown> = {
+    created: Math.floor(Date.now() / 1000),
+    provider: response.providerId,
+    model: response.modelId,
+    data: response.videos?.map((v) => ({
+      url: v.url,
+      b64_json: v.b64_json,
+      duration: v.duration,
+      fps: v.fps,
+    })) || [],
+  };
+
+  return JSON.stringify(result, null, 2);
+}
+
+function formatMusicResponse(response: UnifiedResponse): string {
+  const result: Record<string, unknown> = {
+    created: Math.floor(Date.now() / 1000),
+    provider: response.providerId,
+    model: response.modelId,
+    audio: response.audio ? {
+      url: response.audio.url,
+      b64_json: response.audio.b64_json,
+      format: response.audio.format,
+      duration: response.audio.duration,
+    } : null,
+  };
+
+  return JSON.stringify(result, null, 2);
+}
+
+function format3DResponse(response: UnifiedResponse): string {
+  const result: Record<string, unknown> = {
+    created: Math.floor(Date.now() / 1000),
+    provider: response.providerId,
+    model: response.modelId,
+    data: response.models3d?.map((v) => ({
+      url: v.url,
+      b64_json: v.b64_json,
+      format: v.format,
     })) || [],
   };
 
@@ -460,6 +540,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   const sdkToolDefs: Array<{ name: string; description: string; params: unknown }> = [
     { name: TOOL_NAMES.CHAT, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT], params: chatParams },
     { name: TOOL_NAMES.GENERATE_IMAGE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE], params: imageParams },
+    { name: TOOL_NAMES.GENERATE_VIDEO, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO], params: videoParams },
+    { name: TOOL_NAMES.GENERATE_MUSIC, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_MUSIC], params: musicParams },
     { name: TOOL_NAMES.EMBED, description: TOOL_DESCRIPTIONS[TOOL_NAMES.EMBED], params: embedParams },
     { name: TOOL_NAMES.TRANSCRIBE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.TRANSCRIBE], params: transcribeParams },
     { name: TOOL_NAMES.SPEAK, description: TOOL_DESCRIPTIONS[TOOL_NAMES.SPEAK], params: speakParams },
@@ -474,7 +556,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     { name: TOOL_NAMES.CONTEXT_COMPRESS, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_COMPRESS], params: contextCompressParams },
     { name: TOOL_NAMES.CHAT_STREAM, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT_STREAM], params: chatStreamParams },
     { name: TOOL_NAMES.GENERATE_IMAGE_STREAM, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE_STREAM], params: imageStreamParams },
+    { name: TOOL_NAMES.GENERATE_VIDEO_STREAM, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO_STREAM], params: videoStreamParams },
     { name: TOOL_NAMES.WORKFLOW, description: TOOL_DESCRIPTIONS[TOOL_NAMES.WORKFLOW], params: workflowParams },
+    { name: TOOL_NAMES.GENERATE_3D, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_3D], params: threeDParams },
   ];
 
   for (const def of sdkToolDefs) {
@@ -736,6 +820,178 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   );
 
   // -----------------------------------------------------------------------
+  // Tool: dmrx_generate_video
+  // -----------------------------------------------------------------------
+  server.tool(
+    TOOL_NAMES.GENERATE_VIDEO,
+    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO],
+    videoParams as any,
+    async (params: any) => {
+      await initAdapters();
+      state.requestCount++;
+
+      try {
+        const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
+        const classifyOptions: ClassifyOptions = {
+          path: MODALITY_TO_PATH['video'],
+          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
+        };
+
+        const { response } = await router.route(request, classifyOptions);
+        const formatted = formatVideoResponse(response);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: formatted + formatRoutingInfo(response),
+          }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        state.lastError = message;
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_generate_video_stream
+  // -----------------------------------------------------------------------
+  server.tool(
+    TOOL_NAMES.GENERATE_VIDEO_STREAM,
+    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO_STREAM],
+    videoStreamParams as any,
+    async (params: any) => {
+      await initAdapters();
+      state.requestCount++;
+
+      try {
+        const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
+        request.stream = true;
+        const classifyOptions: ClassifyOptions = {
+          path: MODALITY_TO_PATH['video'],
+          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
+        };
+
+        const adapter = state.adapterRegistry.get('runway') || state.adapterRegistry.get('replicate') || state.adapterRegistry.get('comfyui');
+        if (!adapter || !adapter.executeStream) {
+          throw new Error('Streaming video generation not supported by current adapter configuration');
+        }
+
+        const stream = adapter.executeStream(request);
+        const updates: string[] = [];
+        for await (const chunk of stream) {
+          updates.push(JSON.stringify(chunk));
+        }
+
+        const response: UnifiedResponse = {
+          modality: 'video',
+          requestId: crypto.randomUUID(),
+          providerId: 'streaming',
+          modelId: request.model || 'streaming-video',
+          videos: [],
+          latencyMs: 0,
+        };
+
+        const formatted = formatVideoResponse(response);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ updates, final: JSON.parse(formatted) }, null, 2),
+          }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        state.lastError = message;
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_generate_music
+  // -----------------------------------------------------------------------
+  server.tool(
+    TOOL_NAMES.GENERATE_MUSIC,
+    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_MUSIC],
+    musicParams as any,
+    async (params: any) => {
+      await initAdapters();
+      state.requestCount++;
+
+      try {
+        const request = toUnifiedRequest('music', params as unknown as Record<string, unknown>);
+        const classifyOptions: ClassifyOptions = {
+          path: MODALITY_TO_PATH['music'],
+          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
+        };
+
+        const { response } = await router.route(request, classifyOptions);
+        const formatted = formatMusicResponse(response);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: formatted + formatRoutingInfo(response),
+          }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        state.lastError = message;
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_generate_3d
+  // -----------------------------------------------------------------------
+  server.tool(
+    TOOL_NAMES.GENERATE_3D,
+    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_3D],
+    threeDParams as any,
+    async (params: any) => {
+      await initAdapters();
+      state.requestCount++;
+
+      try {
+        const request = toUnifiedRequest('3d', params as unknown as Record<string, unknown>);
+        const classifyOptions: ClassifyOptions = {
+          path: MODALITY_TO_PATH['3d'],
+          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
+        };
+
+        const { response } = await router.route(request, classifyOptions);
+        const formatted = format3DResponse(response);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: formatted + formatRoutingInfo(response),
+          }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        state.lastError = message;
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
   // Tool: dmrx_models
   // -----------------------------------------------------------------------
   server.tool(
@@ -811,6 +1067,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           costPerInputToken: m.costPerInputToken,
           costPerOutputToken: m.costPerOutputToken,
           costPerImage: m.costPerImage,
+          costPerVideo: m.costPerVideo,
+          costPerSecond: m.costPerSecond,
+          maxDuration: m.maxDuration,
           healthy: m.isHealthy,
         }));
 
@@ -1482,6 +1741,18 @@ async function executeDMRXTool(
       modality = 'reranking';
       path = '/v1/rerank';
       break;
+    case TOOL_NAMES.GENERATE_VIDEO:
+      modality = 'video';
+      path = '/v1/video/generations';
+      break;
+    case TOOL_NAMES.GENERATE_MUSIC:
+      modality = 'music';
+      path = '/v1/music/generations';
+      break;
+    case TOOL_NAMES.GENERATE_3D:
+      modality = '3d';
+      path = '/v1/3d/generate';
+      break;
     default:
       throw new Error(`Unsupported tool in batch: ${toolName}`);
   }
@@ -1507,6 +1778,12 @@ async function executeDMRXTool(
       return JSON.parse(formatSpeakResponse(response));
     case 'reranking':
       return JSON.parse(formatRerankResponse(response));
+    case 'video':
+      return JSON.parse(formatVideoResponse(response));
+    case 'music':
+      return JSON.parse(formatMusicResponse(response));
+    case '3d':
+      return JSON.parse(format3DResponse(response));
     default:
       return { response };
   }

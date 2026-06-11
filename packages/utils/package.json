@@ -17,9 +17,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "pino": "^9.0.0"
+    "pino": "9.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.4.0"
+    "typescript": "5.4.0"
   }
 }

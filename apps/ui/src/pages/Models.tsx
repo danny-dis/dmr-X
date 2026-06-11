@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Database, Search, Cpu, Filter, ChevronRight, Hash, DollarSign, Zap, RefreshCw } from 'lucide-react';
+import { Database, Search, Cpu, Filter, ChevronRight, Hash, DollarSign, Zap, RefreshCw, Plus } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
@@ -13,14 +13,28 @@ import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatCurrency, formatNumber } from '@/lib/formatters';
 import { ModelDetailDrawer } from '@/components/domain/ModelDetailDrawer';
+import { CreateModelDialog } from '@/components/domain/CreateModelDialog';
 import type { ApiModel, ApiProvider } from '@/types/api';
+
+const CAPABILITY_TIER_LABELS: Record<string, string> = {
+  orchestrator: 'Orchestrator',
+  brain: 'Brain',
+  thinker: 'Thinker',
+  executor: 'Executor',
+  specialist: 'Specialist',
+  worker: 'Worker',
+  temp_worker: 'Temp Worker',
+};
 
 export function ModelsPage() {
   const [query, setQuery] = React.useState('');
   const [modality, setModality] = React.useState<string | null>(null);
   const [providerFilter, setProviderFilter] = React.useState<string | null>(null);
+  const [layerFilter, setLayerFilter] = React.useState<string | null>(null);
+  const [capabilityFilter, setCapabilityFilter] = React.useState<string | null>(null);
   const [page, setPage] = React.useState(1);
   const [selectedModel, setSelectedModel] = React.useState<ApiModel | null>(null);
+  const [createModelOpen, setCreateModelOpen] = React.useState(false);
   const pageSize = 24;
 
   const models = useApiData<ApiModel[]>(() => Admin.listModels(), [], { refetchInterval: 60000 });
@@ -30,10 +44,14 @@ export function ModelsPage() {
     if (query && !m.name.toLowerCase().includes(query.toLowerCase())) return false;
     if (modality && m.modality !== modality) return false;
     if (providerFilter && m.providerId !== providerFilter) return false;
+    if (layerFilter && m.intelligence_layer !== layerFilter) return false;
+    if (capabilityFilter && m.capability_tier !== capabilityFilter) return false;
     return true;
   });
 
   const modalities = Array.from(new Set((models.data ?? []).map((m) => m.modality).filter(Boolean)));
+  const intelligenceLayers = Array.from(new Set((models.data ?? []).map((m) => m.intelligence_layer).filter(Boolean)));
+  const capabilityTiers = ['orchestrator', 'brain', 'thinker', 'executor', 'specialist', 'worker', 'temp_worker'];
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   return (
@@ -50,7 +68,14 @@ export function ModelsPage() {
               onClick={() => void models.refetch()}
               leftIcon={<RefreshCw className="size-3" />}
             >
-              Discover models
+              Discover
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => setCreateModelOpen(true)}
+              leftIcon={<Plus className="size-3" />}
+            >
+              New model
             </Button>
             <Badge tone="muted" size="md" icon={<Cpu className="size-3" />}>
               {filtered.length} models
@@ -105,6 +130,29 @@ export function ModelsPage() {
               </button>
             ))}
           </div>
+          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-border">
+            <button
+              onClick={() => setCapabilityFilter(null)}
+              className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                !capabilityFilter ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+              }`}
+            >
+              all tiers
+            </button>
+            {capabilityTiers.map((tier) => (
+              <button
+                key={tier}
+                onClick={() => setCapabilityFilter(tier === capabilityFilter ? null : tier)}
+                className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                  capabilityFilter === tier
+                    ? 'bg-primary/10 text-primary border border-primary/20'
+                    : 'text-fg-muted hover:bg-surface-2 border border-transparent'
+                }`}
+              >
+                {CAPABILITY_TIER_LABELS[tier] ?? tier}
+              </button>
+            ))}
+          </div>
         </div>
 
         {models.isLoading ? (
@@ -136,12 +184,12 @@ export function ModelsPage() {
                 <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
                   <div>
                     <div className="text-fg-subtle">Context</div>
-                    <div className="text-fg tabular-nums">{formatNumber(m.contextWindow ?? 0, true)}</div>
+                    <div className="text-fg tabular-nums">{formatNumber(m.context_window ?? 0, true)}</div>
                   </div>
                   <div>
                     <div className="text-fg-subtle">In/Out</div>
                     <div className="text-fg tabular-nums">
-                      ${m.inputCostPer1k?.toFixed(3) ?? '—'} / ${m.outputCostPer1k?.toFixed(3) ?? '—'}
+                      ${m.input_cost_per_1k?.toFixed(3) ?? '—'} / ${m.output_cost_per_1k?.toFixed(3) ?? '—'}
                     </div>
                   </div>
                   <div>
@@ -179,6 +227,12 @@ export function ModelsPage() {
           if (!open) setSelectedModel(null);
         }}
         onChanged={() => void models.refetch()}
+      />
+
+      <CreateModelDialog
+        open={createModelOpen}
+        onOpenChange={setCreateModelOpen}
+        onCreated={() => void models.refetch()}
       />
     </PageContainer>
   );

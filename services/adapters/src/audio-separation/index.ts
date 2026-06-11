@@ -1,0 +1,1 @@
+export { AudioSeparationAdapter, createAudioSeparationAdapter } from './audio-separation.adapter.js';

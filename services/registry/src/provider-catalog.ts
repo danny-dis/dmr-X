@@ -79,7 +79,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://api.openai.com/v1',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm', 'embedding', 'audio_tts', 'audio_stt', 'diffusion'],
+    modalities: ['llm', 'embedding', 'audio_tts', 'audio_stt', 'diffusion', 'video'],
     models: [
       { id: 'gpt-4o', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 2.5, outputCostPer1M: 10, capabilities: ['vision', 'tool_use', 'json_mode', 'streaming'], specializations: ['backend_api', 'backend_logic', 'general'] },
       { id: 'gpt-4o-mini', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'json_mode', 'streaming'], specializations: ['bulk_generation', 'fast', 'cheap'] },
@@ -98,6 +98,9 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'gpt-5.4-mini', modalities: ['llm'], contextWindow: 1000000, maxOutputTokens: 32768, inputCostPer1M: 1, outputCostPer1M: 4, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['general', 'fast'] },
       { id: 'gpt-4.1-nano', modalities: ['llm'], contextWindow: 1048576, maxOutputTokens: 32768, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['streaming', 'tool_use', 'json_mode'], specializations: ['fast', 'cheap'] },
       { id: 'gpt-image-1', modalities: ['llm', 'image'], contextWindow: 128000, maxOutputTokens: 4096, inputCostPer1M: 5, outputCostPer1M: 20, costPerImage: 0.02, capabilities: ['streaming', 'vision'], specializations: ['image_generation'] },
+      // Video generation (Sora 2)
+      { id: 'sora-2', modalities: ['video'], capabilities: ['text2video', 'img2video', 'video_edit', 'video_extend', 'native_audio'], specializations: ['creative'] },
+      { id: 'sora-2-pro', modalities: ['video'], capabilities: ['text2video', 'img2video', 'video_edit', 'video_extend', 'native_audio', '4k_output'], specializations: ['creative'] },
     ],
     streaming: true,
     toolCalling: true,
@@ -138,7 +141,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm', 'embedding', 'audio_stt', 'diffusion'],
+    modalities: ['llm', 'embedding', 'audio_stt', 'diffusion', 'video'],
     models: [
       { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
       { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
@@ -146,7 +149,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'text-embedding-004', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
       { id: 'imagen-3.0', modalities: ['diffusion'], capabilities: ['text2img'], specializations: ['creative'] },
       { id: 'gemini-3.5-flash', modalities: ['llm'], contextWindow: 1000000, maxOutputTokens: 65536, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['fast', 'cheap'] },
-      { id: 'gemma-4-27b', modalities: ['llm'], contextWindow: 131072, maxOutputTokens: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'gemma-4-26b-a4b-it', modalities: ['llm'], contextWindow: 128000, maxOutputTokens: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
     ],
     streaming: true,
     toolCalling: true,
@@ -164,6 +167,25 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       redirectPath: '/v1/admin/providers/:id/oauth/callback',
       tokenResponseType: 'access_refresh',
     },
+  },
+
+  {
+    id: 'veo',
+    name: 'Google Veo',
+    category: 'cloud_video',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['video'],
+    models: [
+      { id: 'veo-3.1', modalities: ['video'], capabilities: ['text2video', 'img2video', 'native_audio', 'reference_images', 'video_extend', 'first_last_frame', '4k_output'], specializations: ['creative'] },
+      { id: 'veo-3.1-fast', modalities: ['video'], capabilities: ['text2video', 'img2video', 'native_audio', 'reference_images'], specializations: ['creative', 'fast'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: 'GOOGLE_API_KEY',
+    description: 'Google Veo 3.1 video generation.',
+    region: 'us',
   },
 
   {
@@ -308,10 +330,15 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://api.fireworks.ai/inference/v1',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm', 'embedding'],
+    modalities: ['llm', 'embedding', 'reranking'],
     models: [
       { id: 'accounts/fireworks/models/llama-v3p3-70b-instruct', modalities: ['llm'], inputCostPer1M: 0.9, outputCostPer1M: 0.9, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
       { id: 'accounts/fireworks/models/deepseek-v3', modalities: ['llm'], inputCostPer1M: 0.9, outputCostPer1M: 0.9, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      // Embeddings
+      { id: 'accounts/fireworks/models/stella-en-1.5B-v5', modalities: ['embedding'], inputCostPer1M: 0.008, outputCostPer1M: 0, capabilities: ['embedding'], specializations: ['embedding'] },
+      { id: 'nomic-embed-text-v1.5', modalities: ['embedding'], inputCostPer1M: 0.008, outputCostPer1M: 0, capabilities: ['embedding'], specializations: ['embedding'] },
+      // Reranking
+      { id: 'accounts/fireworks/models/cohere-rerank-v3.5', modalities: ['reranking'], capabilities: ['reranking'], specializations: ['reranking'] },
     ],
     streaming: true,
     toolCalling: true,
@@ -328,16 +355,25 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://api.replicate.com/v1',
     authMethod: 'bearer',
     apiFormat: 'custom',
-    modalities: ['llm', 'diffusion', 'audio_tts', 'audio_stt', 'video'],
+    modalities: ['llm', 'diffusion', 'audio_tts', 'audio_stt', 'video', 'music', '3d'],
     models: [
       { id: 'stability-ai/sdxl', modalities: ['diffusion'], costPerImage: 0.0023, capabilities: ['text2img'], specializations: ['creative'] },
       { id: 'black-forest-labs/flux-schnell', modalities: ['diffusion'], costPerImage: 0.003, capabilities: ['text2img'], specializations: ['creative'] },
+      // Video generation
+      { id: 'stability-ai/stable-video-diffusion', modalities: ['video'], capabilities: ['img2video'], specializations: ['creative'] },
+      { id: 'minimax/video-01', modalities: ['video'], capabilities: ['text2video', 'img2video'], specializations: ['creative'] },
+      { id: 'luma/ray-2', modalities: ['video'], capabilities: ['text2video', 'img2video'], specializations: ['creative'] },
+      // Music generation
       { id: 'meta/musicgen', modalities: ['music'], capabilities: ['music_generation'], specializations: ['creative'] },
+      { id: 'suno/bark', modalities: ['music'], capabilities: ['music_generation', 'vocals'], specializations: ['creative'] },
+      // 3D generation
+      { id: 'tencent/hunyuan3d-2', modalities: ['3d'], capabilities: ['text-to-3d', 'image-to-3d'], specializations: ['creative'] },
+      { id: 'stability-ai/stable-fast-3d', modalities: ['3d'], capabilities: ['image-to-3d'], specializations: ['creative', 'fast'] },
     ],
     streaming: false,
     toolCalling: false,
     envKey: 'REPLICATE_API_TOKEN',
-    description: 'Run any open-source model. Diffusion, video, audio.',
+    description: 'Run any open-source model. Diffusion, video, audio, 3D.',
     region: 'us',
     signupUrl: 'https://replicate.com/',
   },
@@ -349,11 +385,18 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://router.huggingface.co/v1',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm', 'embedding', 'diffusion', 'audio_stt', 'audio_tts'],
+    modalities: ['llm', 'embedding', 'diffusion', 'audio_stt', 'audio_tts', 'reranking'],
     models: [
       { id: 'meta-llama/Llama-3.3-70B-Instruct', modalities: ['llm'], capabilities: ['streaming'], specializations: ['general'] },
       { id: 'black-forest-labs/FLUX.1-schnell', modalities: ['diffusion'], capabilities: ['text2img'], specializations: ['creative'] },
       { id: 'openai/whisper-large-v3', modalities: ['audio_stt'], capabilities: ['stt'], specializations: ['audio'] },
+      // Embeddings
+      { id: 'intfloat/multilingual-e5-large-instruct', modalities: ['embedding'], capabilities: ['embedding', 'multilingual'], specializations: ['embedding'] },
+      { id: 'BAAI/bge-large-en-v1.5', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
+      { id: 'sentence-transformers/all-MiniLM-L6-v2', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding', 'fast'] },
+      // Reranking
+      { id: 'BAAI/bge-reranker-v2-m3', modalities: ['reranking'], capabilities: ['reranking', 'multilingual'], specializations: ['reranking'] },
+      { id: 'cross-encoder/ms-marco-MiniLM-L-6-v2', modalities: ['reranking'], capabilities: ['reranking'], specializations: ['reranking', 'fast'] },
     ],
     streaming: true,
     toolCalling: false,
@@ -527,19 +570,24 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     id: 'runway',
     name: 'RunwayML',
     category: 'cloud_video',
-    baseUrl: 'https://api.runwayml.com/v1',
+    baseUrl: 'https://api.dev.runwayml.com/v1',
     authMethod: 'bearer',
     apiFormat: 'custom',
-    modalities: ['video'],
+    modalities: ['video', 'diffusion'],
     models: [
       { id: 'gen-3-alpha', modalities: ['video'], capabilities: ['text2video', 'img2video'], specializations: ['creative'] },
+      { id: 'gen4.5', modalities: ['video'], capabilities: ['text2video', 'img2video', 'camera_control', 'reference_images'], specializations: ['creative'] },
+      { id: 'gen4_turbo', modalities: ['video'], capabilities: ['text2video', 'img2video'], specializations: ['creative', 'fast'] },
+      { id: 'seedance2', modalities: ['video'], capabilities: ['text2video', 'img2video', 'native_audio'], specializations: ['creative'] },
+      { id: 'veo3', modalities: ['video'], capabilities: ['text2video', 'img2video', 'native_audio'], specializations: ['creative'] },
+      { id: 'veo3.1', modalities: ['video'], capabilities: ['text2video', 'img2video', 'native_audio', 'reference_images', 'video_extend'], specializations: ['creative'] },
     ],
     streaming: false,
     toolCalling: false,
     envKey: 'RUNWAY_API_KEY',
-    description: 'AI video generation.',
+    description: 'AI video generation. Gen-4.5, Seedance 2.0, Veo 3.1.',
     region: 'us',
-    signupUrl: 'https://runwayml.com/',
+    signupUrl: 'https://dev.runwayml.com/',
   },
 
   {
@@ -559,6 +607,68 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'AI video generation and editing.',
     region: 'us',
     signupUrl: 'https://pika.art/',
+  },
+
+  {
+    id: 'fal',
+    name: 'FAL.ai',
+    category: 'cloud_video',
+    baseUrl: 'https://fal.run',
+    authMethod: 'bearer',
+    apiFormat: 'custom',
+    modalities: ['video', 'diffusion', 'music', '3d'],
+    models: [
+      // Seedance 2.0 (ByteDance)
+      { id: 'seedance-2.0', modalities: ['video'], capabilities: ['text2video', 'img2video', 'reference-to-video', 'native_audio', 'multimodal_reference'], specializations: ['creative'] },
+      { id: 'seedance-2.0/text-to-video', modalities: ['video'], capabilities: ['text2video', 'native_audio'], specializations: ['creative'] },
+      { id: 'seedance-2.0/image-to-video', modalities: ['video'], capabilities: ['img2video', 'native_audio'], specializations: ['creative'] },
+      { id: 'seedance-2.0/reference-to-video', modalities: ['video'], capabilities: ['reference-to-video', 'native_audio'], specializations: ['creative'] },
+      { id: 'seedance-2.0-fast', modalities: ['video'], capabilities: ['text2video', 'img2video', 'native_audio'], specializations: ['creative', 'fast'] },
+      // Wan 2.7 (Alibaba)
+      { id: 'wan-2.7', modalities: ['video'], capabilities: ['text2video', 'img2video', 'reference-to-video', 'video-edit', 'native_audio'], specializations: ['creative'] },
+      { id: 'wan-2.7/text-to-video', modalities: ['video'], capabilities: ['text2video', 'native_audio'], specializations: ['creative'] },
+      { id: 'wan-2.7/image-to-video', modalities: ['video'], capabilities: ['img2video', 'native_audio'], specializations: ['creative'] },
+      { id: 'wan-2.7/reference-to-video', modalities: ['video'], capabilities: ['reference-to-video'], specializations: ['creative'] },
+      { id: 'wan-2.7/edit-video', modalities: ['video'], capabilities: ['video-edit'], specializations: ['creative'] },
+      // Kling 3.0 (Kuaishou)
+      { id: 'kling-v3', modalities: ['video'], capabilities: ['text2video', 'img2video', 'native_audio', 'multi_shot', '4k_output'], specializations: ['creative'] },
+      { id: 'kling-v3/text-to-video', modalities: ['video'], capabilities: ['text2video', 'native_audio'], specializations: ['creative'] },
+      { id: 'kling-v3/image-to-video', modalities: ['video'], capabilities: ['img2video'], specializations: ['creative'] },
+      // Music Generation
+      { id: 'sonauto/v2/text-to-music', modalities: ['music'], capabilities: ['music_generation', 'vocals'], specializations: ['creative'] },
+      { id: 'cassetteai/music-generator', modalities: ['music'], capabilities: ['music_generation'], specializations: ['creative'] },
+      // 3D Generation
+      { id: 'hunyuan3d', modalities: ['3d'], capabilities: ['text2img', 'image-to-3d', 'multi-view'], specializations: ['creative'] },
+      { id: 'trellis', modalities: ['3d'], capabilities: ['text-to-3d', 'image-to-3d'], specializations: ['creative'] },
+      { id: 'trellis2', modalities: ['3d'], capabilities: ['text-to-3d', 'image-to-3d'], specializations: ['creative'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: 'FAL_KEY',
+    description: 'FAL.ai serverless video. Seedance 2.0, Wan 2.7, Kling 3.0. Music + 3D. Pay-per-second.',
+    region: 'global',
+    signupUrl: 'https://fal.ai/',
+  },
+
+  {
+    id: 'luma',
+    name: 'Luma AI',
+    category: 'cloud_video',
+    baseUrl: 'https://api.lumalabs.ai/dream-machine/v1',
+    authMethod: 'bearer',
+    apiFormat: 'custom',
+    modalities: ['video'],
+    models: [
+      { id: 'ray-3.2', modalities: ['video'], capabilities: ['text2video', 'img2video', 'video_extend', 'camera_control', 'first_last_frame'], specializations: ['creative'] },
+      { id: 'ray-2', modalities: ['video'], capabilities: ['text2video', 'img2video', 'video_extend', 'camera_control'], specializations: ['creative'] },
+      { id: 'ray-flash-2', modalities: ['video'], capabilities: ['text2video', 'img2video'], specializations: ['creative', 'fast'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: 'LUMA_API_KEY',
+    description: 'Luma Dream Machine. Ray 3.2/2. Best camera control. Pay-per-video.',
+    region: 'us',
+    signupUrl: 'https://lumalabs.ai/api',
   },
 
   // ═══════════════════════════════════════════════════════════
@@ -675,6 +785,106 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 
   // ═══════════════════════════════════════════════════════════
+  // SELF-HOSTED SPECIALIZED PROVIDERS
+  // ═══════════════════════════════════════════════════════════
+
+  {
+    id: 'tei',
+    name: 'Text Embeddings Inference (Local)',
+    category: 'local',
+    baseUrl: 'http://localhost:8090',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['embedding', 'reranking'],
+    models: [],  // Configured at serve time
+    streaming: false,
+    toolCalling: false,
+    envKey: 'TEI_BASE_URL',
+    description: 'Hugging Face TEI. Fast embeddings + reranking. GPU-optimized.',
+    region: 'local',
+  },
+
+  {
+    id: 'piper',
+    name: 'Piper TTS (Local)',
+    category: 'local',
+    baseUrl: 'http://localhost:5000',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['audio_tts'],
+    models: [],  // Loaded at startup
+    streaming: false,
+    toolCalling: false,
+    envKey: 'PIPER_BASE_URL',
+    description: 'Local neural TTS. Fast, lightweight, CPU-friendly.',
+    region: 'local',
+  },
+
+  {
+    id: 'kokoro',
+    name: 'Kokoro TTS (Local)',
+    category: 'local',
+    baseUrl: 'http://localhost:8880',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['audio_tts'],
+    models: [],  // Loaded at startup
+    streaming: false,
+    toolCalling: false,
+    envKey: 'KOKORO_BASE_URL',
+    description: 'Local TTS. High-quality, fast inference.',
+    region: 'local',
+  },
+
+  {
+    id: 'orpheus',
+    name: 'Orpheus TTS (Local)',
+    category: 'local',
+    baseUrl: 'http://localhost:5005',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['audio_tts'],
+    models: [],  // Loaded at startup
+    streaming: true,
+    toolCalling: false,
+    envKey: 'ORPHEUS_BASE_URL',
+    description: 'Local TTS with emotional expression. Streaming support.',
+    region: 'local',
+  },
+
+  {
+    id: 'faster-whisper',
+    name: 'Faster-Whisper (Local)',
+    category: 'local',
+    baseUrl: 'http://localhost:8000',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['audio_stt'],
+    models: [],  // Loaded at startup
+    streaming: false,
+    toolCalling: false,
+    envKey: 'FASTER_WHISPER_BASE_URL',
+    description: 'Local ASR. CTranslate2-optimized Whisper. Fast transcription.',
+    region: 'local',
+  },
+
+  {
+    id: 'ultralytics',
+    name: 'Ultralytics (Local)',
+    category: 'local',
+    baseUrl: 'http://localhost:8080',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['vision'],
+    models: [],  // Loaded at startup
+    streaming: false,
+    toolCalling: false,
+    envKey: 'ULTRALYTICS_BASE_URL',
+    description: 'Local vision. YOLO detection, segmentation, classification.',
+    region: 'local',
+  },
+
+  // ═══════════════════════════════════════════════════════════
   // FREE-TIER PROVIDERS
   // ═══════════════════════════════════════════════════════════
 
@@ -776,7 +986,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm'],
+    modalities: ['llm', 'video'],
     models: [
       { id: 'glm-4.5-flash', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
       { id: 'glm-4.7-flash', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
@@ -1215,10 +1425,13 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://api.minimaxi.chat/v1',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm'],
+    modalities: ['llm', 'video'],
     models: [
       { id: 'MiniMax-Text-01', modalities: ['llm'], contextWindow: 200000, inputCostPer1M: 0.2, outputCostPer1M: 0.2, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
       { id: 'MiniMax-M1', modalities: ['llm'], contextWindow: 1000000, maxOutputTokens: 16384, inputCostPer1M: 0.5, outputCostPer1M: 2, capabilities: ['streaming', 'tool_use'], specializations: ['reasoning'] },
+      // Video generation (Hailuo)
+      { id: 'MiniMax-Hailuo-2.3', modalities: ['video'], capabilities: ['text2video', 'img2video', 'first_last_frame'], specializations: ['creative'] },
+      { id: 'MiniMax-Hailuo-2.3-fast', modalities: ['video'], capabilities: ['text2video', 'img2video'], specializations: ['creative', 'fast'] },
     ],
     streaming: true,
     toolCalling: true,
@@ -1407,7 +1620,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     baseUrl: 'https://api.together.xyz/v1',
     authMethod: 'bearer',
     apiFormat: 'openai',
-    modalities: ['llm', 'embedding', 'audio_stt'],
+    modalities: ['llm', 'embedding', 'audio_stt', 'reranking'],
     models: [
       // Llama 4
       { id: 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-Turbo', modalities: ['llm'], contextWindow: 131072, maxOutputTokens: 16384, inputCostPer1M: 0.27, outputCostPer1M: 0.85, capabilities: ['tool_use', 'streaming', 'vision'], specializations: ['general'] },
@@ -1431,6 +1644,10 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'google/gemma-2-27b-it', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0.3, outputCostPer1M: 0.3, capabilities: ['streaming'], specializations: ['fast', 'cheap'] },
       // Embeddings
       { id: 'togethercomputer/m2-bert-80M-32k-retrieval', modalities: ['embedding'], contextWindow: 32768, inputCostPer1M: 0.008, outputCostPer1M: 0, capabilities: ['embedding'], specializations: ['embedding'] },
+      { id: 'intfloat/multilingual-e5-large-instruct', modalities: ['embedding'], contextWindow: 512, inputCostPer1M: 0.002, outputCostPer1M: 0, capabilities: ['embedding', 'multilingual'], specializations: ['embedding'] },
+      // Reranking
+      { id: 'Salesforce/LlamaRank-v1', modalities: ['reranking'], capabilities: ['reranking'], specializations: ['reranking'] },
+      { id: 'togethercomputer/m2-bert-80M-32k-retrieval', modalities: ['reranking'], capabilities: ['reranking'], specializations: ['reranking'] },
       // Whisper
       { id: 'openai/whisper-large-v3', modalities: ['audio_stt'], capabilities: ['stt'], specializations: ['audio'] },
     ],
@@ -1912,6 +2129,96 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'Community API, OpenAI-compatible',
     region: 'global',
     signupUrl: 'https://webraftai.com/',
+  },
+
+  // Audio Separation providers
+  {
+    id: 'demucs',
+    name: 'Demucs',
+    category: 'local',
+    baseUrl: 'http://localhost:8000',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['audio_separation'],
+    models: [
+      { id: 'htdemucs_ft', modalities: ['audio_separation'], capabilities: ['vocals', 'drums', 'bass', 'other', 'guitar', 'piano'], specializations: ['audio_separation'] },
+      { id: 'htdemucs', modalities: ['audio_separation'], capabilities: ['vocals', 'drums', 'bass', 'other'], specializations: ['audio_separation'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: '',
+    description: 'Local Demucs audio source separation (Meta)',
+  },
+
+  {
+    id: 'audioshake',
+    name: 'AudioShake',
+    category: 'specialized',
+    baseUrl: 'https://api.audioshake.com/v1',
+    authMethod: 'bearer',
+    apiFormat: 'custom',
+    modalities: ['audio_separation'],
+    models: [
+      { id: 'audioshake-standard', modalities: ['audio_separation'], capabilities: ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'], specializations: ['audio_separation'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: 'AUDIO_SHAKE_API_KEY',
+    description: 'Enterprise audio stem separation API',
+    signupUrl: 'https://audioshake.com/',
+  },
+
+  {
+    id: 'stemsplit',
+    name: 'StemSplit',
+    category: 'specialized',
+    baseUrl: 'https://api.stemsplit.com/v1',
+    authMethod: 'bearer',
+    apiFormat: 'custom',
+    modalities: ['audio_separation'],
+    models: [
+      { id: 'stemsplit-6stem', modalities: ['audio_separation'], capabilities: ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'], specializations: ['audio_separation'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: 'STEMSPLIT_API_KEY',
+    description: 'Cloud audio stem separation',
+    signupUrl: 'https://stemsplit.com/',
+  },
+
+  // OCR providers
+  {
+    id: 'tesseract',
+    name: 'Tesseract',
+    category: 'local',
+    baseUrl: 'http://localhost:8000',
+    authMethod: 'none',
+    apiFormat: 'custom',
+    modalities: ['ocr'],
+    models: [
+      { id: 'tesseract-5', modalities: ['ocr'], capabilities: ['printed-text', 'multilingual'], specializations: ['ocr'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: '',
+    description: 'Local Tesseract OCR engine (Open-source)',
+  },
+
+  {
+    id: 'paddleocr',
+    name: 'PaddleOCR',
+    category: 'local',
+    baseUrl: 'http://localhost:8000',
+    authMethod: 'bearer',
+    apiFormat: 'custom',
+    modalities: ['ocr'],
+    models: [
+      { id: 'paddleocr', modalities: ['ocr'], capabilities: ['printed-text', 'handwritten', 'structured-output'], specializations: ['ocr'] },
+    ],
+    streaming: false,
+    toolCalling: false,
+    envKey: 'HF_TOKEN',
+    description: 'Local or HuggingFace PaddleOCR',
   },
 ];
 

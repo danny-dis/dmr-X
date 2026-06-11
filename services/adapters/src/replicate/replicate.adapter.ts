@@ -6,7 +6,7 @@ import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 
 export class ReplicateAdapter extends BaseAdapter {
   readonly providerId = 'replicate';
-  readonly supportedModalities: Modality[] = ['diffusion'];
+  readonly supportedModalities: Modality[] = ['diffusion', 'video', 'music', '3d'];
 
   private apiKey = '';
 
@@ -34,15 +34,60 @@ export class ReplicateAdapter extends BaseAdapter {
   async execute(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {
     this.assertInitialized();
 
-    if (request.modality !== 'diffusion') {
-      throw new Error(`Replicate only supports diffusion modality, got: ${request.modality}`);
+    if (!this.supportedModalities.includes(request.modality)) {
+      throw new Error(`Replicate does not support modality: ${request.modality}`);
     }
 
     const start = Date.now();
     const model = request.model || 'stability-ai/sdxl';
 
     try {
-      // Create prediction
+      const input: Record<string, unknown> = {
+        prompt: request.prompt,
+      };
+
+      if (request.modality === 'diffusion') {
+        input.negative_prompt = request.negative_prompt;
+        input.width = request.width || 1024;
+        input.height = request.height || 1024;
+        input.num_inference_steps = request.steps || 50;
+        input.guidance_scale = request.cfg_scale || 7.5;
+        if (request.diffusion_seed !== undefined) {
+          input.seed = request.diffusion_seed;
+        }
+        if (request.image) {
+          input.image = request.image;
+        }
+      } else if (request.modality === 'video') {
+        if (request.image) {
+          input.image = request.image;
+        }
+        if (request.duration !== undefined) {
+          input.duration = request.duration;
+        }
+        if (request.fps !== undefined) {
+          input.fps = request.fps;
+        }
+      } else if (request.modality === 'music') {
+        if (request.genre) {
+          input.genre = request.genre;
+        }
+        if (request.duration_seconds !== undefined) {
+          input.duration = request.duration_seconds;
+        }
+        if (request.instruments?.length) {
+          input.instruments = request.instruments;
+        }
+      } else if (request.modality === '3d') {
+        if (request.image) {
+          input.image = request.image;
+          input.images = [request.image];
+        }
+        if (request.texture_resolution) {
+          input.texture_size = request.texture_resolution;
+        }
+      }
+
       const createResponse = await this.fetchWithTimeout(
         `https://api.replicate.com/v1/predictions`,
         {
@@ -54,15 +99,7 @@ export class ReplicateAdapter extends BaseAdapter {
           },
           body: JSON.stringify({
             version: await this.getModelVersion(model),
-            input: {
-              prompt: request.prompt,
-              negative_prompt: request.negative_prompt,
-              width: request.width || 1024,
-              height: request.height || 1024,
-              num_inference_steps: request.steps || 50,
-              guidance_scale: request.cfg_scale || 7.5,
-              seed: request.diffusion_seed,
-            },
+            input,
           }),
           timeoutMs: options?.timeoutMs ?? 120000,
         }
@@ -81,27 +118,61 @@ export class ReplicateAdapter extends BaseAdapter {
       // If prediction is still processing, poll for completion
       if (prediction.status !== 'succeeded') {
         const result = await this.pollPrediction(prediction.id, options?.timeoutMs ?? 120000);
-        return {
-          modality: 'diffusion',
-          requestId: prediction.id,
-          providerId: this.providerId,
-          modelId: model,
-          images: [{ url: result.output?.[0] }],
-          latencyMs: Date.now() - start,
-        };
+        return this.buildResponse(request.modality, prediction.id, model, result);
       }
 
-      return {
-        modality: 'diffusion',
-        requestId: prediction.id,
-        providerId: this.providerId,
-        modelId: model,
-        images: [{ url: prediction.output?.[0] }],
-        latencyMs,
-      };
+      return this.buildResponse(request.modality, prediction.id, model, prediction);
     } catch (err) {
       throw this.handleAdapterError(err);
     }
+  }
+
+  private buildResponse(
+    modality: Modality,
+    requestId: string,
+    modelId: string,
+    prediction: { output?: unknown; status?: string },
+  ): UnifiedResponse {
+    const base: UnifiedResponse = {
+      modality,
+      requestId,
+      providerId: this.providerId,
+      modelId,
+      latencyMs: 0,
+    };
+
+    const output = prediction.output;
+
+    if (modality === 'diffusion') {
+      const outputUrl = Array.isArray(output) ? output[0] : output;
+      return {
+        ...base,
+        images: [{ url: outputUrl }],
+      };
+    }
+
+    if (modality === 'video') {
+      const outputUrl = Array.isArray(output) ? output[0] : output;
+      return {
+        ...base,
+        videos: [{ url: outputUrl }],
+      };
+    }
+
+    if (modality === '3d') {
+      const outputUrl = Array.isArray(output) ? output[0] : output;
+      return {
+        ...base,
+        models3d: [{ url: outputUrl, format: 'glb' }],
+      };
+    }
+
+    // Music modality
+    const outputUrl = Array.isArray(output) ? output[0] : output;
+    return {
+      ...base,
+      audio: { url: outputUrl },
+    };
   }
 
   private async pollPrediction(predictionId: string, timeoutMs: number): Promise<any> {
@@ -172,12 +243,25 @@ export class ReplicateAdapter extends BaseAdapter {
   }
 
   async *executeStream(request: UnifiedRequest, options?: ExecuteOptions): AsyncIterable<StreamChunk> {
-    // Diffusion doesn't support streaming in the LLM sense
-    // Execute and yield the result as a single chunk
     const response = await this.execute(request, options);
+
+    let chunkType: StreamChunk['type'] = 'image_partial';
+    let chunkData: unknown;
+
+    if (request.modality === 'diffusion') {
+      chunkType = 'image_partial';
+      chunkData = response.images?.[0];
+    } else if (request.modality === 'video') {
+      chunkType = 'video_partial';
+      chunkData = response.videos?.[0];
+    } else {
+      chunkType = 'audio_partial';
+      chunkData = response.audio;
+    }
+
     yield {
-      type: 'image_partial',
-      data: response.images?.[0],
+      type: chunkType,
+      data: chunkData,
       index: 0,
     };
     yield {
@@ -191,6 +275,10 @@ export class ReplicateAdapter extends BaseAdapter {
     return [
       { modelId: 'stability-ai/sdxl', modality: 'diffusion', capabilities: ['text2img', 'img2img'] },
       { modelId: 'black-forest-labs/flux-schnell', modality: 'diffusion', capabilities: ['text2img'] },
+      { modelId: 'stability-ai/stable-video-diffusion', modality: 'video', capabilities: ['text2video', 'img2video'] },
+      { modelId: 'meta/musicgen', modality: 'music', capabilities: ['text2music'] },
+      { modelId: 'firtoz/trellis', modality: '3d', capabilities: ['image-to-3d'] },
+      { modelId: 'tencent/hunyuan3d-2', modality: '3d', capabilities: ['text-to-3d', 'image-to-3d'] },
     ];
   }
 }

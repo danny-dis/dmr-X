@@ -7,7 +7,7 @@ Universal AI routing and orchestration platform. A single gateway that accepts r
 - **Multi-Format API** — native OpenAI, Anthropic, and Gemini endpoints from one gateway
 - **Dynamic Routing** — cost/latency/quality scoring with fallback chains and Thompson Sampling bandit
 - **Meta-Model Aliases** — `free-coding`, `free-smart`, `free-agentic`, `free-fast`, `free` for automatic provider selection
-- **70+ Provider Adapters** — OpenAI, Anthropic, Google, Mistral, DeepSeek, Cohere, Ollama, Replicate, and more
+- **18 Provider Adapters** — OpenAI, Anthropic, Google, Mistral, Cohere, Ollama, Replicate, Stability, ElevenLabs, Deepgram, Jina, ComfyUI, FAL.ai, Runway, Veo, Kokoro, Piper, TEI, plus GenericOpenAI for any OAI-compatible provider
 - **Zero External Dependencies** — SQLite via sql.js, no Redis/Postgres required
 - **Single Binary Distribution** — compile to standalone executable for Windows, Linux, macOS
 - **Admin UI** — React/Vite dashboard for providers, models, tenants, keys, policies, quotas, and telemetry
@@ -82,10 +82,11 @@ docker compose up -d
                        │
                        ▼
 ┌──────────────────────────────────────────────────────┐
-│  Provider Adapters                                    │
-│  OpenAI · Anthropic · Google · Mistral · DeepSeek    │
-│  Cohere · Ollama · Replicate · Stability · ElevenLabs│
-│  Deepgram · Jina · GenericOpenAI (any OAI-compat)    │
+│  Provider Adapters (18 total)                         │
+│  OpenAI · Anthropic · Ollama · GenericOpenAI         │
+│  Replicate · Stability · ComfyUI · FAL · Runway · Veo│
+│  ElevenLabs · Deepgram · Kokoro · Piper              │
+│  Cohere · Jina · TEI                                 │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -104,7 +105,7 @@ dmr-x/
 │   ├── utils/            # Logging, retries, streams, crypto, errors
 │   └── cli/              # CLI tool (dmrx command)
 ├── services/
-│   ├── adapters/         # Provider adapter interface + 10 concrete adapters
+│   ├── adapters/         # Provider adapter interface + 18 concrete adapters
 │   ├── router/           # Task classifier, routing pipeline, fallback, bandit
 │   ├── registry/         # Provider and model registry
 │   ├── quota/            # Quota management

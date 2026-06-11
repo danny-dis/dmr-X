@@ -8,9 +8,9 @@ export interface ResourceCheck {
 export class ResourceLimiter {
   private maxCpuPercent = 80;
   private maxMemoryPercent = 80;
-  private maxConcurrentProcesses = 100;
+  private maxConcurrentProcesses = 5;
 
-  checkLimits(): ResourceCheck {
+  checkLimits(runningCount?: number): ResourceCheck {
     const loadavg = os.loadavg();
     const cpuCount = os.cpus().length;
     const cpuPercent = (loadavg[0] / cpuCount) * 100;
@@ -25,6 +25,11 @@ export class ResourceLimiter {
 
     if (usedPercent > this.maxMemoryPercent) {
       return { ok: false, reason: `Memory usage too high: ${usedPercent.toFixed(1)}%` };
+    }
+
+    // Check concurrent process limit
+    if (runningCount !== undefined && runningCount >= this.maxConcurrentProcesses) {
+      return { ok: false, reason: `Maximum concurrent processes reached (${this.maxConcurrentProcesses})` };
     }
 
     return { ok: true };

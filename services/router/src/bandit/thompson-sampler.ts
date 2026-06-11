@@ -105,6 +105,53 @@ export class ThompsonSampler {
     this.arms.clear();
   }
 
+  /**
+   * Snapshot of every arm — used by the admin API to inspect the bandit's
+   * learned posteriors. Keys are `providerId:modelId`.
+   */
+  snapshot(): Array<{
+    key: string;
+    providerId: string;
+    modelId: string;
+    alpha: number;
+    beta: number;
+    pulls: number;
+    mean: number;
+    totalReward: number;
+  }> {
+    const out: Array<{
+      key: string;
+      providerId: string;
+      modelId: string;
+      alpha: number;
+      beta: number;
+      pulls: number;
+      mean: number;
+      totalReward: number;
+    }> = [];
+    for (const [key, arm] of this.arms) {
+      const sep = key.indexOf(':');
+      out.push({
+        key,
+        providerId: sep >= 0 ? key.slice(0, sep) : key,
+        modelId: sep >= 0 ? key.slice(sep + 1) : '',
+        alpha: arm.alpha,
+        beta: arm.beta,
+        pulls: arm.pulls,
+        mean: arm.alpha / (arm.alpha + arm.beta),
+        totalReward: arm.totalReward,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Restore an arm from persisted state. Used by `RewardUpdater.loadFromDb`.
+   */
+  restore(key: string, alpha: number, beta: number, pulls: number, totalReward: number): void {
+    this.arms.set(key, { alpha, beta, pulls, totalReward });
+  }
+
   private getArmKey(candidate: ProviderModel): string {
     return `${candidate.providerId}:${candidate.modelId}`;
   }
@@ -187,13 +234,26 @@ export class ThompsonSampler {
 }
 
 /**
- * Calculate reward from response metrics
+ * Calculate reward from response metrics.
+ *
+ * Optional fields (8C.1 / 8C.2):
+ *  - `firstTokenLatencyMs` — time to first token. Used as a *fast* latency
+ *    signal for streaming responses (TTFT). When provided it is blended with
+ *    total latency so the bandit learns that "fast first byte" is valuable.
+ *  - `toolCallsSucceeded` / `toolCallsAttempted` — tool-call success rate
+ *    becomes a reward signal *only* when the request actually used tools.
+ *    When tools weren't used, this signal is neutral.
  */
 export function calculateReward(
   qualityScore: number,
   latencyMs: number,
   costPerToken: number,
-  success: boolean
+  success: boolean,
+  options: {
+    firstTokenLatencyMs?: number;
+    toolCallsSucceeded?: number;
+    toolCallsAttempted?: number;
+  } = {},
 ): number {
   if (!success) return 0;
 
@@ -202,10 +262,29 @@ export function calculateReward(
   const normalizedLatency = Math.max(0, 1 - latencyMs / 10000); // 10s max
   const normalizedCost = Math.max(0, 1 - costPerToken / 0.01); // $0.01 max
 
-  // Weighted combination
+  // TTFT signal: 0..1, where 0 ms = 1.0 and 5000 ms = 0.0
+  let ttftSignal = 0.5; // neutral if not provided
+  if (typeof options.firstTokenLatencyMs === 'number' && options.firstTokenLatencyMs >= 0) {
+    ttftSignal = Math.max(0, 1 - options.firstTokenLatencyMs / 5000);
+  }
+
+  // Tool-call success signal: only applied when the request actually used tools.
+  let toolSignal = 0.5; // neutral if no tools were used
+  if (
+    typeof options.toolCallsAttempted === 'number' &&
+    options.toolCallsAttempted > 0 &&
+    typeof options.toolCallsSucceeded === 'number'
+  ) {
+    toolSignal = Math.max(0, Math.min(1, options.toolCallsSucceeded / options.toolCallsAttempted));
+  }
+
+  // Weighted combination.
+  // Quality stays the dominant signal; TTFT and tool success each pull 10%.
   return (
-    normalizedQuality * 0.5 +
-    normalizedLatency * 0.3 +
-    normalizedCost * 0.2
+    normalizedQuality * 0.45 +
+    normalizedLatency * 0.20 +
+    normalizedCost * 0.15 +
+    ttftSignal * 0.10 +
+    toolSignal * 0.10
   );
 }

@@ -31,7 +31,7 @@ export interface ModelDiscoveryOptions {
   timeoutMs?: number;
 }
 
-const TIMEOUT_MS = 5000;
+const TIMEOUT_MS = 1000;
 
 /**
  * Fetch and normalize models from an OpenAI-compatible provider.

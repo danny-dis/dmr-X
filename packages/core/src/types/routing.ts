@@ -1,4 +1,4 @@
-import { Modality, IntelligenceLayer, QualityTarget } from './modality.js';
+import { Modality, IntelligenceLayer, CapabilityTier, QualityTarget } from './modality.js';
 
 export type FreeTierStrategy = 'prioritize' | 'load_balance' | 'fallback' | 'none';
 
@@ -13,6 +13,8 @@ export interface TaskProfile {
   priority: number; // 1-10
   streaming: boolean;
   qualityTarget: QualityTarget;
+  /** Required capability tier for routing (soft preference — boosts matching models) */
+  requiredCapabilityTier?: CapabilityTier;
 }
 
 export interface ProviderModel {
@@ -21,10 +23,17 @@ export interface ProviderModel {
   modelId: string;
   modality: Modality;
   intelligenceLayer: IntelligenceLayer;
+  capabilityTier: CapabilityTier;
   capabilities: string[];
   costPerInputToken: number;
   costPerOutputToken: number;
   costPerImage: number;
+  /** Flat cost per video generation (for video modality models) */
+  costPerVideo?: number;
+  /** Cost per second of output video (alternative to costPerVideo for duration-based pricing) */
+  costPerSecond?: number;
+  /** Maximum supported video duration in seconds */
+  maxDuration?: number;
   avgLatencyMs: number;
   qualityScore: number;
   isHealthy: boolean;

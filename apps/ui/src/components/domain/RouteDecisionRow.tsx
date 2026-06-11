@@ -35,46 +35,39 @@ export function RouteDecisionRow({ decision, onClick, className, expanded }: Rou
       )}
     >
       <div className="flex items-center gap-2 min-w-0 flex-1">
-        <IntelligenceBadge layer={decision.intelligenceLayer ?? 'brain'} size="sm" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-sm">
-            <span className="font-medium text-fg truncate">{decision.tenantId ?? 'anon'}</span>
-            <span className="text-fg-subtle">→</span>
-            <span className="text-fg-muted truncate">{decision.provider}</span>
+            <span className="font-medium text-fg truncate">{decision.selected_provider}</span>
             <span className="text-fg-subtle">/</span>
-            <span className="text-fg font-mono text-xs truncate">{decision.model}</span>
+            <span className="text-fg font-mono text-xs truncate">{decision.selected_model}</span>
           </div>
-          {decision.reasoning && expanded && (
-            <p className="text-[11px] text-fg-muted mt-0.5 line-clamp-1">{decision.reasoning}</p>
+          {decision.decision_reason && expanded && (
+            <p className="text-[11px] text-fg-muted mt-0.5 line-clamp-1">{decision.decision_reason}</p>
           )}
         </div>
-      </div>
-
-      <div className="flex items-center gap-1.5">
-        {decision.modality && <ModalityBadge modality={decision.modality} size="sm" />}
       </div>
 
       <div className="hidden md:flex items-center gap-3 text-[11px] text-fg-muted shrink-0">
         <span className="flex items-center gap-1 tabular-nums">
           <Clock className="size-3" />
-          {formatDuration(decision.latencyMs ?? 0)}
+          {formatDuration(decision.latency ?? 0)}
         </span>
-        {decision.tokens != null && (
-          <span className="tabular-nums">{decision.tokens.toLocaleString()} tok</span>
+        {decision.input_tokens != null && (
+          <span className="tabular-nums">{(decision.input_tokens + (decision.output_tokens ?? 0)).toLocaleString()} tok</span>
         )}
         {decision.cost != null && (
           <span className="tabular-nums">${decision.cost.toFixed(4)}</span>
         )}
         <StatusPill
-          status={decision.success ? 'online' : 'offline'}
-          label={decision.success ? 'OK' : 'ERR'}
+          status={decision.status === 'success' ? 'online' : decision.status === 'fallback' ? 'warning' : 'offline'}
+          label={decision.status.toUpperCase()}
           size="sm"
           pulse={false}
         />
       </div>
 
       <span className="text-fg-subtle tabular-nums text-[10px] shrink-0 w-12 text-right">
-        {decision.at ? timeAgo(decision.at) : ''}
+        {decision.timestamp ? timeAgo(decision.timestamp) : ''}
       </span>
 
       {onClick && (

@@ -81,6 +81,27 @@ export const PROVIDER_SLUGS = {
   replicate: 'replicate',
   jina: 'jina',
   wandb: 'wandb',
+
+  // Audio Separation
+  demucs: 'demucs',
+  audioshake: 'audioshake',
+  stemsplit: 'stemsplit',
+
+  // OCR
+  tesseract: 'tesseract',
+  paddleocr: 'paddleocr',
+
+  // Image Enhancement
+  realesrgan: 'realesrgan',
+  gfgpan: 'gfgpan',
+
+  // Music Generation
+  suno: 'suno',
+  stableaudio: 'stable-audio',
+
+  // Embeddings
+  voyage: 'voyage',
+  nomic: 'nomic',
 } as const;
 
 export type ProviderSlug = (typeof PROVIDER_SLUGS)[keyof typeof PROVIDER_SLUGS];
@@ -122,6 +143,8 @@ export type ProviderCategory =
   | 'cloud_audio'
   | 'cloud_video'
   | 'cloud_embedding'
+  | 'cloud_vision'
+  | 'cloud_3d'
   | 'local'
   | 'hosting'
   | 'specialized';

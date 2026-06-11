@@ -7,6 +7,7 @@ import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatTile } from '@/components/primitives/StatTile';
 import { FreeProviderCard } from '@/components/domain/FreeProviderCard';
 import { FreeTierDrawer } from '@/components/domain/FreeTierDrawer';
 import { AddProviderDialog } from '@/components/domain/AddProviderDialog';

@@ -9,17 +9,22 @@ import { fileURLToPath } from 'node:url';
 import { logger, decryptConfigApiKey, encrypt, decrypt } from '@dmr-x/utils';
 import { Router } from '@dmr-x/router';
 import { getTelemetryService } from '@dmr-x/telemetry';
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter } from '@dmr-x/adapters';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { quotaService, rateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
+import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import { chatRoutes } from './routes/chat.routes.js';
 import { modelsRoutes } from './routes/models.routes.js';
 import { imagesRoutes } from './routes/images.routes.js';
 import { embeddingsRoutes } from './routes/embeddings.routes.js';
 import { audioRoutes } from './routes/audio.routes.js';
+import { audioSeparationRoutes } from './routes/audio-separation.routes.js';
+import { ocrRoutes } from './routes/ocr.routes.js';
+import { videoRoutes } from './routes/video.routes.js';
+import { threeDRoutes } from './routes/3d.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
 import { geminiRoutes } from './routes/gemini.routes.js';
 import { adminRoutes } from './routes/admin.routes.js';
@@ -68,6 +73,18 @@ export async function createServer() {
   adapterRegistry.register(new DeepgramAdapter());
   adapterRegistry.register(new CohereAdapter());
   adapterRegistry.register(new JinaAdapter());
+  adapterRegistry.register(new FalAdapter());
+  adapterRegistry.register(new VeoAdapter());
+  adapterRegistry.register(new RunwayAdapter());
+  adapterRegistry.register(new ComfyUIAdapter());
+  // Audio Separation adapters
+  adapterRegistry.register(createAudioSeparationAdapter('demucs'));
+  adapterRegistry.register(createAudioSeparationAdapter('audioshake'));
+  adapterRegistry.register(createAudioSeparationAdapter('stemsplit'));
+  // OCR adapters
+  adapterRegistry.register(createOcrAdapter('tesseract'));
+  adapterRegistry.register(createOcrAdapter('paddleocr'));
+  adapterRegistry.register(createOcrAdapter('huggingface'));
 
   // Initialize adapters with config from env
   if (process.env.OPENAI_API_KEY) {
@@ -121,6 +138,72 @@ export async function createServer() {
     await adapterRegistry.initialize('jina', {
       baseUrl: 'https://api.jina.ai/v1',
       apiKey: process.env.JINA_API_KEY,
+    });
+  }
+  if (process.env.FAL_KEY) {
+    await adapterRegistry.initialize('fal', {
+      baseUrl: 'https://fal.run',
+      apiKey: process.env.FAL_KEY,
+    });
+  }
+  if (process.env.GOOGLE_API_KEY) {
+    await adapterRegistry.initialize('google', {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      apiKey: process.env.GOOGLE_API_KEY,
+    });
+  }
+  if (process.env.GOOGLE_API_KEY) {
+    await adapterRegistry.initialize('veo', {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      apiKey: process.env.GOOGLE_API_KEY,
+    });
+  }
+  if (process.env.RUNWAY_API_KEY) {
+    await adapterRegistry.initialize('runway', {
+      baseUrl: 'https://api.dev.runwayml.com/v1',
+      apiKey: process.env.RUNWAY_API_KEY,
+    });
+  }
+
+  // Initialize ComfyUI local video generation (no API key required)
+  if (process.env.COMFYUI_BASE_URL) {
+    await adapterRegistry.initialize('comfyui', {
+      baseUrl: process.env.COMFYUI_BASE_URL,
+      maxConcurrent: parseInt(process.env.COMFYUI_MAX_CONCURRENT || '1', 10),
+    });
+  }
+
+  // Initialize Demucs audio separation (local service)
+  if (process.env.DMRX_DEMUCS_BASE_URL) {
+    await adapterRegistry.initialize('demucs', {
+      baseUrl: process.env.DMRX_DEMUCS_BASE_URL,
+    });
+  }
+
+  // Initialize cloud audio separation providers
+  if (process.env.AUDIO_SHAKE_API_KEY) {
+    await adapterRegistry.initialize('audioshake', {
+      baseUrl: process.env.DMRX_AUDIO_SHAKE_BASE_URL || 'https://api.audioshake.com/v1',
+      apiKey: process.env.AUDIO_SHAKE_API_KEY,
+    });
+  }
+  if (process.env.STEMSPLIT_API_KEY) {
+    await adapterRegistry.initialize('stemsplit', {
+      baseUrl: process.env.DMRX_STEMSPLIT_BASE_URL || 'https://api.stemsplit.com/v1',
+      apiKey: process.env.STEMSPLIT_API_KEY,
+    });
+  }
+
+  // Initialize OCR providers
+  if (process.env.TESSERACT_BASE_URL) {
+    await adapterRegistry.initialize('tesseract', {
+      baseUrl: process.env.TESSERACT_BASE_URL,
+    });
+  }
+  if (process.env.PADDLEOCR_BASE_URL || process.env.HF_TOKEN) {
+    await adapterRegistry.initialize('paddleocr', {
+      baseUrl: process.env.PADDLEOCR_BASE_URL || process.env.HF_INFERENCE_URL || 'http://localhost:8000',
+      apiKey: process.env.PADDLEOCR_API_KEY || process.env.HF_TOKEN,
     });
   }
 
@@ -277,6 +360,13 @@ export async function createServer() {
   server.decorate('rateLimitService', rateLimitService);
   server.decorate('quotaService', quotaService);
 
+  // Initialize Benchmark services
+  const judgeService = new JudgeService(router);
+  const benchmarkService = new BenchmarkService(adapterRegistry, judgeService);
+  benchmarkService.startScheduled(); // start 24h cycle
+  server.decorate('benchmarkService', benchmarkService);
+  server.decorate('judgeService', judgeService);
+
   // Helper to get adapter by provider ID (UUID or name)
   server.decorate('getAdapter', (providerId: string) => {
     let adapter = adapterRegistry.get(providerId);
@@ -318,8 +408,11 @@ export async function createServer() {
   // Start health checker — delay initial run to allow all adapters (including
   // those loaded from DB and auto-registered) to fully initialise.
   const healthChecker = new HealthChecker(adapterRegistry, 30000);
-  const healthCheckStartTimer = setTimeout(() => healthChecker.start(), 5000);
-  healthCheckStartTimer.unref();
+  let healthCheckStartTimer: ReturnType<typeof setTimeout> | null = null;
+  server.addHook('onListen', async () => {
+    healthCheckStartTimer = setTimeout(() => healthChecker.start(), 5000);
+    healthCheckStartTimer.unref();
+  });
 
   // Background OAuth token refresh — check every 5 minutes
   const OAUTH_REFRESH_INTERVAL = 5 * 60 * 1000;
@@ -382,14 +475,14 @@ export async function createServer() {
   }, OAUTH_REFRESH_INTERVAL);
   oauthRefreshTimer.unref();
 
-  // Start telemetry service (fire-and-forget — must not crash the server)
-  try {
-    const telemetry = getTelemetryService();
-    await telemetry.start();
-    logger.info('Telemetry service started');
-  } catch (err) {
-    logger.warn({ err }, 'Failed to start telemetry service — continuing without telemetry');
-  }
+// Start telemetry service (fire-and-forget — must not crash the server)
+   try {
+     const telemetry = getTelemetryService();
+     await telemetry.start();
+     logger.info('Telemetry service started');
+   } catch (err) {
+     logger.warn({ err }, 'Failed to start telemetry service — continuing without telemetry');
+   }
 
   // CORS — never use wildcard origin; always use explicit origins
   const defaultOrigins = [
@@ -510,21 +603,26 @@ export async function createServer() {
 
   server.get('/livez', async () => ({ status: 'alive' }));
 
-  // Routes
-  await server.register(chatRoutes, { prefix: '/v1' });
-  await server.register(anthropicRoutes, { prefix: '/v1' });
-  await server.register(geminiRoutes, { prefix: '/v1' });
-  await server.register(modelsRoutes, { prefix: '/v1' });
-  await server.register(imagesRoutes, { prefix: '/v1' });
-  await server.register(embeddingsRoutes, { prefix: '/v1' });
-  await server.register(audioRoutes, { prefix: '/v1' });
-  await server.register(adminRoutes, { prefix: '/v1' });
-  await server.register(toolsRoutes, { prefix: '/v1' });
-  await server.register(agenticRoutes, { prefix: '/v1' });
+// Routes
+   await server.register(chatRoutes, { prefix: '/v1' });
+   await server.register(anthropicRoutes, { prefix: '/v1' });
+   await server.register(geminiRoutes, { prefix: '/v1' });
+   await server.register(modelsRoutes, { prefix: '/v1' });
+   await server.register(imagesRoutes, { prefix: '/v1' });
+   await server.register(embeddingsRoutes, { prefix: '/v1' });
+   await server.register(audioRoutes, { prefix: '/v1' });
+   await server.register(audioSeparationRoutes, { prefix: '/v1' });
+   await server.register(ocrRoutes, { prefix: '/v1' });
+   await server.register(videoRoutes, { prefix: '/v1' });
+   await server.register(threeDRoutes, { prefix: '/v1' });
+   await server.register(adminRoutes, { prefix: '/v1' });
+   await server.register(toolsRoutes, { prefix: '/v1' });
+   await server.register(agenticRoutes, { prefix: '/v1' });
 
-  // SPA fallback — serve index.html for non-API GET requests
-  server.get('*', async (request, reply) => {
-    if (request.url.startsWith('/v1/') || request.url.startsWith('/health')) {
+  // SPA fallback: serve index.html for non-API GET requests.
+  server.setNotFoundHandler(async (request, reply) => {
+    const pathname = request.url.split('?')[0];
+    if (request.method !== 'GET' || pathname.startsWith('/v1/') || pathname.startsWith('/health')) {
       return reply.code(404).send({ error: 'Not Found' });
     }
     const indexHtml = await fs.promises.readFile(path.join(uiDir, 'index.html'), 'utf8');
@@ -554,7 +652,10 @@ export async function createServer() {
 
   // Cleanup on close
   server.addHook('onClose', async () => {
-    clearTimeout(healthCheckStartTimer);
+    if (healthCheckStartTimer) {
+      clearTimeout(healthCheckStartTimer);
+      healthCheckStartTimer = null;
+    }
     clearInterval(oauthRefreshTimer);
     healthChecker.stop();
     await adapterRegistry.disposeAll();

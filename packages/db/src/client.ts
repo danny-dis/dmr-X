@@ -25,7 +25,7 @@ async function saveDatabase(): Promise<void> {
   }
 }
 
-const SAVE_DEBOUNCE_MS = 100;
+const SAVE_DEBOUNCE_MS = 50;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSaveResolvers: (() => void)[] = [];
 
@@ -165,6 +165,18 @@ class DatabaseWrapper {
     };
   }
 
+  transaction(fn: () => void) {
+    this.raw.exec('BEGIN TRANSACTION');
+    try {
+      fn();
+      this.raw.exec('COMMIT');
+      scheduleSave();
+    } catch (err) {
+      this.raw.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
   exec(sql: string) {
     this.raw.exec(sql);
     scheduleSave();
@@ -194,8 +206,15 @@ export async function initDb(): Promise<DatabaseWrapper> {
   dbPath = path.join(dataDir, 'data.db');
 
   if (fs.existsSync(dbPath)) {
-    const buffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(buffer);
+    try {
+      const buffer = fs.readFileSync(dbPath);
+      db = new SQL.Database(buffer);
+    } catch {
+      const backupPath = `${dbPath}.corrupt.${Date.now()}.bak`;
+      fs.renameSync(dbPath, backupPath);
+      log.warn(`Corrupted database backed up to ${backupPath}, creating fresh database`);
+      db = new SQL.Database();
+    }
   } else {
     db = new SQL.Database();
   }

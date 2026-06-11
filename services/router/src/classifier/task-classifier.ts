@@ -1,4 +1,4 @@
-import type { UnifiedRequest, TaskProfile } from '@dmr-x/core';
+import type { UnifiedRequest, TaskProfile, CapabilityTier } from '@dmr-x/core';
 import { detectModality } from './modality-detector.js';
 import { extractCapabilities } from './capability-extractor.js';
 
@@ -10,6 +10,28 @@ export interface ClassifyOptions {
   planOnly?: boolean;
   /** Request-scoped ID for tracing through the pipeline */
   requestId?: string;
+  /** Explicit capability tier override (bypasses auto-inference) */
+  requiredCapabilityTier?: CapabilityTier;
+}
+
+/**
+ * Infer the required capability tier from the quality target.
+ * This provides automatic tier preference based on the request's quality requirements.
+ */
+function inferCapabilityTier(qualityTarget: 'frontier' | 'balanced' | 'economy'): CapabilityTier {
+  switch (qualityTarget) {
+    case 'frontier':
+      // Frontier tasks want the best — brain or thinker tier
+      return 'brain';
+    case 'balanced':
+      // Balanced tasks are fine with executor or specialist
+      return 'executor';
+    case 'economy':
+      // Economy tasks want cheap/fast — worker tier
+      return 'worker';
+    default:
+      return 'executor';
+  }
 }
 
 export function classifyTask(request: UnifiedRequest, options: ClassifyOptions): TaskProfile {
@@ -17,6 +39,10 @@ export function classifyTask(request: UnifiedRequest, options: ClassifyOptions):
   const capabilities = extractCapabilities(request);
 
   const sizeEstimate = estimateSize(request, modality);
+  const qualityTarget = options.qualityTarget ?? 'balanced';
+
+  // Use explicit override if provided, otherwise infer from quality target
+  const requiredCapabilityTier = options.requiredCapabilityTier ?? inferCapabilityTier(qualityTarget);
 
   return {
     modality,
@@ -24,7 +50,8 @@ export function classifyTask(request: UnifiedRequest, options: ClassifyOptions):
     sizeEstimate,
     priority: options.priority ?? 5,
     streaming: request.stream,
-    qualityTarget: options.qualityTarget ?? 'balanced',
+    qualityTarget,
+    requiredCapabilityTier,
   };
 }
 

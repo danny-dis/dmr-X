@@ -7,11 +7,13 @@
  */
 
 import { Plugin, PluginManifest } from './plugin.js';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync as fsExistsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // __dirname workaround for ES modules
-const __dirname = dirname(new URL(import.meta.url).pathname);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export interface PluginLoaderConfig {
   pluginsDir?: string;                  // e.g. "services/plugins"
@@ -34,7 +36,7 @@ export class PluginLoader {
       }
       this.manifests.set(manifest.id, manifest);
 
-      const pluginModule = await this.dynamicImport(pluginDir, manifest.id) as { default?: Plugin; };
+      const pluginModule = await this.dynamicImport(pluginDir, manifest.id) as any;
       const plugin: Plugin = pluginModule.default ?? (pluginModule as Plugin);
 
       // TODO: Implement dependency injection wrapping
@@ -67,6 +69,7 @@ export class PluginLoader {
         try {
           await plugin.stop();
         } catch (error) {
+          // @ts-ignore - manifest is not in scope here, but we can use id
           console.error(`Failed to stop plugin ${id}:`, error);
         }
       }
@@ -102,9 +105,9 @@ export class PluginLoader {
       const indexJsPath = join(dir, 'dist', 'index.js');
       
       return (
-        existsSync(packageJsonPath) ||
-        existsSync(indexTsPath) ||
-        existsSync(indexJsPath)
+        fsExistsSync(packageJsonPath) ||
+        fsExistsSync(indexTsPath) ||
+        fsExistsSync(indexJsPath)
       );
     } catch (error) {
       return false;
@@ -114,7 +117,7 @@ export class PluginLoader {
   private loadManifest(pluginDir: string): PluginManifest {
     // Try to load from package.json first
     const packageJsonPath = join(pluginDir, 'package.json');
-    if (existsSync(packageJsonPath)) {
+    if (fsExistsSync(packageJsonPath)) {
       const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
       return {
         id: packageJson.name || 'unknown',
@@ -140,7 +143,7 @@ export class PluginLoader {
     ];
 
     for (const manifestPath of manifestPaths) {
-      if (existsSync(manifestPath)) {
+      if (fsExistsSync(manifestPath)) {
         // In a real implementation, we would dynamically import the manifest
         // For now, return a default manifest
         return {
@@ -185,7 +188,7 @@ export class PluginLoader {
     ];
 
     for (const entryPath of entryPaths) {
-      if (existsSync(entryPath)) {
+      if (fsExistsSync(entryPath)) {
         try {
           // Use dynamic import() - no static coupling
           return import(entryPath);
@@ -197,13 +200,5 @@ export class PluginLoader {
     }
 
     throw new Error(`Could not find entry point for plugin ${pluginId}`);
-  }
-}
-
-function existsSync(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch (error) {
-    return false;
   }
 }

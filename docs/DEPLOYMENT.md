@@ -70,6 +70,8 @@ This uses the root `Dockerfile` and `docker-compose.yml`:
 - Log rotation: 50MB max, 3 files
 - Persistent volume for data at `/home/dmrx/.dmr-x`
 
+> **Important:** Use `docker compose stop` (graceful) rather than `docker kill` (forced) to ensure SQLite data is properly flushed. The gateway handles SIGTERM with a 30-second grace period for clean shutdown.
+
 ### Environment Variables
 
 Pass environment variables via `docker-compose.yml` or a `.env` file:

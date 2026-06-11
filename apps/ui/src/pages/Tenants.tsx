@@ -26,6 +26,12 @@ export function TenantsPage() {
   const [createKeyOpen, setCreateKeyOpen] = React.useState(false);
 
   const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 15000 });
+
+  const filtered = (tenants.data ?? []).filter((t) =>
+    query ? `${t.name} ${t.email ?? ''}`.toLowerCase().includes(query.toLowerCase()) : true
+  );
+  const selected = (tenants.data ?? []).find((t) => t.id === selectedTenant);
+
   const keys = useApiData<ApiKey[]>(
     () => Admin.listApiKeys().then(allKeys => allKeys.filter(k => k.tenant_id === selectedTenant)),
     [selectedTenant],
@@ -74,11 +80,6 @@ export function TenantsPage() {
     }
   };
 
-  const filtered = (tenants.data ?? []).filter((t) =>
-    query ? `${t.name} ${t.email ?? ''}`.toLowerCase().includes(query.toLowerCase()) : true
-  );
-  const selected = (tenants.data ?? []).find((t) => t.id === selectedTenant);
-
   return (
     <PageContainer>
       <PageHeader
@@ -125,9 +126,9 @@ export function TenantsPage() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-fg truncate">{t.name}</p>
-                    <p className="text-[10px] text-fg-muted">
-                      {t.tier ?? 'free'} · {formatNumber(t.tokensUsed ?? 0, true)} tokens
-                    </p>
+<p className="text-[10px] text-fg-muted">
+                       {t.tier ?? 'free'} · {formatNumber(t.tokens_used ?? 0, true)} tokens
+                     </p>
                   </div>
                   <StatusPill
                     status={t.suspended ? 'offline' : 'online'}
@@ -223,24 +224,24 @@ export function TenantsPage() {
                     </div>
                   )}
                 </TabsContent>
-                <TabsContent value="usage" className="px-3 pb-3">
+<TabsContent value="usage" className="px-3 pb-3">
                   <div className="grid grid-cols-3 gap-3">
                     <div className="rounded-lg border border-border p-3">
                       <p className="text-[10px] text-fg-muted uppercase tracking-wider">Tokens</p>
                       <p className="text-lg font-semibold text-fg mt-1">
-                        {formatNumber(selected.tokensUsed ?? 0, true)}
+                        {formatNumber(selected.tokens_used ?? 0, true)}
                       </p>
                     </div>
                     <div className="rounded-lg border border-border p-3">
                       <p className="text-[10px] text-fg-muted uppercase tracking-wider">Requests</p>
                       <p className="text-lg font-semibold text-fg mt-1">
-                        {formatNumber(selected.requestsUsed ?? 0, true)}
+                        {formatNumber(selected.requests_used ?? 0, true)}
                       </p>
                     </div>
                     <div className="rounded-lg border border-border p-3">
                       <p className="text-[10px] text-fg-muted uppercase tracking-wider">Cost</p>
                       <p className="text-lg font-semibold text-fg mt-1">
-                        ${(selected.costUsed ?? 0).toFixed(2)}
+                        ${(selected.cost_used ?? 0).toFixed(2)}
                       </p>
                     </div>
                   </div>
@@ -285,15 +286,15 @@ export function TenantsPage() {
                       <div className="grid grid-cols-3 gap-2 text-[11px]">
                         <div>
                           <p className="text-fg-subtle">Tokens</p>
-                          <p className="text-fg tabular-nums">{formatNumber(selected.tokensUsed ?? 0, true)} / {formatNumber(selected.tokensLimit ?? 0, true)}</p>
+                          <p className="text-fg tabular-nums">{formatNumber(selected.tokens_used ?? 0, true)} / {formatNumber(selected.tokens_limit ?? 0, true)}</p>
                         </div>
                         <div>
                           <p className="text-fg-subtle">Requests</p>
-                          <p className="text-fg tabular-nums">{formatNumber(selected.requestsUsed ?? 0, true)} / {formatNumber(selected.requestsLimit ?? 0, true)}</p>
+                          <p className="text-fg tabular-nums">{formatNumber(selected.requests_used ?? 0, true)} / {formatNumber(selected.requests_limit ?? 0, true)}</p>
                         </div>
                         <div>
                           <p className="text-fg-subtle">Cost</p>
-                          <p className="text-fg tabular-nums">${(selected.costUsed ?? 0).toFixed(2)} / ${(selected.costLimit ?? 0).toFixed(2)}</p>
+                          <p className="text-fg tabular-nums">${(selected.cost_used ?? 0).toFixed(2)} / ${(selected.cost_limit ?? 0).toFixed(2)}</p>
                         </div>
                       </div>
                     </div>

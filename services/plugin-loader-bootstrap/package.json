@@ -20,7 +20,7 @@
     "@dmr-x/mcp-server": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "5.0.0"
   },
   "keywords": [
     "dmr-x",

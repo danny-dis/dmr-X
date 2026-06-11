@@ -1,7 +1,31 @@
-import * as React from 'react';
 import {
-  Send, Sparkles, RotateCcw, Save, Settings2, Mic,
-  ArrowUpDown, ShieldAlert, ChevronDown, Volume2, Brain,
+  Sparkles,
+  Send,
+  RotateCcw,
+  Settings2,
+  ChevronDown,
+  MessageSquare,
+  Image as ImageIcon,
+  Type,
+  Volume2,
+  Mic,
+  ArrowUpDown,
+  ShieldAlert,
+  Terminal,
+  Brain,
+  Zap,
+  Clock,
+  DollarSign,
+  Search,
+  Plus,
+  Save,
+  Trash2,
+  ChevronRight,
+  Info,
+  ThumbsUp,
+  ThumbsDown,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
@@ -9,872 +33,467 @@ import { Button } from '@/components/primitives/Button';
 import { Input } from '@/components/primitives/Input';
 import { Textarea } from '@/components/primitives/Textarea';
 import { Badge } from '@/components/primitives/Badge';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { apiPost } from '@/lib/api';
 import { formatDuration, formatTokens } from '@/lib/formatters';
-import type { ApiModel } from '@/types/api';
 import { toast } from '@/components/primitives/Toast';
-import { AgenticChatTab } from '@/components/domain/playground/AgenticChatTab';
-import { AnthropicChatTab } from '@/components/domain/playground/AnthropicChatTab';
-import { GeminiChatTab } from '@/components/domain/playground/GeminiChatTab';
+import { cn } from '@/lib/utils';
+import type { ApiModel } from '@/types/api';
 
 /* -------------------------------------------------------------------------- */
-/*  Samples                                                                   */
+/*  Types                                                                      */
 /* -------------------------------------------------------------------------- */
 
-const SAMPLES: Record<string, { label: string; prompt: string }[]> = {
-  chat: [
-    { label: 'Explain', prompt: 'Explain quantum entanglement in one paragraph.' },
-    { label: 'Code', prompt: 'Write a TypeScript debounce function.' },
-    { label: 'Haiku', prompt: 'Write a haiku about distributed systems.' },
-  ],
-  image: [
-    { label: 'Landscape', prompt: 'A serene mountain landscape at sunset, oil painting style' },
-    { label: 'Abstract', prompt: 'Abstract neural network visualization, neon colors on dark background' },
-  ],
-  embed: [
-    { label: 'Gateway', prompt: 'DMR-X is a universal AI routing gateway.' },
-  ],
-  code: [
-    { label: 'Debounce', prompt: 'Write a TypeScript debounce function.' },
-    { label: 'Merge sort', prompt: 'Implement merge sort in Rust.' },
-  ],
-  tts: [
-    { label: 'Greeting', prompt: 'Hello and welcome to DMR-X, the universal AI routing platform.' },
-    { label: 'News', prompt: 'Breaking: Local developer builds AI router that supports 80 providers.' },
-  ],
-  stt: [
-    { label: 'Upload audio', prompt: '' },
-  ],
-  rerank: [
-    { label: 'Docs', prompt: 'How does the routing algorithm work?' },
-  ],
-  moderate: [
-    { label: 'Test', prompt: 'This is a test message to check content moderation.' },
-  ],
-  anthropic: [],
-  gemini: [],
-};
+type PlaygroundMode = 'chat' | 'image' | 'embed' | 'tts' | 'stt' | 'rerank' | 'moderate' | 'agent';
 
-/* -------------------------------------------------------------------------- */
-/*  Advanced params                                                           */
-/* -------------------------------------------------------------------------- */
-
-interface AdvancedParams {
-  temperature: number;
-  maxTokens: string;
-  topP: number;
-  frequencyPenalty: number;
-  presencePenalty: number;
-  stop: string;
-  responseFormat: 'text' | 'json_object';
-  seed: string;
-  n: number;
-  stream: boolean;
+interface PlaygroundResponse {
+  id: string; // requestId
+  text: string;
+  audioUrl?: string;
+  meta?: {
+    latency: number;
+    tokens: number;
+    provider: string;
+    model: string;
+    cost: number;
+    routingDecision?: string;
+  };
+  feedback?: 'up' | 'down' | null;
+  copied?: boolean;
 }
-
-const DEFAULT_ADVANCED: AdvancedParams = {
-  temperature: 0.7,
-  maxTokens: '',
-  topP: 1,
-  frequencyPenalty: 0,
-  presencePenalty: 0,
-  stop: '',
-  responseFormat: 'text',
-  seed: '',
-  n: 1,
-  stream: true,
-};
 
 /* -------------------------------------------------------------------------- */
 /*  Presets                                                                   */
 /* -------------------------------------------------------------------------- */
 
-interface PresetEntry {
-  name: string;
-  tab: string;
-  model: string;
-  adv: AdvancedParams;
-  ttsVoice: string;
-  ttsSpeed: number;
-  ttsFormat: string;
-}
-
-const PRESETS_KEY = 'dmrx-playground-presets';
+const SAMPLES: Record<PlaygroundMode, { label: string; prompt: string }[]> = {
+  chat: [
+    { label: 'Explain', prompt: 'Explain quantum entanglement in one paragraph.' },
+    { label: 'Code', prompt: 'Write a TypeScript debounce function.' },
+    { label: 'Poem', prompt: 'Write a haiku about a lonely satellite.' },
+  ],
+  image: [
+    { label: 'Cyberpunk', prompt: 'A futuristic Tokyo street at night, neon signs, rainy reflections, cinematic lighting, 8k' },
+    { label: 'Oil Painting', prompt: 'A serene mountain lake at sunset, thick brushstrokes, impressionist style' },
+  ],
+  embed: [
+    { label: 'Sentence', prompt: 'DMR-X is a universal AI routing gateway.' },
+  ],
+  tts: [
+    { label: 'Greeting', prompt: 'Hello and welcome to the DMR-X universal AI gateway.' },
+  ],
+  stt: [],
+  rerank: [
+    { label: 'Docs', prompt: 'How does the routing algorithm work?' },
+  ],
+  moderate: [
+    { label: 'Check', prompt: 'This is a test message to check content moderation.' },
+  ],
+  agent: [
+    { label: 'Research', prompt: 'Find the current weather in New York and compare it with London.' },
+  ],
+};
 
 /* -------------------------------------------------------------------------- */
-/*  Component                                                                 */
+/*  Component                                                                  */
 /* -------------------------------------------------------------------------- */
 
 export function PlaygroundPage() {
-  // --- Core state ---
-  const [tab, setTab] = React.useState('chat');
+  const [mode, setMode] = React.useState<PlaygroundMode>('chat');
   const [model, setModel] = React.useState('free');
-  const [prompt, setPrompt] = React.useState(SAMPLES.chat[0].prompt);
-  const [response, setResponse] = React.useState<{
-    text: string;
-    meta?: { latency: number; tokens: number; provider: string; cost: number };
-  } | null>(null);
+  const [prompt, setPrompt] = React.useState('');
   const [loading, setLoading] = React.useState(false);
+  const [responses, setResponses] = React.useState<PlaygroundResponse[]>([]);
 
-  // --- Advanced params ---
-  const [advOpen, setAdvOpen] = React.useState(false);
-  const [adv, setAdv] = React.useState<AdvancedParams>(DEFAULT_ADVANCED);
-  const updateAdv = <K extends keyof AdvancedParams>(key: K, value: AdvancedParams[K]) =>
-    setAdv((a) => ({ ...a, [key]: value }));
+  // Config
+  const [temperature, setTemperature] = React.useState(0.7);
+  const [maxTokens, setMaxTokens] = React.useState<number | undefined>(undefined);
+  const [stream, setStream] = React.useState(true);
+  const [showConfig, setShowConfig] = React.useState(false);
 
-  // --- TTS state ---
-  const [ttsVoice, setTtsVoice] = React.useState('alloy');
-  const [ttsSpeed, setTtsSpeed] = React.useState(1);
-  const [ttsFormat, setTtsFormat] = React.useState('mp3');
-  const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
-
-  // --- Presets ---
-  const [presets, setPresets] = React.useState<PresetEntry[]>([]);
-
-  React.useEffect(() => {
-    try {
-      const raw = localStorage.getItem(PRESETS_KEY);
-      if (raw) setPresets(JSON.parse(raw));
-    } catch { /* ignore */ }
-  }, []);
-
-  const handleSavePreset = () => {
-    const name = window.prompt('Preset name:');
-    if (!name) return;
-    const existing = presets.find((p) => p.name === name);
-    if (existing && !window.confirm(`Preset "${name}" already exists. Overwrite?`)) return;
-    const entry: PresetEntry = { name, tab, model, adv, ttsVoice, ttsSpeed, ttsFormat };
-    const next = existing ? presets.map((p) => (p.name === name ? entry : p)) : [...presets, entry];
-    localStorage.setItem(PRESETS_KEY, JSON.stringify(next));
-    setPresets(next);
-    toast.success('Preset saved', { description: name });
-  };
-
-  const handleLoadPreset = (p: PresetEntry) => {
-    setTab(p.tab);
-    setModel(p.model);
-    setAdv(p.adv);
-    setTtsVoice(p.ttsVoice);
-    setTtsSpeed(p.ttsSpeed);
-    setTtsFormat(p.ttsFormat);
-    toast.success('Preset loaded', { description: p.name });
-  };
-
-  const handleDeletePreset = (e: React.MouseEvent, name: string) => {
-    e.stopPropagation();
-    const next = presets.filter((p) => p.name !== name);
-    localStorage.setItem(PRESETS_KEY, JSON.stringify(next));
-    setPresets(next);
-    toast.success('Preset removed', { description: name });
-  };
-
-  // --- STT state ---
-  const [sttFile, setSttFile] = React.useState<File | null>(null);
-  const [sttLanguage, setSttLanguage] = React.useState('');
-  const [sttPrompt, setSttPrompt] = React.useState('');
-
-  // --- Rerank state ---
-  const [rerankDocs, setRerankDocs] = React.useState('');
-  const [rerankTopN, setRerankTopN] = React.useState(5);
-
-  // --- Moderate state ---
-  // (uses prompt directly)
-
-  // --- Data ---
+  // Data
   const models = useApiData<ApiModel[]>(() => Admin.listModels(), [], { refetchInterval: 60_000 });
 
-  // Filter models by modality for non-chat tabs
-  const modelsForTab = React.useMemo(() => {
+  const filteredModels = React.useMemo(() => {
     const all = models.data ?? [];
-    switch (tab) {
-      case 'tts': return all.filter((m) => m.modality === 'audio_tts');
-      case 'stt': return all.filter((m) => m.modality === 'audio_stt');
-      case 'rerank': return all.filter((m) => m.modality === 'reranking');
-      case 'moderate': return all.filter((m) => m.modality === 'llm');
-      case 'image': return all.filter((m) => m.modality === 'diffusion');
-      case 'embed': return all.filter((m) => m.modality === 'embedding');
-      default: return all.filter((m) => m.modality === 'llm');
+    switch (mode) {
+      case 'image': return all.filter(m => m.modality === 'diffusion');
+      case 'embed': return all.filter(m => m.modality === 'embedding');
+      case 'tts': return all.filter(m => m.modality === 'audio_tts');
+      case 'stt': return all.filter(m => m.modality === 'audio_stt');
+      case 'rerank': return all.filter(m => m.modality === 'reranking');
+      default: return all.filter(m => m.modality === 'llm');
     }
-  }, [models.data, tab]);
+  }, [models.data, mode]);
 
-  // --- Reset on tab change ---
-  React.useEffect(() => {
-    setResponse(null);
-    setAudioUrl(null);
-    const samples = SAMPLES[tab] ?? SAMPLES.chat;
-    if (samples.length > 0) {
-      setPrompt(samples[0].prompt);
-    }
-    // Reset model to first matching for tab
-    if (modelsForTab.length > 0) {
-      setModel(modelsForTab[0].id);
-    }
-  }, [tab]);
-
-  // --- Send handlers ---
-
-  const onSendChat = async () => {
-    const body: Record<string, unknown> = {
-      model,
-      messages: [{ role: 'user', content: prompt }],
-    };
-    // Wire advanced params
-    if (adv.temperature !== 0.7) body.temperature = adv.temperature;
-    if (adv.maxTokens) body.max_tokens = Number(adv.maxTokens);
-    if (adv.topP !== 1) body.top_p = adv.topP;
-    if (adv.frequencyPenalty !== 0) body.frequency_penalty = adv.frequencyPenalty;
-    if (adv.presencePenalty !== 0) body.presence_penalty = adv.presencePenalty;
-    if (adv.stop) body.stop = adv.stop.split(',').map((s) => s.trim()).filter(Boolean);
-    if (adv.responseFormat !== 'text') body.response_format = { type: adv.responseFormat };
-    if (adv.seed) body.seed = Number(adv.seed);
-    if (adv.n !== 1) body.n = adv.n;
-    body.stream = adv.stream;
-
-    const res = await fetch('/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content ?? data.text ?? JSON.stringify(data, null, 2);
-    return {
-      text,
-      meta: {
-        latency: 0, // filled by caller
-        tokens: data.usage?.total_tokens ?? 0,
-        provider: data.provider ?? 'auto',
-        cost: data.cost ?? 0,
-      },
-    };
-  };
-
-  const onSendImage = async () => {
-    const res = await fetch('/v1/images/generations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt, n: 1, size: '1024x1024' }),
-    });
-    const data = await res.json();
-    const urls = (data.data ?? []).map((d: { url?: string; b64_json?: string }) => d.url ?? (d.b64_json ? `data:image/png;base64,${d.b64_json}` : ''));
-    return {
-      text: urls.length > 0
-        ? urls.map((u: string, i: number) => `![Generated ${i + 1}](${u})`).join('\n\n')
-        : JSON.stringify(data, null, 2),
-      meta: { latency: 0, tokens: 0, provider: data.provider ?? 'auto', cost: data.cost ?? 0 },
-    };
-  };
-
-  const onSendEmbed = async () => {
-    const res = await fetch('/v1/embeddings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, input: prompt }),
-    });
-    const data = await res.json();
-    const dims = data.data?.[0]?.embedding?.length ?? 0;
-    const preview = data.data?.[0]?.embedding?.slice(0, 10)?.map((v: number) => v.toFixed(4))?.join(', ');
-    return {
-      text: `Embedding (${dims} dimensions)\n[${preview}...]`,
-      meta: { latency: 0, tokens: data.usage?.total_tokens ?? 0, provider: data.model ?? model, cost: 0 },
-    };
-  };
-
-  const onSendTTS = async () => {
-    const res = await fetch('/v1/audio/speech', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, input: prompt, voice: ttsVoice, speed: ttsSpeed, response_format: ttsFormat }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      return { text: `Error: ${err.error ?? res.statusText}`, meta: undefined };
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    setAudioUrl(url);
-    const ext = ttsFormat === 'mp3' ? 'mpeg' : ttsFormat;
-    return {
-      text: `Audio generated (${ttsFormat}, ${ttsVoice}, ${ttsSpeed}x)\n\nListen above ↓`,
-      meta: { latency: 0, tokens: 0, provider: model, cost: 0 },
-    };
-  };
-
-  const onSendSTT = async () => {
-    if (!sttFile) return { text: 'Please select an audio file.', meta: undefined };
-    const formData = new FormData();
-    formData.append('file', sttFile);
-    formData.append('model', model);
-    if (sttLanguage) formData.append('language', sttLanguage);
-    if (sttPrompt) formData.append('prompt', sttPrompt);
-
-    const res = await fetch('/v1/audio/transcriptions', {
-      method: 'POST',
-      body: formData,
-    });
-    const data = await res.json();
-    return {
-      text: data.text ?? JSON.stringify(data, null, 2),
-      meta: { latency: 0, tokens: 0, provider: model, cost: 0 },
-    };
-  };
-
-  const onSendRerank = async () => {
-    const docs = rerankDocs.split('\n').map((d) => d.trim()).filter(Boolean);
-    if (docs.length === 0) return { text: 'Please enter at least one document.', meta: undefined };
-    const res = await fetch('/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [{
-          role: 'user',
-          content: `Rank the following documents by relevance to the query: "${prompt}"\n\nDocuments:\n${docs.map((d, i) => `${i + 1}. ${d}`).join('\n')}\n\nReturn a JSON array of objects with "index", "relevance_score", and "summary" fields, sorted by relevance descending. Return at most ${rerankTopN} results.`,
-        }],
-        response_format: { type: 'json_object' },
-      }),
-    });
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2);
-    return {
-      text,
-      meta: { latency: 0, tokens: data.usage?.total_tokens ?? 0, provider: data.provider ?? model, cost: data.cost ?? 0 },
-    };
-  };
-
-  const onSendModerate = async () => {
-    const res = await fetch('/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: model || 'free',
-        messages: [{
-          role: 'user',
-          content: `Moderate the following content. Return a JSON object with "flagged" (boolean), "categories" (object with category names and true/false), and "category_scores" (object with scores 0-1). Content: "${prompt}"`,
-        }],
-        response_format: { type: 'json_object' },
-      }),
-    });
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2);
-    return {
-      text,
-      meta: { latency: 0, tokens: data.usage?.total_tokens ?? 0, provider: data.provider ?? model, cost: data.cost ?? 0 },
-    };
-  };
-
-  // --- Main send dispatcher ---
   const onSend = async () => {
+    if (!prompt.trim()) return;
     setLoading(true);
-    setResponse(null);
-    setAudioUrl(null);
     const start = performance.now();
+
     try {
-      let result: { text: string; meta?: { latency: number; tokens: number; provider: string; cost: number } };
-      switch (tab) {
-        case 'image': result = await onSendImage(); break;
-        case 'embed': result = await onSendEmbed(); break;
-        case 'tts': result = await onSendTTS(); break;
-        case 'stt': result = await onSendSTT(); break;
-        case 'rerank': result = await onSendRerank(); break;
-        case 'moderate': result = await onSendModerate(); break;
-        default: result = await onSendChat(); break;
+      let endpoint = '/chat/completions';
+      let body: any = { model, stream: false }; // Disable streaming for simplicity in this helper call
+
+      if (mode === 'chat') {
+        body.messages = [{ role: 'user', content: prompt }];
+        body.temperature = temperature;
+        if (maxTokens) body.max_tokens = maxTokens;
+      } else if (mode === 'image') {
+        endpoint = '/images/generations';
+        body.prompt = prompt;
+      } else if (mode === 'tts') {
+        endpoint = '/audio/speech';
+        body.input = prompt;
+        body.voice = 'alloy';
+      } else if (mode === 'embed') {
+        endpoint = '/embeddings';
+        body.input = prompt;
+      } else if (mode === 'rerank') {
+        endpoint = '/rerank';
+        body.query = prompt;
+        body.documents = ['Example doc 1', 'Example doc 2'];
       }
-      if (result.meta) result.meta.latency = performance.now() - start;
-      setResponse(result);
+
+      if (mode === 'tts') {
+        // Special case for audio blob
+        const RAW_BASE = (import.meta.env.VITE_API_BASE ?? '') as string;
+        const res = await fetch(`${RAW_BASE}/v1${endpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('dmrx_token') || import.meta.env.VITE_ADMIN_API_KEY || ''}`
+          },
+          body: JSON.stringify(body),
+        });
+        const requestId = res.headers.get('x-request-id') || crypto.randomUUID();
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        setResponses(prev => [{
+          id: requestId,
+          text: 'Audio generated successfully.',
+          audioUrl: url,
+          meta: {
+            latency: performance.now() - start,
+            tokens: 0,
+            provider: model,
+            model: model,
+            cost: 0
+          }
+        }, ...prev]);
+      } else {
+        const data: any = await apiPost(endpoint, body);
+
+        let text = '';
+        if (mode === 'chat') text = data.choices?.[0]?.message?.content ?? data.text;
+        else if (mode === 'image') text = data.data?.[0]?.url || data.data?.[0]?.b64_json;
+        else if (mode === 'embed') text = `Vector: [${data.data?.[0]?.embedding?.slice(0, 5).join(', ')}...] (${data.data?.[0]?.embedding?.length} dims)`;
+        else text = JSON.stringify(data, null, 2);
+
+        setResponses(prev => [{
+          id: data.id || crypto.randomUUID(),
+          text,
+          meta: {
+            latency: performance.now() - start,
+            tokens: data.usage?.total_tokens ?? 0,
+            provider: data.provider ?? 'auto',
+            model: data.model ?? model,
+            cost: data.cost ?? 0,
+            routingDecision: data.routing_decision
+          }
+        }, ...prev]);
+      }
     } catch (e) {
-      setResponse({ text: `Error: ${(e as Error).message}` });
+      toast.error((e as Error).message);
     } finally {
       setLoading(false);
     }
   };
 
-  const onReset = () => {
-    setPrompt('');
-    setResponse(null);
-    setAudioUrl(null);
-    setAdv({ ...DEFAULT_ADVANCED });
-    setSttFile(null);
-    setRerankDocs('');
+  const handleFeedback = async (requestId: string, rating: number) => {
+    try {
+      await Admin.submitFeedback({ requestId, rating });
+      setResponses(prev => prev.map(r => r.id === requestId ? { ...r, feedback: rating === 1 ? 'up' : 'down' } : r));
+      toast.success('Feedback recorded');
+    } catch (e) {
+      toast.error('Failed to submit feedback');
+    }
   };
 
-  const samples = SAMPLES[tab] ?? SAMPLES.chat;
-  const canSend = tab === 'stt' ? !!sttFile : !!prompt;
+  const handleCopy = async (requestId: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      await Admin.submitFeedback({ requestId, implicitSignals: { copied: true } });
+      setResponses(prev => prev.map(r => r.id === requestId ? { ...r, copied: true } : r));
+      setTimeout(() => {
+        setResponses(prev => prev.map(r => r.id === requestId ? { ...r, copied: false } : r));
+      }, 2000);
+      toast.success('Copied to clipboard');
+    } catch (e) {
+      // ignore
+    }
+  };
 
   return (
-    <PageContainer>
-      <PageHeader
-        title="Playground"
-        description="Test any model through the router — see real-time routing decisions"
-        icon={<Sparkles className="size-5" />}
-        actions={
-          <Button variant="ghost" size="sm" onClick={onReset}>
-            <RotateCcw className="size-3" />
-            Reset
-          </Button>
-        }
-      />
+    <PageContainer size="wide" className="h-[calc(100dvh-64px)] overflow-hidden flex flex-col">
+      <div className="shrink-0">
+        <PageHeader
+          title="Playground"
+          description="Test any model through the universal router"
+          icon={<Sparkles className="size-5" />}
+        />
+      </div>
 
-      {/* --- Presets bar --- */}
-      {presets.length > 0 && (
-        <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-fg-muted uppercase tracking-wider mr-1">Presets:</span>
-          {presets.map((p) => (
-            <span
-              key={p.name}
-              onClick={() => handleLoadPreset(p)}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-fg cursor-pointer hover:bg-surface-3 hover:border-border-strong transition-colors"
-            >
-              {p.name}
-              <button
-                onClick={(e) => handleDeletePreset(e, p.name)}
-                className="size-3.5 inline-flex items-center justify-center rounded-sm text-fg-muted hover:text-destructive hover:bg-destructive/10 transition-colors"
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="flex-1 mt-5 flex gap-4 min-h-0">
+        {/* Sidebar Controls */}
+        <Card padding="none" className="w-80 shrink-0 flex flex-col shadow-sm">
+          <div className="p-4 border-b border-border flex flex-col gap-4">
+            <div>
+              <label className="text-[10px] text-fg-muted mb-1.5 block uppercase tracking-wider font-semibold">Mode</label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {(['chat', 'image', 'embed', 'tts', 'rerank', 'moderate'] as const).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={cn(
+                      'flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors border',
+                      mode === m
+                        ? 'bg-primary/10 border-primary/20 text-primary'
+                        : 'bg-surface-2 border-transparent text-fg-muted hover:bg-surface-3 hover:text-fg'
+                    )}
+                  >
+                    {m === 'chat' && <MessageSquare className="size-3.5" />}
+                    {m === 'image' && <ImageIcon className="size-3.5" />}
+                    {m === 'embed' && <ArrowUpDown className="size-3.5" />}
+                    {m === 'tts' && <Volume2 className="size-3.5" />}
+                    {m === 'rerank' && <Zap className="size-3.5" />}
+                    {m === 'moderate' && <ShieldAlert className="size-3.5" />}
+                    <span className="capitalize">{m}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
 
-      <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <Card padding="md" className={tab === 'agent' || tab === 'anthropic' || tab === 'gemini' ? 'lg:col-span-3' : 'lg:col-span-2'}>
-          <Tabs value={tab} onValueChange={setTab}>
-            <TabsList>
-              <TabsTrigger value="chat">Chat</TabsTrigger>
-              <TabsTrigger value="image">Image</TabsTrigger>
-              <TabsTrigger value="embed">Embed</TabsTrigger>
-              <TabsTrigger value="code">Code</TabsTrigger>
-              <TabsTrigger value="tts"><Volume2 className="size-3 mr-1" />TTS</TabsTrigger>
-              <TabsTrigger value="stt"><Mic className="size-3 mr-1" />STT</TabsTrigger>
-              <TabsTrigger value="rerank"><ArrowUpDown className="size-3 mr-1" />Rerank</TabsTrigger>
-              <TabsTrigger value="moderate"><ShieldAlert className="size-3 mr-1" />Moderate</TabsTrigger>
-              <TabsTrigger value="anthropic"><Brain className="size-3 mr-1" />Anthropic</TabsTrigger>
-              <TabsTrigger value="gemini"><Brain className="size-3 mr-1" />Gemini</TabsTrigger>
-              <TabsTrigger value="agent"><Brain className="size-3 mr-1" />Agent</TabsTrigger>
-            </TabsList>
+            <div>
+              <label className="text-[10px] text-fg-muted mb-1.5 block uppercase tracking-wider font-semibold">Model</label>
+              <Select value={model} onValueChange={setModel}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="free">free (auto-route)</SelectItem>
+                  {filteredModels.map(m => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.name} <span className="text-fg-subtle opacity-60 ml-1">· {m.provider}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
 
-            {!['agent', 'anthropic', 'gemini'].includes(tab) && (
-              <TabsContent value={tab} className="mt-3 flex flex-col gap-3">
-              {/* ------- Model selector (all tabs) ------- */}
-              {tab !== 'stt' && (
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="col-span-2">
-                    <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Model</label>
-                    <Select value={model} onValueChange={setModel}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(tab === 'chat' || tab === 'code') && (
-                          <>
-                            <SelectItem value="free">free (auto-route)</SelectItem>
-                            <SelectItem value="free-fast">free-fast</SelectItem>
-                            <SelectItem value="free-smart">free-smart</SelectItem>
-                            <SelectItem value="free-agentic">free-agentic</SelectItem>
-                            <SelectItem value="free-coding">free-coding</SelectItem>
-                          </>
-                        )}
-                        {modelsForTab.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.name} <span className="text-fg-subtle ml-1">· {m.provider}</span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+          <div className="flex-1 overflow-y-auto p-4 space-y-5">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-fg-muted uppercase tracking-wider font-semibold">Configuration</span>
+                <Button variant="ghost" size="icon-sm" onClick={() => setShowConfig(!showConfig)}>
+                  <Settings2 className="size-3" />
+                </Button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-fg-muted">Temperature</span>
+                    <span className="text-fg font-mono">{temperature}</span>
                   </div>
-                  {(tab === 'chat' || tab === 'code') && (
-                    <div>
-                      <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Layer</label>
-                      <Select defaultValue="auto">
-                        <SelectTrigger>
-                          <SelectValue placeholder="auto" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="auto">Auto</SelectItem>
-                          <SelectItem value="brain">Brain</SelectItem>
-                          <SelectItem value="thinker">Thinker</SelectItem>
-                          <SelectItem value="executor">Executor</SelectItem>
-                          <SelectItem value="worker">Worker</SelectItem>
-                          <SelectItem value="temp_worker">Temp Worker</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ------- Prompt (all tabs except stt) ------- */}
-              {tab !== 'stt' && (
-                <div>
-                  <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">
-                    {tab === 'tts' ? 'Text to speak' : tab === 'rerank' ? 'Query' : tab === 'moderate' ? 'Content to moderate' : 'Prompt'}
-                  </label>
-                  <Textarea
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    rows={tab === 'rerank' || tab === 'moderate' ? 4 : 6}
-                    placeholder={
-                      tab === 'tts' ? 'Enter text to synthesize…' :
-                      tab === 'rerank' ? 'Enter your search query…' :
-                      tab === 'moderate' ? 'Enter content to check…' :
-                      'Type your prompt…'
-                    }
+                  <Slider
+                    value={[temperature]}
+                    onValueChange={v => setTemperature(v[0] ?? 0.7)}
+                    max={2}
+                    step={0.1}
                   />
                 </div>
-              )}
 
-              {/* ------- STT: File upload ------- */}
-              {tab === 'stt' && (
-                <div className="flex flex-col gap-3">
-                  <div>
-                    <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Audio file</label>
-                    <input
-                      type="file"
-                      accept="audio/*"
-                      onChange={(e) => setSttFile(e.target.files?.[0] ?? null)}
-                      className="block w-full text-sm text-fg file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-primary file:text-white hover:file:bg-primary/90 cursor-pointer"
-                    />
-                    {sttFile && (
-                      <p className="text-[10px] text-fg-muted mt-1">{sttFile.name} ({(sttFile.size / 1024).toFixed(1)} KB)</p>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Language (optional)</label>
-                      <Input value={sttLanguage} onChange={(e) => setSttLanguage(e.target.value)} placeholder="en" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Context prompt (optional)</label>
-                      <Input value={sttPrompt} onChange={(e) => setSttPrompt(e.target.value)} placeholder="Technical terms…" />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* ------- Rerank: Documents ------- */}
-              {tab === 'rerank' && (
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-2">
-                    <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Documents (one per line)</label>
-                    <Textarea
-                      value={rerankDocs}
-                      onChange={(e) => setRerankDocs(e.target.value)}
-                      rows={5}
-                      placeholder={"The router selects providers based on quality, cost, and latency.\nFallback chains ensure high availability.\nPolicies control access per tenant."}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Top N</label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={rerankTopN}
-                      onChange={(e) => setRerankTopN(Number(e.target.value) || 5)}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* ------- TTS: Voice / Speed / Format ------- */}
-              {tab === 'tts' && (
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Voice</label>
-                    <Select value={ttsVoice} onValueChange={setTtsVoice}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="alloy">Alloy</SelectItem>
-                        <SelectItem value="echo">Echo</SelectItem>
-                        <SelectItem value="fable">Fable</SelectItem>
-                        <SelectItem value="onyx">Onyx</SelectItem>
-                        <SelectItem value="nova">Nova</SelectItem>
-                        <SelectItem value="shimmer">Shimmer</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Speed</label>
-                    <div className="space-y-1">
-                      <Slider
-                        value={[ttsSpeed]}
-                        min={0.25}
-                        max={4}
-                        step={0.25}
-                        onValueChange={(v) => setTtsSpeed(v[0] ?? 1)}
-                      />
-                      <p className="text-[10px] text-fg-muted text-right">{ttsSpeed}x</p>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Format</label>
-                    <Select value={ttsFormat} onValueChange={setTtsFormat}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="mp3">MP3</SelectItem>
-                        <SelectItem value="opus">Opus</SelectItem>
-                        <SelectItem value="aac">AAC</SelectItem>
-                        <SelectItem value="flac">FLAC</SelectItem>
-                        <SelectItem value="wav">WAV</SelectItem>
-                        <SelectItem value="pcm">PCM</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-              )}
-
-              {/* ------- Advanced params (chat/code only) ------- */}
-              {(tab === 'chat' || tab === 'code') && (
-                <div className="rounded-lg border border-border overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => setAdvOpen(!advOpen)}
-                    className="flex items-center justify-between w-full px-3 py-2 text-xs font-medium text-fg-muted hover:text-fg hover:bg-surface-2 transition-colors"
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <Settings2 className="size-3" />
-                      Advanced parameters
-                    </span>
-                    <ChevronDown className={`size-3.5 transition-transform ${advOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  {advOpen && (
-                    <div className="px-3 pb-3 pt-1 grid grid-cols-2 gap-x-4 gap-y-2.5 border-t border-border bg-surface-1/50">
-                      {/* Temperature */}
-                      <div className="col-span-2 sm:col-span-1">
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[10px] text-fg-muted uppercase tracking-wider">Temperature</label>
-                          <span className="text-[10px] text-fg font-mono">{adv.temperature}</span>
-                        </div>
-                        <Slider
-                          value={[adv.temperature]}
-                          min={0}
-                          max={2}
-                          step={0.1}
-                          onValueChange={(v) => updateAdv('temperature', v[0] ?? 0.7)}
-                        />
-                      </div>
-                      {/* Top P */}
-                      <div className="col-span-2 sm:col-span-1">
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[10px] text-fg-muted uppercase tracking-wider">Top P</label>
-                          <span className="text-[10px] text-fg font-mono">{adv.topP}</span>
-                        </div>
-                        <Slider
-                          value={[adv.topP]}
-                          min={0}
-                          max={1}
-                          step={0.05}
-                          onValueChange={(v) => updateAdv('topP', v[0] ?? 1)}
-                        />
-                      </div>
-                      {/* Max tokens */}
-                      <div>
-                        <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Max tokens</label>
-                        <Input
-                          type="number"
-                          value={adv.maxTokens}
-                          onChange={(e) => updateAdv('maxTokens', e.target.value)}
-                          placeholder="auto"
-                        />
-                      </div>
-                      {/* N */}
-                      <div>
-                        <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">N (completions)</label>
-                        <Input
-                          type="number"
-                          min={1}
-                          max={5}
-                          value={adv.n}
-                          onChange={(e) => updateAdv('n', Number(e.target.value) || 1)}
-                        />
-                      </div>
-                      {/* Frequency penalty */}
-                      <div>
-                        <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Frequency penalty</label>
-                        <Input
-                          type="number"
-                          step="0.1"
-                          min={-2}
-                          max={2}
-                          value={adv.frequencyPenalty}
-                          onChange={(e) => updateAdv('frequencyPenalty', Number(e.target.value) || 0)}
-                        />
-                      </div>
-                      {/* Presence penalty */}
-                      <div>
-                        <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Presence penalty</label>
-                        <Input
-                          type="number"
-                          step="0.1"
-                          min={-2}
-                          max={2}
-                          value={adv.presencePenalty}
-                          onChange={(e) => updateAdv('presencePenalty', Number(e.target.value) || 0)}
-                        />
-                      </div>
-                      {/* Stop sequences */}
-                      <div>
-                        <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Stop sequences</label>
-                        <Input
-                          value={adv.stop}
-                          onChange={(e) => updateAdv('stop', e.target.value)}
-                          placeholder="comma-separated"
-                        />
-                      </div>
-                      {/* Seed */}
-                      <div>
-                        <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Seed</label>
-                        <Input
-                          type="number"
-                          value={adv.seed}
-                          onChange={(e) => updateAdv('seed', e.target.value)}
-                          placeholder="random"
-                        />
-                      </div>
-                      {/* Response format */}
-                      <div>
-                        <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Response format</label>
-                        <Select value={adv.responseFormat} onValueChange={(v) => updateAdv('responseFormat', v as 'text' | 'json_object')}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="text">Text</SelectItem>
-                            <SelectItem value="json_object">JSON</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      {/* Stream */}
-                      <div className="flex items-center gap-2">
-                        <Switch
-                          checked={adv.stream}
-                          onCheckedChange={(v) => updateAdv('stream', v)}
-                        />
-                        <label className="text-[10px] text-fg-muted uppercase tracking-wider">Stream</label>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ------- Footer: char count + send ------- */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-[10px] text-fg-muted">
-                  {tab !== 'stt' && (
-                    <>
-                      <span>{prompt.length} chars</span>
-                      <span>·</span>
-                      <span>~{Math.ceil(prompt.length / 4)} tokens</span>
-                    </>
-                  )}
-                  {tab === 'stt' && sttFile && (
-                    <span>{sttFile.name}</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={handleSavePreset}>
-                    <Save className="size-3" />
-                    Save preset
-                  </Button>
-                  <Button onClick={onSend} loading={loading} disabled={!canSend}>
-                    <Send className="size-3" />
-                    Send
-                  </Button>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-fg-muted">Stream response</span>
+                  <Switch checked={stream} onCheckedChange={setStream} />
                 </div>
               </div>
-            </TabsContent>
-            )}
+            </div>
 
-            <TabsContent value="anthropic" className="mt-3">
-              <AnthropicChatTab models={models} modelsForTab={modelsForTab} />
-            </TabsContent>
-            <TabsContent value="gemini" className="mt-3">
-              <GeminiChatTab models={models} modelsForTab={modelsForTab} />
-            </TabsContent>
-            <TabsContent value="agent" className="mt-3">
-              <AgenticChatTab models={models} />
-            </TabsContent>
-          </Tabs>
+            <div className="space-y-3">
+              <span className="text-[10px] text-fg-muted uppercase tracking-wider font-semibold">Samples</span>
+              <div className="flex flex-col gap-1.5">
+                {SAMPLES[mode].map(s => (
+                  <button
+                    key={s.label}
+                    onClick={() => setPrompt(s.prompt)}
+                    className="text-left p-2.5 rounded-lg bg-surface-2 border border-border/50 hover:bg-surface-3 transition-colors group"
+                  >
+                    <div className="text-[11px] font-medium text-fg mb-0.5">{s.label}</div>
+                    <div className="text-[10px] text-fg-subtle truncate">{s.prompt}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 border-t border-border bg-surface-2/50">
+            <Button className="w-full" onClick={onSend} loading={loading} disabled={!prompt.trim()}>
+              <Send className="size-3.5" />
+              Run Request
+            </Button>
+          </div>
         </Card>
 
-        {/* ------- Samples sidebar ------- */}
-        {tab !== 'agent' && tab !== 'anthropic' && tab !== 'gemini' && (
-        <Card padding="md">
-          <h3 className="text-sm font-semibold text-fg mb-2">Samples</h3>
-          <p className="text-[10px] text-fg-muted mb-3">Click to load</p>
-          <div className="flex flex-col gap-1.5">
-            {samples.map((s) => (
-              <button
-                key={s.label}
-                onClick={() => { setPrompt(s.prompt); }}
-                className="text-left rounded-lg border border-border bg-surface-2 px-2.5 py-2 hover:border-border-strong hover:bg-surface-3 transition-colors"
-              >
-                <div className="text-xs font-medium text-fg">{s.label}</div>
-                <div className="text-[10px] text-fg-muted truncate mt-0.5">
-                  {s.prompt || '(upload audio)'}
+        {/* Main Area */}
+        <div className="flex-1 flex flex-col gap-4 min-w-0">
+          <Card padding="none" className="shrink-0 bg-surface-1 shadow-sm overflow-hidden">
+            <div className="p-3">
+              <Textarea
+                value={prompt}
+                onChange={e => setPrompt(e.target.value)}
+                placeholder={`Enter ${mode} prompt...`}
+                className="min-h-[120px] bg-transparent border-none resize-none focus:ring-0 text-sm p-0 shadow-none"
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    void onSend();
+                  }
+                }}
+              />
+              <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/40">
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => setPrompt('')} className="h-7 text-xs">
+                    <RotateCcw className="size-3" />
+                    Reset
+                  </Button>
                 </div>
-              </button>
+                <div className="text-[10px] text-fg-subtle">
+                  Press <Kbd>⌘</Kbd>+<Kbd>Enter</Kbd> to run
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Results Stream */}
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 custom-scrollbar">
+            {responses.length === 0 && !loading && (
+              <div className="h-full flex flex-col items-center justify-center text-center p-12 opacity-40">
+                <div className="size-16 rounded-3xl bg-surface-2 flex items-center justify-center mb-4">
+                  <Terminal className="size-8" />
+                </div>
+                <h3 className="text-sm font-semibold text-fg">Ready for input</h3>
+                <p className="text-xs text-fg-muted mt-1 max-w-[200px]">
+                  Configure your request and hit run to see the universal router in action.
+                </p>
+              </div>
+            )}
+
+            {loading && (
+              <Card padding="md" className="animate-pulse">
+                <div className="flex items-center gap-2 mb-4">
+                  <Skeleton className="size-8 rounded-lg" />
+                  <Skeleton className="h-4 w-32" />
+                </div>
+                <Skeleton className="h-3 w-full mb-2" />
+                <Skeleton className="h-3 w-5/6" />
+              </Card>
+            )}
+
+            {responses.map((res, i) => (
+              <Card key={res.id} padding="none" className="overflow-hidden group shadow-sm border-border/60">
+                <div className="bg-surface-2/50 px-4 py-2 border-b border-border flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Badge tone="primary" size="sm">{res.meta?.provider}</Badge>
+                    <span className="text-[11px] font-mono text-fg-muted">{res.meta?.model}</span>
+                  </div>
+                  <div className="flex items-center gap-4 text-[10px] text-fg-subtle">
+                    <span className="flex items-center gap-1">
+                      <Clock className="size-3" />
+                      {formatDuration(res.meta?.latency ?? 0)}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Zap className="size-3" />
+                      {formatTokens(res.meta?.tokens ?? 0)}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <DollarSign className="size-3" />
+                      {res.meta?.cost.toFixed(4)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4">
+                  <div className="flex justify-between items-start gap-4">
+                    <div className="flex-1">
+                      {res.audioUrl ? (
+                        <audio controls src={res.audioUrl} className="w-full h-8" />
+                      ) : mode === 'image' && res.text.startsWith('http') ? (
+                        <img src={res.text} className="rounded-lg max-h-[400px] object-contain bg-black mx-auto" />
+                      ) : (
+                        <div className="text-sm text-fg leading-relaxed whitespace-pre-wrap font-sans">
+                          {res.text}
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="flex flex-col gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button 
+                        variant="ghost" 
+                        size="icon-sm" 
+                        onClick={() => handleCopy(res.id, res.text)}
+                        className={cn(res.copied && 'text-primary')}
+                      >
+                        {res.copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+                      </Button>
+                      <Button 
+                        variant="ghost" 
+                        size="icon-sm" 
+                        onClick={() => handleFeedback(res.id, 1)}
+                        className={cn(res.feedback === 'up' && 'text-success bg-success/10')}
+                      >
+                        <ThumbsUp className="size-3" />
+                      </Button>
+                      <Button 
+                        variant="ghost" 
+                        size="icon-sm" 
+                        onClick={() => handleFeedback(res.id, -1)}
+                        className={cn(res.feedback === 'down' && 'text-destructive bg-destructive/10')}
+                      >
+                        <ThumbsDown className="size-3" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {res.meta?.routingDecision && (
+                    <div className="mt-4 pt-3 border-t border-border/60 flex items-start gap-2">
+                      <Info className="size-3 text-primary mt-0.5 shrink-0" />
+                      <div className="text-[10px] text-fg-muted leading-tight italic">
+                        Routing Decision: {res.meta.routingDecision}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Card>
             ))}
           </div>
-        </Card>
-        )}
+        </div>
       </div>
-
-      {/* ------- Response card ------- */}
-      {tab !== 'agent' && tab !== 'anthropic' && tab !== 'gemini' && (
-      <div className="mt-3">
-        <Card padding="md">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-fg">Response</h3>
-            {response?.meta && (
-              <div className="flex items-center gap-3 text-[10px]">
-                <span className="text-fg-muted">
-                  <span className="text-fg-subtle">latency</span>{' '}
-                  <span className="text-fg font-mono">{formatDuration(response.meta.latency)}</span>
-                </span>
-                <span className="text-fg-muted">
-                  <span className="text-fg-subtle">tokens</span>{' '}
-                  <span className="text-fg font-mono">{formatTokens(response.meta.tokens)}</span>
-                </span>
-                <span className="text-fg-muted">
-                  <span className="text-fg-subtle">cost</span>{' '}
-                  <span className="text-fg font-mono">${response.meta.cost.toFixed(4)}</span>
-                </span>
-                <Badge tone="primary" size="sm">{response.meta.provider}</Badge>
-              </div>
-            )}
-          </div>
-
-          {/* Audio player for TTS */}
-          {audioUrl && (
-            <div className="mb-3">
-              <audio controls src={audioUrl} className="w-full" />
-            </div>
-          )}
-
-          {loading ? (
-            <div className="flex flex-col gap-2">
-              <Skeleton className="h-3 w-3/4" />
-              <Skeleton className="h-3 w-full" />
-              <Skeleton className="h-3 w-5/6" />
-              <Skeleton className="h-3 w-2/3" />
-            </div>
-          ) : response ? (
-            <pre className="text-sm text-fg leading-relaxed whitespace-pre-wrap font-sans">
-              {response.text}
-            </pre>
-          ) : (
-            <div className="py-12 text-center text-fg-subtle text-sm">
-              Send a prompt to see the response
-            </div>
-          )}
-        </Card>
-      </div>
-      )}
     </PageContainer>
+  );
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="inline-flex items-center rounded border border-border bg-surface-2 px-1 font-mono text-[10px] font-medium text-fg shadow-sm">
+      {children}
+    </kbd>
   );
 }

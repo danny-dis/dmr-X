@@ -1,0 +1,59 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__IMAGE_B64__"
+    }
+  },
+  "2": {
+    "class_type": "WanVideoTextEncode",
+    "inputs": {
+      "text": "__PROMPT__"
+    }
+  },
+  "3": {
+    "class_type": "WanVideoImageEncode",
+    "inputs": {
+      "image": ["1", 0]
+    }
+  },
+  "4": {
+    "class_type": "WanVideoEmptyLatent",
+    "inputs": {
+      "width": __WIDTH__,
+      "height": __HEIGHT__,
+      "length": __DURATION__
+    }
+  },
+  "5": {
+    "class_type": "WanVideoSampler",
+    "inputs": {
+      "seed": __SEED__,
+      "steps": __STEPS__,
+      "cfg": __CFG_SCALE__,
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "positive": ["2", 0],
+      "latent": ["4", 0],
+      "image": ["3", 0]
+    }
+  },
+  "6": {
+    "class_type": "WanVideoDecode",
+    "inputs": {
+      "samples": ["5", 0]
+    }
+  },
+  "7": {
+    "class_type": "VideoCombine",
+    "inputs": {
+      "frame_rate": __FPS__,
+      "loop_count": 1,
+      "filename_prefix": "dmrx_wan_img2vid",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true,
+      "images": ["6", 0]
+    }
+  }
+}

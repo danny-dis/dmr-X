@@ -208,7 +208,7 @@ export const dmrxRerankParams = {
 export const dmrxModelsParams = {
   modality: z.enum([
     'llm', 'diffusion', 'embedding', 'audio_tts', 'audio_stt',
-    'video', 'music', 'reranking', 'moderation', 'code_completion',
+    'video', 'music', 'reranking', 'moderation', 'code_completion', '3d',
   ]).optional().describe('Filter by modality'),
   provider: z.string().optional().describe('Filter by provider ID (e.g. "openai", "anthropic")'),
 } as const;
@@ -276,6 +276,62 @@ export const dmrxGenerateImageStreamParams = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// dmrx_generate_video — Video generation
+// ---------------------------------------------------------------------------
+
+export const dmrxGenerateVideoParams = {
+  prompt: z.string().describe('Text description of the video to generate'),
+  model: z.string().optional().describe('Preferred video model'),
+  image: z.string().optional().describe('Base64-encoded image for img2video'),
+  duration: z.number().int().positive().optional().default(5).describe('Video duration in seconds'),
+  fps: z.number().int().positive().optional().default(24).describe('Frames per second'),
+  aspect_ratio: z.enum(['16:9', '9:16', '1:1', '3:2', '2:3']).optional().default('16:9'),
+  quality_target: QualityTarget,
+  user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
+} as const;
+
+export const dmrxGenerateVideoStreamParams = {
+  ...dmrxGenerateVideoParams,
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_generate_music — Music generation
+// ---------------------------------------------------------------------------
+
+export const dmrxGenerateMusicParams = {
+  prompt: z.string().describe('Text description of the music to generate'),
+  model: z.string().optional().describe('Preferred music model'),
+  genre: z.string().optional().describe('Music genre (e.g., "pop", "rock", "electronic")'),
+  duration_seconds: z.number().int().positive().optional().default(30).describe('Duration in seconds'),
+  instruments: z.array(z.string()).optional().describe('List of instruments'),
+  quality_target: QualityTarget,
+  user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_generate_3d — 3D Generation
+// ---------------------------------------------------------------------------
+
+export const dmrxGenerate3DParams = {
+  prompt: z.string().optional().describe('Text description for text-to-3d generation'),
+  image: z.string().optional().describe('Base64-encoded image or URL for image-to-3d generation'),
+  model: z.string().optional().describe('Preferred 3D model (e.g., tencent/hunyuan3d-2, trellis, stability-ai/stable-fast-3d)'),
+  texture_resolution: z.number().int().positive().optional().describe('Texture resolution (e.g., 1024, 2048)'),
+  seed: z.number().int().optional().describe('Random seed for reproducibility'),
+  quality_target: QualityTarget,
+  user: z.string().optional().describe('End-user identifier'),
+  provider_preference: ProviderPreference,
+  provider_blacklist: ProviderBlacklist,
+  local_first: LocalFirst,
+} as const;
+
+// ---------------------------------------------------------------------------
 // dmrx_workflow — Workflow orchestration
 // ---------------------------------------------------------------------------
 
@@ -302,6 +358,8 @@ export const dmrxWorkflowParams = {
 export const TOOL_NAMES = {
   CHAT: 'dmrx_chat',
   GENERATE_IMAGE: 'dmrx_generate_image',
+  GENERATE_VIDEO: 'dmrx_generate_video',
+  GENERATE_MUSIC: 'dmrx_generate_music',
   EMBED: 'dmrx_embed',
   TRANSCRIBE: 'dmrx_transcribe',
   SPEAK: 'dmrx_speak',
@@ -316,6 +374,8 @@ export const TOOL_NAMES = {
   CONTEXT_COMPRESS: 'dmrx_context_compress',
   CHAT_STREAM: 'dmrx_chat_stream',
   GENERATE_IMAGE_STREAM: 'dmrx_generate_image_stream',
+  GENERATE_VIDEO_STREAM: 'dmrx_generate_video_stream',
+  GENERATE_3D: 'dmrx_generate_3d',
   WORKFLOW: 'dmrx_workflow',
 } as const;
 
@@ -332,6 +392,12 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   dmrx_generate_image:
     'Generate images through DMR-X. Automatically routes to the best available diffusion model ' +
     '(Stable Diffusion, DALL-E, Replicate, etc.). Supports text-to-image and style presets.',
+  dmrx_generate_video:
+    'Generate videos through DMR-X. Routes to the best video model (Runway, Pika, Replicate, etc.). ' +
+    'Supports text-to-video and image-to-video with duration, fps, and aspect_ratio control.',
+  dmrx_generate_music:
+    'Generate music through DMR-X. Routes to music generation providers (Suno, Udio, Replicate/MusicGen). ' +
+    'Supports genre, duration, and instrument specification.',
   dmrx_embed:
     'Get text embeddings through DMR-X. Routes to the best embedding model for the given input. ' +
     'Supports single strings and batches.',
@@ -368,6 +434,11 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     'Streaming chat completion through DMR-X. Returns token-by-token output via streaming response.',
   dmrx_generate_image_stream:
     'Streaming image generation through DMR-X. Returns progressive generation updates.',
+  dmrx_generate_video_stream:
+    'Streaming video generation through DMR-X. Returns progressive generation updates.',
+  dmrx_generate_3d:
+    'Generate 3D models through DMR-X. Routes to the best 3D generation model (Hunyuan3D, Trellis, Stable Fast 3D). ' +
+    'Supports text-to-3d and image-to-3d with texture resolution control. Returns GLB/OBJ URLs.',
   dmrx_workflow:
     'Define and execute multi-step workflows. Supports conditional branching, looping, parallel execution, ' +
     'error handling, and retry policies. Enables complex agent behaviors in a single MCP call.',

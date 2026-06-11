@@ -49,7 +49,12 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler } = input;
 
   // Stage 1: Capability Filter
-  let filtered = capabilityFilter(candidates, taskProfile.capabilities, taskProfile.modality);
+  let filtered = capabilityFilter(
+    candidates,
+    taskProfile.capabilities,
+    taskProfile.modality,
+    taskProfile.requiredCapabilityTier,
+  );
 
   // Stage 1.5: Provider Preference Filter
   if (providerPreferences) {
@@ -111,7 +116,14 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   const sortStrategy = providerPreferences?.sort;
 
   // Stage 6: Cost/Latency Scoring (with penalty awareness and sort preference)
-  let scored = costLatencyScorer(filtered, taskProfile.qualityTarget, rateLimitService, sortStrategy);
+  let scored = costLatencyScorer(
+    filtered,
+    taskProfile.qualityTarget,
+    rateLimitService,
+    sortStrategy,
+    taskProfile.requiredCapabilityTier,
+    taskProfile.modality, // modality-aware scoring for video/non-token pricing
+  );
 
   // Stage 6.5: Apply free-tier strategy (skip if meta-model already filtered to free-only)
   if (freeTierStrategy !== 'none' && !metaModelFilteredFree) {

@@ -2,7 +2,6 @@
   "name": "@dmr-x/plugin-loader",
   "version": "0.1.0",
   "description": "Plugin loader for DMR-X",
-  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -21,7 +20,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "5.4.0"
   },
   "keywords": [
     "dmr-x",

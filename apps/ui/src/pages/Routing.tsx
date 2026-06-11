@@ -32,25 +32,25 @@ export function RoutingPage() {
   );
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
   const usage = useApiData<{ points: ApiUsagePoint[] }>(
-    () => Admin.getUsage({ granularity: 'hour' }),
+    () => Admin.getUsage('hour'),
     [],
     { refetchInterval: 10000 }
   );
 
   const byLayer = (decisions.data ?? []).reduce<Record<string, number>>((acc, d) => {
-    const l = d.intelligenceLayer ?? 'brain';
+    const l = d.task_type ?? 'brain';
     acc[l] = (acc[l] ?? 0) + 1;
     return acc;
   }, {});
 
-  const layerData = (['brain', 'thinker', 'executor', 'worker', 'temp_worker'] as const).map((l) => ({
-    name: l,
-    value: byLayer[l] ?? 0,
-    color: l === 'brain' ? TONE.primary : l === 'thinker' ? TONE.accent : l === 'executor' ? TONE.success : l === 'worker' ? TONE.warning : TONE.pink,
+  const layerData = (['brain', 'thinker', 'executor', 'worker', 'temp_worker'] as const).map((_) => ({
+    name: _,
+    value: byLayer[_] ?? 0,
+    color: _ === 'brain' ? TONE.primary : _ === 'thinker' ? TONE.accent : _ === 'executor' ? TONE.success : _ === 'worker' ? TONE.warning : TONE.pink,
   }));
 
   const byReason = (decisions.data ?? []).reduce<Record<string, number>>((acc, d) => {
-    const r = d.reasoning ?? 'unknown';
+    const r = d.decision_reason ?? 'unknown';
     acc[r] = (acc[r] ?? 0) + 1;
     return acc;
   }, {});

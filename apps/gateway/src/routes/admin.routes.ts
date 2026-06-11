@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb } from '@dmr-x/db';
 import crypto from 'node:crypto';
 import { ValidationError } from '@dmr-x/core';
-import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey } from '@dmr-x/utils';
+import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
 import { memoryService, retentionManager } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
@@ -22,8 +22,9 @@ const CreateModelSchema = z.object({
   provider_id: z.string().uuid(),
   model_id: z.string().min(1),
   display_name: z.string().optional(),
-  modality: z.enum(['llm', 'diffusion', 'embedding', 'audio_tts', 'audio_stt', 'audio_speech', 'audio_transcription', 'video', 'music', 'reranking', 'moderation', 'code_completion', 'image_upscaling', 'image_inpainting']),
+  modality: z.enum(['llm', 'diffusion', 'embedding', 'audio_tts', 'audio_stt', 'audio_speech', 'audio_transcription', 'video', 'music', 'reranking', 'moderation', 'code_completion', 'image_upscaling', 'image_inpainting', 'vision', '3d']),
   intelligence_layer: z.enum(['brain', 'thinker', 'executor', 'worker', 'temp_worker']).optional().default('executor'),
+  capability_tier: z.enum(['orchestrator', 'brain', 'thinker', 'executor', 'specialist', 'worker', 'temp_worker']).optional().default('executor'),
   context_window: z.number().positive().optional(),
   max_output_tokens: z.number().positive().optional(),
   supports_streaming: z.boolean().optional().default(false),
@@ -1121,13 +1122,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     db.prepare(
       `INSERT INTO model_profiles (
-        id, provider_id, model_id, display_name, modality, intelligence_layer,
+        id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
         context_window, max_output_tokens, supports_streaming, supports_vision,
         supports_tool_use, input_cost_per_1k, output_cost_per_1k, cost_per_image
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id, body.provider_id, body.model_id, body.display_name, body.modality,
-      body.intelligence_layer, body.context_window, body.max_output_tokens,
+      body.intelligence_layer, body.capability_tier, body.context_window, body.max_output_tokens,
       body.supports_streaming ? 1 : 0, body.supports_vision ? 1 : 0, body.supports_tool_use ? 1 : 0,
       body.input_cost_per_1k, body.output_cost_per_1k, body.cost_per_image,
     );
@@ -1748,6 +1749,14 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Sandbox endpoints
+  const SubmitSandboxSchema = z.object({
+    tenantId: z.string().optional(),
+    language: z.enum(['python', 'python3', 'node', 'javascript', 'js', 'deno', 'bun']).default('python'),
+    code: z.string().min(1).max(100_000),
+    timeoutMs: z.number().int().min(1000).max(30_000).optional().default(5000),
+    maxRetries: z.number().int().min(0).max(3).optional().default(2),
+  });
+
   server.get('/admin/sandbox/jobs', async (request) => {
     const { limit } = request.query as { limit?: number };
     const jobs = sandboxService.list(limit);
@@ -1755,12 +1764,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   server.post('/admin/sandbox/jobs', async (request, reply) => {
-    const { tenantId, language, code, timeoutMs, maxRetries } = request.body as any;
-    if (!code) {
-      reply.status(400);
-      return { error: { message: 'code is required', type: 'validation', code: 'missing_code' } };
+    const parsed = SubmitSandboxSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const job = await sandboxService.submit({ tenantId, language, code, timeoutMs, maxRetries });
+    const job = await sandboxService.submit(parsed.data);
     reply.status(201);
     return job;
   });
@@ -2156,5 +2164,148 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       upsert.run(key, JSON.stringify(value));
     }
     return { success: true };
+  });
+
+  // --- Benchmarks 2.0 ---
+
+  // Get leaderboard
+  server.get('/admin/benchmarks/leaderboard', async () => {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT mp.id, mp.model_id, mp.display_name, p.name as provider_name, 
+             mp.elo_rating, mp.quality_score, mp.avg_latency_ms, mp.capability_tier
+      FROM model_profiles mp
+      JOIN providers p ON p.id = mp.provider_id
+      WHERE mp.is_active = 1
+      ORDER BY mp.elo_rating DESC
+    `).all();
+    return { leaderboard: rows };
+  });
+
+  // Get battle history
+  server.get('/admin/benchmarks/battles', async () => {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT br.*, mp.display_name as model_name
+      FROM benchmark_results br
+      JOIN model_profiles mp ON mp.id = br.model_id
+      WHERE br.benchmark_type LIKE 'battle:%'
+      ORDER BY br.run_at DESC
+      LIMIT 50
+    `).all() as any[];
+    return { 
+      battles: rows.map(r => ({
+        ...r,
+        details: typeof r.details === 'string' ? JSON.parse(r.details) : r.details
+      })) 
+    };
+  });
+
+  // Run manual benchmark
+  server.post('/admin/benchmarks/run', async (request) => {
+    const { benchmarkService } = server as any;
+    if (!benchmarkService) {
+      throw new ValidationError('Benchmark service not initialized');
+    }
+    
+    // Trigger in background
+    benchmarkService.runBenchmarks().catch((err: any) => {
+      logger.error({ err }, 'Manual benchmark run failed');
+    });
+
+    return { status: 'started', message: 'Benchmark run started in background' };
+  });
+
+  // Run manual arena battle
+  server.post('/admin/benchmarks/battle', async (request) => {
+    const { modelA, modelB } = request.body as any;
+    const { benchmarkService } = server as any;
+    
+    if (!modelA || !modelB) {
+      throw new ValidationError('modelA and modelB (profile IDs) are required');
+    }
+
+    if (!benchmarkService) {
+      throw new ValidationError('Benchmark service not initialized');
+    }
+
+    // Trigger in background
+    // Pick a random prompt from LLM_BENCHMARKS
+    const benchmark = await import('@dmr-x/benchmark');
+    const prompt = benchmark.LLM_BENCHMARKS[Math.floor(Math.random() * benchmark.LLM_BENCHMARKS.length)];
+
+    benchmarkService.runArenaBattle(modelA, modelB, prompt).catch((err: any) => {
+      logger.error({ err }, 'Manual arena battle failed');
+    });
+
+    return { status: 'started' };
+  });
+
+  // Playground feedback capture
+  server.post('/admin/playground/feedback', async (request) => {
+    const body = request.body as any;
+    const db = getDb();
+    
+    let modelId = body.modelId;
+    let competitorModelId = body.competitorModelId;
+
+    // If modelId is missing, look it up from request logs
+    if (!modelId && body.requestId) {
+      const log = db.prepare(`
+        SELECT mp.id 
+        FROM request_logs rl 
+        JOIN model_profiles mp ON mp.provider_id = rl.selected_provider AND mp.model_id = rl.selected_model
+        WHERE rl.request_id = ?
+      `).get(body.requestId) as any;
+      if (log) {
+        modelId = log.id;
+      }
+    }
+
+    if (!modelId) {
+      throw new ValidationError('modelId or a valid requestId is required');
+    }
+
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO playground_feedback (
+        id, request_id, model_id, user_id, rating, feedback_text, implicit_signals, is_winner, competitor_model_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      body.requestId,
+      modelId,
+      body.userId ?? null,
+      body.rating ?? null,
+      body.feedbackText ?? null,
+      JSON.stringify(body.implicitSignals ?? {}),
+      body.isWinner ?? null,
+      competitorModelId ?? null
+    );
+
+    // If it was a comparison winner, trigger an Elo update event
+    if (body.isWinner && competitorModelId) {
+      const modelA = db.prepare('SELECT elo_rating FROM model_profiles WHERE id = ?').get(modelId) as any;
+      const modelB = db.prepare('SELECT elo_rating FROM model_profiles WHERE id = ?').get(competitorModelId) as any;
+      
+      if (modelA && modelB) {
+        const benchmark = await import('@dmr-x/benchmark');
+        const update = benchmark.calculateEloUpdate(modelA.elo_rating, modelB.elo_rating, 1.0, 16); // High K for human feedback
+        
+        db.transaction(() => {
+          db.prepare('UPDATE model_profiles SET elo_rating = ? WHERE id = ?').run(update.newRatingA, modelId);
+          db.prepare('UPDATE model_profiles SET elo_rating = ? WHERE id = ?').run(update.newRatingB, competitorModelId);
+        });
+
+        eventBus.emit(SystemEvents.ELO_UPDATED, {
+          modelA: { id: modelId, oldElo: modelA.elo_rating, newElo: update.newRatingA },
+          modelB: { id: competitorModelId, oldElo: modelB.elo_rating, newElo: update.newRatingB },
+          winner: 'A',
+          source: 'playground'
+        });
+      }
+    }
+
+    return { success: true, id };
   });
 }

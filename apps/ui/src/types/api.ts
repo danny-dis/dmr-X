@@ -4,6 +4,7 @@ export type RouteStatus = 'success' | 'fallback' | 'error' | 'retry';
 export type ExecutionMode = 'sync' | 'async' | 'stream';
 export type AuthMethod = 'api_key' | 'oauth' | 'none' | 'device_code' | 'client_credentials' | 'pkce';
 export type IntelligenceLayer = 'brain' | 'thinker' | 'executor' | 'worker' | 'temp_worker';
+export type CapabilityTier = 'orchestrator' | 'brain' | 'thinker' | 'executor' | 'specialist' | 'worker' | 'temp_worker';
 export type Modality =
   | 'llm'
   | 'diffusion'
@@ -26,9 +27,9 @@ export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancell
 export interface ApiProvider {
   id: string;
   name: string;
-  adapterType?: string;
-  baseUrl?: string | null;
-  apiKeyRef?: string | null;
+  adapter_type?: string;
+  base_url?: string | null;
+  api_key_ref?: string | null;
   enabled?: boolean;
   status?: ProviderStatus;
   health?: {
@@ -56,27 +57,28 @@ export interface ApiProvider {
 
 export interface ApiModel {
   id: string;
-  providerId: string;
+  provider_id: string;
   provider?: string;
-  providerName?: string;
+  provider_name?: string;
   name: string;
-  displayName?: string | null;
+  display_name?: string | null;
   modality: Modality;
-  intelligenceLayer?: IntelligenceLayer;
-  contextWindow?: number | null;
-  maxOutputTokens?: number | null;
-  inputCostPer1k?: number;
-  outputCostPer1k?: number;
-  costPerImage?: number;
+  intelligence_layer?: IntelligenceLayer;
+  capability_tier?: CapabilityTier;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+  input_cost_per_1k?: number;
+  output_cost_per_1k?: number;
+  cost_per_image?: number;
   tier?: CostTier | string;
-  qualityScore?: number;
-  supportsStreaming?: boolean;
-  supportsVision?: boolean;
-  supportsToolUse?: boolean;
-  supportsReasoning?: boolean;
-  supportsFunctionCall?: boolean;
-  isActive?: boolean;
-  createdAt?: string;
+  quality_score?: number;
+  supports_streaming?: boolean;
+  supports_vision?: boolean;
+  supports_tool_use?: boolean;
+  supports_reasoning?: boolean;
+  supports_function_call?: boolean;
+  is_active?: boolean;
+  created_at?: string;
 }
 
 export interface ApiTenant {
@@ -84,56 +86,58 @@ export interface ApiTenant {
   name: string;
   email?: string;
   tier?: string;
-  tokensUsed?: number;
-  tokensLimit?: number;
-  requestsUsed?: number;
-  requestsLimit?: number;
-  costUsed?: number;
-  costLimit?: number;
+  tokens_used?: number;
+  tokens_limit?: number;
+  requests_used?: number;
+  requests_limit?: number;
+  cost_used?: number;
+  cost_limit?: number;
   suspended?: boolean;
-  createdAt?: string;
+  created_at?: string;
 }
 
 export interface ApiKey {
   id: string;
   name: string;
   key: string;
-  tenantId: string;
+  tenant_id: string;
   scopes?: string[];
-  lastUsedAt?: string;
-  revokedAt?: string;
-  createdAt?: string;
+  last_used_at?: string;
+  is_active: number;
+  created_at?: string;
 }
 
 export interface ApiRouteDecision {
-  id: string;
-  tenantId?: string;
-  provider: string;
-  model: string;
-  modality?: Modality;
-  intelligenceLayer?: IntelligenceLayer;
-  reasoning?: string;
-  latencyMs?: number;
-  tokens?: number;
+  id?: string;
+  timestamp: string;
+  task_type?: string;
+  selected_model: string;
+  selected_provider: string;
+  execution_mode?: string;
+  decision_reason?: string;
+  fallback_chain?: string[];
+  latency?: number;
   cost?: number;
-  success?: boolean;
-  at?: string;
+  confidence?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  status: 'success' | 'fallback' | 'error';
 }
 
 export interface ApiQuotaState {
   id?: string;
-  tenantId?: string;
-  tokensUsed?: number;
-  tokensLimit?: number;
-  requestsUsed?: number;
-  requestsLimit?: number;
-  costUsed?: number;
-  costLimit?: number;
-  resetAt?: string;
+  tenant_id?: string;
+  tokens_used?: number;
+  tokens_limit?: number;
+  requests_used?: number;
+  requests_limit?: number;
+  cost_used?: number;
+  cost_limit?: number;
+  reset_at?: string;
   exceeded?: boolean;
-  warnAt?: number;
-  byModel?: Record<string, number>;
-  perModelLimit?: Record<string, number>;
+  warn_at?: number;
+  by_model?: Record<string, number>;
+  per_model_limit?: Record<string, number>;
 }
 
 export interface ApiUsagePoint {

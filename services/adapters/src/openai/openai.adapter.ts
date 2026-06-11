@@ -9,17 +9,15 @@ import type {
   UnifiedRequest,
   UnifiedResponse,
   StreamChunk,
-  TokenStreamChunk,
-  DoneStreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { HttpError } from '@dmr-x/utils';
+import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 import { logger } from '@dmr-x/utils';
 import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 export class OpenAIAdapter extends BaseAdapter {
   readonly providerId = 'openai';
-  readonly supportedModalities: Modality[] = ['llm', 'embedding', 'diffusion', 'audio_tts', 'audio_stt'];
+  readonly supportedModalities: Modality[] = ['llm', 'embedding', 'diffusion', 'audio_tts', 'audio_stt', 'video'];
 
   private apiKey = '';
 
@@ -60,6 +58,10 @@ export class OpenAIAdapter extends BaseAdapter {
 
       if (request.modality === 'diffusion') {
         return this.executeImage(baseUrl, request, options);
+      }
+
+      if (request.modality === 'video') {
+        return this.executeVideo(baseUrl, request, options);
       }
 
       throw new Error(`Unsupported modality: ${request.modality}`);
@@ -200,6 +202,185 @@ export class OpenAIAdapter extends BaseAdapter {
     };
   }
 
+  /**
+   * Execute video generation via OpenAI Sora API.
+   *
+   * Sora uses an async job-based API:
+   *   1. POST /v1/video/generations → returns { id, status: "queued" }
+   *   2. GET  /v1/video/generations/{id} → polls until status is "completed" or "failed"
+   *   3. On completion, the response contains a video URL
+   */
+  private async executeVideo(
+    baseUrl: string,
+    request: UnifiedRequest,
+    options?: ExecuteOptions,
+  ): Promise<UnifiedResponse> {
+    const start = Date.now();
+    const modelId = request.model || 'sora-2';
+
+    // Build the request body per OpenAI Sora API spec
+    const body: Record<string, unknown> = {
+      model: modelId,
+      prompt: request.prompt,
+    };
+
+    // Map DMR-X duration (seconds) to Sora's `seconds` param
+    if (request.duration) {
+      body.seconds = Math.min(request.duration, 20); // Sora max is 20s
+    }
+
+    // Map resolution to Sora's `size` param (WxH)
+    if (request.aspect_ratio || request.resolution) {
+      body.size = this.mapToSoraSize(request.aspect_ratio, request.resolution);
+    }
+
+    // Image-to-video: pass image as input
+    if (request.image) {
+      body.image = request.image;
+    }
+
+    // Seed / generation control
+    if (request.seed !== undefined && request.seed !== null) {
+      body.seed = request.seed;
+    }
+
+    // N parameter (number of videos to generate)
+    if (request.n) {
+      body.n = Math.min(request.n, 4); // Sora max is 4
+    }
+
+    // Create the video generation job
+    let createResponse: Response;
+    try {
+      createResponse = await this.fetchWithTimeout(`${baseUrl}/v1/video/generations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        timeoutMs: options?.timeoutMs ?? 30000,
+      });
+    } catch (error) {
+      throw this.handleAdapterError(error, 'video');
+    }
+
+    if (!createResponse.ok) {
+      const errBody = await createResponse.text();
+      const httpMeta: HttpMeta = { response: createResponse, request: new Request(createResponse.url), body: errBody };
+      const httpError = createHttpError(createResponse.status, httpMeta);
+      throw new ProviderError(`OpenAI Sora: ${httpError.message}`, this.providerId, createResponse.status);
+    }
+
+    const createData = await createResponse.json() as {
+      id: string;
+      status: string;
+      video?: { url?: string };
+    };
+
+    // If the result came back inline (unlikely for Sora, but handle it)
+    if (createData.video?.url) {
+      return this.buildVideoResponse(request.model || 'sora-2', createData.id, createData, Date.now() - start);
+    }
+
+    // Poll for completion
+    const jobId = createData.id;
+    const timeoutMs = options?.timeoutMs ?? 600000; // 10 min default for video
+    const result = await this.pollVideoJob(baseUrl, jobId, timeoutMs);
+    return this.buildVideoResponse(request.model || 'sora-2', jobId, result, Date.now() - start);
+  }
+
+  private async pollVideoJob(
+    baseUrl: string,
+    jobId: string,
+    timeoutMs: number,
+  ): Promise<Record<string, unknown>> {
+    const startTime = Date.now();
+    const pollInterval = 3000; // 3s initial
+
+    while (Date.now() - startTime < timeoutMs) {
+      let response: Response;
+      try {
+        response = await this.fetchWithTimeout(`${baseUrl}/v1/video/generations/${jobId}`, {
+          headers: { Authorization: `Bearer ${this.apiKey}` },
+          timeoutMs: 15000,
+        });
+      } catch (error) {
+        throw this.handleAdapterError(error, 'video-poll');
+      }
+
+      if (!response.ok) {
+        const errBody = await response.text();
+        const httpMeta: HttpMeta = { response, request: new Request(response.url), body: errBody };
+        const httpError = createHttpError(response.status, httpMeta);
+        throw new ProviderError(`OpenAI Sora poll: ${httpError.message}`, this.providerId, response.status);
+      }
+
+      const data = await response.json() as {
+        id: string;
+        status: string;
+        video?: { url?: string };
+        error?: { message?: string };
+      };
+
+      if (data.status === 'completed') {
+        return data as unknown as Record<string, unknown>;
+      }
+
+      if (data.status === 'failed') {
+        throw new ProviderError(
+          `OpenAI Sora generation failed: ${data.error?.message || 'Unknown error'}`,
+          this.providerId,
+        );
+      }
+
+      // Exponential backoff with cap
+      const elapsed = Date.now() - startTime;
+      const interval = Math.min(pollInterval * Math.pow(1.5, Math.floor(elapsed / 10000)), 10000);
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+
+    throw new ProviderError('OpenAI Sora generation timed out', this.providerId, 504);
+  }
+
+  private mapToSoraSize(aspectRatio?: string, resolution?: string): string {
+    // Sora accepts WxH format: 1920x1080, 1080x1920, 1280x720, 720x1280, 1024x1024
+    const resMap: Record<string, string> = {
+      '16:9_1080p': '1920x1080',
+      '16:9_720p': '1280x720',
+      '16:9_480p': '854x480',
+      '9:16_1080p': '1080x1920',
+      '9:16_720p': '720x1280',
+      '9:16_480p': '480x854',
+      '1:1_1080p': '1080x1080',
+      '1:1_720p': '720x720',
+      '1:1_480p': '480x480',
+    };
+
+    const key = `${aspectRatio || '16:9'}_${resolution || '720p'}`;
+    return resMap[key] || '1280x720';
+  }
+
+  private buildVideoResponse(
+    modelId: string,
+    jobId: string,
+    data: Record<string, unknown>,
+    latencyMs: number,
+  ): UnifiedResponse {
+    const videoData = data.video as { url?: string } | undefined;
+    return {
+      modality: 'video',
+      requestId: jobId,
+      providerId: this.providerId,
+      modelId,
+      videos: [{
+        url: videoData?.url,
+        duration: typeof data.seconds === 'number' ? data.seconds : undefined,
+      }],
+      latencyMs,
+    };
+  }
+
   async *executeStream(request: UnifiedRequest, options?: ExecuteOptions): AsyncIterable<StreamChunk> {
     this.assertInitialized();
 
@@ -245,10 +426,19 @@ export class OpenAIAdapter extends BaseAdapter {
     }
 
     const data = (await response.json()) as Record<string, unknown>;
-    return ((data.data as any[]) || []).map((model: any) => ({
+    const remoteModels = ((data.data as any[]) || []).map((model: any) => ({
       modelId: model.id,
       modality: 'llm' as Modality,
       capabilities: [],
     }));
+
+    // Append known Sora models (not listed via /v1/models)
+    const soraModels: ModelInfo[] = [
+      { modelId: 'sora-2', modality: 'video', capabilities: ['text2video', 'img2video'] },
+      { modelId: 'sora-2-pro', modality: 'video', capabilities: ['text2video', 'img2video'] },
+      { modelId: 'sora-2-turbo', modality: 'video', capabilities: ['text2video', 'img2video'] },
+    ];
+
+    return [...remoteModels, ...soraModels];
   }
 }

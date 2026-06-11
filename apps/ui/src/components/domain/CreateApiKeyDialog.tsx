@@ -157,7 +157,6 @@ export function CreateApiKeyDialog({
                   <Input
                     value={createdKey}
                     readOnly
-                    mono
                     className="font-mono"
                   />
                   <Button

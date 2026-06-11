@@ -1,8 +1,58 @@
 import { getDb } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
+import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
 import { PROVIDER_CATALOG } from './provider-catalog.js';
 import { discoverOpenAIModels, type DiscoveredModel } from './model-discovery.js';
 import crypto from 'node:crypto';
+import type { CapabilityTier } from '@dmr-x/core';
+
+/**
+ * Classify a model's capability tier based on its properties.
+ * This determines the model's actual capability level (brain/thinker/executor/specialist/worker).
+ */
+function classifyCapabilityTier(model: DiscoveredModel): CapabilityTier {
+  const id = (model.modelId || '').toLowerCase();
+  const caps = model.capabilities || [];
+  const specs = model.specializations || [];
+
+  // Orchestrator: Multi-model coordination
+  if (specs.includes('orchestration')) return 'orchestrator';
+
+  // Brain: Top-tier models (best reasoning, largest, most capable)
+  if (
+    id.match(/opus|gpt-5\.5|gpt-5\.4($|-)|o3($|-)|deepseek-r1/) ||
+    (id.includes('gpt-4') && !id.includes('mini') && !id.includes('nano'))
+  ) {
+    // Exclude mini/nano variants from brain
+    if (!id.match(/mini|nano|flash|haiku/)) return 'brain';
+  }
+
+  // Thinker: Reasoning/thinking models
+  if (
+    id.match(/o3-mini|o4-mini|deepseek-r1/) ||
+    (caps.includes('reasoning') && !id.match(/mini|nano|flash/))
+  ) {
+    return 'thinker';
+  }
+
+  // Specialist: Domain-specific narrow AI
+  if (
+    id.match(/codestral|v0|mimo|sonar|embed|rerank|whisper|piper|kokoro|orpheus|ultralytics|yolo/) ||
+    specs.some(s => ['database_schema', 'database_query', 'ui_component', 'embedding', 'reranking', 'stt', 'tts', 'music_generation', 'vision', '3d'].includes(s))
+  ) {
+    return 'specialist';
+  }
+
+  // Worker: Fast/cheap models
+  if (
+    specs.some(s => ['fast', 'cheap'].includes(s)) ||
+    id.match(/mini|flash|haiku|nano/)
+  ) {
+    return 'worker';
+  }
+
+  // Default: Executor (general-purpose)
+  return 'executor';
+}
 
 /**
  * Insert a batch of model profiles for a provider.
@@ -16,25 +66,28 @@ function insertModelProfiles(
   const db = getDb();
   const insert = db.prepare(
     `INSERT OR IGNORE INTO model_profiles (
-      id, provider_id, model_id, display_name, modality, intelligence_layer,
+      id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
       supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
       context_window, max_output_tokens,
       input_cost_per_1k, output_cost_per_1k, cost_per_image,
       quality_score, is_active
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let count = 0;
   for (const m of models) {
     if (!m.modelId) continue;
     const caps = new Set(m.capabilities);
+    const capabilityTier = classifyCapabilityTier(m);
+    const id = crypto.randomUUID();
     const result = insert.run(
-      crypto.randomUUID(),
+      id,
       providerId,
       m.modelId,
       m.displayName || m.modelId,
       m.modality || 'llm',
-      'executor',
+      'executor', // intelligence_layer (source: cloud by default)
+      capabilityTier,
       caps.has('streaming') ? 1 : 0,
       caps.has('vision') ? 1 : 0,
       caps.has('tool_use') ? 1 : 0,
@@ -49,7 +102,16 @@ function insertModelProfiles(
       0.5,
       isActive ? 1 : 0,
     );
-    if (result.changes > 0) count += 1;
+    if (result.changes > 0) {
+      count += 1;
+      eventBus.emit(SystemEvents.MODEL_REGISTERED, {
+        id,
+        providerId,
+        modelId: m.modelId,
+        modality: m.modality || 'llm',
+        capabilityTier,
+      });
+    }
   }
   return count;
 }
@@ -185,25 +247,39 @@ export async function autoRegisterProviders(): Promise<string[]> {
       // Create model profiles (rich variant with rate-limit / rank fields)
       const insert = db.prepare(
         `INSERT INTO model_profiles (
-          id, provider_id, model_id, display_name, modality, intelligence_layer,
+          id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
           supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
           context_window, max_output_tokens,
           input_cost_per_1k, output_cost_per_1k, cost_per_image,
           quality_score, is_active,
           rate_limit_rpm, rate_limit_rpd, rate_limit_tpm, rate_limit_tpd,
           monthly_token_budget, intelligence_rank, speed_rank
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const m of modelsForInsert) {
         if (!m.modelId) continue;
         const caps = new Set(m.capabilities);
+        // Convert to DiscoveredModel-like object for classification
+        const capabilityTier = classifyCapabilityTier({
+          modelId: m.modelId,
+          displayName: m.displayName,
+          modality: m.modality,
+          contextWindow: m.contextWindow,
+          maxOutputTokens: m.maxOutputTokens,
+          inputCostPer1M: m.inputCostPer1M,
+          outputCostPer1M: m.outputCostPer1M,
+          costPerImage: m.costPerImage,
+          capabilities: m.capabilities,
+          specializations: m.specializations,
+        });
         insert.run(
           crypto.randomUUID(),
           providerId,
           m.modelId,
           m.displayName || m.modelId,
           m.modality || 'llm',
-          'executor',
+          'executor', // intelligence_layer (source: cloud by default)
+          capabilityTier,
           caps.has('streaming') ? 1 : 0,
           caps.has('vision') ? 1 : 0,
           caps.has('tool_use') ? 1 : 0,
@@ -250,8 +326,9 @@ export async function autoRegisterProviders(): Promise<string[]> {
  */
 export async function discoverMissingModels(): Promise<number> {
   const db = getDb();
-  let totalInserted = 0;
 
+  // Phase 1: collect eligible providers via sync DB lookups (cheap, no I/O)
+  const eligible: Array<{ providerId: string; templateId: string; baseUrl: string }> = [];
   for (const template of PROVIDER_CATALOG) {
     if (template.apiFormat !== 'openai' || !template.baseUrl) continue;
 
@@ -265,32 +342,48 @@ export async function discoverMissingModels(): Promise<number> {
       .get(row.id);
     if (hasAny) continue;
 
-    try {
-      const discovered = await discoverOpenAIModels({
-        baseUrl: template.baseUrl,
-        apiKey: '',
-      });
-      if (discovered.length === 0) {
-        logger.warn(
-          { provider: template.id },
-          'discoverMissingModels: /v1/models returned empty; provider will stay without models',
-        );
-        continue;
-      }
+    eligible.push({ providerId: row.id, templateId: template.id, baseUrl: template.baseUrl });
+  }
 
-      const isActive = 1; // backfill targets already-active providers
-      const inserted = insertModelProfiles(row.id, discovered, Boolean(isActive));
-      totalInserted += inserted;
-      logger.info(
-        { provider: template.id, inserted },
-        'Backfilled model profiles via discovery',
-      );
-    } catch (err) {
-      logger.warn(
-        { err, provider: template.id },
-        'discoverMissingModels: discovery failed',
-      );
-    }
+  // Phase 2: discover models in parallel. Each fetch is capped by its own
+  // 1s AbortController timeout inside discoverOpenAIModels, so the total wait
+  // is bounded by ~1s regardless of how many providers are in the catalog.
+  const discoveries = await Promise.all(
+    eligible.map(async ({ templateId, baseUrl }) => {
+      try {
+        const discovered = await discoverOpenAIModels({ baseUrl, apiKey: '' });
+        if (discovered.length === 0) {
+          logger.warn(
+            { provider: templateId },
+            'discoverMissingModels: /v1/models returned empty; provider will stay without models',
+          );
+          return null;
+        }
+        return { templateId, discovered };
+      } catch (err) {
+        logger.warn(
+          { err, provider: templateId },
+          'discoverMissingModels: discovery failed',
+        );
+        return null;
+      }
+    }),
+  );
+
+  // Phase 3: insert serially. Writes to SQLite must be serialised — sql.js
+  // is single-threaded and concurrent inserts from the parallel discoveries
+  // can corrupt the prepared-statement cache.
+  let totalInserted = 0;
+  for (let i = 0; i < discoveries.length; i++) {
+    const result = discoveries[i];
+    if (!result) continue;
+    const { providerId } = eligible[i];
+    const inserted = insertModelProfiles(providerId, result.discovered, true);
+    totalInserted += inserted;
+    logger.info(
+      { provider: result.templateId, inserted },
+      'Backfilled model profiles via discovery',
+    );
   }
 
   return totalInserted;

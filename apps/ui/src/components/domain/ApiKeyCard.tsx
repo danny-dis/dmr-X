@@ -39,7 +39,7 @@ export function ApiKeyCard({ apiKey, onRotate, onRevoke, className }: ApiKeyCard
         </div>
         <StatusPill
           status={isActive ? 'online' : 'offline'}
-          label={isActive ? 'Active' : 'Inactive'}
+          label={isActive ? 'Active' : 'Revoked'}
           size="sm"
           pulse={isActive}
         />

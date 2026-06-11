@@ -1,4 +1,5 @@
 export { createLogger, logger } from './logger.js';
+export { eventBus, SystemEvents } from './events.js';
 export {
   withRetry,
   parseRetryAfter,

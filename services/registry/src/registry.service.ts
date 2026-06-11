@@ -17,8 +17,10 @@ export class RegistryService {
         mp.model_id as "modelId",
         mp.modality,
         mp.intelligence_layer as "intelligenceLayer",
+        mp.capability_tier as "capabilityTier",
         p.is_healthy as "isHealthy",
         mp.quality_score as "qualityScore",
+        mp.elo_rating as "eloRating",
         mp.avg_latency_ms as "avgLatencyMs",
         mp.input_cost_per_1k as "costPerInputToken",
         mp.output_cost_per_1k as "costPerOutputToken",
@@ -55,12 +57,13 @@ export class RegistryService {
       modelId: row.modelId,
       modality: row.modality,
       intelligenceLayer: row.intelligenceLayer,
+      capabilityTier: row.capabilityTier || 'executor',
       capabilities: this.extractCapabilities(row),
       costPerInputToken: parseFloat(row.costPerInputToken) || 0,
       costPerOutputToken: parseFloat(row.costPerOutputToken) || 0,
       costPerImage: parseFloat(row.costPerImage) || 0,
       avgLatencyMs: row.avgLatencyMs || 1000,
-      qualityScore: parseFloat(row.qualityScore) || 0.5,
+      qualityScore: this.calculateQualityScore(parseFloat(row.qualityScore) || 0.5, parseFloat(row.eloRating) || 1200),
       maxOutputTokens: row.maxOutputTokens || undefined,
       contextLength: row.contextWindow || undefined,
       isHealthy: row.isHealthy === 1 || row.isHealthy === true,
@@ -76,6 +79,18 @@ export class RegistryService {
         },
       } : undefined,
     }));
+  }
+
+  /**
+   * Calculate a composite quality score from the heuristic quality_score and the Elo rating.
+   * Gives 40% weight to heuristic/benchmark average and 60% weight to Elo rating.
+   */
+  private calculateQualityScore(heuristicScore: number, eloRating: number): number {
+    // Normalize Elo (baseline 1200, range 800-1600)
+    const normalizedElo = (eloRating - 800) / (1600 - 800);
+    const clampedElo = Math.max(0, Math.min(1, normalizedElo));
+
+    return (heuristicScore * 0.4) + (clampedElo * 0.6);
   }
 
   private extractCapabilities(row: any): string[] {

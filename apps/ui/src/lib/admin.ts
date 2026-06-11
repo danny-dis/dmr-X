@@ -87,7 +87,8 @@ export const Admin = {
   // Tenants & API keys
   listTenants: async () => {
     const res = await apiGet<ApiTenant[] | { tenants: ApiTenant[] }>('/admin/tenants');
-    return Array.isArray(res) ? res : res.tenants;
+    if (!res) return [];
+    return Array.isArray(res) ? res : res.tenants ?? [];
   },
   getTenant: (id: string) => apiGet<ApiTenant>(`/admin/tenants/${id}`),
   createTenant: (body: Partial<ApiTenant>) => apiPost<ApiTenant>('/admin/tenants', body),
@@ -96,23 +97,24 @@ export const Admin = {
   deleteTenant: (id: string) => apiDelete<{ ok: true }>(`/admin/tenants/${id}`),
   listApiKeys: async () => {
     const res = await apiGet<ApiKey[] | { api_keys: ApiKey[] }>('/admin/api-keys');
-    return Array.isArray(res) ? res : res.api_keys;
+    if (!res) return [];
+    return Array.isArray(res) ? res : res.api_keys ?? [];
   },
   createApiKey: (body: { tenant_id: string; name?: string }) =>
     apiPost<ApiKey & { key: string }>('/admin/api-keys', body),
   revokeApiKey: (id: string) =>
     apiDelete<{ ok: true }>(`/admin/api-keys/${id}`),
 
-  // Routing & quota
-  listRouteDecisions: () =>
-    apiGet<{ decisions: ApiRouteDecision[] }>('/admin/routing/decisions').then(r => r.decisions),
-  getQuota: () => apiGet<{ quotas: ApiQuotaState[] }>('/admin/quota').then(r => r.quotas),
+// Routing & quota
+  listRouteDecisions: (query?: { limit?: number }) =>
+    apiGet<{ decisions: ApiRouteDecision[] }>('/admin/routing/decisions', query).then(r => r.decisions),
+  getQuota: (tenantId?: string) => apiGet<{ quotas: ApiQuotaState[] }>('/admin/quota', { tenant_id: tenantId }).then(r => r.quotas),
 
   // Billing & usage
-  getBilling: () =>
-    apiGet<ApiBillingSummary>('/admin/billing/summary'),
-  getUsage: () =>
-    apiGet<{ history: ApiUsagePoint[] }>('/admin/billing/usage-history').then(r => ({ points: r.history, total: r.history.length })),
+  getBilling: (period?: string) =>
+    apiGet<ApiBillingSummary>('/admin/billing/summary', { period }),
+  getUsage: (granularity?: string) =>
+    apiGet<{ history: ApiUsagePoint[] }>('/admin/billing/usage-history', { granularity }).then(r => ({ points: r.history, total: r.history.length })),
 
   // Observability
   listAlerts: () =>
@@ -141,7 +143,10 @@ export const Admin = {
   // Benchmarks
   listBenchmarks: () => apiGet<ApiBenchmarkResult[]>('/admin/benchmarks'),
   runBenchmark: (body: ApiBenchmarkRun) => apiPost<ApiBenchmarkResult>('/admin/benchmarks/run', body),
-
+  getLeaderboard: () => apiGet<{ leaderboard: any[] }>('/admin/benchmarks/leaderboard').then(r => r.leaderboard),
+  getBattles: () => apiGet<{ battles: any[] }>('/admin/benchmarks/battles').then(r => r.battles),
+  runArenaBattle: (modelA: string, modelB: string) => apiPost('/admin/benchmarks/battle', { modelA, modelB }),
+  submitFeedback: (feedback: any) => apiPost('/admin/playground/feedback', feedback),
   // Policies
   listPolicies: () => apiGet<ApiPolicyRule[]>('/admin/policies'),
   upsertPolicy: (body: Partial<ApiPolicyRule>) => apiPost<ApiPolicyRule>('/admin/policies', body),

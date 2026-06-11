@@ -7,6 +7,7 @@ import type { ApiAlert } from '@/types/api';
 
 const ICON_FOR = {
   error: <AlertCircle className="size-3.5" />,
+  critical: <AlertCircle className="size-3.5" />,
   warning: <AlertTriangle className="size-3.5" />,
   info: <Info className="size-3.5" />,
   success: <CheckCircle2 className="size-3.5" />,
@@ -14,6 +15,7 @@ const ICON_FOR = {
 
 const TONE_FOR = {
   error: 'danger' as const,
+  critical: 'danger' as const,
   warning: 'warning' as const,
   info: 'info' as const,
   success: 'success' as const,

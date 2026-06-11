@@ -1,8 +1,15 @@
 # AI Provider Reference (2026)
 
-Comprehensive catalog of 35+ AI providers with API details for adapter configuration.
+Comprehensive catalog of 100+ AI providers with API details for adapter configuration.
+DMR-X ships 20+ first-class adapters (see "Local & Specialized Adapters" at the end) plus
+a `GenericOpenAIAdapter` that handles any OpenAI-compatible provider (OpenRouter, Together,
+Fireworks, Groq, Cerebras, SambaNova, etc.) without custom code.
 
 > **Note**: Prices and model lists reflect known state circa early 2026. Always verify against provider docs before building adapters.
+
+> **Adapter inventory** (see `services/adapters/src/index.ts`): OpenAI, Anthropic,
+> Ollama, GenericOpenAI, Replicate, Stability, ComfyUI, FAL.ai, Runway, Veo,
+> ElevenLabs, Deepgram, Kokoro, Piper, Cohere, Jina, TEI. Total: **18 adapters**.
 
 ---
 
@@ -1027,6 +1034,98 @@ Top-tier embeddings. `voyage-3` (1024d), `voyage-code-3`, domain-specific varian
 
 ---
 
+## 10. AUDIO SEPARATION PROVIDERS
+
+### 10.1 AudioShake
+
+| Field | Value |
+|---|---|
+| **API Base** | `https://api.audioshake.com/v1` |
+| **Auth** | `Authorization: Bearer <key>` |
+| **API Format** | Custom REST |
+| **Modalities** | audio_separation |
+| **Notable Models** | `standard` (4-6 stems), `lite` (vocals/instrumental) |
+| **Rate Limits** | Enterprise-tiered |
+| **Pricing** | Per-minute of audio. ~$0.05-0.15/min depending on tier |
+| **Streaming** | N/A (async processing) |
+| **Notes** | Enterprise-grade stem separation. Supports webhook callbacks. CDN delivery for large files. MusicAI.ai parent company.
+
+### 10.2 StemSplit
+
+| Field | Value |
+|---|---|
+| **API Base** | `https://api.stemsplit.com/v1` |
+| **Auth** | `Authorization: Bearer <key>` |
+| **API Format** | Custom REST |
+| **Modalities** | audio_separation |
+| **Notable Models** | `2stem`, `4stem`, `6stem` |
+| **Rate Limits** | Per-plan limits |
+| **Pricing** | Pay-per-minute. ~$0.03/min |
+| **Streaming** | N/A (async) |
+| **Notes** | Webhook support for job completion. Good for real-time applications.
+
+### 10.3 Demucs (Local)
+
+| Field | Value |
+|---|---|
+| **API Base** | `http://localhost:8000` (HTTP wrapper service) |
+| **Auth** | None (local) |
+| **API Format** | Custom REST (wrapper) |
+| **Modalities** | audio_separation |
+| **Notable Models** | `htdemucs_ft` (6 stems), `htdemucs` (4 stems), `mdx` (2 stems) |
+| **Rate Limits** | None (local) |
+| **Pricing** | Free (self-hosted) |
+| **Streaming** | N/A |
+| **Notes** | Hybrid Transformer architecture. Requires GPU for fast processing. Open-source (Meta).
+
+---
+
+## 11. OCR PROVIDERS
+
+### 11.1 PaddleOCR
+
+| Field | Value |
+|---|---|
+| **API Base** | `http://localhost:8000` (local) or HuggingFace Inference API |
+| **Auth** | None (local) or `Authorization: Bearer <hf_token>` (HF) |
+| **API Format** | Custom REST (local) or HuggingFace Inference API |
+| **Modalities** | ocr |
+| **Notable Models** | `ch_ppocrv4` (80+ languages), `ch_ppocrv3` |
+| **Rate Limits** | None (local) or ~30 RPM (HF free) |
+| **Pricing** | Free (self-hosted) or ~$0.0001/request (HF Inference Endpoints) |
+| **Streaming** | N/A |
+| **Notes** | Excellent multilingual support. Lightweight. Structured output with bounding boxes.
+
+### 11.2 Tesseract 5
+
+| Field | Value |
+|---|---|
+| **API Base** | `http://localhost:8000` (HTTP wrapper) |
+| **Auth** | None |
+| **API Format** | Custom REST |
+| **Modalities** | ocr |
+| **Notable Models** | `tesseract-5` (all languages) |
+| **Rate Limits** | None (local) |
+| **Pricing** | Free (open-source) |
+| **Streaming** | N/A |
+| **Notes** | Classic OCR engine. Lightweight. Good for embedded systems. Supports 100+ languages.
+
+### 11.3 TrOCR (HuggingFace)
+
+| Field | Value |
+|---|---|
+| **API Base** | `https://api-inference.huggingface.co/models/<model-id>` |
+| **Auth** | `Authorization: Bearer <hf_token>` |
+| **API Format** | HuggingFace Inference API |
+| **Modalities** | ocr |
+| **Notable Models** | `microsoft/trocr-base-printed`, `microsoft/trocr-large-printed`, `microsoft/trocr-base-handwritten` |
+| **Rate Limits** | ~30 RPM (free), higher on paid |
+| **Pricing** | Free (rate-limited) or Inference Endpoints (pay-as-you-go) |
+| **Streaming** | N/A |
+| **Notes** | Transformer-based OCR. Excellent for printed and handwritten text.
+
+---
+
 ## QUICK REFERENCE: API FORMAT COMPATIBILITY
 
 ### OpenAI-Compatible Providers (drop-in `openai` SDK)
@@ -1086,25 +1185,30 @@ Top-tier embeddings. `voyage-3` (1024d), `voyage-code-3`, domain-specific varian
 
 ## MODALITY MATRIX
 
-| Provider | LLM | Vision | Image Gen | Embedding | Reranking | TTS | STT | Video |
-|---|---|---|---|---|---|---|---|---|
-| OpenAI | x | x | x | x | | x | x | |
-| Anthropic | x | x | | | | | | |
-| Google Gemini | x | x | x | x | | | x | |
-| Mistral | x | x | | x | | | | |
-| Cohere | x | | | x | x | | | |
-| xAI (Grok) | x | x | x | | | | | |
-| DeepSeek | x | | | | | | | |
-| ElevenLabs | | | | | | x | x | |
-| Deepgram | | | | | | x | x | |
-| Stability AI | | | x | | | | | x |
-| RunwayML | | | x | | | | | x |
-| Replicate | x | x | x | | | x | x | x |
-| Together AI | x | x | x | x | | | x | |
-| Groq | x | | | | | | x | |
-| HuggingFace | x | x | x | x | | x | x | |
-| Ollama | x | x | | x | | | | |
-| vLLM | x | x | | x | | | | |
+| Provider | LLM | Vision | Image Gen | Embedding | Reranking | TTS | STT | Video | Audio Separation | OCR |
+|---|---|---|---|---|---|---|---|---|---|---|
+| OpenAI | x | x | x | x | | x | x | | | |
+| Anthropic | x | x | | | | | | | | |
+| Google Gemini | x | x | x | x | | | x | | | |
+| Mistral | x | x | | x | | | | | | |
+| Cohere | x | | | x | x | | | | | |
+| xAI (Grok) | x | x | x | | | | | | | |
+| DeepSeek | x | | | | | | | | | |
+| ElevenLabs | | | | | | x | x | | stem-separation | |
+| Deepgram | | | | | | x | x | | diarization | |
+| Stability AI | | | x | | | | | x | | |
+| RunwayML | | | x | | | | | x | | |
+| Replicate | x | x | x | | | x | x | x | | ocr-via-trocr |
+| Together AI | x | x | x | x | | | x | | | |
+| Groq | x | | | | | | x | | | |
+| HuggingFace | x | x | x | x | | x | x | | | trocr, paddleocr |
+| Ollama | x | x | | x | | | | | | |
+| vLLM | x | x | | x | | | | | | |
+| AudioShake | | | | | | | | | x | |
+| StemSplit | | | | | | | | | x | |
+| Demucs | | | | | | | | | x (local) | |
+| Tesseract | | | | | | | | | | x |
+| PaddleOCR | | | | | | | | | | x (local/hf) |
 
 ---
 
@@ -1115,6 +1219,8 @@ Top-tier embeddings. `voyage-3` (1024d), `voyage-code-3`, domain-specific varian
 3. **Google Gemini** needs its own adapter (different endpoint structure, API key in URL).
 4. **Image/video providers** use async patterns (submit job, poll for result) rather than streaming.
 5. **Audio providers** vary widely: some use WebSocket (Deepgram, ElevenLabs), some use multipart form (Whisper).
-6. **Local platforms** (Ollama, vLLM, llama.cpp, etc.) are mostly OpenAI-compatible, simplifying integration.
-7. **Rate limiting**: Most use RPM-based limits. Audio providers may use per-second/per-minute limits. Image providers use per-generation or credit-based limits.
-8. **Authentication** should be configurable per-adapter to support the variety of header formats listed above.
+6. **Audio Separation** uses async job pattern (processing takes 30s-3min). Demucs is local-only; AudioShake/StemSplit are cloud APIs.
+7. **OCR** can be synchronous (fast) or async depending on image size. Tesseract/PaddleOCR run locally; HuggingFace/Trocr via Inference API.
+8. **Local platforms** (Ollama, vLLM, llama.cpp, etc.) are mostly OpenAI-compatible, simplifying integration.
+9. **Rate limiting**: Most use RPM-based limits. Audio providers may use per-second/per-minute limits. Image providers use per-generation or credit-based limits.
+10. **Authentication** should be configurable per-adapter to support the variety of header formats listed above.

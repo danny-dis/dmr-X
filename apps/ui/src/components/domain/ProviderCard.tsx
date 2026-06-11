@@ -25,7 +25,11 @@ export function ProviderCard({
   className,
 }: ProviderCardProps) {
   const health = provider.health;
-  const healthStatus = health?.status ?? provider.enabled ? 'online' : 'offline';
+  const healthStatus = 
+    health?.status === 'ok' ? 'online' : 
+    health?.status === 'degraded' ? 'degraded' : 
+    health?.status === 'down' ? 'offline' : 
+    provider.enabled ? 'online' : 'offline';
   const latency = health?.latencyMs;
   return (
     <Card
@@ -48,7 +52,7 @@ export function ProviderCard({
                 </Badge>
               )}
             </div>
-            <p className="text-[11px] text-fg-muted truncate">{provider.baseUrl ?? '—'}</p>
+            <p className="text-[11px] text-fg-muted truncate">{provider.base_url ?? '—'}</p>
           </div>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">

@@ -6,6 +6,19 @@ import { ResourceLimiter } from './resource-limiter.js';
 
 const cache = createNamespacedCache('sandbox');
 
+/** Languages allowed for sandbox execution (bash/sh removed for security). */
+const ALLOWED_LANGUAGES = new Set(['python', 'python3', 'node', 'javascript', 'js', 'deno', 'bun']);
+
+/** Maximum code size in characters. */
+const MAX_CODE_SIZE = 100_000;
+
+/** Clamp timeout between 1 second and 30 seconds. */
+const MIN_TIMEOUT_MS = 1_000;
+const MAX_TIMEOUT_MS = 30_000;
+
+/** Maximum retry count. */
+const MAX_RETRIES = 3;
+
 export interface SandboxJob {
   id: string;
   tenantId: string | null;
@@ -48,11 +61,26 @@ export class SandboxService {
   }
 
   async submit(input: SubmitJobInput): Promise<SandboxJob> {
+    // Validate language
+    const language = input.language || 'python';
+    if (!ALLOWED_LANGUAGES.has(language)) {
+      throw new Error(`Unsupported language: ${language}. Allowed: ${[...ALLOWED_LANGUAGES].join(', ')}`);
+    }
+
+    // Validate code
+    if (!input.code || input.code.length === 0) {
+      throw new Error('Code is required');
+    }
+    if (input.code.length > MAX_CODE_SIZE) {
+      throw new Error(`Code exceeds maximum size (${MAX_CODE_SIZE} characters)`);
+    }
+
+    // Clamp timeout and retries to safe bounds
+    const timeoutMs = Math.min(Math.max(input.timeoutMs || 5000, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
+    const maxRetries = Math.min(Math.max(input.maxRetries ?? 2, 0), MAX_RETRIES);
+
     const db = getDb();
     const id = crypto.randomUUID();
-    const language = input.language || 'python';
-    const timeoutMs = input.timeoutMs || 5000;
-    const maxRetries = input.maxRetries || 2;
 
     db.prepare(`
       INSERT INTO sandbox_jobs (id, tenant_id, language, code, status, isolation_level, timeout_ms, max_retries)
@@ -109,7 +137,8 @@ export class SandboxService {
 
       const job = this.getById(id);
       if (!job || job.status !== 'running') {
-        this.runningCount--;
+        // Already cancelled or picked up by another runner — don't decrement here,
+        // the finally block handles it.
         return;
       }
 
@@ -119,7 +148,6 @@ export class SandboxService {
           UPDATE sandbox_jobs SET status = 'failed', error = ?, completed_at = datetime('now')
           WHERE id = ?
         `).run(resourceCheck.reason, id);
-        this.runningCount--;
         cache.delete('list');
         return;
       }
@@ -141,8 +169,9 @@ export class SandboxService {
             UPDATE sandbox_jobs SET retries = retries + 1, status = 'queued'
             WHERE id = ?
           `).run(id);
-          this.runningCount--;
           cache.delete('list');
+          // Decrement before recursive call to keep count accurate
+          this.runningCount--;
           this.runJob(id);
           return;
         }

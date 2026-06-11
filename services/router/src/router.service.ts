@@ -9,6 +9,7 @@ import { hashConversation, getStickyProvider, setStickyProvider, breakStickySess
 import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { SpecialistRouter } from './decomposer/specialist-router.js';
 import { CompositeExecutor } from './decomposer/composite-executor.js';
+import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
 import { ThompsonSampler } from './bandit/thompson-sampler.js';
 import type { CandidateSet } from '@dmr-x/core';
@@ -51,7 +52,20 @@ export class Router {
 
   setAdapterExecutor(executor: AdapterExecutor): void {
     this.adapterExecutor = executor;
-    this.compositeExecutor = new CompositeExecutor(this.specialistRouter, executor);
+    // Wire the WorkerPoolFanout opt-in: when DMRX_WORKER_POOL_FANOUT=true the
+    // gateway registers itself as a worker and tracks every parallel sub-task
+    // as a WorkerJob in the SQLite `worker_jobs` table (and the /v1/admin/workers API).
+    const workerPool = new WorkerPoolFanout(executor, {
+      enabled: process.env.DMRX_WORKER_POOL_FANOUT === 'true',
+    });
+    this.compositeExecutor = new CompositeExecutor(
+      this.specialistRouter,
+      executor,
+      workerPool,
+    );
+    if (process.env.DMRX_WORKER_POOL_FANOUT === 'true') {
+      logger.info('WorkerPoolFanout enabled (DMRX_WORKER_POOL_FANOUT=true)');
+    }
   }
 
   /**

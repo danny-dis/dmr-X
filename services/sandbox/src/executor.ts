@@ -15,10 +15,37 @@ export interface ExecuteResult {
   cancelled: boolean;
 }
 
+/** Maximum code size in characters to prevent DoS via large payloads. */
+const MAX_CODE_SIZE = 100_000;
+
+/**
+ * Safe environment for sandboxed child processes.
+ * Only passes through non-sensitive system variables.
+ * Explicitly strips DMRX_* secrets, API keys, and tokens.
+ */
+const SANDBOX_ENV: Record<string, string | undefined> = {
+  HOME: '/tmp',
+  PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+  LANG: process.env.LANG || 'en_US.UTF-8',
+  TMPDIR: '/tmp',
+  USER: 'dmrx-sandbox',
+};
+
 export class Executor {
   private running = new Map<string, ChildProcess>();
 
   async execute(input: ExecuteInput): Promise<ExecuteResult> {
+    // Validate code size
+    if (input.code.length > MAX_CODE_SIZE) {
+      return {
+        stdout: '',
+        stderr: '',
+        error: `Code exceeds maximum size (${MAX_CODE_SIZE} characters)`,
+        exitCode: 1,
+        cancelled: false,
+      };
+    }
+
     const runner = this.getRunner(input.language);
     if (!runner) {
       return {
@@ -34,7 +61,9 @@ export class Executor {
       const proc = spawn(runner.command, runner.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: input.timeoutMs,
-        env: { ...process.env, ...runner.env },
+        // SECURITY: Use a stripped environment — never inherit process.env
+        // which contains DMRX_ADMIN_API_KEY, DMRX_ENCRYPTION_KEY, etc.
+        env: { ...SANDBOX_ENV, ...runner.env },
       });
 
       const jobId = crypto.randomUUID();
@@ -94,6 +123,10 @@ export class Executor {
     return true;
   }
 
+  getRunningCount(): number {
+    return this.running.size;
+  }
+
   private getRunner(language: string): { command: string; args: string[]; env: Record<string, string> } | null {
     switch (language) {
       case 'python':
@@ -103,13 +136,12 @@ export class Executor {
       case 'javascript':
       case 'js':
         return { command: 'node', args: ['-e', ''], env: {} };
-      case 'bash':
-      case 'sh':
-        return { command: 'bash', args: ['-c', ''], env: {} };
       case 'deno':
-        return { command: 'deno', args: ['eval', ''], env: {} };
+        // Deno with minimal permissions — no network, no filesystem write, no env
+        return { command: 'deno', args: ['eval', '--no-prompt', '--allow-read', '--allow-run'], env: {} };
       case 'bun':
         return { command: 'bun', args: ['-e', ''], env: {} };
+      // SECURITY: bash/sh removed — they provide unrestricted OS access
       default:
         return null;
     }

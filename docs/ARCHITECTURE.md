@@ -319,8 +319,23 @@ where each layer is a different way of resolving a request:
 5. **Temporary Workers** — ephemeral local models spun up just for a
    single request and torn down
 
-The current router implements the Brain, Thinkers, and Executers
-layers. Workers and Temporary Workers are in-progress.
+The current router implements the Brain, Thinkers, Executers, and **Workers**
+layers (Workers landed in v0.4.0). Temporary Workers are in-progress.
+
+**Workers layer wiring:** when the gateway has `DMRX_WORKER_POOL_FANOUT=true`,
+`Router.setAdapterExecutor` constructs a `WorkerPoolFanout` and passes it to
+`CompositeExecutor`. Parallel sub-task groups (from `TaskDecomposer`) are
+dispatched via `WorkerPoolFanout.runParallel`, which:
+1. Lazily registers the gateway as a `Worker` (type `router-fanout`).
+2. For each sub-task, calls `WorkersService.assignJob` to record a
+   `WorkerJob` (jobType `router.fanout`).
+3. Executes the sub-task in-process via the existing `AdapterExecutor`.
+4. Calls `WorkersService.completeJob` with success or error.
+
+The "Workers" layer is therefore observable today via `/v1/admin/workers` and
+the SQLite `workers` / `worker_jobs` tables; it becomes a true multi-process
+worker pool when the gateway is run as multiple processes — the
+`assignJob → execute → completeJob` contract is the exact handoff point.
 
 ### Operational Philosophy
 

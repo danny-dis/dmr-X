@@ -29,12 +29,12 @@ const TONE = {
 export function UsagePage() {
   const [period, setPeriod] = React.useState<'day' | 'week' | 'month'>('day');
   const billing = useApiData<ApiBillingSummary>(
-    () => Admin.getBilling({ period }),
+    () => Admin.getBilling(period),
     [period],
     { refetchInterval: 30000 }
   );
   const usage = useApiData<{ points: ApiUsagePoint[] }>(
-    () => Admin.getUsage({ granularity: period === 'day' ? 'hour' : 'day' }),
+    () => Admin.getUsage(period === 'day' ? 'hour' : 'day'),
     [period],
     { refetchInterval: 15000 }
   );
@@ -48,7 +48,7 @@ export function UsagePage() {
   }));
 
   const tenantCosts = (tenants.data ?? [])
-    .map((t) => ({ label: t.name, value: t.costUsed ?? 0 }))
+    .map((t) => ({ label: t.name, value: t.cost_used ?? 0 }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 8);
 

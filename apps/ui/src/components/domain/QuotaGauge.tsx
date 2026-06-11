@@ -11,12 +11,12 @@ export interface QuotaGaugeProps {
 }
 
 export function QuotaGauge({ quota, className }: QuotaGaugeProps) {
-  const tokensUsed = quota.tokensUsed ?? 0;
-  const tokensLimit = quota.tokensLimit ?? 0;
-  const reqUsed = quota.requestsUsed ?? 0;
-  const reqLimit = quota.requestsLimit ?? 0;
-  const costUsed = quota.costUsed ?? 0;
-  const costLimit = quota.costLimit ?? 0;
+  const tokensUsed = quota.tokens_used ?? 0;
+  const tokensLimit = quota.tokens_limit ?? 0;
+  const reqUsed = quota.requests_used ?? 0;
+  const reqLimit = quota.requests_limit ?? 0;
+  const costUsed = quota.cost_used ?? 0;
+  const costLimit = quota.cost_limit ?? 0;
 
   const tokensT = tokensLimit > 0 ? (tokensUsed / tokensLimit) * 100 : 0;
   const reqT = reqLimit > 0 ? (reqUsed / reqLimit) * 100 : 0;
@@ -68,9 +68,9 @@ export function QuotaGauge({ quota, className }: QuotaGaugeProps) {
           </div>
         </div>
       </div>
-      {quota.resetAt && (
+      {quota.reset_at && (
         <p className="text-[10px] text-fg-muted text-center">
-          Resets {new Date(quota.resetAt).toLocaleString()}
+          Resets {new Date(quota.reset_at).toLocaleString()}
         </p>
       )}
     </div>
@@ -78,7 +78,7 @@ export function QuotaGauge({ quota, className }: QuotaGaugeProps) {
 }
 
 export function QuotaProgressBar({ quota, className }: QuotaGaugeProps) {
-  const tokensT = (quota.tokensLimit ?? 0) > 0 ? ((quota.tokensUsed ?? 0) / quota.tokensLimit!) * 100 : 0;
+  const tokensT = (quota.tokens_limit ?? 0) > 0 ? ((quota.tokens_used ?? 0) / quota.tokens_limit!) * 100 : 0;
   return (
     <div className={cn('flex flex-col gap-1', className)}>
       <div className="flex items-center justify-between text-[10px]">
