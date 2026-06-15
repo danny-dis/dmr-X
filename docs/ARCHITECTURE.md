@@ -135,8 +135,8 @@ dmr-x/
 │   └── mcp-client/           # MCP client integration
 │
 ├── tests/
-│   ├── unit/                 # 20 unit test suites
-│   └── e2e/                  # Opt-in connectivity tests
+│   ├── unit/                 # 40 unit test files (498 tests)
+│   └── e2e/                  # Opt-in connectivity tests (3 files)
 │
 ├── scripts/                  # Install scripts and release packaging
 ├── docs/                     # Documentation
@@ -253,18 +253,31 @@ If no free provider is available, the gateway returns `503 No available provider
 
 ## MCP Server
 
-The MCP server (`services/mcp-server`) exposes DMR-X routing as MCP tools:
+The MCP server (`services/mcp-server`) exposes DMR-X routing as MCP tools. The full SDK tool inventory (per `services/mcp-server/src/server.ts:650-671` and `tools.ts:358-380`) is 21 tools:
 
 | Tool | Description |
 |------|-------------|
 | `dmrx_chat` | Chat completions |
+| `dmrx_chat_stream` | Streaming chat completions |
 | `dmrx_generate_image` | Image generation |
+| `dmrx_generate_image_stream` | Streaming image generation |
+| `dmrx_generate_video` | Video generation |
+| `dmrx_generate_video_stream` | Streaming video generation |
+| `dmrx_generate_music` | Music generation |
+| `dmrx_generate_3d` | 3D asset generation |
 | `dmrx_embed` | Text embeddings |
 | `dmrx_transcribe` | Speech-to-text |
 | `dmrx_speak` | Text-to-speech |
 | `dmrx_rerank` | Document reranking |
 | `dmrx_models` | List available models |
 | `dmrx_status` | System status |
+| `dmrx_batch` | Batch completions |
+| `dmrx_workflow` | Multi-step workflow execution |
+| `dmrx_context_save` | Save conversation context to memory |
+| `dmrx_context_load` | Load conversation context from memory |
+| `dmrx_context_list` | List stored conversation contexts |
+| `dmrx_context_summarize` | Summarize a stored conversation context |
+| `dmrx_context_compress` | Compress a stored conversation context |
 
 Transports: stdio (default), SSE, HTTP. Configured via `DMRX_MCP_TRANSPORT`.
 
@@ -272,7 +285,7 @@ Transports: stdio (default), SSE, HTTP. Configured via `DMRX_MCP_TRANSPORT`.
 
 `apps/ui` is a React 18 + Vite 6 SPA. Its production build outputs to `apps/gateway/public`, which the gateway serves as static files with SPA fallback.
 
-Pages: Dashboard, Playground, Providers, Models, Tenants, Policies, Quotas, Requests, Routing, Benchmarks, Observability, Memory, Workers, Federation, Sandbox, Settings, Usage.
+Pages (22 total per `apps/ui/src/pages/index.ts`): Dashboard, Playground, Providers, Models, FreeTier, Tenants, Policies, Quotas, Requests, Routing, Benchmarks, Observability, Memory, Workers, Federation, Sandbox, Settings, Usage, MCP, Connect, Tools, plus a NotFound route.
 
 The UI communicates with the gateway via the `/v1/admin/*` API endpoints. In development, Vite runs at `:4200` and proxies `/v1/*` to the gateway at `:3000`.
 

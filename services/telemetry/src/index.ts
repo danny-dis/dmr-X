@@ -6,6 +6,12 @@ export {
 } from './telemetry.service.js';
 
 export {
+  tracer,
+  TRACER_NAME,
+  TRACER_VERSION,
+} from './tracer.js';
+
+export {
   requestCount,
   requestLatency,
   ttftLatency,

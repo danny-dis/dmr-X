@@ -161,12 +161,13 @@ This is the Google Gemini generateContent format.
   },
   "generationConfig": {
     "temperature": 0.7,
-    "maxOutputTokens": 1024,
-    "model": "free-fast"
+    "maxOutputTokens": 1024
   },
   "stream": false
 }
 ```
+
+> **Note:** Do **not** nest a `model` field inside `generationConfig` — the Zod schema rejects it. Model selection happens via the meta-model path (`model` is a top-level field in the **UnifiedRequest** envelope, not in the Gemini wire format) or via the `x-free-tier-strategy` request header. To target a specific model, send it as a separate field on the converted request, or use a meta-model alias from the [Meta-Models](#meta-models-dynamic-routing) section below.
 
 **Auth:** `x-api-key: <dmrx-api-key>`
 

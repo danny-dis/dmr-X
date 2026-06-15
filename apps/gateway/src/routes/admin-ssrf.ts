@@ -22,7 +22,7 @@
  * fold it back to its IPv4 form before applying the blocklist.
  */
 import dns from 'node:dns';
-import net, { type AddressType } from 'node:net';
+import net, { type IPVersion } from 'node:net';
 
 export interface ValidatedURL {
   /** The original URL string we were given. */
@@ -137,7 +137,7 @@ function isPrivateIP(address: string, family: number): boolean {
       normalizedFamily = 'ipv4';
     }
   }
-  return IP_BLOCK_LIST.check(normalized, normalizedFamily as AddressType);
+  return IP_BLOCK_LIST.check(normalized, normalizedFamily as IPVersion);
 }
 
 /**

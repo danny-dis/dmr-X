@@ -9,7 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logger, decryptConfigApiKey, encrypt, decrypt } from '@dmr-x/utils';
 import { Router } from '@dmr-x/router';
-import { getTelemetryService } from '@dmr-x/telemetry';
+import { getTelemetryService, tracer } from '@dmr-x/telemetry';
+import { trace, SpanStatusCode, SpanKind, propagation, context, type Span } from '@opentelemetry/api';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter } from '@dmr-x/adapters';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { ProviderUnavailableError } from '@dmr-x/core';
@@ -537,9 +538,24 @@ void (async () => {
   //     providerId, modelId, modality,
   //     tokens?: { prompt, completion, total, costUsd? },
   //     errorCode?: string,    // present if the request errored
+  //     tenantId?: string,     // CRIT-6: tenant for request_logs row
+  //     taskProfile?: string,  // CRIT-6: routing decision audit trail
+  //     routingPlan?: {        // CRIT-6: top-3 candidates considered
+  //       primary: { providerId, modelId, score },
+  //       candidates: Array<{ providerId, modelId, score }>,
+  //     },
+  //     firstTokenLatencyMs?: number, // CRIT-6: optional TTFT for streaming
   //   }
   // The hook is fire-and-forget — telemetry must never break the request.
+  // CRIT-6: a row is also inserted into `request_logs` so the bandit
+  // reward-updater can learn across restarts. The write is wrapped in the
+  // existing try/catch — a write failure logs a warning and continues.
+  // OpenTelemetry: end the root `http.request` span, record the response
+  // status / latency, and surface 5xx as span errors so trace UIs can
+  // highlight them. This is the second half of the pair started in
+  // the onRequest hook above.
   server.addHook('onResponse', async (request, reply) => {
+    const span = (request as any).openTelemetrySpan as Span | undefined;
     try {
       const metrics = (request as any).metrics as
         | {
@@ -553,52 +569,135 @@ void (async () => {
               costUsd?: number;
             };
             errorCode?: string;
+            tenantId?: string;
+            taskProfile?: string;
+            routingPlan?: {
+              primary?: { providerId: string; modelId: string; score?: number };
+              candidates?: Array<{ providerId: string; modelId: string; score?: number }>;
+            };
+            firstTokenLatencyMs?: number;
           }
         | undefined;
-      if (!metrics?.providerId || !metrics.modelId) return;
+      if (metrics?.providerId && metrics.modelId) {
+        const statusCode = reply.statusCode;
+        const latencyMs = Date.now() - ((request as any).startTime ?? Date.now());
 
-      const statusCode = reply.statusCode;
-      const latencyMs = Date.now() - ((request as any).startTime ?? Date.now());
-
-      telemetry.recordRequest({
-        providerId: metrics.providerId,
-        modelId: metrics.modelId,
-        modality: metrics.modality ?? 'unknown',
-        statusCode,
-      });
-      telemetry.recordLatency({
-        providerId: metrics.providerId,
-        modelId: metrics.modelId,
-        modality: metrics.modality ?? 'unknown',
-        latencyMs,
-      });
-      if (metrics.errorCode) {
-        telemetry.recordError({
+        telemetry.recordRequest({
           providerId: metrics.providerId,
           modelId: metrics.modelId,
           modality: metrics.modality ?? 'unknown',
-          errorCode: metrics.errorCode,
+          statusCode,
         });
-      }
-      if (metrics.tokens) {
-        telemetry.recordTokens({
+        telemetry.recordLatency({
           providerId: metrics.providerId,
           modelId: metrics.modelId,
-          promptTokens: metrics.tokens.prompt,
-          completionTokens: metrics.tokens.completion,
-          totalTokens: metrics.tokens.total,
-          costUsd: metrics.tokens.costUsd,
+          modality: metrics.modality ?? 'unknown',
+          latencyMs,
         });
+        if (metrics.errorCode) {
+          telemetry.recordError({
+            providerId: metrics.providerId,
+            modelId: metrics.modelId,
+            modality: metrics.modality ?? 'unknown',
+            errorCode: metrics.errorCode,
+          });
+        }
+        if (metrics.tokens) {
+          telemetry.recordTokens({
+            providerId: metrics.providerId,
+            modelId: metrics.modelId,
+            promptTokens: metrics.tokens.prompt,
+            completionTokens: metrics.tokens.completion,
+            totalTokens: metrics.tokens.total,
+            costUsd: metrics.tokens.costUsd,
+          });
+        }
+
+        // Tag the OTel span with the routing outcome so a trace shows
+        // which provider the gateway picked for this request.
+        if (span) {
+          span.setAttribute('router.selected_provider', metrics.providerId);
+          span.setAttribute('router.selected_model', metrics.modelId);
+          if (metrics.modality) span.setAttribute('router.modality', metrics.modality);
+        }
+
+        // CRIT-6: write a row to `request_logs` so the bandit reward-updater
+        // (services/router/src/bandit/reward-updater.ts:198) has data to
+        // compute per-provider reward signals. The table was added in the
+        // v0.2.0 schema but never populated — this closes the loop.
+        //
+        // The write is single-row, prepared-statement, no transaction. With
+        // the 50ms debounced save in packages/db/src/client.ts, burst writes
+        // batch into a single disk write.
+        try {
+          const requestLogsDb = getDb();
+          const id = crypto.randomUUID();
+          const fallbackUsed = (metrics.routingPlan?.candidates?.length ?? 0) > 1 ? 1 : 0;
+          // Top-3 candidates only — keep the row narrow.
+          const candidatesTop3 = (metrics.routingPlan?.candidates ?? []).slice(0, 3);
+          const routingPlanJson = metrics.routingPlan
+            ? JSON.stringify({
+                primary: metrics.routingPlan.primary,
+                candidates: candidatesTop3,
+              })
+            : null;
+          requestLogsDb.prepare(
+            `INSERT INTO request_logs (
+              id, request_id, tenant_id, timestamp,
+              task_profile, routing_plan, selected_provider, selected_model,
+              fallback_used, fallback_reason,
+              latency_ms, time_to_first_token_ms, tokens_input, tokens_output,
+              estimated_cost, error_code, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            id,
+            request.id,
+            metrics.tenantId ?? null,
+            new Date().toISOString(),
+            metrics.taskProfile ?? null,
+            routingPlanJson,
+            metrics.providerId,
+            metrics.modelId,
+            fallbackUsed,
+            null,
+            latencyMs,
+            metrics.firstTokenLatencyMs ?? null,
+            metrics.tokens?.prompt ?? null,
+            metrics.tokens?.completion ?? null,
+            metrics.tokens?.costUsd ?? null,
+            metrics.errorCode ?? null,
+            null,
+          );
+        } catch (writeErr) {
+          // Persistence failures must never break the request. The debounced
+          // save will retry the export on the next batch, so a single bad
+          // row is fine.
+          logger.warn({ err: writeErr, requestId: request.id }, 'request_logs write failed');
+        }
       }
     } catch (err) {
       // Telemetry failures must never affect the request
       logger.debug({ err }, 'telemetry onResponse hook failed');
+    } finally {
+      if (span) {
+        try {
+          const statusCode = reply.statusCode;
+          span.setAttribute('http.status_code', statusCode);
+          const latencyMs = Date.now() - ((request as any).startTime ?? Date.now());
+          span.setAttribute('http.duration_ms', latencyMs);
+          if (statusCode >= 500) {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${statusCode}` });
+          } else {
+            span.setStatus({ code: SpanStatusCode.OK });
+          }
+        } catch (err) {
+          // Span manipulation must never break the request either
+          logger.debug({ err }, 'otel onResponse span finalisation failed');
+        } finally {
+          span.end();
+        }
+      }
     }
-  });
-
-  // Stamp start time on every request so latency is computable
-  server.addHook('onRequest', async (request) => {
-    (request as any).startTime = Date.now();
   });
 
   // Health checks
@@ -683,6 +782,46 @@ void (async () => {
 
   server.get('/livez', async () => ({ status: 'alive' }));
 
+  // OpenTelemetry: stamp start time on every request AND start the
+  // root `http.request` span. The span is the parent of every downstream
+  // span (router.*, adapter.fetch) emitted for this request — without it,
+  // the OTel SDK receives a tree of disconnected spans.
+  //
+  // We honour an incoming W3C `traceparent` header so this gateway can
+  // participate in a trace that was started upstream (e.g. by a frontend
+  // SDK, a service mesh sidecar, or another DMR-X gateway in a federation).
+  // The propagation.extract call is a no-op when no `traceparent` is
+  // present, so it is always safe.
+  server.addHook('onRequest', async (request) => {
+    (request as any).startTime = Date.now();
+
+    // Pull the W3C context out of the inbound headers (if any) so the
+    // span we are about to start uses the upstream trace id.
+    const parentCtx = propagation.extract(context.active(), request.headers);
+    const span = tracer.startSpan(
+      'http.request',
+      {
+        kind: SpanKind.SERVER,
+        attributes: {
+          'http.method': request.method,
+          'http.target': request.url,
+          'url.path': request.url.split('?')[0],
+          'url.scheme': (request.headers['x-forwarded-proto'] as string) || 'http',
+          'http.host': (request.headers['host'] as string) || 'unknown',
+          'server.address': (request.headers['host'] as string) || 'unknown',
+          'request.id': request.id,
+        },
+      },
+      parentCtx,
+    );
+    // Stash the span on the request so route handlers + the onResponse
+    // hook can attach attributes and end it. We don't call
+    // `startActiveSpan` here because Fastify already has its own async
+    // context that would be lost across route boundaries.
+    (request as any).openTelemetrySpan = span;
+    (request as any).openTelemetryContext = trace.setSpan(parentCtx, span);
+  });
+
   // Error handler — must be set BEFORE server.register(...) so that the
   // custom shape (`{ error: { message, type, code } }`) is captured by
   // child contexts. Setting it after register means the child context
@@ -692,6 +831,20 @@ void (async () => {
   server.setErrorHandler((error, request, reply) => {
     const statusCode = error.statusCode || 500;
     const code = error.code || 'INTERNAL_ERROR';
+
+    // OpenTelemetry: record the exception on the active span (started in
+    // the onRequest hook) so the trace UI can show the failure mode.
+    // Don't crash the request if span manipulation itself fails.
+    try {
+      const span = (request as any).openTelemetrySpan as Span | undefined;
+      if (span && span.isRecording()) {
+        span.recordException(error);
+        span.setAttribute('error.type', code);
+        span.setAttribute('error.message', error.message);
+      }
+    } catch {
+      // swallow — telemetry must never break the error path
+    }
 
     // Always log full error server-side (with request id so logs and
     // client payloads are correlatable)

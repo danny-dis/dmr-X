@@ -38,6 +38,7 @@
     "@fastify/rate-limit": "9.1.0",
     "@fastify/static": "7.0.4",
     "fastify": "^4.29.1",
+    "undici": "^6.21.0",
     "zod": "3.23.0"
   },
   "devDependencies": {

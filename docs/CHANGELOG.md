@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1 — Follow-up (Unreleased)
+
+### In Progress
+- **request_logs writes** — durable per-request audit log table (`request_logs`) is now being populated by the gateway's `onResponse` hook (CRIT-6). The `request_logs` table captures `request_id`, `tenant_id`, `task_profile`, `routing_plan` (JSON with primary + top-3 candidates), `selected_provider`, `selected_model`, `fallback_used`, `latency_ms`, `time_to_first_token_ms`, `tokens_input`, `tokens_output`, `estimated_cost`, `error_code`, and `error_message`. Coverage: `tests/unit/request-logs-writes.test.ts` (11 tests) — the bandit reward-updater at `services/router/src/bandit/reward-updater.ts:198` will now see real rows.
+- **OpenTelemetry spans** — `services/telemetry/src/tracer.ts` defines the gateway's `tracer: Tracer` (name `dmr-x-gateway`, version `0.2.0`), obtained from the OTel global provider. Spans are written via the `OTLPTraceExporter` configured by `TelemetryService.start()`. WIP: route handlers, the router pipeline, and adapter execution are not yet wrapped in `tracer.startActiveSpan(...)` calls — that integration is the next step.
+
 ## v0.2.0 — Production Ready (2026-06-15)
 
 ### Deployment infrastructure
@@ -178,7 +184,7 @@ All six are validated by `validateStartupConfig()` in `apps/gateway/src/main.ts`
 - Removed Redis/Postgres dependencies — zero external infrastructure required.
 
 ### Adapters
-- 10 provider adapters: OpenAI, Anthropic, Ollama, Replicate, Stability, ElevenLabs, Deepgram, Cohere, Jina, GenericOpenAI.
+- 18 provider adapters: OpenAI, Anthropic, Ollama, Replicate, Stability, ElevenLabs, Deepgram, Cohere, Jina, GenericOpenAI, plus ComfyUI, Fal, Veo, Runway, Kokoro, Piper, Tei (see `services/adapters/src/index.ts` for the canonical list).
 - Unified adapter registry with health checking and automatic failure tracking.
 - GenericOpenAIAdapter for any OpenAI-compatible provider.
 

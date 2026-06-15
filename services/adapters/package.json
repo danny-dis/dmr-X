@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "@dmr-x/core": "*",
-    "@dmr-x/utils": "*"
+    "@dmr-x/utils": "*",
+    "@opentelemetry/api": "^1.9.0"
   },
   "devDependencies": {
     "typescript": "5.9.3"

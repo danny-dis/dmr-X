@@ -2,6 +2,7 @@ import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, Pr
 import { ProviderUnavailableError } from '@dmr-x/core';
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
 import type { PolicyService } from '@dmr-x/policy';
+import { trace, SpanStatusCode } from '@opentelemetry/api';
 import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
 import { runPipeline } from './pipeline/pipeline.js';
 import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
@@ -14,6 +15,12 @@ import { isMetaModel, resolveMetaModel } from './meta-models.js';
 import { ThompsonSampler } from './bandit/thompson-sampler.js';
 import type { CandidateSet } from '@dmr-x/core';
 import { logger } from '@dmr-x/utils';
+
+// The router shares the gateway's tracer instance (see services/telemetry/src/tracer.ts).
+// The OTel API resolves this lazily through the global provider, so it is always
+// safe to call tracer.startActiveSpan(...) — pre-SDK, the spans go to a no-op
+// provider and incur only the cost of one context lookup.
+const tracer = trace.getTracer('dmr-x-gateway', '0.2.0');
 
 export interface RouterConfig {
   epsilon?: number;
@@ -202,11 +209,28 @@ export class Router {
       }
     }
 
-    // Step 1: Classify the task
-    const taskProfile = classifyTask(request, options);
-    logger.debug({ taskProfile }, 'Task classified');
+    // Step 1: Classify the task (router.classify span)
+    const taskProfile = tracer.startActiveSpan('router.classify', (span) => {
+      try {
+        const profile = classifyTask(request, options);
+        span.setAttribute('router.modality', profile.modality);
+        span.setAttribute('router.quality_target', profile.qualityTarget);
+        span.setAttribute('router.capability_count', profile.capabilities.length);
+        if (requestId) span.setAttribute('request.id', requestId);
+        logger.debug({ taskProfile: profile }, 'Task classified');
+        return profile;
+      } catch (err) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+        throw err;
+      } finally {
+        span.end();
+      }
+    });
 
     // Step 1.5: Resolve meta-model aliases to filtered candidates
+    // (still inside the classify stage semantically — keeps the trace tidy
+    // because meta-model resolution is a sub-step of "what is this request?".)
     let pipelineCandidates = this.candidates;
     let metaModelFilteredFree = false;
     if (request.model && isMetaModel(request.model)) {
@@ -228,110 +252,140 @@ export class Router {
     }
 
     // Step 1.6: Direct model selection — if the user picked a specific model, route to it
+    // Step 2: provider-preference direct strategy.
+    // Both branches are wrapped in the `router.select_candidates` span so
+    // the trace shows "we picked a model" as one logical step regardless
+    // of which branch was taken.
     const tenantId = (request as any).metadata?.tenant?.id;
-    if (request.model && !isMetaModel(request.model)) {
-      const directMatch = pipelineCandidates.find(
-        (c) => c.modelId === request.model && c.isHealthy
-      );
-      if (directMatch) {
-        logger.info({ model: request.model, provider: directMatch.providerName }, 'Direct model selection');
-        const plan: RoutingPlan = {
-          primary: { providerId: directMatch.providerId, modelId: directMatch.modelId, adapterType: directMatch.providerName, score: 1 },
-          chain: [],
-          timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
-          maxRetries: 1,
-        };
-        if (options.planOnly) {
-          return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
+    const directSelection = tracer.startActiveSpan('router.select_candidates', (span) => {
+      try {
+        span.setAttribute('router.candidate_pool_size', pipelineCandidates.length);
+        span.setAttribute('router.is_meta_model', request.model ? isMetaModel(request.model) : false);
+        if (request.model && !isMetaModel(request.model)) {
+          const directMatch = pipelineCandidates.find(
+            (c) => c.modelId === request.model && c.isHealthy
+          );
+          if (directMatch) {
+            span.setAttribute('router.selection', 'direct_model');
+            span.setAttribute('router.selected_provider', directMatch.providerId);
+            span.setAttribute('router.selected_model', directMatch.modelId);
+            logger.info({ model: request.model, provider: directMatch.providerName }, 'Direct model selection');
+            return {
+              providerId: directMatch.providerId,
+              modelId: directMatch.modelId,
+              adapterType: directMatch.providerName,
+              score: 1,
+            } as const;
+          }
         }
-        if (!this.adapterExecutor) throw new Error('No adapter executor configured');
-        const response = await executeWithFallback(plan, request, this.adapterExecutor, {
-          rateLimitService: this.config.rateLimitService,
-          quotaService: this.config.quotaService,
-          tenantId,
-          requestId,
-          onSuccess: this.config.onProviderSuccess,
-          onFailure: this.config.onProviderFailure,
-        });
-        return { plan, response };
+        const providerPreferences: ProviderPreferences | undefined = request.metadata?.providerPreferences;
+        if (providerPreferences?.strategy === 'direct' && providerPreferences.order?.length) {
+          const directCandidate = pipelineCandidates.find(
+            (c) => c.providerId === providerPreferences.order![0] && c.isHealthy
+          );
+          if (directCandidate) {
+            span.setAttribute('router.selection', 'direct_strategy');
+            span.setAttribute('router.selected_provider', directCandidate.providerId);
+            span.setAttribute('router.selected_model', directCandidate.modelId);
+            return {
+              providerId: directCandidate.providerId,
+              modelId: directCandidate.modelId,
+              adapterType: directCandidate.providerName,
+              score: 1,
+            } as const;
+          }
+        }
+        span.setAttribute('router.selection', 'pipeline');
+        return null;
+      } catch (err) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+        throw err;
+      } finally {
+        span.end();
       }
+    });
+
+    if (directSelection) {
+      // We picked a specific provider above — bypass the scoring pipeline
+      // and go straight to execution.
+      const plan: RoutingPlan = {
+        primary: { ...directSelection, score: 1 },
+        chain: [],
+        timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
+        maxRetries: 1,
+      };
+      if (options.planOnly) {
+        return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
+      }
+      if (!this.adapterExecutor) throw new Error('No adapter executor configured');
+      const response = await this.executePlan(plan, request, tenantId, requestId);
+      return { plan, response };
     }
 
-    // Step 2: Run the routing pipeline
-    const providerPreferences: ProviderPreferences | undefined = request.metadata?.providerPreferences;
-
-    // If strategy is 'direct' and an order list exists, force the first provider
-    if (providerPreferences?.strategy === 'direct' && providerPreferences.order?.length) {
-      const directCandidate = pipelineCandidates.find(
-        (c) => c.providerId === providerPreferences.order![0] && c.isHealthy
-      );
-      if (directCandidate) {
-        const plan: RoutingPlan = {
-          primary: { providerId: directCandidate.providerId, modelId: directCandidate.modelId, adapterType: directCandidate.providerName, score: 1 },
-          chain: [],
-          timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
-          maxRetries: 0,
-        };
-        if (options.planOnly) {
-          return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
-        }
-        if (!this.adapterExecutor) throw new Error('No adapter executor configured');
-        const response = await executeWithFallback(plan, request, this.adapterExecutor, {
-          rateLimitService: this.config.rateLimitService,
-          quotaService: this.config.quotaService,
-          tenantId,
-          requestId,
-          onSuccess: this.config.onProviderSuccess,
-          onFailure: this.config.onProviderFailure,
-        });
-        return { plan, response };
-      }
-    }
-
-    // Step 3: Execute with fallback
+    // Step 3: Score candidates by running the routing pipeline
     if (!this.adapterExecutor) {
       throw new Error('No adapter executor configured');
     }
 
-    let pipelineResult;
-    try {
-      pipelineResult = await runPipeline({
-        taskProfile,
-        candidates: pipelineCandidates,
-        epsilon: this.config.epsilon ?? 0.05,
-        rateLimitService: this.config.rateLimitService,
-        quotaService: this.config.quotaService,
-        policyService: this.config.policyService,
-        tenantId,
-        estimatedTokens: this.estimateTokens(request),
-        freeTierStrategy,
-        providerPreferences,
-        metaModelFilteredFree,
-        thompsonSampler: this.thompsonSampler,
-      });
-    } catch (error) {
-      if (error instanceof ProviderUnavailableError && error.retryAfter) {
-        const waitMs = Math.min(error.retryAfter, 3000);
-        logger.info({ waitMs }, 'All providers temporarily unavailable, retrying after wait');
-        await new Promise(resolve => setTimeout(resolve, waitMs));
-        pipelineResult = await runPipeline({
-          taskProfile,
-          candidates: pipelineCandidates,
-          epsilon: this.config.epsilon ?? 0.05,
-          rateLimitService: this.config.rateLimitService,
-          quotaService: this.config.quotaService,
-          policyService: this.config.policyService,
-          tenantId,
-          estimatedTokens: this.estimateTokens(request),
-          freeTierStrategy,
-          providerPreferences,
-          metaModelFilteredFree,
-          thompsonSampler: this.thompsonSampler,
-        });
-      } else {
-        throw error;
+    const providerPreferences: ProviderPreferences | undefined = request.metadata?.providerPreferences;
+    const effectiveFreeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
+    const pipelineResult = await tracer.startActiveSpan('router.score', async (span) => {
+      try {
+        span.setAttribute('router.candidate_pool_size', pipelineCandidates.length);
+        span.setAttribute('router.quality_target', taskProfile.qualityTarget);
+        let result;
+        try {
+          result = await runPipeline({
+            taskProfile,
+            candidates: pipelineCandidates,
+            epsilon: this.config.epsilon ?? 0.05,
+            rateLimitService: this.config.rateLimitService,
+            quotaService: this.config.quotaService,
+            policyService: this.config.policyService,
+            tenantId,
+            estimatedTokens: this.estimateTokens(request),
+            freeTierStrategy: effectiveFreeTierStrategy,
+            providerPreferences,
+            metaModelFilteredFree,
+            thompsonSampler: this.thompsonSampler,
+          });
+        } catch (error) {
+          if (error instanceof ProviderUnavailableError && error.retryAfter) {
+            const waitMs = Math.min(error.retryAfter, 3000);
+            logger.info({ waitMs }, 'All providers temporarily unavailable, retrying after wait');
+            span.addEvent('router.retry_after_wait', { 'wait_ms': waitMs });
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+            result = await runPipeline({
+              taskProfile,
+              candidates: pipelineCandidates,
+              epsilon: this.config.epsilon ?? 0.05,
+              rateLimitService: this.config.rateLimitService,
+              quotaService: this.config.quotaService,
+              policyService: this.config.policyService,
+              tenantId,
+              estimatedTokens: this.estimateTokens(request),
+              freeTierStrategy: effectiveFreeTierStrategy,
+              providerPreferences,
+              metaModelFilteredFree,
+              thompsonSampler: this.thompsonSampler,
+            });
+          } else {
+            throw error;
+          }
+        }
+        span.setAttribute('router.selected_provider', result.selected.providerId);
+        span.setAttribute('router.selected_model', result.selected.modelId);
+        span.setAttribute('router.fallback_count', result.chain.length);
+        return result;
+      } catch (err) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+        throw err;
+      } finally {
+        span.end();
       }
-    }
+    });
 
     const plan: RoutingPlan = {
       primary: pipelineResult.selected,
@@ -353,21 +407,33 @@ export class Router {
       };
     }
 
-    // Step 3: Execute with fallback
-    if (!this.adapterExecutor) {
-      throw new Error('No adapter executor configured');
-    }
-
-    const response = await executeWithFallback(plan, request, this.adapterExecutor, {
-      rateLimitService: this.config.rateLimitService,
-      quotaService: this.config.quotaService,
-      tenantId,
-      requestId,
-      onSuccess: this.config.onProviderSuccess,
-      onFailure: this.config.onProviderFailure,
+    // Step 4: Execute the plan with adapter fallback
+    const response = await tracer.startActiveSpan('router.execute', async (span) => {
+      try {
+        span.setAttribute('router.selected_provider', plan.primary.providerId);
+        span.setAttribute('router.selected_model', plan.primary.modelId);
+        span.setAttribute('router.fallback_count', plan.chain.length);
+        if (!this.adapterExecutor) throw new Error('No adapter executor configured');
+        const res = await executeWithFallback(plan, request, this.adapterExecutor, {
+          rateLimitService: this.config.rateLimitService,
+          quotaService: this.config.quotaService,
+          tenantId,
+          requestId,
+          onSuccess: this.config.onProviderSuccess,
+          onFailure: this.config.onProviderFailure,
+        });
+        span.setAttribute('router.used_provider', res.providerId);
+        return res;
+      } catch (err) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+        throw err;
+      } finally {
+        span.end();
+      }
     });
 
-    // Step 4: Set sticky session for this conversation
+    // Step 5: Set sticky session for this conversation
     if (conversationHash) {
       // Get RPM for TTL adjustment if rate limit service is available
       let rateLimitRpm: number | undefined;
@@ -390,6 +456,44 @@ export class Router {
     }
 
     return { plan, response };
+  }
+
+  /**
+   * Execute a routing plan that has already been finalised (used by both
+   * the direct-model branch and the scored branch). Wrapped in its own
+   * `router.execute` span so a trace makes the "this plan was executed"
+   * step explicit regardless of which branch produced it.
+   */
+  private async executePlan(
+    plan: RoutingPlan,
+    request: UnifiedRequest,
+    tenantId: string | undefined,
+    requestId: string | undefined,
+  ): Promise<UnifiedResponse> {
+    return tracer.startActiveSpan('router.execute', async (span) => {
+      try {
+        span.setAttribute('router.selected_provider', plan.primary.providerId);
+        span.setAttribute('router.selected_model', plan.primary.modelId);
+        span.setAttribute('router.fallback_count', plan.chain.length);
+        if (!this.adapterExecutor) throw new Error('No adapter executor configured');
+        const res = await executeWithFallback(plan, request, this.adapterExecutor, {
+          rateLimitService: this.config.rateLimitService,
+          quotaService: this.config.quotaService,
+          tenantId,
+          requestId,
+          onSuccess: this.config.onProviderSuccess,
+          onFailure: this.config.onProviderFailure,
+        });
+        span.setAttribute('router.used_provider', res.providerId);
+        return res;
+      } catch (err) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+        throw err;
+      } finally {
+        span.end();
+      }
+    });
   }
 
   /**

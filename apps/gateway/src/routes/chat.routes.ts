@@ -130,9 +130,53 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
         try {
           const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
+          // CRIT-6: stamp metrics so the onResponse hook writes a request_logs
+          // row for streaming requests too. Tokens are unknown at this point
+          // (the stream is about to start) and are filled in below as the
+          // usage chunk arrives. The onResponse hook reads the final shape.
+          (request as any).metrics = {
+            providerId: plan.primary.providerId,
+            modelId: plan.primary.modelId,
+            modality: unifiedRequest.modality ?? 'llm',
+            tenantId,
+            taskProfile: unifiedRequest.modality,
+            routingPlan: {
+              primary: {
+                providerId: plan.primary.providerId,
+                modelId: plan.primary.modelId,
+                score: plan.primary.score,
+              },
+              candidates: plan.chain.map((step) => ({
+                providerId: step.provider.providerId,
+                modelId: step.provider.modelId,
+                score: step.provider.score,
+              })),
+            },
+            firstTokenLatencyMs: undefined,
+            tokens: undefined,
+            errorCode: undefined,
+          };
           const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
+          // CRIT-6: track when the first token arrives so the request_logs
+          // row can carry `time_to_first_token_ms` for streaming requests.
+          const streamStart = Date.now();
+          let firstTokenAt: number | undefined;
+          let streamErrorCode: string | undefined;
+          let streamPromptTokens = 0;
+          let streamCompletionTokens = 0;
           for await (const chunk of stream) {
             if (controller.signal.aborted) break;
+            if (chunk.type === 'token' && firstTokenAt === undefined) {
+              firstTokenAt = Date.now();
+              (request as any).metrics.firstTokenLatencyMs = firstTokenAt - streamStart;
+            }
+            // The `done` chunk carries final usage. The union of StreamChunk
+            // shapes means we narrow on `chunk.type` before reading `chunk.data`.
+            if (chunk.type === 'done' && (chunk.data as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | undefined)?.usage) {
+              const usage = (chunk.data as { usage: { prompt_tokens?: number; completion_tokens?: number } }).usage;
+              streamPromptTokens = usage.prompt_tokens ?? streamPromptTokens;
+              streamCompletionTokens = usage.completion_tokens ?? streamCompletionTokens;
+            }
             let data: string;
             if (chunk.type === 'token') {
               data = `data: ${JSON.stringify({
@@ -148,6 +192,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               })}\n\n`;
             } else if (chunk.type === 'error') {
               logger.error({ requestId, chunkError: chunk.data }, 'Adapter stream error chunk');
+              streamErrorCode = (chunk.data as { code?: string } | undefined)?.code ?? 'stream_error';
               data = `data: ${JSON.stringify({
                 error: { message: 'Stream error', type: 'stream_error' },
               })}\n\n`;
@@ -160,6 +205,18 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             if (!reply.raw.write(data)) {
               await new Promise<void>(resolve => reply.raw.once('drain', resolve));
             }
+          }
+          // CRIT-6: fill in token totals + error code on the metrics
+          // before the request_logs write happens in onResponse.
+          if (streamPromptTokens || streamCompletionTokens) {
+            (request as any).metrics.tokens = {
+              prompt: streamPromptTokens,
+              completion: streamCompletionTokens,
+              total: streamPromptTokens + streamCompletionTokens,
+            };
+          }
+          if (streamErrorCode) {
+            (request as any).metrics.errorCode = streamErrorCode;
           }
           // Record usage after successful stream completion (fire-and-forget)
           try {
@@ -231,7 +288,21 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     (request as any).metrics = {
       providerId: plan.primary.providerId,
       modelId: response.modelId,
-      modality: 'llm',
+      modality: unifiedRequest.modality ?? 'llm',
+      tenantId: (request as any).tenant?.id,
+      taskProfile: unifiedRequest.modality,
+      routingPlan: {
+        primary: {
+          providerId: plan.primary.providerId,
+          modelId: plan.primary.modelId,
+          score: plan.primary.score,
+        },
+        candidates: plan.chain.map((step) => ({
+          providerId: step.provider.providerId,
+          modelId: step.provider.modelId,
+          score: step.provider.score,
+        })),
+      },
       tokens: response.usage
         ? {
             prompt: response.usage.prompt_tokens ?? 0,

@@ -111,9 +111,17 @@ export class TelemetryService {
       : undefined;
 
     this.sdk = new NodeSDK({
-      resource,
+      // The telemetry package pins @opentelemetry/resources and
+      // @opentelemetry/sdk-metrics at v1.30.1, but @opentelemetry/sdk-node
+      // transitively brings in v2.7.1 and types its `resource` /
+      // `metricReader` options against that newer version. The runtime
+      // shapes are compatible (v1.30.1's `Resource` exposes the same
+      // public attributes / merge() that NodeSDK reads), so we cast
+      // through `any` at the call site to bridge the type-version gap.
+      // If we ever bump this package to v2.x directly, drop the casts.
+      resource: resource as any,
       traceExporter,
-      metricReader,
+      metricReader: metricReader as any,
     });
 
     this.sdk.start();

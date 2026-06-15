@@ -1,62 +1,62 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-// Mock sql.js before importing client
-const mockStmt = {
-  bind: vi.fn(),
-  step: vi.fn(() => false),
-  getAsObject: vi.fn(() => ({})),
-  free: vi.fn(),
-};
+// NOTE: this test runs against the real sql.js WASM, not a mock. The
+// previous `vi.mock('sql.js')` pattern does not intercept the default
+// import on Windows + Vitest 3.x (the mock object never replaces the
+// real Database constructor), so the production code path was being
+// exercised anyway. We embrace that here: `initDb()` runs the real
+// migration set on a real on-disk database, then we create a
+// scratch `users` table on the same database to exercise the
+// wrapper methods.
 
-const mockDb = {
-  prepare: vi.fn(() => mockStmt),
-  exec: vi.fn(),
-  getRowsModified: vi.fn(() => 0),
-  export: vi.fn(() => new Uint8Array([1, 2, 3])),
-  close: vi.fn(),
-};
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-const mockSQL = {
-  Database: vi.fn(() => mockDb),
-};
+import { initDb, getDb, closeDb } from '../../packages/db/src/client.js';
 
-vi.mock('sql.js', () => ({
-  default: vi.fn(async () => mockSQL),
-}));
+let tmpDir: string;
 
-vi.mock('node:fs', () => ({
-  default: {
-    existsSync: vi.fn(() => false),
-    mkdirSync: vi.fn(),
-    readFileSync: vi.fn(),
-    writeFileSync: vi.fn(),
-    readdirSync: vi.fn(() => []),
-    promises: {
-      writeFile: vi.fn(async () => {}),
-    },
-  },
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-  readFileSync: vi.fn(),
-  writeFileSync: vi.fn(),
-  readdirSync: vi.fn(() => []),
-  promises: {
-    writeFile: vi.fn(async () => {}),
-  },
-}));
+beforeEach(async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmr-x-sqlite-test-'));
+  process.env.DMRX_DATA_DIR = tmpDir;
+  // Reset the module-level cache so a fresh DB is created per test.
+  // The client module exports a singleton `db` variable; we close it
+  // here to make sure the new DMRX_DATA_DIR takes effect.
+  try {
+    await closeDb();
+  } catch {
+    // ignore — first test
+  }
+});
+
+afterEach(async () => {
+  try {
+    await closeDb();
+  } catch {
+    // ignore
+  }
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+});
 
 describe('sqlite-client', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockStmt.step.mockReturnValue(false);
-    mockDb.getRowsModified.mockReturnValue(0);
-  });
-
   describe('DatabaseWrapper', () => {
-    it('should create prepared statements', async () => {
-      const { initDb } = await import('../../packages/db/src/client.js');
-      const db = await initDb();
-      const stmt = db.prepare('SELECT * FROM test');
+    it('initializes sql.js and applies all 17 migrations', async () => {
+      const wrapper = await initDb();
+      // The schema_version table is created by migration 002 and
+      // every subsequent migration appends a row. After 17 successful
+      // migrations the highest version should be 17.
+      const row = wrapper.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+      expect(row.v).toBe(17);
+    });
+
+    it('should expose prepare / get / run / all / close on the wrapper', async () => {
+      const wrapper = await initDb();
+      const stmt = wrapper.prepare('SELECT 1 AS one');
       expect(stmt).toBeDefined();
       expect(typeof stmt.all).toBe('function');
       expect(typeof stmt.get).toBe('function');
@@ -64,15 +64,17 @@ describe('sqlite-client', () => {
     });
 
     it('prepare().all() should return rows', async () => {
-      const { initDb } = await import('../../packages/db/src/client.js');
-      const db = await initDb();
+      const wrapper = await initDb();
+      wrapper.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL
+        );
+      `);
+      wrapper.prepare('INSERT INTO users (name) VALUES (?)').run('Alice');
+      wrapper.prepare('INSERT INTO users (name) VALUES (?)').run('Bob');
 
-      mockStmt.step.mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValueOnce(false);
-      mockStmt.getAsObject
-        .mockReturnValueOnce({ id: 1, name: 'Alice' })
-        .mockReturnValueOnce({ id: 2, name: 'Bob' });
-
-      const rows = db.prepare('SELECT * FROM users').all();
+      const rows = wrapper.prepare('SELECT * FROM users ORDER BY id').all() as Array<{ id: number; name: string }>;
       expect(rows).toEqual([
         { id: 1, name: 'Alice' },
         { id: 2, name: 'Bob' },
@@ -80,55 +82,65 @@ describe('sqlite-client', () => {
     });
 
     it('prepare().get() should return single row', async () => {
-      const { initDb } = await import('../../packages/db/src/client.js');
-      const db = await initDb();
+      const wrapper = await initDb();
+      wrapper.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL
+        );
+      `);
+      wrapper.prepare('INSERT INTO users (name) VALUES (?)').run('Alice');
 
-      mockStmt.step.mockReturnValueOnce(true);
-      mockStmt.getAsObject.mockReturnValueOnce({ id: 1, name: 'Alice' });
-
-      const row = db.prepare('SELECT * FROM users WHERE id = ?').get(1);
+      const row = wrapper.prepare('SELECT * FROM users WHERE id = 1').get() as { id: number; name: string };
       expect(row).toEqual({ id: 1, name: 'Alice' });
     });
 
     it('prepare().get() should return undefined when no rows', async () => {
-      const { initDb } = await import('../../packages/db/src/client.js');
-      const db = await initDb();
-
-      mockStmt.step.mockReturnValue(false);
-      const row = db.prepare('SELECT * FROM users WHERE id = ?').get(999);
+      const wrapper = await initDb();
+      wrapper.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL
+        );
+      `);
+      const row = wrapper.prepare('SELECT * FROM users WHERE id = 999').get();
       expect(row).toBeUndefined();
     });
 
     it('prepare().run() should return changes count', async () => {
-      const { initDb } = await import('../../packages/db/src/client.js');
-      const db = await initDb();
-
-      mockDb.getRowsModified.mockReturnValue(1);
-      const result = db.prepare('INSERT INTO users (name) VALUES (?)').run('Charlie');
+      const wrapper = await initDb();
+      wrapper.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL
+        );
+      `);
+      const result = wrapper.prepare('INSERT INTO users (name) VALUES (?)').run('Charlie');
       expect(result).toEqual({ changes: 1 });
     });
 
-    it('exec() should call raw.exec', async () => {
-      const { initDb } = await import('../../packages/db/src/client.js');
-      const db = await initDb();
-
-      db.exec('CREATE TABLE test (id INTEGER)');
-      expect(mockDb.exec).toHaveBeenCalledWith('CREATE TABLE test (id INTEGER)');
+    it('exec() should execute raw SQL', async () => {
+      const wrapper = await initDb();
+      wrapper.exec('CREATE TABLE exec_test (id INTEGER)');
+      wrapper.prepare('INSERT INTO exec_test (id) VALUES (42)').run();
+      const row = wrapper.prepare('SELECT id FROM exec_test').get() as { id: number };
+      expect(row).toEqual({ id: 42 });
     });
 
-    it('close() should close the database', async () => {
-      const { initDb, closeDb } = await import('../../packages/db/src/client.js');
+    it('closeDb() should clear the singleton so getDb() throws', async () => {
       await initDb();
+      // closeDb() flushes pending writes, closes the underlying
+      // Database, and nulls the module-level singleton. After that,
+      // getDb() should throw because no database is initialized.
       await closeDb();
-      expect(mockDb.close).toHaveBeenCalled();
+      expect(() => getDb()).toThrow(/Database not initialized/);
     });
 
-    it('getDb() should return db after initDb() is called', async () => {
-      const { initDb, getDb } = await import('../../packages/db/src/client.js');
+    it('getDb() should return wrapper after initDb() is called', async () => {
       await initDb();
-      const db = getDb();
-      expect(db).toBeDefined();
-      expect(typeof db.prepare).toBe('function');
+      const wrapper = getDb();
+      expect(wrapper).toBeDefined();
+      expect(typeof wrapper.prepare).toBe('function');
     });
   });
 });

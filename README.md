@@ -121,7 +121,7 @@ dmr-x/
 │   ├── mcp-server/       # MCP tool server (stdio/SSE/HTTP)
 │   └── mcp-client/       # MCP client integration
 ├── tests/
-│   ├── unit/             # Unit tests (20 test suites)
+│   ├── unit/             # Unit tests (40 test files / 498 tests)
 │   └── e2e/              # Opt-in end-to-end connectivity tests
 ├── scripts/              # Install scripts and release packaging
 ├── docs/                 # Documentation
@@ -177,8 +177,13 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 |--------|----------|-------------|
 | `POST` | `/v1/images/generations` | Image generation |
 | `POST` | `/v1/embeddings` | Text embeddings |
+| `POST` | `/v1/rerank` | Document reranking |
 | `POST` | `/v1/audio/speech` | Text-to-speech |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
+| `POST` | `/v1/audio/separate` | Audio source separation (stems) |
+| `POST` | `/v1/video/generations` | Video generation |
+| `POST` | `/v1/3d/generate` | 3D asset generation |
+| `POST` | `/v1/ocr` | Optical character recognition |
 
 ### Agentic
 
@@ -250,7 +255,9 @@ DMRX_RUN_E2E=true bun run test -- tests/e2e/connectivity.test.ts
 bun run test
 ```
 
-20 unit test suites covering:
+**Security:** v0.2.0 fixes a cross-tenant data leak, an SSRF DNS-rebinding bypass, and 11 CVEs. See [SECURITY.md](SECURITY.md).
+
+40 unit test files / 498 tests covering:
 
 - Routing pipeline (capability filter, availability, cost/latency scoring, final selector, fallback)
 - Anthropic converter and stream serializer
@@ -286,6 +293,7 @@ CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that build
 | [docs/MCP.md](docs/MCP.md) | MCP server setup and tool reference |
 | [docs/TESTING.md](docs/TESTING.md) | Testing guide |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
+| [SECURITY.md](SECURITY.md) | Security policy, supported versions, and vulnerability disclosure |
 | [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Provider API reference (35+ providers) |
 | [docs/AI_API_PROVIDERS_EXHAUSTIVE.md](docs/AI_API_PROVIDERS_EXHAUSTIVE.md) | Exhaustive provider catalog (100+) |
 | [docs/FREE_API_PROVIDERS_REPORT.md](docs/FREE_API_PROVIDERS_REPORT.md) | Free-tier provider report |

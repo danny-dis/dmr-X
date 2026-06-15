@@ -7,6 +7,7 @@ import type {
 } from './adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
+import { trace, SpanStatusCode, SpanKind, propagation, context } from '@opentelemetry/api';
 import {
   logger,
   DefaultHttpHooks,
@@ -28,6 +29,12 @@ import {
   match,
   type Result,
 } from '@dmr-x/utils';
+
+// All adapters share a single tracer instance (see services/telemetry/src/tracer.ts).
+// `adapter.fetch` spans get the active gateway request as their parent
+// because they are called from `router.execute`, which runs inside the
+// `http.request` span started in apps/gateway/src/server.ts.
+const tracer = trace.getTracer('dmr-x-gateway', '0.2.0');
 
 /**
  * HTTP status codes that trigger automatic retry.
@@ -198,6 +205,10 @@ export abstract class BaseAdapter implements ProviderAdapter {
    * Raw HTTP fetch with timeout, hooks, and typed error handling.
    * Single attempt -- no retry logic. Used internally by fetchWithTimeout.
    *
+   * Wraps the outgoing HTTP request in an `adapter.fetch` OTel span so
+   * the parent gateway trace shows every upstream provider call as a
+   * child span with timing, status code, and host attributes.
+   *
    * Throws:
    * - HttpError subclasses (TooManyRequestsError, BadGatewayError, etc.) for HTTP errors
    * - ClientTimeoutError for request timeouts (AbortController)
@@ -227,85 +238,131 @@ export abstract class BaseAdapter implements ProviderAdapter {
       }
     }
 
-    // Build the Request object
-    let request = new Request(url, {
-      ...fetchOptions,
-      signal: controller.signal,
-    });
+    // OTel span: one per upstream HTTP call. The propagator injects the
+    // W3C `traceparent` header into the request so the provider can keep
+    // the trace going (and so the trace UI shows provider-side spans
+    // nested under our gateway span).
+    const parsedUrl = (() => { try { return new URL(url); } catch { return null; } })();
+    return tracer.startActiveSpan(
+      'adapter.fetch',
+      {
+        kind: SpanKind.CLIENT,
+        attributes: {
+          'http.method': (fetchOptions.method || 'GET').toUpperCase(),
+          'http.url': url,
+          'url.full': url,
+          'url.scheme': parsedUrl?.protocol.replace(':', '') ?? 'unknown',
+          'url.host': parsedUrl?.host ?? 'unknown',
+          'server.address': parsedUrl?.host ?? 'unknown',
+          'adapter.provider': this.providerId,
+        },
+      },
+      async (span) => {
+        try {
+          // Build the Request object. We start from `fetchOptions.headers`
+          // (a plain object) so we can inject the W3C `traceparent` header
+          // in-place — Request.headers is read-only.
+          const headers = new Headers(fetchOptions.headers ?? {});
+          // Inject W3C `traceparent` (and any other configured propagators
+          // — e.g. baggage) into the request headers. No-op if the global
+          // propagator isn't set yet, which is fine.
+          propagation.inject(context.active(), headers);
+          // Persist the (possibly augmented) headers into fetchOptions so
+          // the Request below picks them up.
+          fetchOptions.headers = headers;
 
-    // Execute beforeRequest hooks
-    const hookCtx = {
-      url: new URL(url),
-      method: fetchOptions.method || 'GET',
-      providerId: this.providerId,
-    };
-    request = await this.hooks.executeBeforeRequest(hookCtx, request);
+          let request = new Request(url, {
+            ...fetchOptions,
+            signal: controller.signal,
+          });
 
-    try {
-      let response = await fetch(request);
+          // Execute beforeRequest hooks
+          const hookCtx = {
+            url: new URL(url),
+            method: fetchOptions.method || 'GET',
+            providerId: this.providerId,
+          };
+          request = await this.hooks.executeBeforeRequest(hookCtx, request);
 
-      // Execute afterSuccess hooks for successful responses
-      if (response.ok) {
-        response = await this.hooks.executeAfterSuccess(
-          { ...hookCtx, status: response.status },
-          response,
-        );
-      } else {
-        // Read error body for typed error creation (clone to keep original readable)
-        const errorBody = await response.clone().text();
+          let response = await fetch(request);
 
-        // Create a typed HTTP error with full context instead of a plain Error.
-        // This produces status-specific classes (TooManyRequestsError, BadGatewayError, etc.)
-        // with statusCode, headers, body, and parsed data attached.
-        const httpError = createHttpError(response.status, {
-          response,
-          request,
-          body: errorBody,
-        });
+          span.setAttribute('http.status_code', response.status);
 
-        // Execute afterError hooks with the typed error
-        const result = await this.hooks.executeAfterError(
-          { ...hookCtx, status: response.status, error: httpError },
-          response,
-          httpError,
-        );
+          // Execute afterSuccess hooks for successful responses
+          if (response.ok) {
+            span.setStatus({ code: SpanStatusCode.OK });
+            response = await this.hooks.executeAfterSuccess(
+              { ...hookCtx, status: response.status },
+              response,
+            );
+          } else {
+            // Read error body for typed error creation (clone to keep original readable)
+            const errorBody = await response.clone().text();
 
-        if (result.response) {
-          response = result.response;
+            // Create a typed HTTP error with full context instead of a plain Error.
+            // This produces status-specific classes (TooManyRequestsError, BadGatewayError, etc.)
+            // with statusCode, headers, body, and parsed data attached.
+            const httpError = createHttpError(response.status, {
+              response,
+              request,
+              body: errorBody,
+            });
+
+            // Execute afterError hooks with the typed error
+            const result = await this.hooks.executeAfterError(
+              { ...hookCtx, status: response.status, error: httpError },
+              response,
+              httpError,
+            );
+
+            if (result.response) {
+              response = result.response;
+            }
+
+            // If hooks didn't recover the response (still not OK), throw the typed error
+            if (!response.ok) {
+              span.recordException(httpError);
+              span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${response.status}` });
+              throw httpError;
+            }
+            span.setStatus({ code: SpanStatusCode.OK });
+          }
+
+          return response;
+        } catch (error) {
+          if (!(error instanceof HttpError)) {
+            // HttpError is already recorded + status set above. Record + status
+            // transport errors so the trace shows them distinctly.
+            span.recordException(error as Error);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+          }
+          // Re-throw typed HTTP errors as-is (already an HttpError subclass)
+          if (error instanceof HttpError) {
+            throw error;
+          }
+          // Wrap transport-level errors in typed client errors
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            throw new ClientTimeoutError(
+              `Request to ${url} timed out after ${timeoutMs}ms`,
+              { cause: error },
+            );
+          }
+          if (error instanceof TypeError) {
+            throw new ConnectionError(
+              `Failed to connect to ${url}: ${error.message}`,
+              { cause: error },
+            );
+          }
+          throw error;
+        } finally {
+          clearTimeout(timeout);
+          if (externalAbortHandler && externalSignal) {
+            externalSignal.removeEventListener('abort', externalAbortHandler);
+          }
+          span.end();
         }
-
-        // If hooks didn't recover the response (still not OK), throw the typed error
-        if (!response.ok) {
-          throw httpError;
-        }
-      }
-
-      return response;
-    } catch (error) {
-      // Re-throw typed HTTP errors as-is (already an HttpError subclass)
-      if (error instanceof HttpError) {
-        throw error;
-      }
-      // Wrap transport-level errors in typed client errors
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new ClientTimeoutError(
-          `Request to ${url} timed out after ${timeoutMs}ms`,
-          { cause: error },
-        );
-      }
-      if (error instanceof TypeError) {
-        throw new ConnectionError(
-          `Failed to connect to ${url}: ${error.message}`,
-          { cause: error },
-        );
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-      if (externalAbortHandler && externalSignal) {
-        externalSignal.removeEventListener('abort', externalAbortHandler);
-      }
-    }
+      },
+    );
   }
 
   /**

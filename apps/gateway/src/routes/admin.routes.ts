@@ -11,7 +11,35 @@ import { memoryService, retentionManager } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
 import { workersService } from '@dmr-x/workers';
 import { federationService } from '@dmr-x/federation';
+import { trace, type Span } from '@opentelemetry/api';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
+
+/**
+ * Pull the current OTel trace_id / span_id off the active span, if any.
+ *
+ * - `trace_id` is the 32-char hex id of the request's trace.  It is the
+ *   value that ties multiple spans (gateway -> router -> adapter.fetch)
+ *   together in a trace UI.
+ * - `span_id` is the 16-char hex id of the *active* span when this
+ *   helper was called. For events emitted from request handlers, that
+ *   is the `http.request` span started in `apps/gateway/src/server.ts`.
+ *
+ * Both return `null` when no SDK has registered a global provider, or
+ * when there is no active span on the current async context.
+ */
+function getActiveTraceContext(): { traceId: string | null; spanId: string | null } {
+  try {
+    const span = trace.getActiveSpan() as Span | undefined;
+    if (!span) return { traceId: null, spanId: null };
+    const ctx = span.spanContext();
+    if (!ctx || ctx.traceId === '00000000000000000000000000000000') {
+      return { traceId: null, spanId: null };
+    }
+    return { traceId: ctx.traceId, spanId: ctx.spanId };
+  } catch {
+    return { traceId: null, spanId: null };
+  }
+}
 
 const CreateProviderSchema = z.object({
   name: z.string().min(1),
@@ -2866,14 +2894,30 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     duration?: number | null;
     metadata?: Record<string, unknown>;
   }): void {
+    // HIGH-3: the `trace_id` / `span_id` fields used to be hard-coded to
+    // `null` placeholders, which meant the live telemetry SSE stream could
+    // never link an event back to its source span. Now we resolve the
+    // active OTel span context at publish time. Callers can still pass
+    // explicit values (e.g. when emitting a "child" event for a span that
+    // has already been closed) and those values win.
+    const explicitTraceId = event.trace_id;
+    const explicitSpanId = event.span_id;
+    let activeTraceId: string | null = null;
+    let activeSpanId: string | null = null;
+    if (explicitTraceId === null || explicitTraceId === undefined ||
+        explicitSpanId === null || explicitSpanId === undefined) {
+      const active = getActiveTraceContext();
+      activeTraceId = active.traceId;
+      activeSpanId = active.spanId;
+    }
     const enriched = {
       id: event.id ?? crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       level: event.level ?? 'info',
       service: event.service ?? 'gateway',
       message: event.message,
-      trace_id: event.trace_id ?? null,
-      span_id: event.span_id ?? null,
+      trace_id: explicitTraceId ?? activeTraceId,
+      span_id: explicitSpanId ?? activeSpanId,
       duration: event.duration ?? null,
       metadata: event.metadata ?? {},
     };
@@ -3113,7 +3157,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     // fetch (the prober does its own dispatching, so we just need the
     // guard at registration time).
     await validateBaseUrlForSSRF(url);
-    const node = federationService.register({ name, url, region, apiKey, privacyLevel });
+    const node = federationService.register({ name, url, region: region ?? undefined, apiKey: apiKey ?? undefined, privacyLevel });
     reply.status(201);
     return node;
   });
