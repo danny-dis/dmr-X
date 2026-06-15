@@ -6,6 +6,39 @@ import { workersService } from '@dmr-x/workers';
 import { federationService } from '@dmr-x/federation';
 
 const MIN_ADMIN_API_KEY_LENGTH = 32;
+const DEFAULT_BODY_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;          // 60 s
+const DEFAULT_KEEPALIVE_TIMEOUT_MS = 65_000;        // 65 s
+const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;       // 10 s
+const DEFAULT_MAX_PARAM_LENGTH = 200;
+const DEFAULT_MEMORY_LIMIT_BYTES = 1_500 * 1024 * 1024; // 1.5 GB
+
+function parseBodyLimit(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const trimmed = raw.trim();
+  if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+  // Accept "10mb", "1024kb", "1gb" — case-insensitive
+  const m = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i.exec(trimmed);
+  if (!m) return fallback;
+  const n = parseFloat(m[1]);
+  const unit = m[2].toLowerCase();
+  const mult = unit === 'gb' ? 1024 ** 3
+             : unit === 'mb' ? 1024 ** 2
+             : unit === 'kb' ? 1024
+             : 1;
+  return Math.floor(n * mult);
+}
+
+function parseTrustProxy(raw: string | undefined): boolean | string {
+  if (raw === undefined) return 'loopback';
+  const v = raw.trim().toLowerCase();
+  if (v === 'true' || v === '1' || v === 'yes') return true;
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  // Allow Fastify-prescribed preset strings
+  if (['loopback', 'linklocal', 'uniquelocal'].includes(v)) return v;
+  // Treat anything else as a CIDR / IP / comma-separated list
+  return raw.trim();
+}
 
 function validateStartupConfig(): void {
   const errors: string[] = [];
@@ -16,6 +49,39 @@ function validateStartupConfig(): void {
   if (!/^\d+$/.test(portValue) || !Number.isInteger(port) || port < 1 || port > 65535) {
     errors.push('PORT must be an integer between 1 and 65535');
   }
+
+  // Body limit — accept numbers or "10mb" style
+  const bodyLimit = parseBodyLimit(process.env.DMRX_BODY_LIMIT, DEFAULT_BODY_LIMIT_BYTES);
+  if (bodyLimit < 1024 || bodyLimit > 100 * 1024 * 1024) {
+    errors.push('DMRX_BODY_LIMIT must be between 1KB and 100MB');
+  }
+
+  // Request timeouts must be positive integers in ms
+  const reqTimeout = parseInt(process.env.DMRX_REQUEST_TIMEOUT || String(DEFAULT_REQUEST_TIMEOUT_MS), 10);
+  if (!Number.isFinite(reqTimeout) || reqTimeout < 1000 || reqTimeout > 600_000) {
+    errors.push('DMRX_REQUEST_TIMEOUT must be between 1000 and 600000 ms');
+  }
+  const keepAlive = parseInt(process.env.DMRX_KEEPALIVE_TIMEOUT || String(DEFAULT_KEEPALIVE_TIMEOUT_MS), 10);
+  if (!Number.isFinite(keepAlive) || keepAlive < 1000 || keepAlive > 600_000) {
+    errors.push('DMRX_KEEPALIVE_TIMEOUT must be between 1000 and 600000 ms');
+  }
+  const connTimeout = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || String(DEFAULT_CONNECTION_TIMEOUT_MS), 10);
+  if (!Number.isFinite(connTimeout) || connTimeout < 1000 || connTimeout > 300_000) {
+    errors.push('DMRX_CONNECTION_TIMEOUT must be between 1000 and 300000 ms');
+  }
+  const maxParam = parseInt(process.env.DMRX_MAX_PARAM_LENGTH || String(DEFAULT_MAX_PARAM_LENGTH), 10);
+  if (!Number.isFinite(maxParam) || maxParam < 1 || maxParam > 4096) {
+    errors.push('DMRX_MAX_PARAM_LENGTH must be between 1 and 4096');
+  }
+
+  // Memory limit for /healthz
+  const memLimit = parseBodyLimit(process.env.DMRX_MEMORY_LIMIT, DEFAULT_MEMORY_LIMIT_BYTES);
+  if (memLimit < 64 * 1024 * 1024 || memLimit > 16 * 1024 ** 3) {
+    errors.push('DMRX_MEMORY_LIMIT must be between 64MB and 16GB');
+  }
+
+  // Verify DMRX_TRUST_PROXY parses
+  parseTrustProxy(process.env.DMRX_TRUST_PROXY);
 
   if (!isProduction) {
     return failIfInvalid(errors);
@@ -80,7 +146,7 @@ async function main(): Promise<void> {
   logger.info('Platform services started');
 
   // Start server
-  const server = await createServer();
+  const { server, runBackgroundInit } = await createServer();
 
   try {
     await server.listen({ port, host: '0.0.0.0' });
@@ -89,6 +155,10 @@ async function main(): Promise<void> {
     logger.error({ err }, 'Failed to start server');
     process.exit(1);
   }
+
+  // Kick off background initialisation (auto-register, model discovery, etc.)
+  // This is non-blocking — the server is already listening.
+  runBackgroundInit();
 
   // Graceful shutdown with 30-second timeout
   const SHUTDOWN_TIMEOUT_MS = 30_000;

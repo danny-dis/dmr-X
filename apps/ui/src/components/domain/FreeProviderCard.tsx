@@ -13,7 +13,7 @@ import { Card } from '@/components/primitives/Card';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { StatusPill } from '@/components/primitives/StatusPill';
-import { Progress } from '@/components/primitives/Progress';
+import { TierBadge } from '@/components/domain/TierBadge';
 import { formatTokens } from '@/lib/formatters';
 import type { ApiProvider } from '@/types/api';
 
@@ -39,8 +39,11 @@ export function FreeProviderCard({
   const latency = health?.latencyMs;
   const config = provider.config as Record<string, unknown> | undefined;
   const hasSignupUrl = (config?.signupUrl as string | undefined) != null;
+  // `monthlyTokenBudget` is part of the provider config and is shown as a
+  // ceiling only — the backend has no per-provider usage query, so the
+  // previous hardcoded "12% used" bar was a lie. Render the cap as a
+  // static label and skip the progress bar until real usage data exists.
   const monthlyBudget = (config?.monthlyTokenBudget as number | undefined) ?? 1000000;
-  const budgetPercent = monthlyBudget > 0 ? 12 : 0;
 
   return (
     <Card
@@ -55,11 +58,9 @@ export function FreeProviderCard({
             {provider.name.slice(0, 2)}
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <h4 className="text-sm font-semibold text-fg truncate">{provider.name}</h4>
-              <Badge tone="muted" size="sm" icon={<Zap className="size-2.5" />}>
-                Free
-              </Badge>
+              <TierBadge tier={provider.tier} />
             </div>
             <p className="text-[11px] text-fg-muted truncate">{provider.baseUrl ?? '—'}</p>
           </div>
@@ -82,18 +83,25 @@ export function FreeProviderCard({
               )}
             </Button>
           )}
-          <Button size="icon-sm" variant="ghost" aria-label="More">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="More"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect?.(provider);
+            }}
+          >
             <MoreHorizontal className="size-3.5" />
           </Button>
         </div>
       </div>
 
       <div className="px-4 pb-2">
-        <div className="flex items-center justify-between text-[10px] text-fg-subtle mb-1.5">
+        <div className="flex items-center justify-between text-[10px] text-fg-subtle">
           <span>Monthly budget</span>
-          <span className="tabular-nums">{formatTokens(budgetPercent * 1000)} / {formatTokens(monthlyBudget)}</span>
+          <span className="tabular-nums">{formatTokens(monthlyBudget)}</span>
         </div>
-        <Progress value={budgetPercent} tone="primary" size="sm" />
       </div>
 
       <div className="px-4 pb-3 flex items-center gap-2 text-[11px] flex-wrap">
@@ -104,6 +112,11 @@ export function FreeProviderCard({
         {provider.authType && (
           <Badge tone="muted" size="sm" icon={<KeyRound className="size-2.5" />}>
             {provider.authType}
+          </Badge>
+        )}
+        {provider.keys && provider.keys.length > 1 && (
+          <Badge tone="muted" size="sm" icon={<KeyRound className="size-2.5" />}>
+            {provider.keys.length} keys
           </Badge>
         )}
         {provider.capabilities?.length ? (

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Gauge as GaugeIcon, TrendingUp, Users, AlertTriangle, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { Gauge as GaugeIcon, TrendingUp, Users, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { StatTile } from '@/components/primitives/StatTile';
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { QuotaGauge, QuotaProgressBar } from '@/components/domain/QuotaGauge';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { formatNumber, formatCompactCurrency, formatTokens, formatDuration } from '@/lib/formatters';
+import { formatNumber, formatCompactCurrency, formatTokens } from '@/lib/formatters';
 import type { ApiTenant, ApiQuotaState } from '@/types/api';
 
 export function QuotaPage() {

@@ -146,7 +146,14 @@ export function ToolsPage() {
   const toolResults = React.useMemo(() => {
     if (!response || typeof response !== 'object') return null;
     const r = response as Record<string, unknown>;
-    return (r.tool_results as unknown[]) ?? (r.steps as unknown[])?.[0]?.tool_results ?? null;
+    // Some agentic backends nest tool outputs at different paths depending
+    // on whether a single step or multi-step trace is returned. Check both.
+    const direct = r.tool_results as unknown[] | undefined;
+    if (Array.isArray(direct)) return direct;
+    const steps = r.steps as unknown[] | undefined;
+    const nested = steps?.[0] as Record<string, unknown> | undefined;
+    const nestedResults = nested?.tool_results as unknown[] | undefined;
+    return Array.isArray(nestedResults) ? nestedResults : null;
   }, [response]);
 
   const stepsCount = React.useMemo(() => {
@@ -332,7 +339,7 @@ export function ToolsPage() {
               </div>
             )}
 
-            {status === 'success' && response && !error && (
+            {status === 'success' && response != null && !error && (
               <Tabs defaultValue="response" className="w-full">
                 <TabsList>
                   <TabsTrigger value="response">

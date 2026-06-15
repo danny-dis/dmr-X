@@ -26,6 +26,8 @@ export interface BarSeriesChartProps {
   height?: number;
   layout?: 'horizontal' | 'vertical';
   showGrid?: boolean;
+  /** Inverse of `showGrid` — convenience for call sites that read more naturally as "hide the grid". */
+  hideGrid?: boolean;
   yFormatter?: (n: number) => string;
   xFormatter?: (v: string | number) => string;
   className?: string;
@@ -43,6 +45,7 @@ export function BarSeriesChart({
   height = 220,
   layout = 'horizontal',
   showGrid = true,
+  hideGrid = false,
   yFormatter = defaultYFormatter,
   xFormatter = defaultXFormatter,
   className,
@@ -50,6 +53,8 @@ export function BarSeriesChart({
   onBarClick,
 }: BarSeriesChartProps) {
   const isVertical = layout === 'vertical';
+  // `hideGrid` is the inverse of `showGrid`; either may be passed.
+  const renderGrid = hideGrid ? false : showGrid;
   return (
     <div className={className} style={{ width: '100%', height }}>
       <ResponsiveContainer>
@@ -63,7 +68,7 @@ export function BarSeriesChart({
             }
           }}
         >
-          {showGrid && (
+          {renderGrid && (
             <CartesianGrid
               stroke="var(--border)"
               strokeDasharray="2 4"

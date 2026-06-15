@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   Settings as SettingsIcon, Save, RotateCcw, Server, Shield, Brain, Cpu,
-  Bell, Webhook, Trophy, Clock,
+  Bell, Webhook, Trophy, Clock, AlertTriangle, KeyRound, Copy, Check,
 } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
@@ -13,6 +13,16 @@ import { Slider } from '@/components/primitives/Slider';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogBody,
+  DialogFooter,
+  DialogClose,
+} from '@/components/primitives/Dialog';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { toast } from '@/components/primitives/Toast';
@@ -26,7 +36,7 @@ interface SettingsForm {
   routingStrategy: 'auto' | 'cost' | 'latency' | 'round-robin' | 'priority';
   costOptimization: boolean;
   latencyBudgetMs: number;
-  autoFallback: boolean;
+  fallbackEnabled: boolean;
   routingTimeout: number;
   qualityWeight: number;
   costWeight: number;
@@ -38,8 +48,8 @@ interface SettingsForm {
   platformName: string;
   timezone: string;
   // Security
-  requireAuth: boolean;
-  corsOrigins: string;
+  requireApiKeyAuth: boolean;
+  allowedOrigins: string;
   rateLimitRpm: number;
   autoKeyRotation: boolean;
   maxRequestSizeMb: number;
@@ -73,7 +83,7 @@ const DEFAULTS: SettingsForm = {
   routingStrategy: 'auto',
   costOptimization: true,
   latencyBudgetMs: 2000,
-  autoFallback: true,
+  fallbackEnabled: true,
   routingTimeout: 30000,
   qualityWeight: 0.4,
   costWeight: 0.25,
@@ -83,8 +93,8 @@ const DEFAULTS: SettingsForm = {
   defaultTemperature: 0.7,
   platformName: 'DMR-X',
   timezone: 'UTC',
-  requireAuth: true,
-  corsOrigins: '*',
+  requireApiKeyAuth: true,
+  allowedOrigins: '*',
   rateLimitRpm: 600,
   autoKeyRotation: false,
   maxRequestSizeMb: 10,
@@ -122,7 +132,7 @@ function fromServer(s: Record<string, unknown> | null): SettingsForm {
     routingStrategy: (s.routingStrategy as SettingsForm['routingStrategy']) ?? DEFAULTS.routingStrategy,
     costOptimization: bool('costOptimization', DEFAULTS.costOptimization),
     latencyBudgetMs: num('latencyBudgetMs', DEFAULTS.latencyBudgetMs),
-    autoFallback: bool('autoFallback', DEFAULTS.autoFallback),
+    autoFallback: bool('fallbackEnabled', DEFAULTS.fallbackEnabled),
     routingTimeout: num('routingTimeout', DEFAULTS.routingTimeout),
     qualityWeight: num('qualityWeight', DEFAULTS.qualityWeight),
     costWeight: num('costWeight', DEFAULTS.costWeight),
@@ -132,8 +142,8 @@ function fromServer(s: Record<string, unknown> | null): SettingsForm {
     defaultTemperature: num('defaultTemperature', DEFAULTS.defaultTemperature),
     platformName: str('platformName', DEFAULTS.platformName),
     timezone: str('timezone', DEFAULTS.timezone),
-    requireAuth: bool('requireAuth', DEFAULTS.requireAuth),
-    corsOrigins: str('corsOrigins', DEFAULTS.corsOrigins),
+    requireAuth: bool('requireApiKeyAuth', DEFAULTS.requireApiKeyAuth),
+    corsOrigins: str('allowedOrigins', DEFAULTS.allowedOrigins),
     rateLimitRpm: num('rateLimitRpm', DEFAULTS.rateLimitRpm),
     autoKeyRotation: bool('autoKeyRotation', DEFAULTS.autoKeyRotation),
     maxRequestSizeMb: num('maxRequestSizeMb', DEFAULTS.maxRequestSizeMb),
@@ -164,7 +174,7 @@ function toServer(f: SettingsForm): Record<string, unknown> {
     routingStrategy: f.routingStrategy,
     costOptimization: f.costOptimization,
     latencyBudgetMs: f.latencyBudgetMs,
-    autoFallback: f.autoFallback,
+    autoFallback: f.fallbackEnabled,
     routingTimeout: f.routingTimeout,
     qualityWeight: f.qualityWeight,
     costWeight: f.costWeight,
@@ -174,8 +184,8 @@ function toServer(f: SettingsForm): Record<string, unknown> {
     defaultTemperature: f.defaultTemperature,
     platformName: f.platformName,
     timezone: f.timezone,
-    requireAuth: f.requireAuth,
-    corsOrigins: f.corsOrigins,
+    requireAuth: f.requireApiKeyAuth,
+    corsOrigins: f.allowedOrigins,
     rateLimitRpm: f.rateLimitRpm,
     autoKeyRotation: f.autoKeyRotation,
     maxRequestSizeMb: f.maxRequestSizeMb,
@@ -239,6 +249,59 @@ export function SettingsPage() {
     setResetKey((k) => k + 1);
     setForm({ ...DEFAULTS });
     toast.show('Reset to defaults', { description: 'Click Save to apply.', tone: 'info' });
+  };
+
+  // --- Admin key rotation state ---
+  const [rotateConfirmOpen, setRotateConfirmOpen] = React.useState(false);
+  const [newKeyDialogOpen, setNewKeyDialogOpen] = React.useState(false);
+  const [newKey, setNewKey] = React.useState<string | null>(null);
+  const [rotating, setRotating] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
+
+  const handleRotate = async () => {
+    setRotateConfirmOpen(false);
+    setRotating(true);
+    try {
+      const res = await Admin.rotateAdminKey();
+      setNewKey(res.new_key);
+      setNewKeyDialogOpen(true);
+      setCopied(false);
+    } catch (e) {
+      toast.error('Rotation failed', { description: (e as Error).message });
+    } finally {
+      setRotating(false);
+    }
+  };
+
+  const copyNewKey = async () => {
+    if (!newKey) return;
+    try {
+      await navigator.clipboard.writeText(newKey);
+      setCopied(true);
+      toast.success('Copied to clipboard', { description: 'Store the new key somewhere safe.' });
+    } catch {
+      toast.error('Copy failed', { description: 'Select the key manually and copy it.' });
+    }
+  };
+
+  const acknowledgeAndReload = () => {
+    if (newKey) {
+      // Persist the new admin token so the UI keeps working after the page
+      // reloads. The gateway now expects this key on every admin request.
+      try {
+        localStorage.setItem('dmrx_token', newKey);
+      } catch {
+        // localStorage may be unavailable in some environments; surface a
+        // warning but still reload so the user can re-authenticate.
+        toast.warning('Could not persist new key locally', {
+          description: 'You will need to re-enter the key after the reload.',
+        });
+      }
+    }
+    setNewKeyDialogOpen(false);
+    // Force a clean state — the React app, the API helper, and any cached
+    // auth checks all need to come back up with the new bearer token.
+    window.location.reload();
   };
 
   const dirty = JSON.stringify(form) !== JSON.stringify(fromServer(settings.data));
@@ -345,8 +408,8 @@ export function SettingsPage() {
                       </SettingRow>
                       <SettingRow label="Auto-fallback" description="Retry on alternate provider if first fails">
                         <Switch
-                          checked={form.autoFallback}
-                          onCheckedChange={(v) => update('autoFallback', v)}
+                          checked={form.fallbackEnabled}
+                          onCheckedChange={(v) => update('fallbackEnabled', v)}
                         />
                       </SettingRow>
                       <SettingRow label="Routing timeout" description="Max time to wait for router decision (ms)">
@@ -458,7 +521,7 @@ export function SettingsPage() {
                 </TabsContent>
 
                 {/* ==================== SECURITY ==================== */}
-                <TabsContent value="security">
+                <TabsContent value="security" className="flex flex-col gap-4">
                   <Card padding="md">
                     <CardHeader className="px-0 pt-0">
                       <CardTitle>Security</CardTitle>
@@ -466,14 +529,14 @@ export function SettingsPage() {
                     <CardContent className="px-0 flex flex-col gap-4">
                       <SettingRow label="Require auth" description="Reject unauthenticated requests">
                         <Switch
-                          checked={form.requireAuth}
-                          onCheckedChange={(v) => update('requireAuth', v)}
+                          checked={form.requireApiKeyAuth}
+                          onCheckedChange={(v) => update('requireApiKeyAuth', v)}
                         />
                       </SettingRow>
                       <SettingRow label="CORS allowed origins">
                         <Input
-                          value={form.corsOrigins}
-                          onChange={(e) => update('corsOrigins', e.target.value)}
+                          value={form.allowedOrigins}
+                          onChange={(e) => update('allowedOrigins', e.target.value)}
                           className="w-72"
                         />
                       </SettingRow>
@@ -501,7 +564,160 @@ export function SettingsPage() {
                       </SettingRow>
                     </CardContent>
                   </Card>
+
+                  {/* Admin API key rotation */}
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Admin API key rotation</CardTitle>
+                      <p className="text-[10px] text-fg-muted mt-0.5">
+                        Issue a new admin key without restarting the gateway.
+                      </p>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <div
+                        className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-warning"
+                        role="alert"
+                      >
+                        <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                        <div className="text-xs leading-relaxed">
+                          Rotating the admin key invalidates the current session.
+                          Save the new key — it will not be shown again.
+                          Update <code className="font-mono">DMRX_ADMIN_API_KEY</code> in
+                          your deployment environment to persist across restarts.
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="text-xs text-fg-muted">
+                          The new key replaces the current one in <code className="font-mono">process.env</code>
+                          immediately. The next admin request must use the new key.
+                        </div>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => setRotateConfirmOpen(true)}
+                          loading={rotating}
+                          disabled={rotating}
+                        >
+                          <KeyRound className="size-3" />
+                          Rotate admin key
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
                 </TabsContent>
+
+                {/* ==================== CONFIRM ROTATION DIALOG ==================== */}
+                <Dialog open={rotateConfirmOpen} onOpenChange={setRotateConfirmOpen}>
+                  <DialogContent size="md">
+                    <DialogHeader>
+                      <DialogTitle>Rotate admin API key?</DialogTitle>
+                      <DialogDescription>
+                        You&apos;ll be logged out and need to use the new key.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogBody>
+                      <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-warning">
+                        <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                        <div className="text-xs leading-relaxed">
+                          The current admin key will stop working immediately after rotation.
+                          Make sure you can save the new key — you will not be shown it again
+                          after this dialog closes.
+                        </div>
+                      </div>
+                    </DialogBody>
+                    <DialogFooter>
+                      <DialogClose asChild>
+                        <Button variant="ghost" size="sm" disabled={rotating}>
+                          Cancel
+                        </Button>
+                      </DialogClose>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={handleRotate}
+                        loading={rotating}
+                        disabled={rotating}
+                      >
+                        <KeyRound className="size-3" />
+                        Yes, rotate
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                {/* ==================== NEW KEY DISPLAY DIALOG ==================== */}
+                <Dialog open={newKeyDialogOpen} onOpenChange={(open) => {
+                  // Block closing via overlay/escape — the user must explicitly
+                  // acknowledge by clicking "I've saved it". Otherwise they'd
+                  // lose the only copy of the key.
+                  if (!open) return;
+                  setNewKeyDialogOpen(open);
+                }}>
+                  <DialogContent size="lg">
+                    <DialogHeader>
+                      <DialogTitle>New admin key</DialogTitle>
+                      <DialogDescription>
+                        Save this key now. It will not be shown again.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogBody>
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-start gap-3 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-danger">
+                          <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                          <div className="text-xs leading-relaxed">
+                            This is the only time the new key will be displayed.
+                            Store it in a secure location (password manager, secrets vault, etc.)
+                            before continuing. The page will reload after you acknowledge.
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-border bg-surface-2 p-4">
+                          <div className="flex items-start justify-between gap-2">
+                            <code
+                              data-testid="new-admin-key"
+                              className="font-mono text-sm break-all text-fg leading-relaxed select-all flex-1"
+                            >
+                              {newKey ?? ''}
+                            </code>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={copyNewKey}
+                              className="shrink-0"
+                            >
+                              {copied ? (
+                                <>
+                                  <Check className="size-3" />
+                                  Copied
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="size-3" />
+                                  Copy
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-fg-muted leading-relaxed">
+                          After acknowledging, <code className="font-mono">dmrx_token</code> in
+                          your browser&apos;s localStorage will be updated and the page will reload
+                          so subsequent admin requests use the new key.
+                          For persistence across gateway restarts, also update
+                          <code className="font-mono"> DMRX_ADMIN_API_KEY </code> in your deployment.
+                        </p>
+                      </div>
+                    </DialogBody>
+                    <DialogFooter>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={acknowledgeAndReload}
+                      >
+                        I&apos;ve saved it — reload
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
 
                 {/* ==================== PERFORMANCE ==================== */}
                 <TabsContent value="performance">

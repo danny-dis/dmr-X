@@ -136,7 +136,11 @@ export function PolicyDialog({ open, onOpenChange, policy, onSaved }: PolicyDial
         enabled: form.enabled,
         match: buildMatch(),
       };
-      const saved = await Admin.upsertPolicy(body);
+      // Editing an existing policy must PUT — Admin.upsertPolicy always
+      // POSTs to /admin/policies which creates a duplicate row.
+      const saved = isEdit && policy?.id
+        ? await Admin.updatePolicy(policy.id, body)
+        : await Admin.upsertPolicy(body);
       toast.success(isEdit ? 'Policy updated' : 'Policy created', { description: saved.name });
       onSaved?.();
       onOpenChange(false);

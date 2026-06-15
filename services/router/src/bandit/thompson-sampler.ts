@@ -264,8 +264,8 @@ export function calculateReward(
 
   // TTFT signal: 0..1, where 0 ms = 1.0 and 5000 ms = 0.0
   let ttftSignal = 0.5; // neutral if not provided
-  if (typeof options.firstTokenLatencyMs === 'number' && options.firstTokenLatencyMs >= 0) {
-    ttftSignal = Math.max(0, 1 - options.firstTokenLatencyMs / 5000);
+  if (typeof options.firstTokenLatencyMs === 'number') {
+    ttftSignal = Math.max(0, 1 - Math.max(0, options.firstTokenLatencyMs) / 5000);
   }
 
   // Tool-call success signal: only applied when the request actually used tools.

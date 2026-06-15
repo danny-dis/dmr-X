@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Wallet, TrendingUp, DollarSign, Users, ChevronRight, ArrowUp, ArrowDown, Sparkles, CreditCard } from 'lucide-react';
+import { Wallet, TrendingUp, DollarSign, Users, ChevronRight, ArrowUp, ArrowDown, Sparkles } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { StatTile } from '@/components/primitives/StatTile';
@@ -11,7 +11,6 @@ import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from '@/components/primitives/Dialog';
 import { Button } from '@/components/primitives/Button';
-import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatCurrency, formatNumber, formatTokens } from '@/lib/formatters';
@@ -262,15 +261,6 @@ export function UsagePage() {
             )}
           </DialogBody>
           <DialogFooter>
-            {selectedInvoice && (selectedInvoice.status === 'pending' || selectedInvoice.status === 'overdue') && (
-              <Button
-                variant="primary"
-                onClick={() => toast.success('Payment integration coming soon')}
-                leftIcon={<CreditCard className="size-3" />}
-              >
-                Pay invoice
-              </Button>
-            )}
             <Button variant="ghost" onClick={() => setSelectedInvoice(null)}>
               Close
             </Button>

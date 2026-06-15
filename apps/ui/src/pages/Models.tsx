@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Database, Search, Cpu, Filter, ChevronRight, Hash, DollarSign, Zap, RefreshCw, Plus } from 'lucide-react';
+import { Database, Search, Cpu, ChevronRight, RefreshCw, Plus } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
@@ -11,7 +11,7 @@ import { Pagination } from '@/components/primitives/Pagination';
 import { ModalityBadge } from '@/icons/Modality';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { formatCurrency, formatNumber } from '@/lib/formatters';
+import { formatNumber } from '@/lib/formatters';
 import { ModelDetailDrawer } from '@/components/domain/ModelDetailDrawer';
 import { CreateModelDialog } from '@/components/domain/CreateModelDialog';
 import type { ApiModel, ApiProvider } from '@/types/api';
@@ -43,7 +43,7 @@ export function ModelsPage() {
   const filtered = (models.data ?? []).filter((m) => {
     if (query && !m.name.toLowerCase().includes(query.toLowerCase())) return false;
     if (modality && m.modality !== modality) return false;
-    if (providerFilter && m.providerId !== providerFilter) return false;
+    if (providerFilter && m.provider_id !== providerFilter) return false;
     if (layerFilter && m.intelligence_layer !== layerFilter) return false;
     if (capabilityFilter && m.capability_tier !== capabilityFilter) return false;
     return true;
@@ -179,7 +179,7 @@ export function ModelsPage() {
                 </div>
                 <div className="flex items-center gap-1.5 text-[10px]">
                   <Badge tone="muted" size="sm">{m.provider ?? 'unknown'}</Badge>
-                  {m.modality && <ModalityBadge modality={m.modality} size="sm" />}
+                  {m.modality && <ModalityBadge modality={m.modality} size={14} />}
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
                   <div>

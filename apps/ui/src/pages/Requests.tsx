@@ -1,10 +1,9 @@
 import * as React from 'react';
-import { Workflow, Filter, Search, Activity, Pause, Play, Download } from 'lucide-react';
+import { Workflow, Search, Activity, Download } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
 import { Button } from '@/components/primitives/Button';
-import { Badge } from '@/components/primitives/Badge';
 import { Toggle } from '@/components/primitives/Toggle';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Skeleton } from '@/components/primitives/Skeleton';
@@ -26,7 +25,7 @@ export function RequestsPage() {
   const liveMode = useUIStore((s) => s.liveMode);
 
   const events = useApiData<ApiTelemetryEvent[]>(
-    () => Admin.listTelemetry({ limit: 200 }),
+    () => Admin.listTelemetry(),
     [],
     { refetchInterval: liveMode ? 3000 : false }
   );
@@ -50,6 +49,22 @@ export function RequestsPage() {
     {} as Record<string, number>
   );
 
+  const handleExport = () => {
+    try {
+      const blob = new Blob([JSON.stringify(events.data ?? [], null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'dmrx-telemetry.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to export telemetry', err);
+    }
+  };
+
   return (
     <PageContainer size="wide">
       <PageHeader
@@ -62,7 +77,7 @@ export function RequestsPage() {
               <Activity className="size-3" />
               {liveMode ? 'Live' : 'Paused'}
             </Toggle>
-            <Button variant="secondary" size="sm">
+            <Button variant="secondary" size="sm" onClick={handleExport}>
               <Download className="size-3" />
               Export
             </Button>

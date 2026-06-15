@@ -219,6 +219,50 @@ describe('MemoryCache', () => {
       expect(lruCache.get('b')).toBeNull();
       lruCache.destroy();
     });
+
+    it('should evict LRU when adding a new hash at exactly maxSize (regression: hSet used `>` instead of `>=`)', () => {
+      // Previously hSet evicted only when size > maxSize, so adding a 4th
+      // hash into a 3-slot cache would silently push size to 4.
+      const lruCache = new MemoryCache(3);
+      lruCache.hSet('h1', 'f', 'v1');
+      lruCache.hSet('h2', 'f', 'v2');
+      lruCache.hSet('h3', 'f', 'v3');
+
+      expect(lruCache.size).toBe(3);
+
+      // Adding a new hash at exactly the cap must evict h1 (LRU), not skip eviction.
+      lruCache.hSet('h4', 'f', 'v4');
+
+      expect(lruCache.size).toBe(3);
+      expect(lruCache.hGet('h1', 'f')).toBeNull();
+      expect(lruCache.hGet('h2', 'f')).toBe('v2');
+      expect(lruCache.hGet('h3', 'f')).toBe('v3');
+      expect(lruCache.hGet('h4', 'f')).toBe('v4');
+      lruCache.destroy();
+    });
+
+    it('should evict LRU when adding a new hash with mixed store+hashes at cap', () => {
+      // Store holds 2 entries, hashes hold 1, maxSize=3 — total at cap.
+      // Adding a new hash must evict, not silently grow to 4.
+      const lruCache = new MemoryCache(3);
+      lruCache.set('s1', 'x');
+      lruCache.set('s2', 'y');
+      lruCache.hSet('h1', 'f', 'v1');
+
+      expect(lruCache.size).toBe(3);
+
+      lruCache.hSet('h2', 'f', 'v2');
+
+      expect(lruCache.size).toBe(3);
+      // s1 is the oldest (inserted before s2); s2 is the LRU after s1
+      // because hSet accessOrder promotion only applies to h1 from the
+      // hSet call. findLRUKey still picks s1 as oldest.
+      expect(lruCache.get('s1')).toBeNull();
+      expect(lruCache.get('s2')).toBe('y');
+      expect(lruCache.hGet('h1', 'f')).toBe('v1');
+      expect(lruCache.hGet('h2', 'f')).toBe('v2');
+      lruCache.destroy();
+    });
   });
 
   describe('namespaced cache', () => {

@@ -13,6 +13,7 @@ import {
 } from '@/components/primitives/Dialog';
 import { Button } from '@/components/primitives/Button';
 import { Input } from '@/components/primitives/Input';
+import { Badge } from '@/components/primitives/Badge';
 import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
@@ -379,9 +380,11 @@ export function AddProviderDialog({
             adapterType: form.adapterType.trim(),
             baseUrl: form.baseUrl.trim() || null,
             apiKeyRef: apiKey || null,
-            region: form.region.trim() || undefined,
-            priority: Number(form.priority) || 0,
-            enabled: true,
+            config: {
+              region: form.region.trim() || undefined,
+              priority: Number(form.priority) || 0,
+              enabled: true,
+            },
           });
       toast.success('Provider created', { description: created.name });
       onCreated?.();
@@ -488,7 +491,7 @@ export function AddProviderDialog({
                     OAuth Authorization
                   </span>
                   {oauth.step === 'completed' && (
-                    <Badge variant="success" className="ml-auto text-[10px]">Connected</Badge>
+                    <Badge tone="success" className="ml-auto text-[10px]">Connected</Badge>
                   )}
                 </div>
 

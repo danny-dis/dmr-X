@@ -86,6 +86,14 @@ export function CreateTenantDialog({ open, onOpenChange, onCreated }: CreateTena
         requestsLimit: Number(form.requestsLimit) || 0,
         costLimit: Number(form.costLimit) || 0,
       });
+      // The backend returns the inserted tenant row. Guard against a
+      // missing id/name so the user gets a clear error instead of a
+      // generic "Failed to create tenant" caused by a TypeError.
+      if (!created || !created.id || !created.name) {
+        // eslint-disable-next-line no-console
+        console.error('createTenant: unexpected response payload', created);
+        throw new Error('Server did not return the new tenant. Please retry.');
+      }
       toast.success('Tenant created', { description: created.name });
       onCreated?.(created.id);
       onOpenChange(false);

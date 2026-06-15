@@ -6,16 +6,12 @@ import {
   DollarSign,
   Globe,
   ArrowRight,
-  TrendingUp,
-  Brain,
-  Bot,
-  Wrench,
-  Cog,
   Clock,
-  Hash,
   ChevronRight,
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
+  Loader2,
 } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
@@ -24,7 +20,7 @@ import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
-import { DonutChart, Sunburst } from '@/components/charts/DonutChart';
+import { DonutChart } from '@/components/charts/DonutChart';
 import { LatencyChart } from '@/components/charts/LatencyChart';
 import { RouteDecisionRow } from '@/components/domain/RouteDecisionRow';
 import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
@@ -36,7 +32,6 @@ import { Admin } from '@/lib/admin';
 import {
   formatNumber,
   formatDuration,
-  formatCurrency,
   formatCompactCurrency,
   timeAgo,
 } from '@/lib/formatters';
@@ -73,6 +68,25 @@ export function DashboardPage() {
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
   const alerts = useApiData<ApiAlert[]>(() => Admin.listAlerts(), [], { refetchInterval: 15000 });
 
+  // Derive the top-of-page system status from real alert severities so the
+  // badge reflects what's actually broken, not a hardcoded "all good" line.
+  // Loading state intentionally renders a muted "Checking…" badge so we don't
+  // show a false success before the first fetch resolves.
+  const alertList = alerts.data ?? [];
+  const hasErrorAlert = alertList.some((a) => a.severity === 'error');
+  const hasWarningAlert = alertList.some((a) => a.severity === 'warning');
+  const systemStatus: {
+    tone: 'success' | 'warning' | 'danger' | 'muted';
+    label: string;
+    icon: React.ReactNode;
+  } = alerts.data === undefined
+    ? { tone: 'muted', label: 'Checking…', icon: <Loader2 className="size-3 animate-spin" /> }
+    : hasErrorAlert
+      ? { tone: 'danger', label: 'Issues detected', icon: <AlertCircle className="size-3" /> }
+      : hasWarningAlert
+        ? { tone: 'warning', label: 'Warnings', icon: <AlertTriangle className="size-3" /> }
+        : { tone: 'success', label: 'All systems operational', icon: <CheckCircle2 className="size-3" /> };
+
   const usageSeries = (usage.data?.points ?? []).slice(-24).map((p) => ({
     t: p.t,
     requests: p.requests ?? 0,
@@ -98,7 +112,7 @@ export function DashboardPage() {
   }, {});
 
   const modalityPie = Object.entries(modalityData).map(([k, v]) => ({
-    name: k,
+    label: k,
     value: v,
     color: MODALITY_COLOR[k] ?? TONE_COLORS.primary,
   }));
@@ -111,8 +125,8 @@ export function DashboardPage() {
         icon={<Activity className="size-5" />}
         actions={
           <div className="flex items-center gap-2">
-            <Badge tone="success" size="md" icon={<CheckCircle2 className="size-3" />}>
-              All systems operational
+            <Badge tone={systemStatus.tone} size="md" icon={systemStatus.icon}>
+              {systemStatus.label}
             </Badge>
             <Button variant="secondary" size="sm" asChild>
               <Link to="/routing">
@@ -327,7 +341,7 @@ export function DashboardPage() {
           <CardContent className="px-0 pb-0">
             <div className="grid grid-cols-5 gap-1.5">
               {(['brain', 'thinker', 'executor', 'worker', 'temp_worker'] as const).map((l) => (
-                <IntelligenceBadge key={l} layer={l} size="md" showLabel />
+                <IntelligenceBadge key={l} layer={l} size={20} showLabel />
               ))}
             </div>
             <p className="text-[10px] text-fg-subtle mt-3">

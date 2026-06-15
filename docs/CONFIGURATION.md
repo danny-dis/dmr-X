@@ -46,6 +46,18 @@ Security headers are automatically applied:
 | `DMRX_RATE_LIMIT_MAX` | `100` | No | Maximum requests per window |
 | `DMRX_RATE_LIMIT_WINDOW` | `1 minute` | No | Rate limit window duration |
 
+## Server Limits (production hardening)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_BODY_LIMIT` | `10485760` (10 MB) | Max JSON request body size in bytes. Accepts `10mb`, `1024kb`, plain numbers. |
+| `DMRX_REQUEST_TIMEOUT` | `60000` (60 s) | Max time to receive a full request, in ms. Streaming responses are not affected. |
+| `DMRX_KEEPALIVE_TIMEOUT` | `65000` (65 s) | HTTP keep-alive timeout, in ms. Stay just above your reverse proxy's `keepalive_timeout`. |
+| `DMRX_CONNECTION_TIMEOUT` | `10000` (10 s) | Slow-loris defense: time to receive request headers, in ms. |
+| `DMRX_MAX_PARAM_LENGTH` | `200` | Max length of a single URL-encoded path/query parameter. |
+| `DMRX_TRUST_PROXY` | `loopback` | When to trust `X-Forwarded-*`. Accepts `true`, `false`, `loopback`, `linklocal`, `uniquelocal`, or a CIDR / IP list. |
+| `DMRX_MEMORY_LIMIT` | `1572864000` (1.5 GB) | RSS threshold for `/healthz` to report `memory: fail`. Accepts `1.5gb`, `512mb`, plain numbers. |
+
 ## Routing
 
 | Variable | Default | Required | Description |

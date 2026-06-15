@@ -39,6 +39,7 @@ export function StatTile({
     success: 'text-success',
     warning: 'text-warning',
     danger: 'text-danger',
+    accent: 'text-accent',
   }[tone];
 
   const deltaDirection =

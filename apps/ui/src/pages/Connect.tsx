@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { Plug, Copy, ExternalLink, Code, Server, Webhook, KeyRound } from 'lucide-react';
+import { useNavigate } from 'react-router';
+import { Plug, Play, Code, Server, Webhook, KeyRound } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Badge } from '@/components/primitives/Badge';
@@ -78,13 +79,34 @@ const EXAMPLES = {
   -H "Authorization: Bearer $DMRX_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "tool": "web.search",
-    "input": {"query": "DMR-X gateway"}
+    "model": "free",
+    "messages": [
+      {"role": "user", "content": "Search for DMR-X"}
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "web_search",
+          "description": "Search the web",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {"type": "string"}
+            },
+            "required": ["query"]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto"
   }'`,
   },
 };
 
 export function ConnectPage() {
+  const navigate = useNavigate();
+
   return (
     <PageContainer size="wide">
       <PageHeader
@@ -145,7 +167,16 @@ export function ConnectPage() {
                   <h3 className="text-sm font-semibold text-fg">{v.title}</h3>
                   <p className="text-[10px] text-fg-muted font-mono">{v.subtitle}</p>
                 </div>
-                <CopyButton value={v.code} />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => navigate('/playground')}
+                  >
+                    <Play className="size-3" /> Try in Playground
+                  </Button>
+                  <CopyButton value={v.code} />
+                </div>
               </div>
               <CodeBlock inline={false} copyable>
                 {v.code}

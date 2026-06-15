@@ -111,7 +111,7 @@ export function SandboxPage() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-fg truncate font-mono">{j.code?.slice(0, 60) ?? j.id}</p>
                     <p className="text-[10px] text-fg-muted">
-                      {j.language ?? 'python'} · {timeAgo(j.submittedAt)}
+                      {j.language ?? 'python'} · {j.submittedAt ? timeAgo(j.submittedAt) : '—'}
                     </p>
                   </div>
                   <div className="flex items-center gap-2 text-[10px] text-fg-muted tabular-nums">
@@ -152,13 +152,12 @@ export function SandboxPage() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="python">Python</SelectItem>
+                    <SelectItem value="python3">Python 3</SelectItem>
+                    <SelectItem value="node">Node.js</SelectItem>
                     <SelectItem value="javascript">JavaScript</SelectItem>
-                    <SelectItem value="typescript">TypeScript</SelectItem>
-                    <SelectItem value="rust">Rust</SelectItem>
-                    <SelectItem value="go">Go</SelectItem>
-                    <SelectItem value="ruby">Ruby</SelectItem>
-                    <SelectItem value="java">Java</SelectItem>
-                    <SelectItem value="bash">Bash</SelectItem>
+                    <SelectItem value="js">JS</SelectItem>
+                    <SelectItem value="deno">Deno</SelectItem>
+                    <SelectItem value="bun">Bun</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

@@ -1,0 +1,10 @@
+import { initDb, getDb } from '@dmr-x/db';
+await initDb();
+const db = getDb();
+const providers = db.prepare('SELECT name, is_healthy, auth_method FROM providers').all();
+console.log('Providers in DB:', providers.length);
+const profiles = db.prepare('SELECT COUNT(*) as cnt FROM model_profiles').get();
+console.log('Model profiles:', JSON.stringify(profiles));
+const oauthProviders = db.prepare("SELECT name FROM providers WHERE auth_method = 'oauth'").all();
+console.log('OAuth providers:', JSON.stringify(oauthProviders));
+process.exit(0);

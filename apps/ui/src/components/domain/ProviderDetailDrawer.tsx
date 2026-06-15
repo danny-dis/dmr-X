@@ -14,6 +14,11 @@ import {
   CheckCircle2,
   Circle,
   Activity,
+  Plus,
+  RotateCw,
+  Power,
+  PowerOff,
+  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -29,10 +34,13 @@ import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
 import { Switch } from '@/components/primitives/Switch';
 import { StatusPill } from '@/components/primitives/StatusPill';
+import { Input } from '@/components/primitives/Input';
+import { TierBadge, KeyTierBadge } from '@/components/domain/TierBadge';
+import { AddKeyDialog } from '@/components/domain/AddKeyDialog';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import { formatDateTime, formatDuration } from '@/lib/formatters';
-import type { ApiProvider, Modality } from '@/types/api';
+import type { ApiProvider, ApiProviderKey } from '@/types/api';
 
 export interface ProviderDetailDrawerProps {
   provider: ApiProvider | null;
@@ -93,6 +101,21 @@ export function ProviderDetailDrawer({
   const [refreshing, setRefreshing] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [apiKeyEditing, setApiKeyEditing] = React.useState(false);
+  const [newApiKey, setNewApiKey] = React.useState('');
+  const [updatingKey, setUpdatingKey] = React.useState(false);
+  const [apiKeyVisible, setApiKeyVisible] = React.useState(false);
+
+  // Per-key state for the multi-key section. We track which key is
+  // currently being rotated (so the inline form knows which one to
+  // PUT to) and which is being deleted (for the confirm step).
+  const [rotatingKeyId, setRotatingKeyId] = React.useState<string | null>(null);
+  const [rotatingKeyValue, setRotatingKeyValue] = React.useState('');
+  const [rotatingKeySubmitting, setRotatingKeySubmitting] = React.useState(false);
+  const [pendingDeleteKeyId, setPendingDeleteKeyId] = React.useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = React.useState(false);
+  const [addKeyOpen, setAddKeyOpen] = React.useState(false);
+  const [togglingKeyId, setTogglingKeyId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!open) {
@@ -101,6 +124,14 @@ export function ProviderDetailDrawer({
       setRefreshing(false);
       setDeleting(false);
       setConfirmDelete(false);
+      setApiKeyEditing(false);
+      setNewApiKey('');
+      setApiKeyVisible(false);
+      setRotatingKeyId(null);
+      setRotatingKeyValue('');
+      setPendingDeleteKeyId(null);
+      setAddKeyOpen(false);
+      setTogglingKeyId(null);
     }
   }, [open]);
 
@@ -179,6 +210,98 @@ export function ProviderDetailDrawer({
     }
   };
 
+  const handleUpdateApiKey = async () => {
+    if (!provider) return;
+    const trimmed = newApiKey.trim();
+    if (!trimmed) {
+      toast.error('API key is required');
+      return;
+    }
+    setUpdatingKey(true);
+    try {
+      await Admin.updateProviderApiKey(provider.id, trimmed);
+      toast.success('API key updated', { description: provider.name });
+      setNewApiKey('');
+      setApiKeyEditing(false);
+      setApiKeyVisible(false);
+      onChanged?.();
+    } catch (err) {
+      toast.error('Failed to update API key', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setUpdatingKey(false);
+    }
+  };
+
+  const cancelApiKeyEdit = () => {
+    setApiKeyEditing(false);
+    setNewApiKey('');
+    setApiKeyVisible(false);
+  };
+
+  const handleRotateKey = async (key: ApiProviderKey) => {
+    if (!provider) return;
+    const trimmed = rotatingKeyValue.trim();
+    if (!trimmed) {
+      toast.error('API key is required');
+      return;
+    }
+    setRotatingKeySubmitting(true);
+    try {
+      await Admin.rotateProviderKey(provider.id, key.id, { api_key: trimmed });
+      toast.success('Key rotated', { description: key.label ?? key.id });
+      setRotatingKeyId(null);
+      setRotatingKeyValue('');
+      onChanged?.();
+    } catch (err) {
+      toast.error('Failed to rotate key', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setRotatingKeySubmitting(false);
+    }
+  };
+
+  const handleToggleKey = async (key: ApiProviderKey) => {
+    if (!provider) return;
+    setTogglingKeyId(key.id);
+    try {
+      await Admin.rotateProviderKey(provider.id, key.id, { is_active: !key.is_active });
+      toast.success(key.is_active ? 'Key deactivated' : 'Key activated', {
+        description: key.label ?? key.id,
+      });
+      onChanged?.();
+    } catch (err) {
+      toast.error('Failed to update key', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTogglingKeyId(null);
+    }
+  };
+
+  const handleDeleteKey = async (key: ApiProviderKey) => {
+    if (!provider) return;
+    if (pendingDeleteKeyId !== key.id) {
+      setPendingDeleteKeyId(key.id);
+      return;
+    }
+    setDeletingKey(true);
+    try {
+      await Admin.removeProviderKey(provider.id, key.id);
+      toast.success('Key removed', { description: key.label ?? key.id });
+      setPendingDeleteKeyId(null);
+      onChanged?.();
+    } catch (err) {
+      toast.error('Failed to remove key', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setDeletingKey(false);
+    }
+  };
+
   if (!provider) {
     return (
       <Drawer open={open} onOpenChange={onOpenChange}>
@@ -201,7 +324,17 @@ export function ProviderDetailDrawer({
   }
 
   const health = provider.health;
-  const healthStatus = health?.status ?? (provider.enabled ? 'online' : 'offline');
+  // Health status from the API can be 'ok' | 'degraded' | 'down' | 'unknown'.
+  // StatusPill accepts the more specific StatusKind union; map the API values
+  // onto it so the pill renders a meaningful label/dot color.
+  const healthStatus = (() => {
+    const raw = health?.status ?? (provider.enabled ? 'online' : 'offline');
+    if (raw === 'ok') return 'online' as const;
+    if (raw === 'down') return 'offline' as const;
+    if (raw === 'degraded') return 'degraded' as const;
+    if (raw === 'unknown') return 'unknown' as const;
+    return raw as 'online' | 'offline';
+  })();
   const enabled = provider.enabled ?? true;
 
   return (
@@ -210,6 +343,7 @@ export function ProviderDetailDrawer({
         <DrawerHeader>
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <StatusPill status={healthStatus} size="sm" showDot pulse />
+            <TierBadge tier={provider.tier} size="md" />
             {provider.adapterType && (
               <Badge tone="muted" size="sm" icon={<Boxes className="size-2.5" />}>
                 {provider.adapterType}
@@ -290,7 +424,261 @@ export function ProviderDetailDrawer({
                 mono
               />
             </div>
+            {apiKeyEditing ? (
+              <div className="mt-2 space-y-2">
+                <Input
+                  type={apiKeyVisible ? 'text' : 'password'}
+                  value={newApiKey}
+                  onChange={(e) => setNewApiKey(e.target.value)}
+                  placeholder="Paste new API key…"
+                  autoComplete="off"
+                  autoFocus
+                />
+                <div className="flex items-center gap-2 justify-end">
+                  <label className="flex items-center gap-1.5 text-[10px] text-fg-muted cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={apiKeyVisible}
+                      onChange={(e) => setApiKeyVisible(e.target.checked)}
+                      className="size-3 accent-primary"
+                    />
+                    Show key
+                  </label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={cancelApiKeyEdit}
+                    disabled={updatingKey}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleUpdateApiKey}
+                    loading={updatingKey}
+                    disabled={updatingKey || !newApiKey.trim()}
+                    leftIcon={<KeyRound className="size-3.5" />}
+                  >
+                    Save key
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="mt-2 w-full"
+                onClick={() => setApiKeyEditing(true)}
+                leftIcon={<KeyRound className="size-3.5" />}
+              >
+                {provider.apiKeyRef ? 'Rotate API key' : 'Set API key'}
+              </Button>
+            )}
+            <p className="text-[10px] text-fg-subtle mt-1 ml-0.5">
+              Stored encrypted on the gateway. The plaintext is never returned in list responses.
+            </p>
           </section>
+
+          {/*
+            Multi-key section. We always render this — even when
+            there's only the Default key — so the "Add another key"
+            affordance is discoverable. The list collapses to nothing
+            when the server hasn't reported any keys (older builds).
+          */}
+          {provider.keys && provider.keys.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider flex items-center gap-1.5">
+                  <KeyRound className="size-3" />
+                  API Keys
+                  <span className="text-fg-subtle font-normal normal-case tracking-normal">
+                    ({provider.keys.length})
+                  </span>
+                </h3>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setAddKeyOpen(true)}
+                  leftIcon={<Plus className="size-3" />}
+                >
+                  Add another key
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {provider.keys.map((key) => {
+                  const isRotating = rotatingKeyId === key.id;
+                  return (
+                    <div
+                      key={key.id}
+                      className={cn(
+                        'rounded-lg border border-border bg-surface-2/40 px-3 py-2.5',
+                        !key.is_active && 'opacity-60',
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-medium text-fg truncate">
+                              {key.label ?? key.id.slice(0, 8)}
+                            </span>
+                            <KeyTierBadge tier={key.tier} />
+                            {!key.is_active && (
+                              <Badge tone="muted" size="sm">inactive</Badge>
+                            )}
+                          </div>
+                          <div className="mt-1 flex items-center gap-3 text-[10px] text-fg-subtle flex-wrap">
+                            {key.masked_key_prefix && (
+                              <span className="font-mono">{key.masked_key_prefix}</span>
+                            )}
+                            {key.auth_method && key.auth_method !== 'api_key' && (
+                              <span>{key.auth_method}</span>
+                            )}
+                            {key.priority > 0 && (
+                              <span>P{key.priority}</span>
+                            )}
+                            {key.last_used_at && (
+                              <span>used {formatDateTime(key.last_used_at)}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          {key.has_api_key && (
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              onClick={() => {
+                                if (isRotating) {
+                                  setRotatingKeyId(null);
+                                  setRotatingKeyValue('');
+                                } else {
+                                  setRotatingKeyId(key.id);
+                                  setRotatingKeyValue('');
+                                }
+                              }}
+                              aria-label={isRotating ? 'Cancel rotate' : 'Rotate key'}
+                              title={isRotating ? 'Cancel' : 'Rotate key'}
+                            >
+                              <RotateCw className="size-3.5" />
+                            </Button>
+                          )}
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => void handleToggleKey(key)}
+                            disabled={togglingKeyId === key.id}
+                            aria-label={key.is_active ? 'Deactivate key' : 'Activate key'}
+                            title={key.is_active ? 'Deactivate' : 'Activate'}
+                          >
+                            {key.is_active ? (
+                              <Power className="size-3.5" />
+                            ) : (
+                              <PowerOff className="size-3.5" />
+                            )}
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => {
+                              if (pendingDeleteKeyId === key.id) {
+                                setPendingDeleteKeyId(null);
+                              } else {
+                                setPendingDeleteKeyId(key.id);
+                              }
+                            }}
+                            aria-label="Delete key"
+                            title="Delete key"
+                            className={cn(
+                              pendingDeleteKeyId === key.id && 'text-danger',
+                            )}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      {isRotating && (
+                        <div className="mt-2 space-y-2">
+                          <Input
+                            type="password"
+                            value={rotatingKeyValue}
+                            onChange={(e) => setRotatingKeyValue(e.target.value)}
+                            placeholder="Paste new API key…"
+                            autoComplete="off"
+                            autoFocus
+                          />
+                          <div className="flex items-center gap-2 justify-end">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setRotatingKeyId(null);
+                                setRotatingKeyValue('');
+                              }}
+                              disabled={rotatingKeySubmitting}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => void handleRotateKey(key)}
+                              loading={rotatingKeySubmitting}
+                              disabled={rotatingKeySubmitting || !rotatingKeyValue.trim()}
+                            >
+                              Save new key
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {pendingDeleteKeyId === key.id && (
+                        <div className="mt-2 flex items-center gap-2 rounded-md border border-danger/30 bg-danger/5 px-2.5 py-2">
+                          <AlertCircle className="size-3.5 text-danger shrink-0" />
+                          <span className="text-[11px] text-danger flex-1">
+                            Click delete again to confirm.
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => void handleDeleteKey(key)}
+                            disabled={deletingKey}
+                            loading={deletingKey}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/*
+            When the server hasn't reported any keys (very old build,
+            or a keyless provider), still expose the "Add key" button
+            so the operator can bootstrap the connection.
+          */}
+          {(!provider.keys || provider.keys.length === 0) && (
+            <section>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="w-full"
+                onClick={() => setAddKeyOpen(true)}
+                leftIcon={<Plus className="size-3.5" />}
+              >
+                Add a key
+              </Button>
+            </section>
+          )}
 
           {provider.capabilities && provider.capabilities.length > 0 && (
             <section>

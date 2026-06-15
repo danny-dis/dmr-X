@@ -1,9 +1,8 @@
 import * as React from 'react';
-import { Cpu, Activity, Pause, Play, Plus, Cpu as CpuIcon, Zap } from 'lucide-react';
+import { Cpu, Pause, Play, Plus } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
 import { Button } from '@/components/primitives/Button';
-import { Badge } from '@/components/primitives/Badge';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { StatusPill } from '@/components/primitives/StatusPill';
@@ -115,12 +114,40 @@ export function WorkersPage() {
 
                 <div className="mt-3 flex items-center gap-1.5 justify-end">
                   {w.draining ? (
-                    <Button size="sm" variant="secondary">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={async () => {
+                        try {
+                          await Admin.resumeWorker(w.id);
+                          toast.success('Worker resumed', { description: w.name ?? w.id });
+                          workers.refetch();
+                        } catch (err) {
+                          toast.error('Failed to resume worker', {
+                            description: err instanceof Error ? err.message : String(err),
+                          });
+                        }
+                      }}
+                    >
                       <Play className="size-3" />
                       Resume
                     </Button>
                   ) : (
-                    <Button size="sm" variant="ghost">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={async () => {
+                        try {
+                          await Admin.drainWorker(w.id);
+                          toast.success('Worker draining', { description: w.name ?? w.id });
+                          workers.refetch();
+                        } catch (err) {
+                          toast.error('Failed to drain worker', {
+                            description: err instanceof Error ? err.message : String(err),
+                          });
+                        }
+                      }}
+                    >
                       <Pause className="size-3" />
                       Drain
                     </Button>

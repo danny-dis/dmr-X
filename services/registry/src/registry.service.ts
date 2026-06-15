@@ -139,6 +139,24 @@ export class RegistryService {
     ).run(crypto.randomUUID(), providerId, healthy ? 1 : 0, latencyMs ?? null);
   }
 
+  /**
+   * Update only the `last_health_check` timestamp for a provider. Used by
+   * the health checker for adapters that are registered but not yet
+   * initialized (no API key configured) — we still want to record that we
+   * checked, but not bump `consecutive_failures` or flip `is_healthy`,
+   * both of which would remove the provider from the candidate set the
+   * moment the user *does* add a key.
+   */
+  touchHealthCheck(providerId: string): void {
+    const db = getDb();
+    db.prepare(
+      `UPDATE providers SET
+        last_health_check = datetime('now'),
+        updated_at = datetime('now')
+      WHERE id = ?`
+    ).run(providerId);
+  }
+
   getProviderConfig(providerId: string): any {
     const cacheKey = `config:${providerId}`;
 

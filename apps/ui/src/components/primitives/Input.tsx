@@ -1,15 +1,19 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> {
+// HTML's native `prefix` attribute on <input> is a string. Our wrapper
+// accepts a ReactNode (icon, badge, etc.), so we omit the inherited type
+// to keep both APIs in sync.
+export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size' | 'prefix'> {
   invalid?: boolean;
   prefix?: React.ReactNode;
   suffix?: React.ReactNode;
+  mono?: boolean;
   size?: 'sm' | 'md' | 'lg';
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, invalid, prefix, suffix, size = 'md', type = 'text', ...props }, ref) => {
+  ({ className, invalid, prefix, suffix, size = 'md', type = 'text', mono = false, ...props }, ref) => {
     const sizeClass = {
       sm: 'h-7 text-xs px-2.5',
       md: 'h-9 text-sm px-3',
@@ -38,7 +42,8 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           type={type}
           className={cn(
             'flex-1 bg-transparent outline-none placeholder:text-fg-subtle min-w-0',
-            'text-fg'
+            'text-fg',
+            mono && 'font-mono'
           )}
           {...props}
         />

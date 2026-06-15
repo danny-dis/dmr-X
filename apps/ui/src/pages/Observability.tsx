@@ -27,12 +27,12 @@ export function ObservabilityPage() {
     { refetchInterval: 10000 }
   );
   const audit = useApiData<ApiAuditEvent[]>(
-    () => Admin.listAudit({ limit: 100 }),
+    () => Admin.listAudit(),
     [],
     { refetchInterval: 30000 }
   );
   const telemetry = useApiData<ApiTelemetryEvent[]>(
-    () => Admin.listTelemetry({ limit: 200 }),
+    () => Admin.listTelemetry(),
     [],
     { refetchInterval: liveMode ? 3000 : false }
   );

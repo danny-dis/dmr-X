@@ -15,6 +15,7 @@ import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/pr
 import { Badge } from '@/components/primitives/Badge';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
+import { setTenantToken } from '@/lib/api';
 
 export interface CreateApiKeyDialogProps {
   open: boolean;
@@ -97,9 +98,28 @@ export function CreateApiKeyDialog({
       const created = await Admin.createApiKey({
         tenant_id: tenantId,
         name: form.name.trim(),
+        scopes: form.scopes,
       });
+      // The backend returns the row plus the plaintext `key`. If the payload
+      // is missing the key (e.g. a non-2xx that somehow came through, or a
+      // proxy stripped the body), surface a clear error instead of crashing
+      // on `undefined.key` and showing a misleading "Failed to create API key".
+      if (!created || typeof created.key !== 'string' || created.key.length === 0) {
+        // eslint-disable-next-line no-console
+        console.error('createApiKey: unexpected response payload', created);
+        throw new Error('Server did not return the new API key. Please retry.');
+      }
       setCreatedKey(created.key);
-      toast.success('API key created', { description: form.name });
+      // Activate the new key: make it the active tenant token for chat
+      // calls and mark it as the currently-active key so other UI surfaces
+      // (the ApiKeyCard list) can highlight it.
+      setTenantToken(created.key);
+      try {
+        localStorage.setItem('dmrx_active_key_id', created.id);
+      } catch {
+        // ignore storage failures (private mode, quota, etc.)
+      }
+      toast.success('API key created and activated', { description: form.name });
       onCreated?.();
     } catch (err) {
       toast.error('Failed to create API key', {
@@ -136,6 +156,7 @@ export function CreateApiKeyDialog({
                   <Check className="size-4" />
                 </div>
                 <DialogTitle>API key created</DialogTitle>
+                <Badge tone="success" size="sm">Active</Badge>
               </div>
               <DialogDescription>
                 Copy this key now — it will not be shown again.

@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased — Production Readiness (2026-06-12)
+
+### Bug Fixes
+
+- **`MemoryCache.hSet` LRU eviction** — previously the 3rd `hSet` into a 3-slot cache silently evicted an entry, leaving size=2. Now `hSet` evicts *before* inserting (matching `set()`'s pattern). Fixes the regression tests at `tests/unit/memory-cache.test.ts:223-265`.
+- **Telemetry build-blocker** — `@opentelemetry/exporter-prometheus@0.52.0` exports a `PrometheusExporter` whose internal `MetricReader` is nominally distinct from the one in `@opentelemetry/sdk-metrics@1.25.0`. The constructor signature was failing structural type-checking, breaking `bun run build`. Now the cast is documented and explicit.
+- **MCP server TypeScript errors** — `services/mcp-server/src/prompts.ts` and `resources.ts` failed to compile against `@modelcontextprotocol/sdk@1.12.1` (Zod type mismatch on prompt args, `ResourceTemplate` moved to a top-level export). The `registerPrompt()` wrapper around `server.prompt()` papers over the Zod 3.23 vs SDK mismatch in one place.
+- **mcp-config test type error** — `resolveConfig<McpConfigFile>(...)` was passing a number where `T` is constrained to `McpConfigFile`; the type parameter is now `string`.
+
+### Server Hardening
+
+- **Body limit** — `bodyLimit: 10 MB` (env: `DMRX_BODY_LIMIT`). Rejects 100MB JSON bodies before they hit the parser.
+- **Request timeout** — `requestTimeout: 60 s` (env: `DMRX_REQUEST_TIMEOUT`). Fastify's default 5 min is too generous for an LLM gateway.
+- **Keep-alive timeout** — `keepAliveTimeout: 65 s` (env: `DMRX_KEEPALIVE_TIMEOUT`).
+- **Connection timeout** — `connectionTimeout: 10 s` (env: `DMRX_CONNECTION_TIMEOUT`). Slow-loris defense.
+- **`maxParamLength: 200`** (env: `DMRX_MAX_PARAM_LENGTH`).
+- **`trustProxy: 'loopback'`** (env: `DMRX_TRUST_PROXY`). Accepts `true` / `false` / `loopback` / `linklocal` / `uniquelocal` / CIDR / IP list. Set to `true` if behind nginx/Cloudflare.
+
+All six are validated by `validateStartupConfig()` in `apps/gateway/src/main.ts` on boot.
+
+### Observability
+
+- **Deepened `/healthz`** — now reports `db_read`, `db_write`, `candidates`, `memory` (vs `DMRX_MEMORY_LIMIT`, default 1.5 GB), and `uptime`. Returns 503 if any check fails.
+- **Request ID in error responses** — 5xx errors now include `error.request_id` so users can quote it in support tickets. The same ID is on the `x-request-id` response header on success.
+- **Telemetry wired into the request flow** — `onResponse` hook calls `telemetry.recordRequest` / `recordLatency` / `recordError` / `recordTokens` when route handlers populate `request.metrics`. The chat route now does this automatically; other routes can opt in by setting `(request as any).metrics = { providerId, modelId, modality, tokens?, errorCode? }`.
+- **Prometheus endpoint documented** — `:9464/metrics` (separate port, started by `TelemetryService`). The 7 metric series are now listed in `docs/DEPLOYMENT.md` with a sample scrape config.
+
+### Documentation
+
+- `docs/CONFIGURATION.md` — new "Server Limits" table with all 7 new env vars.
+- `docs/DEPLOYMENT.md` — Metrics section with Prometheus scrape config, `docker-compose.yml` port mapping, `trustProxy` note in the nginx example, new Server Hardening checklist.
+- `.env.example` — all 7 new env vars documented with format hints.
+
+### Testing
+
+- 2 previously-failing `memory-cache.test.ts` regression tests now pass.
+- New `tests/unit/server-hardening.test.ts` — 25 tests covering body limit, request timeout, max param length, request ID generation/honoring, trust proxy (`loopback` vs `true`), 5xx error `request_id`, 4xx error omission, and the new `/healthz` shape.
+- New `tests/unit/telemetry-integration.test.ts` — 7 tests verifying the `onResponse` hook calls `recordRequest` / `recordLatency` / `recordTokens` / `recordError` with correct args.
+- Total: **521/540 tests pass** (was 487/508; +34 tests, 0 failing).
+
+### Known Limitations
+
+- **gzip compression** — `@fastify/compress` was identified as a desired dependency but install was deferred (requires explicit user approval for new dependencies). Without it, large JSON responses aren't gzipped. Workaround: terminate at a reverse proxy that compresses (nginx `gzip on;`).
+- **Compression is the only deferred item from the production-readiness audit.** All other identified gaps are addressed.
+
 ## Unreleased — Top-3 Improvement Sprint (2026-06-10)
 
 ### Adapters

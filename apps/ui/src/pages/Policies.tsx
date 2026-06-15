@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Shield, Plus, Search, Filter, Zap, AlertCircle, ChevronRight, Brain, Bot } from 'lucide-react';
+import { Shield, Plus, Search, Filter, Zap, AlertCircle, ChevronRight } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
@@ -7,7 +7,6 @@ import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { EmptyState } from '@/components/primitives/EmptyState';
-import { StatusPill } from '@/components/primitives/StatusPill';
 import { Switch } from '@/components/primitives/Switch';
 import { PolicyDialog } from '@/components/domain/PolicyDialog';
 import { useApiData } from '@/hooks/useApiData';
@@ -40,8 +39,8 @@ export function PoliciesPage() {
   const toggleEnabled = async (p: ApiPolicyRule, next: boolean) => {
     setTogglingId(p.id);
     try {
-      await Admin.upsertPolicy({ id: p.id, enabled: next });
-      toast.success(next ? 'Policy enabled' : 'Policy disabled', { description: p.name });
+      await Admin.updatePolicy(p.id, { enabled: next });
+      toast.success('Policy updated', { description: `${p.name} ${next ? 'enabled' : 'disabled'}` });
       await policies.refetch();
     } catch (err) {
       toast.error('Failed to update policy', {

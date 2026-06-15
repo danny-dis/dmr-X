@@ -43,8 +43,14 @@ export function FreeTierPage() {
 
   const catalogEntries = catalog.data?.entries ?? [];
   const freeCatalog = catalogEntries.filter(isFreeProvider);
-  const connectedIds = new Set((providers.data ?? []).map((p) => p.id));
-  const connectedFree = (providers.data ?? []).filter((p) => freeCatalog.some((c) => c.id === p.id));
+  // A "connected free provider" is any provider whose server-computed
+  // tier is `free` or `mixed` (the latter covers connections that
+  // started free and had a paid key added on top). Mapping by `name`
+  // to the catalog entry is still useful for the *browse* cards, but
+  // for the "connected" list we trust the per-connection tier.
+  const connectedFree = (providers.data ?? []).filter(
+    (p) => p.tier === 'free' || p.tier === 'mixed',
+  );
   const totalFreeModels = freeCatalog.reduce((sum, e) => sum + (e.models?.length ?? 0), 0);
 
   const cloudCategories = new Set(['cloud_llm', 'cloud_embedding', 'cloud_audio', 'cloud_video', 'cloud_diffusion']);
@@ -172,7 +178,7 @@ export function FreeTierPage() {
                     const entry = freeCatalog.find((c) => c.id === prov.id);
                     if (entry) {
                       setSelectedTemplate(entry);
-                      setSelectedProvider(prov);
+                      setSelectedProvider(entry);
                     }
                   }}
                 />
@@ -236,7 +242,7 @@ export function FreeTierPage() {
           ) : filtered.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {filtered.map((entry) => {
-                const isConnected = connectedIds.has(entry.id);
+                const isConnected = connectedNames.has(entry.id);
                 const freeModels = (entry.models ?? []).filter(
                   (m) => (m as unknown as { freeTier?: unknown }).freeTier != null
                 );

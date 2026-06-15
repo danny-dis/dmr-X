@@ -57,8 +57,6 @@ function isPublicPath(pathname: string, method: string): boolean {
 }
 
 export async function authMiddleware(server: FastifyInstance): Promise<void> {
-  const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
-
   server.addHook('onRequest', async (request) => {
     // Skip auth for public routes (strip query string so /v1/models?limit=10 still matches)
     const pathname = request.url.split('?')[0];
@@ -66,15 +64,36 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       return;
     }
 
+    // Re-read the admin key on every request so a runtime rotation
+    // (see POST /v1/admin/security/rotate-admin-key) takes effect immediately
+    // instead of requiring a gateway restart.
+    const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
+    // Re-read LOCAL_MODE on every request as well, so toggling the env var
+    // at runtime (and the equivalent admin rotation flow) flips the bypass
+    // without a restart.
+    const localMode = process.env.DMRX_LOCAL_MODE === 'true';
+
     // Admin routes: skip auth in local mode for UI access
     if (pathname.startsWith('/v1/admin')) {
-      if (LOCAL_MODE) return;
+      if (localMode) return;
       if (!adminApiKey || adminApiKey === 'replace-with-admin-key') {
         logger.error('Admin API accessed but DMRX_ADMIN_API_KEY is not set or default. Blocking for safety.');
+        (server as any).recordTelemetryEvent?.({
+          level: 'warning',
+          service: 'gateway',
+          message: 'Admin API accessed but admin key is not configured',
+          metadata: { path: pathname, reason: 'admin_key_unset' },
+        });
         throw new AuthenticationError('Admin API is disabled (no secure key configured)');
       }
       const apiKey = extractApiKey(request);
       if (!apiKey) {
+        (server as any).recordTelemetryEvent?.({
+          level: 'warning',
+          service: 'gateway',
+          message: 'Admin API request missing API key',
+          metadata: { path: pathname, reason: 'admin_key_missing' },
+        });
         throw new AuthenticationError('Invalid admin API key');
       }
       const keyBuf = Buffer.from(apiKey);
@@ -86,13 +105,19 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       keyBuf.copy(paddedKey);
       adminBuf.copy(paddedAdmin);
       if (!timingSafeEqual(paddedKey, paddedAdmin)) {
+        (server as any).recordTelemetryEvent?.({
+          level: 'warning',
+          service: 'gateway',
+          message: 'Admin API key mismatch',
+          metadata: { path: pathname, reason: 'admin_key_invalid' },
+        });
         throw new AuthenticationError('Invalid admin API key');
       }
       return;
     }
 
     // Local mode: skip tenant API key check for public API routes only
-    if (LOCAL_MODE) {
+    if (localMode) {
       logger.warn('LOCAL MODE ACTIVE — tenant API key check is disabled. Do not use in production.');
       const db = getDb();
       const tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined;
@@ -107,6 +132,12 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // All other routes require tenant API key
     const apiKey = extractApiKey(request);
     if (!apiKey) {
+      (server as any).recordTelemetryEvent?.({
+        level: 'warning',
+        service: 'gateway',
+        message: 'Tenant API request missing Authorization header',
+        metadata: { path: pathname, reason: 'tenant_key_missing' },
+      });
       throw new AuthenticationError('Missing or invalid Authorization header');
     }
     const keyHash = hashApiKey(apiKey);
@@ -120,6 +151,12 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     ).get(keyHash) as { id: string; tenant_id: string; tenant_name: string } | undefined;
 
     if (!row) {
+      (server as any).recordTelemetryEvent?.({
+        level: 'warning',
+        service: 'gateway',
+        message: 'Tenant API key not found or inactive',
+        metadata: { path: pathname, reason: 'tenant_key_invalid' },
+      });
       throw new AuthenticationError('Invalid API key');
     }
 

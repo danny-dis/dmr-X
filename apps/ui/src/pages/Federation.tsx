@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Network, Plus, Globe, ArrowRight, ChevronRight, Trash2 } from 'lucide-react';
+import { Network, Plus, Globe, ArrowRight, ChevronRight, Trash2, Activity, RefreshCw } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Button } from '@/components/primitives/Button';
@@ -141,6 +141,41 @@ export function FederationPage() {
                     status={(n.status ?? 'unknown') as 'online' | 'degraded' | 'offline' | 'unknown'}
                     size="sm"
                   />
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label="Health check"
+                    onClick={async () => {
+                      try {
+                        await Admin.healthCheckFederation(n.id);
+                        toast.success('Health check complete', { description: n.name ?? n.id });
+                        nodes.refetch();
+                      } catch (err) {
+                        toast.error('Health check failed', {
+                          description: err instanceof Error ? err.message : String(err),
+                        });
+                      }
+                    }}
+                  >
+                    <Activity className="size-3" />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label="Sync benchmark"
+                    onClick={async () => {
+                      try {
+                        await Admin.syncFederationBenchmark(n.id);
+                        toast.success('Benchmark sync started', { description: n.name ?? n.id });
+                      } catch (err) {
+                        toast.error('Sync failed', {
+                          description: err instanceof Error ? err.message : String(err),
+                        });
+                      }
+                    }}
+                  >
+                    <RefreshCw className="size-3" />
+                  </Button>
                   <Button size="icon-sm" variant="ghost" aria-label="Remove" onClick={() => onRemove(n.id, n.name ?? n.id)}>
                     <Trash2 className="size-3" />
                   </Button>

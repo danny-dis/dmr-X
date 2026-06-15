@@ -67,7 +67,19 @@ const IntelligenceLayerIcons = {
   temp_worker: TempWorkerIcon,
 };
 
-export function IntelligenceBadge({ layer, size = 18, className = '' }: { layer: keyof typeof IntelligenceLayerIcons; size?: number; className?: string }) {
+export function IntelligenceBadge({
+  layer,
+  size = 18,
+  showLabel = false,
+  className = '',
+}: {
+  layer: keyof typeof IntelligenceLayerIcons;
+  /** Pixel size for the icon. Numeric only — pass a number like `18` or `24`. */
+  size?: number;
+  /** When true, render a text label next to the icon. */
+  showLabel?: boolean;
+  className?: string;
+}) {
   const Icon = IntelligenceLayerIcons[layer] || WorkerIcon;
   const colors: Record<string, string> = {
     brain: 'text-pink',
@@ -76,5 +88,14 @@ export function IntelligenceBadge({ layer, size = 18, className = '' }: { layer:
     worker: 'text-success',
     temp_worker: 'text-warning',
   };
+  const labelText = layer.replace('_', ' ');
+  if (showLabel) {
+    return (
+      <span className={`inline-flex items-center gap-1.5 ${colors[layer] || 'text-muted'} ${className}`}>
+        <Icon size={size} />
+        <span className="text-[10px] font-medium uppercase tracking-wider">{labelText}</span>
+      </span>
+    );
+  }
   return <Icon size={size} className={`${colors[layer] || 'text-muted'} ${className}`} />;
 }

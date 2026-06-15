@@ -53,7 +53,13 @@ export class UsageTracker {
   private static readonly RT_PREFIX = 'rt:';
   private static readonly DAILY_PREFIX = 'daily:';
   private static readonly MONTHLY_PREFIX = 'monthly:';
-  private static readonly DEFAULT_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days
+
+  /** RT keys are ephemeral — 7 days prevents unbounded growth from stale combos. */
+  private static readonly RT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+  /** Daily keys: 90 days covers recent billing history. */
+  private static readonly DAILY_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days
+  /** Monthly keys: 365 days covers a full billing year. */
+  private static readonly MONTHLY_TTL_SECONDS = 365 * 24 * 60 * 60; // 365 days
 
   /**
    * Record a single request's usage. Writes to cache counters and persists to SQLite.
@@ -71,17 +77,34 @@ export class UsageTracker {
     const dailyKey = `${UsageTracker.DAILY_PREFIX}${record.tenantId}:${dayKey}`;
     const monthlyKey = `${UsageTracker.MONTHLY_PREFIX}${record.tenantId}:${monthKey}`;
 
-    for (const key of [rtKey, globalKey, dailyKey, monthlyKey]) {
+    for (const key of [rtKey, globalKey]) {
       cache.hIncrBy(key, 'requests', 1);
       cache.hIncrBy(key, 'inputTokens', record.inputTokens);
       cache.hIncrBy(key, 'outputTokens', record.outputTokens);
       cache.hIncrBy(key, 'totalTokens', record.totalTokens);
       cache.hIncrBy(key, 'costCents', record.costCents);
-      cache.expire(key, UsageTracker.DEFAULT_TTL_SECONDS);
+      cache.expire(key, UsageTracker.RT_TTL_SECONDS);
+    }
+    for (const key of [dailyKey]) {
+      cache.hIncrBy(key, 'requests', 1);
+      cache.hIncrBy(key, 'inputTokens', record.inputTokens);
+      cache.hIncrBy(key, 'outputTokens', record.outputTokens);
+      cache.hIncrBy(key, 'totalTokens', record.totalTokens);
+      cache.hIncrBy(key, 'costCents', record.costCents);
+      cache.expire(key, UsageTracker.DAILY_TTL_SECONDS);
+    }
+    for (const key of [monthlyKey]) {
+      cache.hIncrBy(key, 'requests', 1);
+      cache.hIncrBy(key, 'inputTokens', record.inputTokens);
+      cache.hIncrBy(key, 'outputTokens', record.outputTokens);
+      cache.hIncrBy(key, 'totalTokens', record.totalTokens);
+      cache.hIncrBy(key, 'costCents', record.costCents);
+      cache.expire(key, UsageTracker.MONTHLY_TTL_SECONDS);
     }
 
     // 2. Persist to SQLite
     const id = crypto.randomUUID();
+    const createdAt = this.formatDateTime(now);
     db.prepare(
       `INSERT INTO usage_records
          (id, tenant_id, provider_id, model_id, input_tokens, output_tokens, total_tokens, cost_cents, request_id, created_at)
@@ -96,10 +119,8 @@ export class UsageTracker {
       record.totalTokens,
       record.costCents,
       record.requestId,
-      this.formatDateTime(now),
+      createdAt,
     );
-
-    const row = db.prepare('SELECT * FROM usage_records WHERE id = ?').get(id) as any;
 
     logger.debug(
       {
@@ -112,7 +133,19 @@ export class UsageTracker {
       'Recorded usage'
     );
 
-    return this.mapRow(row);
+    // Return the record we just built — no need to re-read from DB
+    return {
+      id,
+      tenantId: record.tenantId,
+      providerId: record.providerId,
+      modelId: record.modelId,
+      inputTokens: record.inputTokens,
+      outputTokens: record.outputTokens,
+      totalTokens: record.totalTokens,
+      costCents: record.costCents,
+      requestId: record.requestId,
+      createdAt,
+    };
   }
 
   /**

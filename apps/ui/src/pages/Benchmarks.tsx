@@ -138,7 +138,7 @@ export function BenchmarksPage() {
                         </td>
                         <td className="p-3 text-xs font-mono text-fg-muted">{formatDuration(model.avg_latency_ms)}</td>
                         <td className="p-3">
-                          <Badge tone="secondary" size="sm">{model.capability_tier}</Badge>
+                          <Badge tone="muted" size="sm">{model.capability_tier}</Badge>
                         </td>
                       </tr>
                     ))}
@@ -258,7 +258,7 @@ export function BenchmarksPage() {
                     <div>
                       <h3 className="text-sm font-semibold text-fg">{b.name}</h3>
                       <p className="text-[10px] text-fg-muted mt-0.5">
-                        {b.models?.length ?? 0} models · {b.promptCount} prompts · {timeAgo(b.runAt)}
+                        {b.models?.length ?? 0} models · {b.promptCount} prompts · {b.runAt ? timeAgo(b.runAt) : '—'}
                       </p>
                     </div>
                     <Badge tone="primary" size="sm">completed</Badge>

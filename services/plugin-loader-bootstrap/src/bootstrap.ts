@@ -66,7 +66,12 @@ export async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   // 1. Start the gateway (unchanged — no new deps)
-  const gateway = await createServer();
+  // createServer() now returns { server, runBackgroundInit }; we destructure
+  // both. The previous shape (returning a Fastify instance directly) was
+  // changed in the gateway to allow background initialisation to be kicked
+  // off after the listener is up.
+  const { server, runBackgroundInit } = await createServer();
+  const gateway = server;
 
   // 2. Extract gateway internals to inject into plugins
   // Fastify decorators are set at runtime via server.decorate(); TS cannot see them
@@ -90,6 +95,10 @@ export async function main() {
   // 4. Start the gateway server
   const port = parseInt(args.port ?? '3000', 10);
   await gateway.listen({ port, host: '0.0.0.0' });
+
+  // 4b. Kick off background initialisation (auto-register, model discovery,
+  // etc.) so the listener is already up while providers come online.
+  runBackgroundInit();
 
   // 5. Start plugins (MCP plugin will start its transports)
   // The plugin loader's load() method already calls start() on plugins

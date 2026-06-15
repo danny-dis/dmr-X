@@ -51,6 +51,35 @@ function getAuthToken(): string | null {
   }
 }
 
+function getTenantToken(): string | null {
+  try {
+    return localStorage.getItem('dmrx_tenant_token') || null;
+  } catch {
+    return null;
+  }
+}
+
+function isAdminPath(path: string): boolean {
+  return path.startsWith('/v1/admin') || path.startsWith('/admin');
+}
+
+function getTokenForPath(path: string): string | null {
+  if (isAdminPath(path)) return getAuthToken();
+  // Tenant routes prefer the tenant token, fall back to admin only for
+  // dev convenience (LOCAL_MODE-bypass). In production the admin key is
+  // not a valid tenant key, so callers must set dmrx_tenant_token.
+  return getTenantToken() ?? getAuthToken();
+}
+
+export function setTenantToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem('dmrx_tenant_token', token);
+    else localStorage.removeItem('dmrx_tenant_token');
+  } catch {
+    // ignore
+  }
+}
+
 export async function api<T = unknown>(path: string, opts: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, query, headers = {}, signal, timeoutMs = 30_000 } = opts;
   const controller = signal ? null : new AbortController();
@@ -66,7 +95,7 @@ export async function api<T = unknown>(path: string, opts: RequestOptions = {}):
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
+        ...(getTokenForPath(path) ? { Authorization: `Bearer ${getTokenForPath(path)}` } : {}),
         ...headers,
       },
       body: body == null ? undefined : JSON.stringify(body),
@@ -81,10 +110,36 @@ export async function api<T = unknown>(path: string, opts: RequestOptions = {}):
       }
     }
     if (!res.ok) {
-      const message =
-        (parsed && typeof parsed === 'object' && 'error' in (parsed as Record<string, unknown>)
-          ? String((parsed as Record<string, unknown>).error)
-          : null) ?? `Request failed: ${res.status}`;
+      // Build a useful message from the body so "Request failed: 500"
+      // never reaches the user without context. The backend can return
+      // several shapes — try them in this order, preferring the one that
+      // is most likely to carry the user-actionable detail:
+      //
+      //   1. { message: "<detail>" }           (Fastify default error envelope)
+      //   2. { error: { message: "<detail>" }} (custom error handler envelope)
+      //   3. { error: "<detail>" }             (custom notFoundHandler / string)
+      //   4. fall back to a generic status line
+      //
+      // Picking `error` (a string) before `message` was a bug: the
+      // gateway's Fastify default envelope puts the HTTP status text
+      // ("Bad Request", "Unauthorized", …) in `error` and the helpful
+      // detail in `message`, so the old order surfaced "Bad Request"
+      // for any 400.
+      let bodyMessage: string | null = null;
+      if (parsed && typeof parsed === 'object') {
+        const p = parsed as Record<string, unknown>;
+        if (typeof p.message === 'string' && p.message.length > 0) {
+          bodyMessage = p.message;
+        } else {
+          const e = p.error;
+          if (e && typeof e === 'object' && typeof (e as Record<string, unknown>).message === 'string') {
+            bodyMessage = String((e as Record<string, unknown>).message);
+          } else if (typeof e === 'string' && e.length > 0) {
+            bodyMessage = e;
+          }
+        }
+      }
+      const message = bodyMessage ?? `Request failed: ${res.status}`;
       throw new ApiError(message, res.status, parsed);
     }
     return parsed as T;

@@ -124,7 +124,7 @@ function MetaRow({
   );
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
+function Empty({ children }: { children?: React.ReactNode }) {
   return <span className="text-fg-subtle">—</span>;
 }
 

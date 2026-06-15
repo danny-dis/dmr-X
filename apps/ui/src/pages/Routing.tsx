@@ -44,7 +44,7 @@ export function RoutingPage() {
   }, {});
 
   const layerData = (['brain', 'thinker', 'executor', 'worker', 'temp_worker'] as const).map((_) => ({
-    name: _,
+    label: _,
     value: byLayer[_] ?? 0,
     color: _ === 'brain' ? TONE.primary : _ === 'thinker' ? TONE.accent : _ === 'executor' ? TONE.success : _ === 'worker' ? TONE.warning : TONE.pink,
   }));
@@ -87,7 +87,7 @@ export function RoutingPage() {
             key={l}
             label={l.replace('_', ' ')}
             value={byLayer[l] ?? 0}
-            icon={<IntelligenceBadge layer={l} size="sm" showLabel={false} />}
+            icon={<IntelligenceBadge layer={l} size={16} showLabel={false} />}
             tone={l === 'brain' ? 'primary' : l === 'thinker' ? 'default' : l === 'executor' ? 'success' : l === 'worker' ? 'warning' : 'danger'}
           />
         ))}

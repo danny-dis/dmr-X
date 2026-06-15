@@ -439,6 +439,17 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         }
       } catch (error) {
         logger.error({ err: error, requestId }, 'Agentic streaming error');
+        (server as any).recordTelemetryEvent?.({
+          level: 'error',
+          service: 'gateway',
+          message: error instanceof Error ? error.message : 'Agentic streaming error',
+          trace_id: requestId,
+          metadata: {
+            path: request.url,
+            model: body.model,
+            requestId,
+          },
+        });
         writeSSE(reply, 'error', { error: { message: 'Request failed' } });
       }
 

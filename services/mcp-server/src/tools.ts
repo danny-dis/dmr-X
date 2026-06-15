@@ -41,27 +41,27 @@ const RequirePrivacy = z.boolean().optional()
 export const ChatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
   content: z.union([
-    z.string(),
+    z.string().max(100_000, 'Message content too long — max 100,000 characters'),
     z.array(z.union([
-      z.object({ type: z.literal('text'), text: z.string() }),
+      z.object({ type: z.literal('text'), text: z.string().max(100_000, 'Text content too long') }),
       z.object({
         type: z.literal('image_url'),
         image_url: z.object({
-          url: z.string(),
+          url: z.string().max(2048, 'Image URL too long'),
           detail: z.enum(['auto', 'low', 'high']).optional(),
         }),
       }),
       z.object({
         type: z.literal('input_audio'),
         input_audio: z.object({
-          data: z.string(),
+          data: z.string().max(25_000_000, 'Audio data too large — max ~18MB base64'),
           format: z.enum(['wav', 'mp3']),
         }),
       }),
-    ])),
+    ])).max(20, 'Too many content parts — max 20 per message'),
   ]),
-  name: z.string().optional(),
-  tool_call_id: z.string().optional(),
+  name: z.string().max(100).optional(),
+  tool_call_id: z.string().max(200).optional(),
 });
 
 export const ToolSchema = z.object({
@@ -88,7 +88,7 @@ export const ToolChoiceSchema = z.union([
 // ---------------------------------------------------------------------------
 
 export const dmrxChatParams = {
-  messages: z.array(ChatMessageSchema).describe('Array of chat messages'),
+  messages: z.array(ChatMessageSchema).min(1, 'At least one message required').max(1000, 'Too many messages — max 1000').describe('Array of chat messages'),
   model: z.string().optional().describe('Preferred model (DMR-X will route to best available if omitted)'),
   temperature: z.number().min(0).max(2).optional().describe('Sampling temperature (0-2)'),
   max_tokens: z.number().int().positive().optional().describe('Maximum tokens to generate'),
@@ -191,7 +191,7 @@ export const dmrxSpeakParams = {
 
 export const dmrxRerankParams = {
   query: z.string().describe('Search query'),
-  documents: z.array(z.string()).describe('Documents to rerank'),
+  documents: z.array(z.string().max(50_000, 'Document too long — max 50,000 characters')).min(1, 'At least one document required').max(1000, 'Too many documents — max 1000').describe('Documents to rerank'),
   model: z.string().optional().describe('Preferred reranking model'),
   top_n: z.number().int().positive().optional().describe('Number of top results to return'),
   quality_target: QualityTarget,
@@ -230,7 +230,7 @@ export const dmrxBatchParams = {
   calls: z.array(z.object({
     tool: z.string().describe('Tool name (e.g., dmrx_chat, dmrx_embed)'),
     parameters: z.record(z.unknown()).describe('Tool parameters'),
-  })).describe('Array of tool calls to execute'),
+  })).min(1, 'At least one call required').max(50, 'Too many batch calls — max 50').describe('Array of tool calls to execute'),
   continue_on_fail: z.boolean().optional().describe('Continue executing on failure (default true)'),
 } as const;
 
@@ -240,7 +240,7 @@ export const dmrxBatchParams = {
 
 export const dmrxContextSaveParams = {
   id: z.string().optional().describe('Context ID (auto-generated if omitted)'),
-  messages: z.array(ChatMessageSchema).describe('Conversation messages to save'),
+  messages: z.array(ChatMessageSchema).min(1, 'At least one message required').max(1000, 'Too many messages — max 1000').describe('Conversation messages to save'),
   ttl_seconds: z.number().int().positive().optional().describe('Time-to-live in seconds (default 86400)'),
   user: z.string().optional().describe('Owner user ID'),
 } as const;
@@ -337,16 +337,16 @@ export const dmrxGenerate3DParams = {
 
 export const dmrxWorkflowParams = {
   steps: z.array(z.object({
-    id: z.string().describe('Step identifier'),
-    tool: z.string().describe('Tool name to execute'),
+    id: z.string().max(100).describe('Step identifier'),
+    tool: z.string().max(200).describe('Tool name to execute'),
     parameters: z.record(z.unknown()).describe('Tool parameters'),
     input_mapping: z.record(z.string()).optional().describe('Map previous step outputs to this step inputs'),
-    condition: z.string().optional().describe('Expression to evaluate for conditional execution'),
+    condition: z.string().max(500).optional().describe('Expression to evaluate for conditional execution'),
     retry_policy: z.object({
-      max_retries: z.number().int().nonnegative().optional(),
-      backoff_ms: z.number().int().positive().optional(),
+      max_retries: z.number().int().nonnegative().max(10).optional(),
+      backoff_ms: z.number().int().positive().max(60_000).optional(),
     }).optional(),
-  })).describe('Ordered workflow steps'),
+  })).min(1, 'At least one step required').max(100, 'Too many workflow steps — max 100').describe('Ordered workflow steps'),
   fail_fast: z.boolean().optional().describe('Stop on first error (default true)'),
   persist: z.boolean().optional().describe('Persist workflow state for resumption'),
 } as const;
@@ -380,6 +380,233 @@ export const TOOL_NAMES = {
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
+
+// ---------------------------------------------------------------------------
+// Tool output schemas (for structured output via registerTool)
+// ---------------------------------------------------------------------------
+
+export const dmrxChatOutput = {
+  id: z.string().describe('Unique request ID'),
+  object: z.literal('chat.completion'),
+  model: z.string().describe('Model ID used'),
+  provider: z.string().describe('Provider ID used'),
+  created: z.number().describe('Unix timestamp'),
+  choices: z.array(z.object({
+    index: z.number(),
+    message: z.object({
+      role: z.literal('assistant'),
+      content: z.string().nullable(),
+    }),
+    finish_reason: z.string(),
+  })).optional(),
+  usage: z.object({
+    prompt_tokens: z.number(),
+    completion_tokens: z.number(),
+    total_tokens: z.number(),
+  }).optional(),
+  routed_via: z.string().describe('Provider/model routing info'),
+  latency_ms: z.number().describe('Routing latency in ms'),
+} as const;
+
+export const dmrxImageOutput = {
+  created: z.number().describe('Unix timestamp'),
+  provider: z.string(),
+  model: z.string(),
+  data: z.array(z.object({
+    url: z.string().optional(),
+    b64_json: z.string().optional(),
+    revised_prompt: z.string().optional(),
+  })),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrxEmbeddingOutput = {
+  object: z.literal('list'),
+  provider: z.string(),
+  model: z.string(),
+  data: z.array(z.object({
+    object: z.literal('embedding'),
+    index: z.number(),
+    embedding: z.array(z.number()),
+  })),
+  usage: z.object({
+    prompt_tokens: z.number(),
+    total_tokens: z.number(),
+  }).optional(),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrxTranscribeOutput = {
+  provider: z.string(),
+  model: z.string(),
+  text: z.string(),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrxSpeakOutput = {
+  provider: z.string(),
+  model: z.string(),
+  audio: z.object({
+    url: z.string().optional(),
+    b64_json: z.string().optional(),
+    format: z.string().optional(),
+    duration: z.number().optional(),
+  }).nullable(),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrxRerankOutput = {
+  provider: z.string(),
+  model: z.string(),
+  results: z.array(z.object({
+    index: z.number(),
+    relevance_score: z.number(),
+    document: z.string(),
+  })),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrxVideoOutput = {
+  created: z.number().describe('Unix timestamp'),
+  provider: z.string(),
+  model: z.string(),
+  data: z.array(z.object({
+    url: z.string().optional(),
+    b64_json: z.string().optional(),
+    duration: z.number().optional(),
+    fps: z.number().optional(),
+  })),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrxMusicOutput = {
+  created: z.number().describe('Unix timestamp'),
+  provider: z.string(),
+  model: z.string(),
+  audio: z.object({
+    url: z.string().optional(),
+    b64_json: z.string().optional(),
+    format: z.string().optional(),
+    duration: z.number().optional(),
+  }).nullable(),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrx3DOutput = {
+  created: z.number().describe('Unix timestamp'),
+  provider: z.string(),
+  model: z.string(),
+  data: z.array(z.object({
+    url: z.string().optional(),
+    b64_json: z.string().optional(),
+    format: z.string().optional(),
+  })),
+  routed_via: z.string(),
+  latency_ms: z.number(),
+} as const;
+
+export const dmrxModelsOutput = {
+  source: z.enum(['registry', 'adapters']),
+  count: z.number(),
+  models: z.array(z.object({
+    provider: z.string(),
+    model: z.string(),
+    modality: z.string(),
+    capabilities: z.array(z.string()).optional(),
+    qualityScore: z.number().optional(),
+    healthy: z.boolean().optional(),
+  })),
+} as const;
+
+export const dmrxStatusOutput = {
+  status: z.literal('ok'),
+  version: z.string(),
+  uptime: z.string(),
+  uptimeMs: z.number(),
+  requestsHandled: z.number(),
+  lastError: z.string().nullable(),
+  router: z.object({
+    candidateCount: z.number(),
+    config: z.object({
+      epsilon: z.number(),
+      defaultQualityTarget: z.string(),
+      enableDecomposition: z.boolean(),
+    }),
+  }),
+  aggregator: z.object({
+    enabled: z.boolean(),
+    externalServerCount: z.number(),
+    externalToolCount: z.number(),
+  }).optional(),
+} as const;
+
+export const dmrxBatchOutput = {
+  success: z.boolean(),
+  results: z.array(z.object({
+    tool: z.string(),
+    success: z.boolean(),
+    output: z.unknown().optional(),
+    error: z.string().optional(),
+  })),
+} as const;
+
+export const dmrxContextSaveOutput = {
+  success: z.literal(true),
+  context_id: z.string(),
+  message: z.string(),
+} as const;
+
+export const dmrxContextLoadOutput = {
+  success: z.literal(true),
+  context: z.object({
+    id: z.string(),
+    messages: z.array(z.unknown()),
+    user: z.string(),
+    created_at: z.string(),
+  }),
+} as const;
+
+export const dmrxContextListOutput = {
+  success: z.literal(true),
+  count: z.number(),
+  contexts: z.array(z.object({
+    id: z.string(),
+    user: z.string(),
+    created_at: z.string(),
+    preview: z.string(),
+  })),
+} as const;
+
+export const dmrxContextSummarizeOutput = {
+  success: z.literal(true),
+  context_id: z.string(),
+  summary: z.string(),
+} as const;
+
+export const dmrxContextCompressOutput = {
+  success: z.literal(true),
+  context_id: z.string(),
+  messages_kept: z.number(),
+} as const;
+
+export const dmrxWorkflowOutput = {
+  success: z.boolean(),
+  results: z.array(z.object({
+    step_id: z.string(),
+    tool: z.string(),
+    success: z.boolean(),
+    output: z.unknown().optional(),
+    error: z.string().optional(),
+  })),
+  step_outputs: z.record(z.unknown()),
+} as const;
 
 // ---------------------------------------------------------------------------
 // Tool descriptions

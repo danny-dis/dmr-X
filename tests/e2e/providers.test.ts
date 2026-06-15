@@ -1,23 +1,26 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { TestClient } from './test-client.js';
 
+const describeE2E = process.env.DMRX_RUN_E2E === 'true' ? describe : describe.skip;
+
 /**
  * E2E Provider Integration Tests
  * Verifies that the integrated providers (Google, OpenRouter, Pollinations)
  * are correctly registered and responding to requests.
- * 
+ *
  * IMPORTANT: These tests require:
- * 1. Gateway running on localhost:3001
+ * 1. Gateway running on the URL set by DMRX_GATEWAY_URL (default: localhost:3000)
  * 2. DMRX_LOCAL_MODE=true to skip API key auth
  * 3. Or valid API keys configured for the providers
+ * 4. Set DMRX_RUN_E2E=true to enable these tests
  */
-describe('Provider Integration E2E', () => {
+describeE2E('Provider Integration E2E', () => {
   let client: TestClient;
 
   beforeAll(() => {
-    // Gateway must be running on localhost:3001
+    // Gateway URL is configurable via DMRX_GATEWAY_URL (matches stress-test suite)
     // DMRX_LOCAL_MODE=true allows us to skip API key auth for local tests
-    client = new TestClient('http://localhost:3001');
+    client = new TestClient(process.env.DMRX_GATEWAY_URL || 'http://localhost:3000');
   });
 
   describe('Registry Discovery', () => {
@@ -83,7 +86,7 @@ describe('Provider Integration E2E', () => {
 
   describe('Streaming', () => {
     it('should support streaming from Pollinations', async () => {
-      const response = await fetch('http://localhost:3001/v1/chat/completions', {
+      const response = await fetch(`${client.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

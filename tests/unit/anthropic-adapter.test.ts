@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { AnthropicAdapter } from '@dmr-x/adapters';
-import type { ProviderConfig, UnifiedRequest } from '@dmr-x/adapters';
+import type { ProviderConfig } from '@dmr-x/adapters';
+import type { UnifiedRequest } from '@dmr-x/core';
 
 describe('AnthropicAdapter', () => {
   let adapter: AnthropicAdapter;

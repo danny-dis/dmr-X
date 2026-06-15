@@ -16,13 +16,19 @@ interface CacheEntry {
  * - `createNamespacedCache(namespace)` returns a thin wrapper that
  *   automatically prefixes every key with `namespace:`, preventing
  *   collisions between unrelated subsystems.
+ * - Both `store` (string cache) and `hashes` (hash cache) entries are
+ *   tracked by a unified `accessOrder` map for LRU eviction. This prevents
+ *   hash entries from growing unboundedly outside the maxSize limit.
  */
 export class MemoryCache {
-  /** LRU store — Map preserves insertion order; re-insert on access. */
+  /** LRU store for string key-value entries. */
   private store = new Map<string, CacheEntry>();
+  /** Hash entries: key -> Map<field, value>. */
   private hashes = new Map<string, Map<string, string>>();
   /** TTL expiry per hash key — expires[key] is the timestamp when the hash expires. */
   private hashTTLs = new Map<string, number>();
+  /** Unified LRU access tracking: key -> last-access timestamp (ms). */
+  private accessOrder = new Map<string, number>();
   private maxSize: number;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -40,11 +46,13 @@ export class MemoryCache {
     if (!entry) return null;
     if (Date.now() > entry.expires) {
       this.store.delete(key);
+      this.accessOrder.delete(key);
       return null;
     }
     // Move to end (most-recently-used)
     this.store.delete(key);
     this.store.set(key, entry);
+    this.accessOrder.set(key, Date.now());
     return entry.value;
   }
 
@@ -52,26 +60,26 @@ export class MemoryCache {
     // If key already exists, delete first so re-insertion puts it at the end
     this.store.delete(key);
 
-    // Evict LRU entries if at capacity
-    while (this.store.size >= this.maxSize) {
-      const lruKey = this.store.keys().next().value;
-      if (lruKey !== undefined) {
-        this.store.delete(lruKey);
-        this.hashes.delete(lruKey);
-        this.hashTTLs.delete(lruKey);
-      } else {
-        break;
-      }
+    // Evict LRU entries if at capacity (count both store AND hashes)
+    while (this.store.size + this.hashes.size >= this.maxSize) {
+      const lruKey = this.findLRUKey();
+      if (lruKey === undefined) break;
+      this.store.delete(lruKey);
+      this.hashes.delete(lruKey);
+      this.hashTTLs.delete(lruKey);
+      this.accessOrder.delete(lruKey);
     }
 
     const expires = Date.now() + ttlSeconds * 1000;
     this.store.set(key, { value, expires });
+    this.accessOrder.set(key, Date.now());
   }
 
   del(key: string): void {
     this.store.delete(key);
     this.hashes.delete(key);
     this.hashTTLs.delete(key);
+    this.accessOrder.delete(key);
   }
 
   /** Alias for del(key) */
@@ -93,24 +101,42 @@ export class MemoryCache {
     if (hashExpiry !== undefined && Date.now() > hashExpiry) {
       this.hashes.delete(key);
       this.hashTTLs.delete(key);
+      this.accessOrder.delete(key);
       return null;
     }
     const hash = this.hashes.get(key);
     if (!hash) return null;
+    // Update LRU access for hash reads
+    this.accessOrder.set(key, Date.now());
     return hash.get(field) ?? null;
   }
 
   hSet(key: string, field: string, value: string, ttlSeconds?: number): void {
     let hash = this.hashes.get(key);
     if (!hash) {
+      // New hash entry — make room first (matching set()'s pattern) so we
+      // don't transiently exceed maxSize. Without this, the third hSet into
+      // a 3-slot cache would evict one entry and leave size=2.
+      while (this.store.size + this.hashes.size >= this.maxSize) {
+        const lruKey = this.findLRUKey();
+        if (lruKey === undefined) break;
+        this.store.delete(lruKey);
+        this.hashes.delete(lruKey);
+        this.hashTTLs.delete(lruKey);
+        this.accessOrder.delete(lruKey);
+      }
       hash = new Map();
       this.hashes.set(key, hash);
     }
     hash.set(field, value);
+
     // Set TTL if provided and no existing TTL
     if (ttlSeconds !== undefined && !this.hashTTLs.has(key)) {
       this.hashTTLs.set(key, Date.now() + ttlSeconds * 1000);
     }
+
+    // Track LRU access (no eviction here — we already made room above)
+    this.accessOrder.set(key, Date.now());
   }
 
   hIncrBy(key: string, field: string, amount: number): number {
@@ -128,10 +154,13 @@ export class MemoryCache {
     if (hashExpiry !== undefined && Date.now() > hashExpiry) {
       this.hashes.delete(key);
       this.hashTTLs.delete(key);
+      this.accessOrder.delete(key);
       return {};
     }
     const hash = this.hashes.get(key);
     if (!hash) return {};
+    // Update LRU access
+    this.accessOrder.set(key, Date.now());
     const result: Record<string, string> = {};
     for (const [field, value] of hash) {
       result[field] = value;
@@ -151,12 +180,24 @@ export class MemoryCache {
     if (this.hashes.has(key)) {
       this.hashTTLs.set(key, Date.now() + seconds * 1000);
     }
+    this.accessOrder.set(key, Date.now());
+  }
+
+  /** Return the total number of entries (store + hashes). */
+  get size(): number {
+    return this.store.size + this.hashes.size;
+  }
+
+  /** Return the number of hash entries (for monitoring). */
+  hashCount(): number {
+    return this.hashes.size;
   }
 
   flush(): void {
     this.store.clear();
     this.hashes.clear();
     this.hashTTLs.clear();
+    this.accessOrder.clear();
   }
 
   /**
@@ -175,6 +216,38 @@ export class MemoryCache {
   // ---------------------------------------------------------------------------
 
   /**
+   * Find the least-recently-used key across both store and hashes.
+   * Returns the key with the oldest access timestamp.
+   */
+  private findLRUKey(): string | undefined {
+    let oldestKey: string | undefined;
+    let oldestTime = Infinity;
+
+    // Check store entries (store preserves insertion order but accessOrder
+    // gives us the true last-access time)
+    for (const key of this.store.keys()) {
+      const ts = this.accessOrder.get(key) ?? 0;
+      if (ts < oldestTime) {
+        oldestTime = ts;
+        oldestKey = key;
+      }
+    }
+
+    // Check hash entries (only hash-only keys; keys in both store and hashes
+    // are already considered above)
+    for (const key of this.hashes.keys()) {
+      if (this.store.has(key)) continue; // already checked
+      const ts = this.accessOrder.get(key) ?? 0;
+      if (ts < oldestTime) {
+        oldestTime = ts;
+        oldestKey = key;
+      }
+    }
+
+    return oldestKey;
+  }
+
+  /**
    * Single shared interval that walks the map and removes expired entries.
    * Much cheaper than one setTimeout per key.
    */
@@ -186,6 +259,7 @@ export class MemoryCache {
           this.store.delete(key);
           this.hashes.delete(key);
           this.hashTTLs.delete(key);
+          this.accessOrder.delete(key);
         }
       }
       // Sweep expired hashes (keys not in store but still have TTL entries)
@@ -193,6 +267,7 @@ export class MemoryCache {
         if (now > expires) {
           this.hashes.delete(key);
           this.hashTTLs.delete(key);
+          this.accessOrder.delete(key);
         }
       }
     }, SWEEP_INTERVAL_MS);

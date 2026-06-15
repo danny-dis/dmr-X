@@ -156,15 +156,24 @@ See [DISTRIBUTION.md](DISTRIBUTION.md) for install script details and CI/CD work
 
 - [ ] Expose port 3000 (or configured `PORT`)
 - [ ] Configure reverse proxy (nginx, Caddy, etc.) if needed
+- [ ] **If behind a reverse proxy, set `DMRX_TRUST_PROXY=true`** so the gateway honors `X-Forwarded-For` and `X-Forwarded-Proto`. Without this, client IPs will be wrong and rate-limiting/audit logs will misattribute requests.
 - [ ] Set up TLS termination at the proxy layer
 - [ ] Configure firewall rules
 
-### Monitoring
+### Server Hardening
 
-- [ ] Verify health endpoint: `GET /health`
-- [ ] Verify readiness: `GET /ready`
+- [ ] `DMRX_BODY_LIMIT` matches your largest legitimate request (default 10 MB covers 256K-token prompts)
+- [ ] `DMRX_REQUEST_TIMEOUT` matches your slowest legitimate model (default 60 s)
+- [ ] `DMRX_KEEPALIVE_TIMEOUT` ≥ reverse proxy `keepalive_timeout` (default 65 s)
+- [ ] `DMRX_MEMORY_LIMIT` matches the container memory limit (default 1.5 GB)
+
+### Observability
+
+- [ ] Verify health endpoint: `GET /health` (liveness), `GET /healthz` (subsystem health)
+- [ ] **Scrape Prometheus metrics from `:9464/metrics`** (separate port, see below)
 - [ ] Set up log aggregation (JSON logs to stdout)
 - [ ] Monitor disk usage for SQLite data file
+- [ ] Watch for `request_id` in 5xx error responses — quote it in incident reports
 
 ### Backup
 
@@ -176,21 +185,64 @@ See [DISTRIBUTION.md](DISTRIBUTION.md) for install script details and CI/CD work
 All endpoints return JSON:
 
 ```bash
-# Basic health
+# Basic health (liveness — always returns 200)
 curl http://localhost:3000/health
 # {"status":"ok"}
 
-# Health with subsystem checks
+# Health with subsystem checks (returns 503 if any check fails)
 curl http://localhost:3000/healthz
-# {"status":"ok","checks":{"sqlite":"ok"}}
+# {
+#   "status": "ok",
+#   "checks": {
+#     "db_read":   { "status": "ok" },
+#     "db_write":  { "status": "ok" },
+#     "candidates":{ "status": "ok", "detail": "5 candidates" },
+#     "memory":    { "status": "ok", "detail": "112MB / 1500MB" }
+#   },
+#   "uptime": 1234
+# }
 
-# Readiness probe
+# Readiness probe (503 if router has no candidates)
 curl http://localhost:3000/ready
 # {"status":"ready"}
 
 # Liveness probe
 curl http://localhost:3000/livez
-# {"status":"ok"}
+# {"status":"alive"}
+```
+
+## Metrics
+
+DMR-X exposes Prometheus metrics on a **separate port** (default `:9464/metrics`) to keep the gateway's HTTP listener focused on user traffic. The metrics include:
+
+- `dmr_request_count` — total requests by provider, model, modality, status
+- `dmr_request_latency_ms` — request latency histogram
+- `dmr_ttft_latency_ms` — time-to-first-token for streaming requests
+- `dmr_token_usage_total` — token usage by provider, model, and type (prompt/completion/total)
+- `dmr_cost_estimate_usd` — estimated cost in USD
+- `dmr_error_count` — errors by provider, model, error code, modality
+- `dmr_provider_health` — 1 = healthy, 0 = unhealthy, per provider
+
+### Prometheus scrape config
+
+```yaml
+scrape_configs:
+  - job_name: dmr-x
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['dmr-x:9464']
+```
+
+### Docker Compose note
+
+The Prometheus port (`9464`) is **not** exposed in the default `docker-compose.yml` because metrics are intended for an in-cluster Prometheus. To scrape from outside the container, add a port mapping:
+
+```yaml
+services:
+  gateway:
+    ports:
+      - "3000:3000"
+      - "9464:9464"   # Prometheus metrics
 ```
 
 ## Reverse Proxy Configuration
@@ -204,6 +256,14 @@ server {
 
     ssl_certificate /etc/ssl/certs/dmrx.pem;
     ssl_certificate_key /etc/ssl/private/dmrx.key;
+
+    # Forward client IP and original protocol. The gateway must be told to
+    # trust these headers — set DMRX_TRUST_PROXY=true (or "loopback" if nginx
+    # runs on the same host). Without this, request.ip is the proxy's IP,
+    # not the client's.
+    real_ip_header X-Forwarded-For;
+    set_real_ip_from 127.0.0.1;
+    # add set_real_ip_from lines for any other trusted proxy CIDRs
 
     location / {
         proxy_pass http://localhost:3000;

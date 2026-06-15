@@ -21,30 +21,106 @@ import type {
   ApiDashboardStats,
   ApiCatalogEntry,
   ApiHealthResponse,
+  ApiMcpStatus,
   ApiProviderTestResult,
   ApiProviderOAuthStart,
   ApiMemorySearch,
   ApiBenchmarkRun,
   ApiSandboxSubmit,
   ApiFederationRegister,
+  ApiRerankResult,
 } from '@/types/api';
 
 import { api, apiGet, apiPost, apiPut, apiDelete } from './api';
 
+// ----------------------------------------------------------------------------
+// Wire-format transforms
+//
+// The admin API returns snake_case (matching DB column names). Components and
+// store code read camelCase aliases. These tiny mappers ensure the runtime
+// shape matches the TypeScript types so `provider.adapterType` etc. don't
+// silently return `undefined`.
+//
+// Kept intentionally narrow — only the fields the UI actually consumes.
+// ----------------------------------------------------------------------------
+
+function toCamelProvider(p: ApiProvider): ApiProvider {
+  return {
+    ...p,
+    adapterType: p.adapterType ?? p.adapter_type,
+    baseUrl: p.baseUrl ?? p.base_url ?? null,
+    apiKeyRef: p.apiKeyRef ?? p.api_key_ref ?? null,
+    tier: p.tier,
+    keys: p.keys,
+  };
+}
+
+function toCamelModel(m: ApiModel): ApiModel {
+  return {
+    ...m,
+    providerId: m.providerId ?? m.provider_id,
+    providerName: m.providerName ?? m.provider_name,
+    // Surface the upstream model identifier as a camelCase field too. Without
+    // this, callers that read `m.modelId` after listing models get `undefined`
+    // and the playground silently sends the row UUID — which the router
+    // can't match against any candidate and the request 500s.
+    modelId: m.modelId ?? m.model_id,
+    displayName: m.displayName ?? m.display_name,
+    intelligenceLayer: m.intelligenceLayer ?? m.intelligence_layer,
+    capabilityTier: m.capabilityTier ?? m.capability_tier,
+    contextWindow: m.contextWindow ?? m.context_window,
+    maxOutputTokens: m.maxOutputTokens ?? m.max_output_tokens,
+    inputCostPer1k: m.inputCostPer1k ?? m.input_cost_per_1k,
+    outputCostPer1k: m.outputCostPer1k ?? m.output_cost_per_1k,
+    costPerImage: m.costPerImage ?? m.cost_per_image,
+    qualityScore: m.qualityScore ?? m.quality_score,
+    supportsStreaming: m.supportsStreaming ?? m.supports_streaming,
+    supportsVision: m.supportsVision ?? m.supports_vision,
+    supportsToolUse: m.supportsToolUse ?? m.supports_tool_use,
+    supportsReasoning: m.supportsReasoning ?? m.supports_reasoning,
+    supportsFunctionCall: m.supportsFunctionCall ?? m.supports_function_call,
+    isActive: m.isActive ?? m.is_active,
+    createdAt: m.createdAt ?? m.created_at,
+  };
+}
+
+function toCamelTenant(t: ApiTenant): ApiTenant {
+  return {
+    ...t,
+    tokensLimit: t.tokensLimit ?? t.tokens_limit,
+    requestsLimit: t.requestsLimit ?? t.requests_limit,
+    costLimit: t.costLimit ?? t.cost_limit,
+    createdAt: t.createdAt ?? t.created_at,
+  };
+}
+
 export const Admin = {
   // Health & dashboard
   health: () => apiGet<ApiHealthResponse>('/health'),
-  dashboard: () => apiGet<ApiDashboardStats>('/admin/dashboard/stats'),
+  dashboard: () => apiGet<ApiDashboardStats>('/admin/dashboard/stats').then(normalizeDashboard),
+
+  // MCP server status. The MCP server is a separate process — the gateway
+  // reports its env-derived config and probes the MCP server's /health
+  // endpoint when reachable. `available: null` means the server runs in
+  // stdio mode (per-client child process) and can't be probed from here.
+  getMcpStatus: () => apiGet<ApiMcpStatus>('/admin/mcp/status'),
 
   // Providers
-  listProviders: () => apiGet<ApiProvider[]>('/admin/providers'),
-  getProvider: (id: string) => apiGet<ApiProvider>(`/admin/providers/${id}`),
+  listProviders: async (): Promise<ApiProvider[]> => {
+    const res = await apiGet<ApiProvider[] | { providers: ApiProvider[] }>('/admin/providers');
+    const list = Array.isArray(res) ? res : (res as { providers?: ApiProvider[] })?.providers ?? [];
+    return list.map(toCamelProvider);
+  },
+  getProvider: async (id: string): Promise<ApiProvider> => {
+    const p = await apiGet<ApiProvider>(`/admin/providers/${id}`);
+    return toCamelProvider(p);
+  },
   createProvider: (body: Partial<ApiProvider>) =>
     apiPost<ApiProvider>('/admin/providers', {
       name: body.name,
-      adapter_type: body.adapterType,
-      base_url: body.baseUrl,
-      api_key_ref: body.apiKeyRef,
+      adapter_type: body.adapterType ?? body.adapter_type,
+      base_url: body.baseUrl ?? body.base_url,
+      api_key_ref: body.apiKeyRef ?? body.api_key_ref,
       config: body.config ?? {},
     }),
   activateProvider: (body: {
@@ -57,9 +133,80 @@ export const Admin = {
     name?: string;
   }) => apiPost<{ success: boolean; provider: ApiProvider }>('/admin/providers/activate', body),
   updateProvider: (id: string, body: Partial<ApiProvider>) =>
-    apiPut<ApiProvider>(`/admin/providers/${id}`, body),
+    apiPut<ApiProvider>(`/admin/providers/${id}`, {
+      name: body.name,
+      adapter_type: body.adapterType ?? body.adapter_type,
+      base_url: body.baseUrl ?? body.base_url ?? null,
+      api_key_ref: body.apiKeyRef ?? body.api_key_ref ?? null,
+      auth_method: body.authMethod ?? body.auth_method,
+      region: (body as any).region ?? null,
+      priority: (body as any).priority,
+      enabled: (body as any).enabled,
+      config: body.config ?? {},
+    }),
+  updateProviderApiKey: (id: string, apiKey: string, options?: { tier?: 'free' | 'paid' }) =>
+    apiPut<{ success: boolean; provider: ApiProvider }>(`/admin/providers/${id}/api-key`, {
+      api_key: apiKey,
+      tier: options?.tier,
+    }),
+
+  // ----------------------------------------------------------------
+  // Per-key management
+  //
+  // The activate / api-key endpoints always touch the "Default" key.
+  // These endpoints manage additional keys (e.g. a free + a paid key
+  // for the same Google upstream). The provider detail drawer calls
+  // them when the user clicks "Add another key" or rotates an
+  // existing key.
+  // ----------------------------------------------------------------
+  listProviderKeys: async (id: string) => {
+    const res = await apiGet<{ keys?: ApiProvider['keys'] } | ApiProvider['keys']>(
+      `/admin/providers/${id}/keys`,
+    );
+    if (Array.isArray(res)) return res;
+    return res?.keys ?? [];
+  },
+  addProviderKey: (
+    id: string,
+    body: {
+      label?: string;
+      tier: 'free' | 'paid';
+      api_key?: string;
+      oauth_access_token?: string;
+      oauth_refresh_token?: string;
+      oauth_token_expires_at?: string;
+      auth_method?: 'api_key' | 'oauth';
+      priority?: number;
+    },
+  ) =>
+    apiPost<{ success: boolean; key: NonNullable<ApiProvider['keys']>[number] }>(
+      `/admin/providers/${id}/keys`,
+      body,
+    ),
+  rotateProviderKey: (
+    id: string,
+    keyId: string,
+    body: {
+      label?: string;
+      tier?: 'free' | 'paid';
+      api_key?: string;
+      oauth_access_token?: string;
+      oauth_refresh_token?: string;
+      oauth_token_expires_at?: string;
+      auth_method?: 'api_key' | 'oauth';
+      priority?: number;
+      is_active?: boolean;
+    },
+  ) =>
+    apiPut<{ success: boolean; key: NonNullable<ApiProvider['keys']>[number] }>(
+      `/admin/providers/${id}/keys/${keyId}`,
+      body,
+    ),
+  removeProviderKey: (id: string, keyId: string) =>
+    apiDelete<{ success: boolean }>(`/admin/providers/${id}/keys/${keyId}`),
+
   deleteProvider: (id: string) => apiDelete<{ ok: true }>(`/admin/providers/${id}`),
-  testProvider: (id: string) => apiPost<ApiProviderTestResult>('/admin/providers/test', { provider_id: id }),
+  testProvider: (id: string) => apiPost<ApiProviderTestResult>('/admin/providers/test', { provider_id: id }).then(normalizeProviderTestResult),
   startProviderOAuth: (id: string) =>
     apiPost<ApiProviderOAuthStart>(`/admin/providers/${id}/oauth/authorize`),
   completeProviderOAuth: (id: string, code: string, state: string) =>
@@ -77,20 +224,29 @@ export const Admin = {
     ),
 
   // Models
-  listModels: (query?: { providerId?: string; modality?: string }) =>
-    apiGet<ApiModel[]>('/admin/models', query),
-  getModel: (id: string) => apiGet<ApiModel>(`/admin/models/${id}`),
+  listModels: async (query?: { providerId?: string; modality?: string }): Promise<ApiModel[]> => {
+    const res = await apiGet<ApiModel[] | { models: ApiModel[] }>('/admin/models', query);
+    const list = Array.isArray(res) ? res : (res as { models?: ApiModel[] })?.models ?? [];
+    return list.map(toCamelModel);
+  },
+  getModel: async (id: string): Promise<ApiModel> => {
+    const m = await apiGet<ApiModel>(`/admin/models/${id}`);
+    return toCamelModel(m);
+  },
   createModel: (body: Partial<ApiModel>) => apiPost<ApiModel>('/admin/models', body),
   updateModel: (id: string, body: Partial<ApiModel>) => apiPut<ApiModel>(`/admin/models/${id}`, body),
   deleteModel: (id: string) => apiDelete<{ ok: true }>(`/admin/models/${id}`),
 
   // Tenants & API keys
-  listTenants: async () => {
+  listTenants: async (): Promise<ApiTenant[]> => {
     const res = await apiGet<ApiTenant[] | { tenants: ApiTenant[] }>('/admin/tenants');
-    if (!res) return [];
-    return Array.isArray(res) ? res : res.tenants ?? [];
+    const list = Array.isArray(res) ? res : (res as { tenants?: ApiTenant[] })?.tenants ?? [];
+    return list.map(toCamelTenant);
   },
-  getTenant: (id: string) => apiGet<ApiTenant>(`/admin/tenants/${id}`),
+  getTenant: async (id: string): Promise<ApiTenant> => {
+    const t = await apiGet<ApiTenant>(`/admin/tenants/${id}`);
+    return toCamelTenant(t);
+  },
   createTenant: (body: Partial<ApiTenant>) => apiPost<ApiTenant>('/admin/tenants', body),
   updateTenant: (id: string, body: Partial<ApiTenant>) =>
     apiPut<ApiTenant>(`/admin/tenants/${id}`, body),
@@ -98,9 +254,37 @@ export const Admin = {
   listApiKeys: async () => {
     const res = await apiGet<ApiKey[] | { api_keys: ApiKey[] }>('/admin/api-keys');
     if (!res) return [];
-    return Array.isArray(res) ? res : res.api_keys ?? [];
+    const raw = Array.isArray(res) ? res : res.api_keys ?? [];
+    // Wire shape: { id, tenant_id, tenant_name, name, is_active, created_at, last_used_at }.
+    // The list response intentionally omits the plaintext key (only `key_hash` is stored).
+    return raw.map((k) => ({
+      id: k.id,
+      name: k.name,
+      tenant_id: k.tenant_id,
+      tenant_name: k.tenant_name,
+      scopes: (() => {
+        const raw = (k as any).scopes;
+        if (!raw) return undefined;
+        if (Array.isArray(raw)) return raw;
+        if (typeof raw === 'string') {
+          try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : undefined;
+          } catch {
+            return undefined;
+          }
+        }
+        return undefined;
+      })(),
+      is_active: k.is_active,
+      created_at: k.created_at,
+      last_used_at: k.last_used_at,
+      // List responses don't include the plaintext key; only the create response does.
+      // Drop the field so downstream components can treat its absence as "key hidden".
+      key: k.key && k.key.length > 0 ? k.key : undefined,
+    }));
   },
-  createApiKey: (body: { tenant_id: string; name?: string }) =>
+  createApiKey: (body: { tenant_id: string; name?: string; scopes?: string[] }) =>
     apiPost<ApiKey & { key: string }>('/admin/api-keys', body),
   revokeApiKey: (id: string) =>
     apiDelete<{ ok: true }>(`/admin/api-keys/${id}`),
@@ -114,17 +298,22 @@ export const Admin = {
   getBilling: (period?: string) =>
     apiGet<ApiBillingSummary>('/admin/billing/summary', { period }),
   getUsage: (granularity?: string) =>
-    apiGet<{ history: ApiUsagePoint[] }>('/admin/billing/usage-history', { granularity }).then(r => ({ points: r.history, total: r.history.length })),
+    apiGet<{ history: ApiUsagePoint[] }>('/admin/billing/usage-history', { granularity }).then(r => ({
+      points: r.history.map(normalizeUsagePoint),
+      total: r.history.length,
+    })),
 
   // Observability
   listAlerts: () =>
-    apiGet<{ alerts: ApiAlert[] }>('/admin/alerts').then(r => r.alerts),
-  acknowledgeAlert: (id: string) => apiPost<ApiAlert>(`/admin/alerts/${id}/ack`),
-  resolveAlert: (id: string) => apiPost<ApiAlert>(`/admin/alerts/${id}/resolve`),
+    apiGet<{ alerts: ApiAlert[] }>('/admin/alerts').then(r => r.alerts.map(normalizeAlert)),
+  acknowledgeAlert: (id: string) =>
+    apiPost<ApiAlert>(`/admin/alerts/${id}/ack`),
+  resolveAlert: (id: string) =>
+    apiPost<ApiAlert>(`/admin/alerts/${id}/resolve`),
   listAudit: () =>
-    apiGet<{ events: ApiAuditEvent[] }>('/admin/audit/events').then(r => r.events),
+    apiGet<{ events: ApiAuditEvent[] }>('/admin/audit/events').then(r => r.events.map(normalizeAuditEvent)),
   listTelemetry: () =>
-    apiGet<{ events: ApiTelemetryEvent[] }>('/admin/telemetry/events').then(r => r.events),
+    apiGet<{ events: ApiTelemetryEvent[] }>('/admin/telemetry/events').then(r => r.events.map(normalizeTelemetryEvent)),
   streamTelemetry: (signal: AbortSignal, onEvent: (e: ApiTelemetryEvent) => void) => {
     const url = '/admin/telemetry/stream';
     const ev = new EventSource(buildSseUrl(url));
@@ -141,41 +330,52 @@ export const Admin = {
   },
 
   // Benchmarks
-  listBenchmarks: () => apiGet<ApiBenchmarkResult[]>('/admin/benchmarks'),
-  runBenchmark: (body: ApiBenchmarkRun) => apiPost<ApiBenchmarkResult>('/admin/benchmarks/run', body),
+  runBenchmark: (body: ApiBenchmarkRun) => apiPost<{ status: string; message: string }>('/admin/benchmarks/run', body),
   getLeaderboard: () => apiGet<{ leaderboard: any[] }>('/admin/benchmarks/leaderboard').then(r => r.leaderboard),
   getBattles: () => apiGet<{ battles: any[] }>('/admin/benchmarks/battles').then(r => r.battles),
   runArenaBattle: (modelA: string, modelB: string) => apiPost('/admin/benchmarks/battle', { modelA, modelB }),
   submitFeedback: (feedback: any) => apiPost('/admin/playground/feedback', feedback),
   // Policies
-  listPolicies: () => apiGet<ApiPolicyRule[]>('/admin/policies'),
+  listPolicies: () => apiGet<{ policies: ApiPolicyRule[] }>('/admin/policies').then(r => r.policies ?? []),
   upsertPolicy: (body: Partial<ApiPolicyRule>) => apiPost<ApiPolicyRule>('/admin/policies', body),
+  updatePolicy: (id: string, body: Partial<ApiPolicyRule>) =>
+    apiPut<ApiPolicyRule>(`/admin/policies/${id}`, body),
   deletePolicy: (id: string) => apiDelete<{ ok: true }>(`/admin/policies/${id}`),
 
   // Memory
   searchMemory: (body: ApiMemorySearch) => apiPost<ApiMemoryItem[]>('/admin/memory/search', body),
   listMemory: (query?: { tenantId?: string; limit?: number }) =>
-    apiGet<ApiMemoryItem[]>('/admin/memory', query),
+    apiGet<{ items: ApiMemoryItem[] }>('/admin/memory', query).then(r => r.items ?? []),
   createMemory: (body: ApiMemoryCreate) => apiPost<ApiMemoryItem>('/admin/memory', body),
   deleteMemory: (id: string) => apiDelete<{ ok: true }>(`/admin/memory/${id}`),
+  getMemoryStats: () => apiGet<{
+    total_items?: number;
+    by_namespace?: Record<string, number>;
+    by_source?: Record<string, number>;
+    oldest_item?: string;
+    newest_item?: string;
+    retention_days?: number;
+  }>('/admin/memory/stats'),
 
   // Sandbox
-  listSandboxJobs: () => apiGet<ApiSandboxJob[]>('/admin/sandbox/jobs'),
+  listSandboxJobs: () => apiGet<{ jobs: ApiSandboxJob[] }>('/admin/sandbox/jobs').then(r => r.jobs ?? []),
   submitSandbox: (body: ApiSandboxSubmit) => apiPost<ApiSandboxJob>('/admin/sandbox/jobs', body),
   cancelSandbox: (id: string) => apiPost<{ ok: true }>(`/admin/sandbox/jobs/${id}/cancel`),
 
   // Workers
-  listWorkers: () => apiGet<ApiWorker[]>('/admin/workers'),
+  listWorkers: () => apiGet<{ workers: ApiWorker[] }>('/admin/workers').then(r => r.workers ?? []),
   registerWorker: (body: ApiWorkerRegister) => apiPost<ApiWorker>('/admin/workers', body),
   drainWorker: (id: string) => apiPost<ApiWorker>(`/admin/workers/${id}/drain`),
   resumeWorker: (id: string) => apiPost<ApiWorker>(`/admin/workers/${id}/resume`),
 
   // Federation
-  listFederation: () => apiGet<ApiFederationNode[]>('/admin/federation'),
+  listFederation: () => apiGet<{ nodes: ApiFederationNode[] }>('/admin/federation').then(r => r.nodes ?? []),
   registerFederation: (body: ApiFederationRegister) =>
     apiPost<ApiFederationNode>('/admin/federation', body),
   unregisterFederation: (id: string) =>
     apiDelete<{ ok: true }>(`/admin/federation/${id}`),
+  healthCheckFederation: (id: string) => apiPost<ApiFederationNode>(`/admin/federation/${id}/health`),
+  syncFederationBenchmark: (id: string) => apiPost<{ ok: boolean }>(`/admin/federation/${id}/sync`),
 
   // Catalog
   getCatalog: async (query?: { category?: string; query?: string }) => {
@@ -183,16 +383,139 @@ export const Admin = {
     return { entries: res.entries ?? res.catalog ?? [] };
   },
 
+  // Benchmarks
+  listBenchmarks: () => apiGet<{ benchmarks: ApiBenchmarkResult[] }>('/admin/benchmarks').then(r => r.benchmarks ?? []),
+
   // Settings
   getSettings: () => apiGet<Record<string, unknown>>('/admin/settings'),
   updateSettings: (body: Record<string, unknown>) =>
     apiPut<Record<string, unknown>>('/admin/settings', body),
+
+  // Security
+  // Rotate the admin API key at runtime. Returns the new key (one-time display).
+  rotateAdminKey: () =>
+    apiPost<{ new_key: string; message: string }>('/admin/security/rotate-admin-key'),
+
+  // Rerank documents
+  rerankDocuments: (body: { model?: string; query: string; documents: string[]; top_n?: number }) =>
+    apiPost<ApiRerankResult>('/v1/rerank', body),
+
+  // Agentic / tool-loop helpers. The Playground currently uses raw fetch
+  // (see usePlaygroundStore) so it can stream the SSE response body itself;
+  // these wrappers are kept for symmetry with the rest of the admin client
+  // and for non-streaming callers that just want the full payload.
+  agenticChat: (body: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>('/v1/agentic/chat', body),
+  toolLoop: (body: Record<string, unknown>) =>
+    apiPost<Record<string, unknown>>('/v1/tools/loop', body),
 };
 
 function buildSseUrl(path: string): string {
   const RAW_BASE = (import.meta.env.VITE_API_BASE ?? '') as string;
   const base = RAW_BASE.replace(/\/+$/, '');
   return `${base || ''}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+// ---------------------------------------------------------------------------
+// Response normalizers
+//
+// The server returns snake_case payloads with field name drift from
+// the UI types (which were updated to expose camelCase aliases). These
+// normalizers are the SINGLE bridge that converts the wire shape into
+// the UI's expected shape, so consuming components don't need to know
+// which fields are aliased.
+//
+// Hoisted via `function` declarations so they're available to the
+// `Admin` object methods above regardless of source order.
+// ---------------------------------------------------------------------------
+
+function normalizeDashboard(s: any): ApiDashboardStats {
+  if (!s) return s;
+  return {
+    ...s,
+    requests24h: s.requests24h ?? s.total_requests ?? 0,
+    cost24h: s.cost24h ?? s.daily_spend ?? 0,
+    avgLatencyMs: s.avgLatencyMs ?? s.avg_latency ?? 0,
+    totalTokens24h: s.totalTokens24h ?? s.token_usage ?? 0,
+    totalCost24h: s.totalCost24h ?? s.daily_spend ?? 0,
+    successRate: s.successRate ?? s.success_rate ?? 100,
+    fallbackRate: s.fallbackRate ?? s.fallback_rate ?? 0,
+    activeModels: s.activeModels ?? s.active_models ?? 0,
+    providerHealth: s.providerHealth ?? s.provider_health ?? 0,
+    quotaRemaining: s.quotaRemaining ?? s.quota_remaining ?? 0,
+    systemStatus: s.systemStatus ?? s.system_status,
+  };
+}
+
+function normalizeAlert(a: any): ApiAlert {
+  if (!a) return a;
+  return {
+    ...a,
+    title: a.title ?? a.message ?? a.type,
+    message: a.message,
+    at: a.at ?? a.timestamp,
+    acknowledgedAt: a.acknowledgedAt,
+    resolvedAt: a.resolvedAt,
+  };
+}
+
+function normalizeUsagePoint(p: any): ApiUsagePoint {
+  if (!p) return p;
+  const t = typeof p.t === 'number'
+    ? p.t
+    : typeof p.time === 'string'
+      ? new Date(p.time).getTime()
+      : p.time;
+  return {
+    ...p,
+    t,
+    time: p.time,
+    latency: p.latency,
+  };
+}
+
+function normalizeTelemetryEvent(e: any): ApiTelemetryEvent {
+  if (!e) return e;
+  return {
+    ...e,
+    status: e.status ?? (e.level === 'error' ? 'error' : 'ok'),
+    tenant: e.tenant ?? e.metadata?.tenant,
+    model: e.model ?? e.metadata?.model,
+    provider: e.provider ?? e.metadata?.provider,
+    latencyMs: e.latencyMs ?? e.duration,
+    message: e.message,
+    at: e.at ?? e.timestamp,
+  };
+}
+
+function normalizeAuditEvent(e: any): ApiAuditEvent {
+  if (!e) return e;
+  return {
+    ...e,
+    action: e.action ?? e.event_type,
+    description: e.description,
+    actor: e.actor,
+    at: e.at ?? e.timestamp,
+    ip_address: e.ip_address,
+    metadata: e.metadata,
+  };
+}
+
+function normalizeProviderTestResult(r: any): ApiProviderTestResult {
+  if (!r) return r;
+  // The cast at the end preserves the extra snake_case fields (status, message,
+  // provider_id, latency_ms) on the returned object so callers that read them
+  // directly still work, while still being assignable to the canonical
+  // ApiProviderTestResult shape.
+  return {
+    ok: r.ok ?? (r.status === 'passed'),
+    latencyMs: r.latencyMs ?? r.latency_ms ?? 0,
+    error: r.error ?? (r.status === 'failed' ? r.message : undefined),
+    status: r.status,
+    message: r.message,
+    provider_id: r.provider_id,
+    latency_ms: r.latency_ms,
+  } as ApiProviderTestResult;
 }
 
 export { api, apiGet, apiPost, apiPut, apiDelete };

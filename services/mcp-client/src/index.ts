@@ -19,3 +19,12 @@ export {
 
 // Adapter
 export { MCPToolAdapter, createAdaptersForRegistry } from './adapter.js';
+
+// Circuit breaker
+export {
+  CircuitBreaker,
+  CircuitBreakerManager,
+  type CircuitBreakerConfig,
+  type CircuitBreakerStatus,
+  type CircuitState,
+} from './circuit-breaker.js';

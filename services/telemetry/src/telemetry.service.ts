@@ -2,7 +2,10 @@ import { NodeSDK } from '@opentelemetry/sdk-node';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { Resource } from '@opentelemetry/resources';
-import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
+import type { MetricReader } from '@opentelemetry/sdk-metrics';
+// ATTR_SERVICE_NAME was added in semantic-conventions 1.27+;
+// fall back to the literal string for older versions.
+const ATTR_SERVICE_NAME = 'service.name' as const;
 import { createLogger } from '@dmr-x/utils';
 import {
   requestCount,
@@ -96,10 +99,21 @@ export class TelemetryService {
     }
 
     // Build and start the SDK
+    // PrometheusExporter extends its own MetricReader (from a nested
+    // @opentelemetry/sdk-metrics declaration), but NodeSDK's
+    // NodeSDKConfiguration.metricReader is typed against the top-level
+    // @opentelemetry/sdk-metrics MetricReader. The two are the same runtime
+    // class but nominally distinct in TypeScript ("separate declarations of
+    // a private property '_shutdown'"). Cast through unknown — they share
+    // the same public surface and the OTel version pin is fixed in bun.lock.
+    const metricReader: MetricReader | undefined = this.prometheusExporter
+      ? (this.prometheusExporter as unknown as MetricReader)
+      : undefined;
+
     this.sdk = new NodeSDK({
       resource,
       traceExporter,
-      metricReader: this.prometheusExporter ?? undefined,
+      metricReader,
     });
 
     this.sdk.start();

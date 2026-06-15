@@ -25,7 +25,7 @@ export { ComfyUIAdapter } from './comfyui/comfyui.adapter.js';
 // Async job runner
 export { AsyncJobRunner, AsyncJobError, AsyncJobTimeoutError } from './async-job.js';
 
-// Video Adapters
+// Video Adapters (continued)
 export { FalAdapter } from './fal/fal.adapter.js';
 export { VeoAdapter } from './veo/veo.adapter.js';
 export { RunwayAdapter } from './runway/runway.adapter.js';

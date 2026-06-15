@@ -70,6 +70,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       });
 
       if (!plan.primary) {
+        (server as any).recordTelemetryEvent?.({
+          level: 'warning',
+          service: 'gateway',
+          message: 'No provider available for streaming chat request',
+          metadata: { path: request.url, model: body.model, requestId },
+        });
         throw new ProviderUnavailableError([]);
       }
 
@@ -81,6 +87,18 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       if (rls) {
         const limitCheck = rls.checkLimit(plan.primary.providerId, plan.primary.modelId, 0);
         if (!limitCheck.allowed) {
+          (server as any).recordTelemetryEvent?.({
+            level: 'warning',
+            service: 'gateway',
+            message: 'Rate limit hit on streaming chat request',
+            metadata: {
+              path: request.url,
+              providerId: plan.primary.providerId,
+              modelId: plan.primary.modelId,
+              requestId,
+              retryAfterMs: limitCheck.retryAfterMs,
+            },
+          });
           throw new ProviderUnavailableError([plan.primary.providerId], limitCheck.retryAfterMs ? Math.ceil(limitCheck.retryAfterMs / 1000) : 30);
         }
       }
@@ -137,6 +155,17 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           }
         } catch (streamError) {
           logger.error({ err: streamError, requestId }, 'Streaming error');
+          (server as any).recordTelemetryEvent?.({
+            level: 'error',
+            service: 'gateway',
+            message: streamError instanceof Error ? streamError.message : 'Streaming error',
+            metadata: {
+              path: request.url,
+              providerId: plan.primary.providerId,
+              modelId: plan.primary.modelId,
+              requestId,
+            },
+          });
           reply.raw.write(`data: ${JSON.stringify({
             error: { message: 'Stream failed', type: 'stream_error' },
           })}\n\n`);
@@ -157,11 +186,31 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       qualityTarget: 'balanced',
     });
     if (!plan.primary) {
+      (server as any).recordTelemetryEvent?.({
+        level: 'warning',
+        service: 'gateway',
+        message: 'No provider available for non-streaming chat request',
+        metadata: { path: request.url, model: body.model, requestId },
+      });
       throw new ProviderUnavailableError([]);
     }
     if (unifiedRequest.metadata?.freeTierStrategy) {
       reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
     }
+
+    // Telemetry: populate metrics for the onResponse hook
+    (request as any).metrics = {
+      providerId: plan.primary.providerId,
+      modelId: response.modelId,
+      modality: 'llm',
+      tokens: response.usage
+        ? {
+            prompt: response.usage.prompt_tokens ?? 0,
+            completion: response.usage.completion_tokens ?? 0,
+            total: response.usage.total_tokens ?? 0,
+          }
+        : undefined,
+    };
 
     return {
       id: requestId,

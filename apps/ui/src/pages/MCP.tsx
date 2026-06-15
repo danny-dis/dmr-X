@@ -1,29 +1,41 @@
 import * as React from 'react';
-import { Cpu, Server, Hammer as Tool, Shield, Play, RotateCcw, Network, Globe, Lock } from 'lucide-react';
+import { Cpu, Server, Hammer as Tool, Network, Globe, Info, RefreshCw, AlertTriangle } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
 import { Code } from '@/components/primitives/Code';
 import { StatusPill } from '@/components/primitives/StatusPill';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { EmptyState } from '@/components/primitives/EmptyState';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
+import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import type { ApiMcpStatus } from '@/types/api';
 
 export function MCPPage() {
-  const settings = useApiData(() => Admin.getSettings(), []);
-  const health = useApiData(() => Admin.health(), []);
-  
-  // These would ideally come from a dedicated MCP API, but for now we'll 
-  // extract what we can from settings and status.
-  const mcpTransport = (settings.data?.DMRX_MCP_TRANSPORT as string) || 'stdio';
-  const mcpPort = (settings.data?.DMRX_MCP_PORT as string) || '3100';
-  const mcpHost = (settings.data?.DMRX_MCP_HOST as string) || '127.0.0.1';
-  const hasMcpKey = !!settings.data?.DMRX_MCP_API_KEY;
+  // The MCP server is a separate process. The gateway's admin endpoint
+  // reports the env-derived config (matching the MCP server's defaults)
+  // and probes the MCP server's /health endpoint for HTTP/SSE transports.
+  // For stdio the process is per-client, so `available` is `null` and we
+  // render an "unknown" pill.
+  const mcp = useApiData<ApiMcpStatus>(Admin.getMcpStatus, [], { refetchInterval: 30_000 });
 
-  const mcpStatus = health.data?.checks?.find(c => c.name === 'mcp') || { status: 'ok' };
+  const data = mcp.data;
+  const transport = data?.transport ?? 'stdio';
+  const host = data?.host ?? '127.0.0.1';
+  const port = data?.port ?? 3100;
+  const isStdio = transport === 'stdio';
+  const isHttp = !isStdio;
+
+  // Status pill: reachable (online), probed-but-down (offline), or stdio
+  // / error / loading (unknown).
+  const pillStatus: 'online' | 'offline' | 'unknown' =
+    data?.available === true ? 'online'
+    : data?.available === false ? 'offline'
+    : 'unknown';
+  const pillLabel =
+    pillStatus === 'online' ? 'Reachable'
+    : pillStatus === 'offline' ? 'Unreachable'
+    : isStdio ? 'Separate process' : 'Status unknown';
 
   return (
     <PageContainer>
@@ -33,52 +45,96 @@ export function MCPPage() {
         icon={<Cpu className="size-5" />}
       />
 
-      <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <div className="mt-5 flex items-start gap-3 rounded-lg border border-border bg-surface-1 p-3">
+        <Info className="size-4 text-primary mt-0.5 shrink-0" />
+        <p className="text-xs text-fg-muted leading-relaxed">
+          DMR-X&apos;s MCP server is a separate process from the gateway. The
+          status panel below reflects the gateway&apos;s env-derived view of
+          the MCP config and probes the server&apos;s <code className="bg-surface-2 px-1 rounded text-primary">/health</code> endpoint
+          when reachable. For stdio transport, the server is a per-client
+          child process and cannot be probed from here — see{' '}
+          <code className="bg-surface-2 px-1 rounded text-primary">
+            services/mcp-server/src/
+          </code>{' '}
+          and the deployment guide.
+        </p>
+      </div>
+
+      {mcp.isError && (
+        <div className="mt-3 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/5 p-3">
+          <AlertTriangle className="size-4 text-warning mt-0.5 shrink-0" />
+          <div className="text-xs text-fg-muted">
+            <span className="font-medium text-warning">Could not load MCP status.</span>{' '}
+            The endpoint may be unavailable; showing the documented defaults.
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-3">
         {/* Server Status */}
         <Card className="lg:col-span-1">
           <CardHeader>
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Server className="size-4 text-primary" />
               Server Status
+              <button
+                type="button"
+                onClick={() => void mcp.refetch()}
+                className="ml-auto text-fg-subtle hover:text-primary transition-colors"
+                title="Refresh MCP status"
+                aria-label="Refresh MCP status"
+              >
+                <RefreshCw className={mcp.isLoading ? 'size-3.5 animate-spin' : 'size-3.5'} />
+              </button>
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between p-3 rounded-lg bg-surface-2">
               <span className="text-xs font-medium">Status</span>
-              <StatusPill status={mcpStatus.status === 'ok' ? 'online' : 'offline'} />
+              {mcp.isLoading && !data ? (
+                <Skeleton className="h-5 w-24" />
+              ) : (
+                <StatusPill status={pillStatus} label={pillLabel} />
+              )}
             </div>
 
             <div className="space-y-3">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-fg-muted">Transport</span>
-                <Badge tone="primary" variant="secondary">{mcpTransport}</Badge>
+                {mcp.isLoading && !data ? (
+                  <Skeleton className="h-4 w-14" />
+                ) : (
+                  <Badge tone="primary" variant="secondary">{transport}</Badge>
+                )}
               </div>
-              
-              {mcpTransport !== 'stdio' && (
-                <>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-fg-muted">Endpoint</span>
-                    <span className="font-mono text-[10px]">{mcpHost}:{mcpPort}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-fg-muted">Authentication</span>
-                    <div className="flex items-center gap-1.5">
-                      {hasMcpKey ? (
-                        <Badge tone="success" size="sm" className="flex items-center gap-1">
-                          <Lock className="size-2.5" /> Enabled
-                        </Badge>
-                      ) : (
-                        <Badge tone="warning" size="sm">Disabled</Badge>
-                      )}
-                    </div>
-                  </div>
-                </>
+
+              {isHttp && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-fg-muted">Endpoint</span>
+                  {mcp.isLoading && !data ? (
+                    <Skeleton className="h-3 w-32" />
+                  ) : (
+                    <span className="font-mono text-[10px]">{host}:{port}</span>
+                  )}
+                </div>
               )}
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-fg-muted">Authentication</span>
+                {mcp.isLoading && !data ? (
+                  <Skeleton className="h-4 w-32" />
+                ) : (
+                  <Badge tone={data?.hasApiKey ? 'primary' : 'muted'} size="sm">
+                    {data?.hasApiKey ? 'API key set in env' : 'No API key (open)'}
+                  </Badge>
+                )}
+              </div>
             </div>
 
             <div className="pt-2">
-              <p className="text-[10px] text-fg-muted italic">
-                The MCP server allows clients like Claude Desktop or Cursor to use DMR-X as a tool provider.
+              <p className="text-[10px] text-fg-subtle">
+                Configured via <code>DMRX_MCP_*</code> environment variables.
+                See the deployment guide for the full list.
               </p>
             </div>
           </CardContent>
@@ -92,6 +148,9 @@ export function MCPPage() {
                 <TabsTrigger value="tools" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                   <Tool className="size-3.5 mr-2" />
                   Available Tools
+                  {data && (
+                    <Badge tone="muted" size="sm" className="ml-2">{data.tools.length}</Badge>
+                  )}
                 </TabsTrigger>
                 <TabsTrigger value="aggregation" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                   <Network className="size-3.5 mr-2" />
@@ -105,23 +164,33 @@ export function MCPPage() {
             </div>
 
             <TabsContent value="tools" className="p-0">
-              <div className="divide-y divide-border">
-                {[
-                  { name: 'dmrx_chat', desc: 'Chat completions with full routing capabilities' },
-                  { name: 'dmrx_generate_image', desc: 'DALL-E, Stable Diffusion, and Flux image generation' },
-                  { name: 'dmrx_embed', desc: 'Generate vector embeddings from text' },
-                  { name: 'dmrx_models', desc: 'List all available models across providers' },
-                  { name: 'dmrx_status', desc: 'Get health and metrics for the DMR-X platform' }
-                ].map((tool) => (
-                  <div key={tool.name} className="p-4 hover:bg-surface-1 transition-colors">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-mono font-semibold text-primary">{tool.name}</span>
-                      <Badge tone="primary" size="sm" variant="secondary">built-in</Badge>
+              {mcp.isLoading && !data ? (
+                <div className="divide-y divide-border">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} className="p-4 space-y-2">
+                      <Skeleton className="h-4 w-40" />
+                      <Skeleton className="h-3 w-3/4" />
                     </div>
-                    <p className="text-xs text-fg-muted">{tool.desc}</p>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {(data?.tools ?? []).map((tool) => (
+                    <div key={tool.name} className="p-4 hover:bg-surface-1 transition-colors">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-mono font-semibold text-primary">{tool.name}</span>
+                        <Badge tone="primary" size="sm" variant="secondary">built-in</Badge>
+                      </div>
+                      <p className="text-xs text-fg-muted">{tool.description}</p>
+                    </div>
+                  ))}
+                  {data && data.tools.length === 0 && (
+                    <div className="p-8 text-center text-xs text-fg-muted">
+                      No tools available. Check the MCP server configuration.
+                    </div>
+                  )}
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="aggregation" className="p-8 text-center">
@@ -147,10 +216,10 @@ export function MCPPage() {
   "mcpServers": {
     "dmr-x": {
       "command": "bun",
-      "args": ["run", "${settings.data?.DMRX_ROOT || '/path/to/dmr-x'}/services/mcp-server/src/index.ts"],
+      "args": ["run", "/path/to/dmr-x/services/mcp-server/src/index.ts"],
       "env": {
-        "DMRX_MCP_TRANSPORT": "stdio"
-      }
+        "DMRX_MCP_TRANSPORT": "${transport}"
+${data?.hasApiKey ? '        "DMRX_MCP_API_KEY": "<your-key>"\n' : ''}      }
     }
   }
 }`}
@@ -164,9 +233,9 @@ export function MCPPage() {
 {`{
   "mcpServers": {
     "dmr-x": {
-      "url": "http://${mcpHost}:${mcpPort}/sse",
+      "url": "http://${host}:${port}/sse",
       "headers": {
-        "Authorization": "Bearer your-mcp-key"
+        "Authorization": "Bearer <your-mcp-key>"
       }
     }
   }

@@ -64,7 +64,12 @@ export class HealthChecker {
 
     for (const adapterId of adapters) {
       try {
-        const adapter = this.adapterRegistry.get(adapterId);
+        // Bypass the circuit-breaker guard: health checks must run on
+        // providers whose breakers have tripped so we can observe
+        // recovery. Gating them through `get()` would mean a tripped
+        // breaker can never heal, and a single transient failure could
+        // turn into a permanent outage.
+        const adapter = this.adapterRegistry.peek(adapterId);
         if (!adapter) continue;
 
         const providerUuid = this.getProviderUuid(adapterId);
@@ -74,6 +79,20 @@ export class HealthChecker {
         }
 
         const status = await adapter.healthCheck();
+
+        // "Adapter not initialized" is an expected, non-failure state — the
+        // user simply hasn't set an API key for this provider yet. Don't
+        // poison the circuit breaker (it would block every request once
+        // failureThreshold is hit) and don't bump `consecutive_failures`
+        // in the DB (it would flip `is_healthy` to 0 and remove the
+        // provider from the candidate set the moment the user *does* add
+        // a key). Just record the timestamp so the admin UI can show
+        // when it was last seen.
+        if (status.error === 'Adapter not initialized') {
+          registryService.touchHealthCheck(providerUuid);
+          continue;
+        }
+
         registryService.updateHealth(providerUuid, status.healthy, status.latencyMs);
 
         // Sync circuit breaker state with health check result

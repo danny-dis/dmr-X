@@ -1,24 +1,16 @@
-export function formatCurrency(n: number, currency = 'USD', maximumFractionDigits = 4): string {
-  if (Math.abs(n) >= 1) {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency,
-      maximumFractionDigits: 2,
-    }).format(n);
-  }
+export function formatCurrency(n: number, currency = 'USD'): string {
+  if (!Number.isFinite(n)) return '—';
+  const big = Math.abs(n) >= 1;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency,
-    minimumFractionDigits: 4,
-    maximumFractionDigits,
+    minimumFractionDigits: big ? 0 : 2,
+    maximumFractionDigits: big ? 2 : 4,
   }).format(n);
 }
 
 export function formatCompactCurrency(n: number, currency = 'USD'): string {
-  if (n >= 1000) {
-    return formatCurrency(n, currency, 0);
-  }
-  return formatCurrency(n, currency, 2);
+  return formatCurrency(n, currency);
 }
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] as const;

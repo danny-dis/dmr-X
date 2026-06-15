@@ -158,3 +158,28 @@ export type AuthMethod = 'api_key' | 'oauth' | 'aws_sigv4' | 'gcp_adc' | 'none';
  * API format the provider speaks.
  */
 export type ApiFormat = 'openai' | 'anthropic' | 'ollama' | 'custom';
+
+/**
+ * Tier of a provider connection.
+ *
+ * The tier is a UI-facing label that lets operators tell free and paid
+ * credentials apart at a glance. It is computed from the set of active
+ * keys on the connection:
+ *
+ *   * `free`     — every active key is a free-tier key.
+ *   * `paid`     — every active key is a paid key.
+ *   * `mixed`    — the connection carries at least one free and one paid key.
+ *   * `inactive` — no active keys are attached.
+ *
+ * Routers and adapters don't branch on this value today; the adapter
+ * uses the highest-priority active key. The field exists so the UI can
+ * render the correct badge and so a future smart-balancer can prefer
+ * free keys for low-priority traffic.
+ */
+export type ProviderTier = 'free' | 'paid' | 'mixed' | 'inactive';
+
+/**
+ * Per-key tier — narrower than ProviderTier because a single key can
+ * only be free or paid. The provider-level tier is derived.
+ */
+export type ProviderKeyTier = 'free' | 'paid';

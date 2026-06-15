@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { MemoryStick, Search, Trash2, Database, Sparkles, Brain, Plus } from 'lucide-react';
+import { MemoryStick, Search, Trash2, Database, Sparkles, Brain, Plus, Clock, Tag } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card } from '@/components/primitives/Card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
 import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
@@ -27,6 +27,18 @@ export function MemoryPage() {
     [],
     { refetchInterval: 30000 }
   );
+  const stats = useApiData<{
+    total_items?: number;
+    by_namespace?: Record<string, number>;
+    by_source?: Record<string, number>;
+    oldest_item?: string;
+    newest_item?: string;
+    retention_days?: number;
+  }>(
+    () => Admin.getMemoryStats(),
+    [],
+    { refetchInterval: 60000 }
+  );
   const [results, setResults] = React.useState<ApiMemoryItem[]>([]);
   const [searching, setSearching] = React.useState(false);
   const [open, setOpen] = React.useState(false);
@@ -36,6 +48,13 @@ export function MemoryPage() {
   const [source, setSource] = React.useState('');
   const [retentionDays, setRetentionDays] = React.useState('30');
   const [submitting, setSubmitting] = React.useState(false);
+
+  const topNamespaces = React.useMemo(() => {
+    const ns = stats.data?.by_namespace ?? {};
+    return Object.entries(ns)
+      .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+      .slice(0, 3);
+  }, [stats.data]);
 
   const onSearch = async () => {
     if (!query.trim()) {
@@ -77,6 +96,17 @@ export function MemoryPage() {
     }
   };
 
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this memory item? This cannot be undone.')) return;
+    try {
+      await Admin.deleteMemory(id);
+      toast.success('Memory item deleted');
+      items.refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete memory item');
+    }
+  };
+
   const list = query ? results : (items.data ?? []);
 
   return (
@@ -97,6 +127,64 @@ export function MemoryPage() {
           </>
         }
       />
+
+      <Card padding="md" className="mt-5">
+        <CardHeader className="px-0 pt-0">
+          <CardTitle className="flex items-center gap-2">
+            <Database className="size-3.5 text-fg-muted" />
+            Memory stats
+          </CardTitle>
+          <p className="text-[10px] text-fg-muted mt-0.5">Retention and storage health</p>
+        </CardHeader>
+        <CardContent className="px-0 pb-0">
+          {stats.isLoading && !stats.data ? (
+            <Skeleton className="h-10 w-full" />
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-fg-muted uppercase tracking-wider">Total items</span>
+                <span className="text-sm font-semibold text-fg tabular-nums">
+                  {(stats.data?.total_items ?? (items.data ?? []).length).toLocaleString()}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-fg-muted uppercase tracking-wider flex items-center gap-1">
+                  <Clock className="size-2.5" /> Oldest
+                </span>
+                <span className="text-sm font-medium text-fg">
+                  {stats.data?.oldest_item ? timeAgo(stats.data.oldest_item) : '—'}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-fg-muted uppercase tracking-wider flex items-center gap-1">
+                  <Clock className="size-2.5" /> Newest
+                </span>
+                <span className="text-sm font-medium text-fg">
+                  {stats.data?.newest_item ? timeAgo(stats.data.newest_item) : '—'}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-fg-muted uppercase tracking-wider">Retention</span>
+                <span className="text-sm font-medium text-fg tabular-nums">
+                  {stats.data?.retention_days != null ? `${stats.data.retention_days}d` : '—'}
+                </span>
+              </div>
+              {topNamespaces.length > 0 && (
+                <div className="col-span-2 md:col-span-4 flex items-center gap-2 flex-wrap pt-1 border-t border-border">
+                  <span className="text-[10px] text-fg-muted uppercase tracking-wider flex items-center gap-1">
+                    <Tag className="size-2.5" /> Top namespaces
+                  </span>
+                  {topNamespaces.map(([ns, count]) => (
+                    <Badge key={ns} tone="muted" size="sm">
+                      {ns} · {count}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card padding="md" className="mt-5">
         <div className="flex items-center gap-2">
@@ -153,7 +241,12 @@ export function MemoryPage() {
                       )}
                     </div>
                   </div>
-                  <Button size="icon-sm" variant="ghost" aria-label="Delete">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label="Delete"
+                    onClick={() => handleDelete(m.id)}
+                  >
                     <Trash2 className="size-3" />
                   </Button>
                 </div>

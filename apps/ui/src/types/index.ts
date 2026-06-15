@@ -2,7 +2,7 @@ import type {
   ApiProvider, ApiModel, ApiTenant, ApiKey, ApiRouteDecision, ApiQuotaState,
   ApiBillingSummary, ApiAlert, ApiAuditEvent, ApiTelemetryEvent, ApiBenchmarkResult,
   ApiPolicyRule, ApiMemoryItem, ApiSandboxJob, ApiWorker, ApiFederationNode,
-  ApiDashboardStats,
+  ApiDashboardStats, Modality,
 } from './api';
 
 export type {
@@ -15,7 +15,7 @@ export type {
 export type CostTier = 'free' | 'low' | 'medium' | 'high' | 'premium';
 export type ProviderHealth = 'healthy' | 'degraded' | 'unavailable' | 'maintenance';
 
-export interface Provider extends ApiProvider {
+export interface Provider extends Omit<ApiProvider, 'capabilities' | 'models'> {
   logo: string;
   baseUrl: string;
   region: string;
@@ -27,7 +27,7 @@ export interface Provider extends ApiProvider {
   avgLatency: number;
   successRate: number;
   isFree?: boolean;
-  capabilities?: string[];
+  capabilities?: Modality[];
 }
 
 export interface Model extends ApiModel {

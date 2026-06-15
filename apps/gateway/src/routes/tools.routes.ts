@@ -186,6 +186,16 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
 
       if (!handler) {
         reply.status(404);
+        (server as any).recordTelemetryEvent?.({
+          level: 'warning',
+          service: 'gateway',
+          message: `No handler registered for tool "${toolCall.function.name}"`,
+          metadata: {
+            path: request.url,
+            tool: toolCall.function.name,
+            requestId,
+          },
+        });
         return {
           error: {
             message: `No handler registered for tool "${toolCall.function.name}"`,
@@ -207,6 +217,16 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
         };
       } catch (error) {
         logger.error({ err: error, requestId, tool: toolCall.function.name }, 'Tool execution failed');
+        (server as any).recordTelemetryEvent?.({
+          level: 'error',
+          service: 'gateway',
+          message: error instanceof Error ? error.message : 'Tool execution failed',
+          metadata: {
+            path: request.url,
+            tool: toolCall.function.name,
+            requestId,
+          },
+        });
         reply.status(500);
         return {
           id: requestId,
@@ -429,6 +449,17 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
         }
       } catch (error) {
         logger.error({ err: error, requestId }, 'Agentic streaming error');
+        (server as any).recordTelemetryEvent?.({
+          level: 'error',
+          service: 'gateway',
+          message: error instanceof Error ? error.message : 'Tools loop streaming error',
+          trace_id: requestId,
+          metadata: {
+            path: request.url,
+            model: body.model,
+            requestId,
+          },
+        });
         writeSSE(reply, 'error', { error: { message: 'Stream failed' } });
       }
 

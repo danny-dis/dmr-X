@@ -17,6 +17,14 @@ coverage/
 *.d.ts
 *.d.ts.map
 
+# ─── Stale Bun incremental emit inside src/ folders ───────────────────────
+# Belt-and-suspenders: the global patterns above already cover these, but
+# pinning them to src/ documents the intent (Bun's watch-mode emit
+# creates .js/.d.ts/.js.map beside .ts sources).
+**/src/**/*.js
+**/src/**/*.d.ts
+**/src/**/*.js.map
+
 # ─── Legitimate JS config files (not compiled from .ts) ────────────────────
 !apps/ui/postcss.config.js
 !apps/ui/tailwind.config.js
@@ -36,8 +44,12 @@ apps/gateway/public/
 # ─── Logs ───────────────────────────────────────────────────────────────────
 *.log
 *.err.log
+# Root-level gateway debug logs (captured by hand during startup debugging)
+gateway-*.log
+gw-*.log
 
 # ─── Local data / cache ─────────────────────────────────────────────────────
+.data/
 *.db
 *.db-wal
 *.db-shm

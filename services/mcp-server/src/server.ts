@@ -47,7 +47,29 @@ import {
   dmrxGenerateVideoStreamParams as videoStreamParams,
   dmrxWorkflowParams as workflowParams,
   dmrxGenerate3DParams as threeDParams,
+  dmrxChatOutput,
+  dmrxImageOutput,
+  dmrxEmbeddingOutput,
+  dmrxTranscribeOutput,
+  dmrxSpeakOutput,
+  dmrxRerankOutput,
+  dmrxVideoOutput,
+  dmrxMusicOutput,
+  dmrx3DOutput,
+  dmrxModelsOutput,
+  dmrxStatusOutput,
+  dmrxBatchOutput,
+  dmrxContextSaveOutput,
+  dmrxContextLoadOutput,
+  dmrxContextListOutput,
+  dmrxContextSummarizeOutput,
+  dmrxContextCompressOutput,
+  dmrxWorkflowOutput,
 } from './tools.js';
+import { RateLimiter } from './rate-limiter.js';
+import { TOOL_ANNOTATIONS, type ToolAnnotations } from './annotations.js';
+import { registerResources } from './resources.js';
+import { registerPrompts } from './prompts.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +106,24 @@ interface ServerState {
   externalMcpClient?: MCPClient;
   /** Number of external tools registered from the aggregator */
   externalToolCount: number;
+  /** Per-tool rate limiter */
+  rateLimiter: RateLimiter;
+}
+
+// ---------------------------------------------------------------------------
+// MCP Logging helper
+// ---------------------------------------------------------------------------
+
+type LoggingLevel = 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical' | 'alert' | 'emergency';
+
+/**
+ * Sends a logging message to the connected MCP client.
+ * Errors are silently swallowed since logging is best-effort.
+ */
+function mcpLog(server: McpServer, level: LoggingLevel, data: unknown, loggerName?: string): void {
+  server.server.sendLoggingMessage({ level, logger: loggerName ?? 'dmr-x', data }).catch(() => {
+    // Logging is best-effort — swallow transport errors
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -99,11 +139,15 @@ const MODALITY_TO_PATH: Record<Modality, string> = {
   audio_stt: '/v1/audio/transcriptions',
   audio_speech: '/v1/audio/speech',
   audio_transcription: '/v1/audio/transcriptions',
+  audio_separation: '/v1/audio/separate',
+  audio_intelligence: '/v1/audio/diarize',
   video: '/v1/video/generations',
+  video_analysis: '/v1/video/analyze',
   music: '/v1/music/generations',
   reranking: '/v1/rerank',
   moderation: '/v1/moderations',
   code_completion: '/v1/completions',
+  ocr: '/v1/ocr',
   image_upscaling: '/v1/images/upscale',
   image_inpainting: '/v1/images/inpaint',
   vision: '/v1/vision/detect',
@@ -126,6 +170,53 @@ function buildAdapterRegistry(): AdapterRegistry {
   registry.register(new VeoAdapter());
   registry.register(new RunwayAdapter());
   return registry;
+}
+
+/**
+ * Checks rate limit for a tool. Returns an MCP error response if rate-limited,
+ * or null if the call is allowed.
+ */
+function checkRateLimit(
+  state: ServerState,
+  toolName: string,
+  requestId?: string
+): { content: Array<{ type: 'text'; text: string }>; isError: true } | null {
+  const rateLimitError = state.rateLimiter.check(toolName);
+  if (!rateLimitError) return null;
+  state.lastError = rateLimitError;
+  const errorPayload = {
+    code: 'RATE_LIMITED',
+    message: rateLimitError,
+    requestId,
+    timestamp: new Date().toISOString(),
+  };
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: errorPayload }, null, 2) }],
+    isError: true as const,
+  };
+}
+
+/**
+ * Creates a structured error response for tool execution failures.
+ * Includes error code, message, suggestion, and correlation ID.
+ */
+function toolError(
+  message: string,
+  code: string = 'TOOL_ERROR',
+  requestId?: string,
+  suggestion?: string
+): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  const errorPayload: Record<string, unknown> = {
+    code,
+    message,
+    requestId,
+    timestamp: new Date().toISOString(),
+  };
+  if (suggestion) errorPayload.suggestion = suggestion;
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: errorPayload }, null, 2) }],
+    isError: true as const,
+  };
 }
 
 function toUnifiedRequest(
@@ -423,8 +514,13 @@ function format3DResponse(response: UnifiedResponse): string {
   return JSON.stringify(result, null, 2);
 }
 
-function formatRoutingInfo(response: UnifiedResponse): string {
-  return `\n\n---\nRouted via: ${response.providerId} / ${response.modelId} (${response.latencyMs}ms)`;
+function formatRoutingInfo(response: UnifiedResponse, requestId?: string): string {
+  const parts = [
+    `\n\n---`,
+    `Routed via: ${response.providerId} / ${response.modelId} (${response.latencyMs}ms)`,
+  ];
+  if (requestId) parts.push(`Request ID: ${requestId}`);
+  return parts.join('\n');
 }
 
 /**
@@ -458,6 +554,8 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
         passthroughSchema as any,
         async (params: any) => {
           state.requestCount++;
+          const rateLimitResponse = checkRateLimit(state, namespacedName);
+          if (rateLimitResponse) return rateLimitResponse;
           const args = (params?.args ?? {}) as Record<string, unknown>;
           try {
             // Use the registry's 3-arg form so we route to a specific
@@ -473,9 +571,20 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
             state.lastError = message;
+
+            // Preserve upstream error structure when possible
+            let errorDetail: Record<string, unknown> = { message };
+            if (error && typeof error === 'object') {
+              const errObj = error as Record<string, unknown>;
+              if (errObj.code) errorDetail.code = errObj.code;
+              if (errObj.data) errorDetail.data = errObj.data;
+            }
+            errorDetail.server = serverId;
+            errorDetail.tool = tool.name;
+
             return {
-              content: [{ type: 'text' as const, text: `Error: ${message}` }],
-              isError: true,
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: errorDetail }, null, 2) }],
+              isError: true as const,
             };
           }
         }
@@ -534,6 +643,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     sdkTools: [],
     externalMcpClient: config.externalMcpClient,
     externalToolCount: 0,
+    rateLimiter: new RateLimiter(),
   };
 
   // SDK tool definitions for programmatic access and discovery
@@ -591,18 +701,33 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     version: '0.1.0',
   });
 
+  // Register MCP resources
+  registerResources(server);
+
+  // Register MCP prompts
+  registerPrompts(server);
+
   // -----------------------------------------------------------------------
   // Tool: dmrx_chat
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.CHAT,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT],
-    chatParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT],
+      inputSchema: chatParams as any,
+      outputSchema: dmrxChatOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CHAT],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const requestId = crypto.randomUUID();
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CHAT);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT, requestId }, 'routing');
+
         const request = toUnifiedRequest('llm', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['llm'],
@@ -612,19 +737,45 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatChatResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.CHAT,
+          requestId,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
-            text: formatted + formatRoutingInfo(response),
+            text: formatted + formatRoutingInfo(response, requestId),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${message}` }],
-          isError: true,
-        };
+
+        let code = 'ROUTING_ERROR';
+        let suggestion: string | undefined;
+        if (message.includes('unavailable') || message.includes('no candidates')) {
+          code = 'PROVIDER_UNAVAILABLE';
+          suggestion = 'Try a different quality target or provider preference';
+        } else if (message.includes('timeout')) {
+          code = 'TIMEOUT';
+          suggestion = 'Increase latency_target or try a different provider';
+        } else if (message.includes('rate limit')) {
+          code = 'RATE_LIMITED';
+          suggestion = 'Wait before retrying or use a different provider';
+        }
+
+        mcpLog(server, 'error', { tool: TOOL_NAMES.CHAT, requestId, code, message }, 'routing');
+        return toolError(message, code, requestId, suggestion);
       }
     }
   );
@@ -632,15 +783,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_generate_image
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.GENERATE_IMAGE,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE],
-    imageParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE],
+      inputSchema: imageParams as any,
+      outputSchema: dmrxImageOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_IMAGE],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_IMAGE);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE }, 'routing');
+
         const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['diffusion'],
@@ -650,15 +809,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatImageResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.GENERATE_IMAGE,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.GENERATE_IMAGE, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -670,15 +843,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_embed
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.EMBED,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.EMBED],
-    embedParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.EMBED],
+      inputSchema: embedParams as any,
+      outputSchema: dmrxEmbeddingOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.EMBED],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.EMBED);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.EMBED }, 'routing');
+
         const request = toUnifiedRequest('embedding', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['embedding'],
@@ -688,15 +869,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatEmbeddingResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.EMBED,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.EMBED, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -708,15 +903,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_transcribe
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.TRANSCRIBE,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.TRANSCRIBE],
-    transcribeParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TRANSCRIBE],
+      inputSchema: transcribeParams as any,
+      outputSchema: dmrxTranscribeOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.TRANSCRIBE],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TRANSCRIBE);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.TRANSCRIBE }, 'routing');
+
         const request = toUnifiedRequest('audio_stt', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['audio_stt'],
@@ -726,15 +929,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatTranscribeResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.TRANSCRIBE,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.TRANSCRIBE, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -746,15 +963,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_speak
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.SPEAK,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.SPEAK],
-    speakParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.SPEAK],
+      inputSchema: speakParams as any,
+      outputSchema: dmrxSpeakOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.SPEAK],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.SPEAK);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.SPEAK }, 'routing');
+
         const request = toUnifiedRequest('audio_tts', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['audio_tts'],
@@ -764,15 +989,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatSpeakResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.SPEAK,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.SPEAK, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -784,15 +1023,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_rerank
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.RERANK,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.RERANK],
-    rerankParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.RERANK],
+      inputSchema: rerankParams as any,
+      outputSchema: dmrxRerankOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.RERANK],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.RERANK);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.RERANK }, 'routing');
+
         const request = toUnifiedRequest('reranking', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['reranking'],
@@ -802,15 +1049,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatRerankResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.RERANK,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.RERANK, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -822,15 +1083,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_generate_video
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.GENERATE_VIDEO,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO],
-    videoParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO],
+      inputSchema: videoParams as any,
+      outputSchema: dmrxVideoOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_VIDEO],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_VIDEO);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_VIDEO }, 'routing');
+
         const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['video'],
@@ -840,15 +1109,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatVideoResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.GENERATE_VIDEO,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.GENERATE_VIDEO, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -860,15 +1143,22 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_generate_video_stream
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.GENERATE_VIDEO_STREAM,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO_STREAM],
-    videoStreamParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO_STREAM],
+      inputSchema: videoStreamParams as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_VIDEO_STREAM],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_VIDEO_STREAM);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_VIDEO_STREAM }, 'routing');
+
         const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
         request.stream = true;
         const classifyOptions: ClassifyOptions = {
@@ -876,9 +1166,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
         };
 
-        const adapter = state.adapterRegistry.get('runway') || state.adapterRegistry.get('replicate') || state.adapterRegistry.get('comfyui');
+        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
+        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
         if (!adapter || !adapter.executeStream) {
-          throw new Error('Streaming video generation not supported by current adapter configuration');
+          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
         }
 
         const stream = adapter.executeStream(request);
@@ -890,13 +1181,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const response: UnifiedResponse = {
           modality: 'video',
           requestId: crypto.randomUUID(),
-          providerId: 'streaming',
-          modelId: request.model || 'streaming-video',
+          providerId: plan.primary.providerId,
+          modelId: plan.primary.modelId,
           videos: [],
           latencyMs: 0,
         };
 
         const formatted = formatVideoResponse(response);
+
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.GENERATE_VIDEO_STREAM,
+          provider: response.providerId,
+          model: response.modelId,
+        }, 'routing');
 
         return {
           content: [{
@@ -907,6 +1204,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.GENERATE_VIDEO_STREAM, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -918,15 +1216,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_generate_music
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.GENERATE_MUSIC,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_MUSIC],
-    musicParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_MUSIC],
+      inputSchema: musicParams as any,
+      outputSchema: dmrxMusicOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_MUSIC],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_MUSIC);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_MUSIC }, 'routing');
+
         const request = toUnifiedRequest('music', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['music'],
@@ -936,15 +1242,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatMusicResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.GENERATE_MUSIC,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.GENERATE_MUSIC, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -956,15 +1276,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_generate_3d
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.GENERATE_3D,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_3D],
-    threeDParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_3D],
+      inputSchema: threeDParams as any,
+      outputSchema: dmrx3DOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_3D],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_3D);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_3D }, 'routing');
+
         const request = toUnifiedRequest('3d', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['3d'],
@@ -974,15 +1302,29 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = format3DResponse(response);
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.GENERATE_3D,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        }, 'routing');
+
+        const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
             text: formatted + formatRoutingInfo(response),
           }],
+          structuredContent: {
+            ...structured,
+            routed_via: `${response.providerId} / ${response.modelId}`,
+            latency_ms: response.latencyMs,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.GENERATE_3D, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -994,12 +1336,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_models
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.MODELS,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.MODELS],
-    modelsParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.MODELS],
+      inputSchema: modelsParams as any,
+      outputSchema: dmrxModelsOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.MODELS],
+    },
     async (params: any) => {
       await initAdapters();
+      state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.MODELS);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
         let models: ProviderModel[] = [...state.candidates];
@@ -1052,6 +1401,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               type: 'text' as const,
               text: JSON.stringify({ source: 'adapters', count: adapterModels.length, models: adapterModels }, null, 2),
             }],
+            structuredContent: { source: 'adapters' as const, count: adapterModels.length, models: adapterModels },
           };
         }
 
@@ -1082,10 +1432,16 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               models: formatted,
             }, null, 2),
           }],
+          structuredContent: {
+            source: 'registry' as const,
+            count: formatted.length,
+            models: formatted,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.MODELS, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1097,12 +1453,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_status
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.STATUS,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.STATUS],
-    statusParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.STATUS],
+      inputSchema: statusParams as any,
+      outputSchema: dmrxStatusOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.STATUS],
+    },
     async (params: any) => {
       await initAdapters();
+      state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.STATUS);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
         const uptimeMs = Date.now() - state.startTime;
@@ -1134,6 +1497,25 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             : 0,
           externalToolCount: state.externalToolCount,
         };
+
+        // Rate limiter status
+        status.rateLimit = {
+          configured: state.rateLimiter.listConfig().length > 0,
+          limits: state.rateLimiter.listConfig(),
+        };
+
+        // Circuit breaker status (aggregator mode)
+        if (state.externalMcpClient) {
+          try {
+            const registry = state.externalMcpClient.getRegistry();
+            status.circuitBreaker = {
+              enabled: true,
+              servers: registry.getCircuitBreakerStatus(),
+            };
+          } catch {
+            status.circuitBreaker = { enabled: true, servers: {} };
+          }
+        }
 
         // Include provider health if requested
         if (params.include_providers) {
@@ -1173,10 +1555,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             type: 'text' as const,
             text: JSON.stringify(status, null, 2),
           }],
+          structuredContent: status as any,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.STATUS, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1188,15 +1572,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_batch
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.BATCH,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.BATCH],
-    batchParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.BATCH],
+      inputSchema: batchParams as any,
+      outputSchema: dmrxBatchOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.BATCH],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.BATCH);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.BATCH, callCount: (params.calls || []).length }, 'routing');
+
         const calls = (params.calls || []) as Array<{ tool: string; parameters: Record<string, unknown> }>;
         const continueOnFail = params.continue_on_fail !== false;
         const results: Array<{ tool: string; success: boolean; output?: unknown; error?: string }> = [];
@@ -1214,15 +1606,24 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           }
         }
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.BATCH,
+          total: results.length,
+          succeeded: results.filter(r => r.success).length,
+          failed: results.filter(r => !r.success).length,
+        }, 'routing');
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({ success: true, results }, null, 2),
           }],
+          structuredContent: { success: true, results },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.BATCH, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1234,13 +1635,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_context_save
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.CONTEXT_SAVE,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SAVE],
-    contextSaveParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SAVE],
+      inputSchema: contextSaveParams as any,
+      outputSchema: dmrxContextSaveOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_SAVE],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_SAVE);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
         const id = params.id || `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1256,15 +1663,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const cacheStore = getContextStore();
         cacheStore.set(cacheKey, JSON.stringify(context), params.ttl_seconds || 86400);
 
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CONTEXT_SAVE, contextId: id }, 'routing');
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({ success: true, context_id: id, message: 'Context saved' }, null, 2),
           }],
+          structuredContent: { success: true as const, context_id: id, message: 'Context saved' },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.CONTEXT_SAVE, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1276,13 +1687,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_context_load
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.CONTEXT_LOAD,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LOAD],
-    contextLoadParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LOAD],
+      inputSchema: contextLoadParams as any,
+      outputSchema: dmrxContextLoadOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_LOAD],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_LOAD);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
         const cacheStore = getContextStore();
@@ -1292,15 +1709,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         }
 
         const context = JSON.parse(cached as string);
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CONTEXT_LOAD, contextId: params.id }, 'routing');
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({ success: true, context }, null, 2),
           }],
+          structuredContent: { success: true as const, context },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.CONTEXT_LOAD, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1312,13 +1733,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_context_list
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.CONTEXT_LIST,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LIST],
-    contextListParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LIST],
+      inputSchema: contextListParams as any,
+      outputSchema: dmrxContextListOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_LIST],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_LIST);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
         const limit = params.limit || 20;
@@ -1344,15 +1771,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         contexts.sort((a, b) => b.created_at.localeCompare(a.created_at));
         const sliced = contexts.slice(0, limit);
 
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CONTEXT_LIST, count: sliced.length }, 'routing');
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({ success: true, count: sliced.length, contexts: sliced }, null, 2),
           }],
+          structuredContent: { success: true as const, count: sliced.length, contexts: sliced },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.CONTEXT_LIST, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1364,13 +1795,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_context_summarize
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.CONTEXT_SUMMARIZE,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SUMMARIZE],
-    contextSummarizeParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SUMMARIZE],
+      inputSchema: contextSummarizeParams as any,
+      outputSchema: dmrxContextSummarizeOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_SUMMARIZE],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_SUMMARIZE);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
         const cacheStore = getContextStore();
@@ -1387,15 +1824,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           summary += `- ${msg.role}: ${(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)).slice(0, 100)}\n`;
         }
 
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CONTEXT_SUMMARIZE, contextId: params.id, messageCount: messages.length }, 'routing');
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({ success: true, context_id: params.id, summary }, null, 2),
           }],
+          structuredContent: { success: true as const, context_id: params.id, summary },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.CONTEXT_SUMMARIZE, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1407,13 +1848,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_context_compress
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.CONTEXT_COMPRESS,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_COMPRESS],
-    contextCompressParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_COMPRESS],
+      inputSchema: contextCompressParams as any,
+      outputSchema: dmrxContextCompressOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_COMPRESS],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_COMPRESS);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
         const cacheStore = getContextStore();
@@ -1436,15 +1883,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const compressed = { ...context, messages, compressed_at: new Date().toISOString() };
         cacheStore.set(`context:${params.id}`, JSON.stringify(compressed), context.ttl_seconds || 86400);
 
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CONTEXT_COMPRESS, contextId: params.id, messagesKept: messages.length }, 'routing');
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({ success: true, context_id: params.id, messages_kept: messages.length }, null, 2),
           }],
+          structuredContent: { success: true as const, context_id: params.id, messages_kept: messages.length },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.CONTEXT_COMPRESS, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1456,15 +1907,22 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_chat_stream
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.CHAT_STREAM,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT_STREAM],
-    chatStreamParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT_STREAM],
+      inputSchema: chatStreamParams as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CHAT_STREAM],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CHAT_STREAM);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT_STREAM }, 'routing');
+
         const request = toUnifiedRequest('llm', params as unknown as Record<string, unknown>);
         request.stream = true;
         const classifyOptions: ClassifyOptions = {
@@ -1472,9 +1930,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
         };
 
-        const adapter = state.adapterRegistry.get('openai');
+        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
+        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
         if (!adapter || !adapter.executeStream) {
-          throw new Error('Streaming not supported by current adapter configuration');
+          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
         }
 
         const stream = adapter.executeStream(request);
@@ -1490,13 +1949,20 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const response: UnifiedResponse = {
           modality: 'llm',
           requestId: crypto.randomUUID(),
-          providerId: request.model || 'openai',
-          modelId: request.model || 'gpt-4',
+          providerId: plan.primary.providerId,
+          modelId: plan.primary.modelId,
           message: { role: 'assistant', content: fullText },
           latencyMs: 0,
         };
 
         const formatted = formatChatResponse(response);
+
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.CHAT_STREAM,
+          provider: response.providerId,
+          model: response.modelId,
+          chunkCount: chunks.length,
+        }, 'routing');
 
         return {
           content: [{
@@ -1507,6 +1973,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.CHAT_STREAM, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1518,15 +1985,22 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_generate_image_stream
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.GENERATE_IMAGE_STREAM,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE_STREAM],
-    imageStreamParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE_STREAM],
+      inputSchema: imageStreamParams as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_IMAGE_STREAM],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_IMAGE_STREAM);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE_STREAM }, 'routing');
+
         const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
         request.stream = true;
         const classifyOptions: ClassifyOptions = {
@@ -1534,9 +2008,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
         };
 
-        const adapter = state.adapterRegistry.get('stability') || state.adapterRegistry.get('replicate');
+        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
+        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
         if (!adapter || !adapter.executeStream) {
-          throw new Error('Streaming image generation not supported by current adapter configuration');
+          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
         }
 
         const stream = adapter.executeStream(request);
@@ -1548,13 +2023,20 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const response: UnifiedResponse = {
           modality: 'diffusion',
           requestId: crypto.randomUUID(),
-          providerId: 'streaming',
-          modelId: request.model || 'streaming-diffusion',
+          providerId: plan.primary.providerId,
+          modelId: plan.primary.modelId,
           images: [],
           latencyMs: 0,
         };
 
         const formatted = formatImageResponse(response);
+
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.GENERATE_IMAGE_STREAM,
+          provider: response.providerId,
+          model: response.modelId,
+          updateCount: updates.length,
+        }, 'routing');
 
         return {
           content: [{
@@ -1565,6 +2047,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.GENERATE_IMAGE_STREAM, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
@@ -1576,15 +2059,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   // Tool: dmrx_workflow
   // -----------------------------------------------------------------------
-  server.tool(
+  server.registerTool(
     TOOL_NAMES.WORKFLOW,
-    TOOL_DESCRIPTIONS[TOOL_NAMES.WORKFLOW],
-    workflowParams as any,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.WORKFLOW],
+      inputSchema: workflowParams as any,
+      outputSchema: dmrxWorkflowOutput as any,
+      annotations: TOOL_ANNOTATIONS[TOOL_NAMES.WORKFLOW],
+    },
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.WORKFLOW);
+      if (rateLimitResponse) return rateLimitResponse;
 
       try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.WORKFLOW, stepCount: (params.steps || []).length }, 'routing');
+
         const steps = params.steps || [];
         const failFast = params.fail_fast !== false;
         const results: Array<{ step_id: string; tool: string; success: boolean; output?: unknown; error?: string }> = [];
@@ -1604,6 +2095,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               }
             }
 
+            mcpLog(server, 'debug', {
+              tool: TOOL_NAMES.WORKFLOW,
+              stepId: step.id,
+              stepTool: step.tool,
+            }, 'routing');
+
             const output = await executeDMRXTool(state.router, state.adapterRegistry, step.tool, stepParams);
             results.push({ step_id: step.id, tool: step.tool, success: true, output });
             stepOutputs[step.id] = output;
@@ -1616,15 +2113,24 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           }
         }
 
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.WORKFLOW,
+          totalSteps: results.length,
+          succeeded: results.filter(r => r.success).length,
+          failed: results.filter(r => !r.success).length,
+        }, 'routing');
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({ success: true, results, step_outputs: stepOutputs }, null, 2),
           }],
+          structuredContent: { success: true, results, step_outputs: stepOutputs },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.WORKFLOW, message }, 'routing');
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,

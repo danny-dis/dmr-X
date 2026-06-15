@@ -48,7 +48,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
       expect(results).toHaveLength(CONCURRENT_REQUESTS);
       results.forEach((result, i) => {
         expect(result.message?.content).toBeDefined();
-        expect(result.message.content).toContain(`Concurrent test ${i + 1}`);
+        expect((result.message?.content as string)).toContain(`Concurrent test ${i + 1}`);
       });
     }, 60000);
 
@@ -92,7 +92,8 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
       });
 
       expect(response).toBeDefined();
-      expect(response.message?.content?.trim()).toBe('4');
+      expect(response.message?.content).toBeDefined();
+      expect((response.message?.content as string)?.trim()).toBe('4');
     }, 30000);
 
     it('should handle vision-style request with text analysis', async () => {
@@ -106,7 +107,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
 
       expect(response).toBeDefined();
       expect(response.message?.content).toBeDefined();
-      expect(response.message.content.split('.').length).toBeGreaterThanOrEqual(3);
+      expect((response.message?.content as string).split('.').length).toBeGreaterThanOrEqual(3);
     }, 30000);
   });
 
@@ -200,7 +201,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
       const response = await client.request('/v1/chat/completions', {
         model: 'pollinations/openai-fast',
         messages: [{ role: 'user', content: 'Test' }],
-        modality: 'invalid_modality',
+        modality: 'invalid_modality' as any,
         stream: false,
         metadata: {},
       }).catch(e => e);
@@ -226,8 +227,8 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
           metadata: {},
         });
 
-        if (response.provider) {
-          providersUsed.add(response.provider);
+        if (response.providerId) {
+          providersUsed.add(response.providerId);
         }
       }
 
@@ -241,7 +242,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
           body: {
             model: 'pollinations/openai-fast',
             messages: [{ role: 'user', content: 'Return a JSON object with keys: status, value. No additional text.' }],
-            modality: 'llm',
+            modality: 'llm' as const,
             stream: false,
             metadata: { response_format: { type: 'json_object' } },
           },
@@ -253,7 +254,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
             messages: [
               { role: 'user', content: 'Repeat back this text: "DMR-X stress testing"' },
             ],
-            modality: 'llm',
+            modality: 'llm' as const,
             stream: false,
             metadata: {},
           },
@@ -263,7 +264,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
           body: {
             model: 'pollinations/openai-fast',
             messages: [{ role: 'user', content: 'What tools do you have available?' }],
-            modality: 'llm',
+            modality: 'llm' as const,
             stream: false,
             metadata: {},
           },
@@ -271,7 +272,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
       ];
 
       for (const req of specialRequests) {
-        const response = await client.request('/v1/chat/completions', req.body);
+        const response = await client.request('/v1/chat/completions', req.body as any);
         expect(response).toBeDefined();
       }
     }, 45000);

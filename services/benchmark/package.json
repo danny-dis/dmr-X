@@ -20,9 +20,10 @@
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
     "@dmr-x/utils": "*",
-    "@dmr-x/adapters": "*"
+    "@dmr-x/adapters": "*",
+    "@dmr-x/router": "*"
   },
   "devDependencies": {
-    "typescript": "5.4.0"
+    "typescript": "5.9.3"
   }
 }

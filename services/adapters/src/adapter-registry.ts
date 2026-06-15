@@ -21,9 +21,22 @@ export class AdapterRegistry {
   get(providerId: string): ProviderAdapter | undefined {
     const cb = this.circuitBreakers.get(providerId);
     if (cb && !cb.canExecute()) {
-      logger.warn({ providerId }, 'Adapter circuit breaker is open, rejecting request');
+      // Debug only — this fires on every request to a tripped provider, so
+      // WARN level would flood the log under any sustained incident.
+      logger.debug({ providerId }, 'Adapter circuit breaker is open, rejecting request');
       return undefined;
     }
+    return this.adapters.get(providerId);
+  }
+
+  /**
+   * Returns the adapter without consulting its circuit breaker.
+   *
+   * Intended for health checks and other observability paths that need to
+   * run regardless of breaker state — a tripped breaker must still be
+   * polled so it can transition to half-open and eventually close.
+   */
+  peek(providerId: string): ProviderAdapter | undefined {
     return this.adapters.get(providerId);
   }
 

@@ -11,6 +11,7 @@ import { Router } from '@dmr-x/router';
 import { getTelemetryService } from '@dmr-x/telemetry';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter } from '@dmr-x/adapters';
 import type { UnifiedRequest } from '@dmr-x/core';
+import { ProviderUnavailableError } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { quotaService, rateLimitService } from '@dmr-x/quota';
@@ -27,15 +28,59 @@ import { videoRoutes } from './routes/video.routes.js';
 import { threeDRoutes } from './routes/3d.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
 import { geminiRoutes } from './routes/gemini.routes.js';
-import { adminRoutes } from './routes/admin.routes.js';
+import { rerankRoutes } from './routes/rerank.routes.js';
+import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
 import { toolsRoutes, registerToolHandler } from './routes/tools.routes.js';
 import { agenticRoutes } from './routes/agentic.routes.js';
+import conversationRoutes from './routes/conversation.routes.js';
 import { authMiddleware } from './middleware/auth.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 declare const Bun: unknown | undefined;
 const isBun = typeof Bun !== 'undefined';
+
+// Production-hardening defaults — overridable via env in apps/gateway/src/main.ts
+const BODY_LIMIT = parseBodyLimit(process.env.DMRX_BODY_LIMIT, 10 * 1024 * 1024);
+const REQUEST_TIMEOUT = parseInt(process.env.DMRX_REQUEST_TIMEOUT || '60000', 10);
+const KEEPALIVE_TIMEOUT = parseInt(process.env.DMRX_KEEPALIVE_TIMEOUT || '65000', 10);
+const CONNECTION_TIMEOUT = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || '10000', 10);
+const MAX_PARAM_LENGTH = parseInt(process.env.DMRX_MAX_PARAM_LENGTH || '200', 10);
+const MEMORY_LIMIT = parseBodyLimit(process.env.DMRX_MEMORY_LIMIT, 1_500 * 1024 * 1024);
+const TRUST_PROXY = parseTrustProxy(process.env.DMRX_TRUST_PROXY);
+
+function parseBodyLimit(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const trimmed = raw.trim();
+  if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+  const m = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i.exec(trimmed);
+  if (!m) return fallback;
+  const n = parseFloat(m[1]);
+  const unit = m[2].toLowerCase();
+  const mult = unit === 'gb' ? 1024 ** 3
+             : unit === 'mb' ? 1024 ** 2
+             : unit === 'kb' ? 1024
+             : 1;
+  return Math.floor(n * mult);
+}
+
+function parseTrustProxy(raw: string | undefined): boolean | string {
+  if (raw === undefined) return 'loopback';
+  const v = raw.trim().toLowerCase();
+  if (v === 'true' || v === '1' || v === 'yes') return true;
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  if (['loopback', 'linklocal', 'uniquelocal'].includes(v)) return v;
+  return raw.trim();
+}
+
+export const SERVER_LIMITS = {
+  bodyLimit: BODY_LIMIT,
+  requestTimeout: REQUEST_TIMEOUT,
+  keepAliveTimeout: KEEPALIVE_TIMEOUT,
+  connectionTimeout: CONNECTION_TIMEOUT,
+  maxParamLength: MAX_PARAM_LENGTH,
+  memoryLimit: MEMORY_LIMIT,
+};
 
 export async function createServer() {
   const server = Fastify({
@@ -48,6 +93,13 @@ export async function createServer() {
     },
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
+    // Production-grade request limits
+    bodyLimit: BODY_LIMIT,
+    requestTimeout: REQUEST_TIMEOUT,
+    keepAliveTimeout: KEEPALIVE_TIMEOUT,
+    connectionTimeout: CONNECTION_TIMEOUT,
+    maxParamLength: MAX_PARAM_LENGTH,
+    trustProxy: TRUST_PROXY,
   });
 
   // Ensure a default tenant exists
@@ -147,10 +199,20 @@ export async function createServer() {
     });
   }
   if (process.env.GOOGLE_API_KEY) {
-    await adapterRegistry.initialize('google', {
-      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      apiKey: process.env.GOOGLE_API_KEY,
-    });
+    // The 'google' provider reuses the OpenAI-compatible surface of
+    // generativelanguage.googleapis.com. A GenericOpenAIAdapter is registered
+    // for it during background init; if the env key is set at boot and the
+    // adapter isn't registered yet, this would throw "Adapter not found"
+    // and hang the gateway before .listen() is ever called. Swallow it —
+    // background init will pick it up.
+    try {
+      await adapterRegistry.initialize('google', {
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        apiKey: process.env.GOOGLE_API_KEY,
+      });
+    } catch (err) {
+      logger.warn({ err, providerId: 'google' }, 'Skipping google env-init (adapter not registered yet — will retry in background init)');
+    }
   }
   if (process.env.GOOGLE_API_KEY) {
     await adapterRegistry.initialize('veo', {
@@ -207,134 +269,7 @@ export async function createServer() {
     });
   }
 
-  // Auto-register any new catalog items FIRST (first-run or updates)
   const db = getDb();
-  try {
-    const newlyRegistered = await autoRegisterProviders();
-    if (newlyRegistered.length > 0) {
-      logger.info({ count: newlyRegistered.length }, 'Auto-registered new catalog providers');
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to auto-register providers');
-  }
-
-  // Backfill model_profiles for any OpenAI-compatible provider whose catalog
-  // entry was empty (e.g. Pollinations) but whose DB row already existed before
-  // the live-discovery logic shipped. Idempotent: providers that already have
-  // model profiles are skipped.
-  try {
-    const backfilled = await discoverMissingModels();
-    if (backfilled > 0) {
-      logger.info({ count: backfilled }, 'Backfilled missing model profiles via /v1/models discovery');
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to backfill missing models');
-  }
-
-  // Load all registered providers from DB and initialize adapters
-  const registeredProviders = db.prepare('SELECT * FROM providers').all() as any[];
-  for (const row of registeredProviders) {
-    const template = PROVIDER_CATALOG.find(t => t.id === row.name);
-    const config = JSON.parse(row.config || '{}');
-    decryptConfigApiKey(config);
-    const apiKey = config.apiKey || (row.api_key_ref ? process.env[row.api_key_ref] : undefined);
-
-    // If adapter not yet registered, register GenericOpenAIAdapter if it's OpenAI-compatible
-    if (!adapterRegistry.get(row.name) && template?.apiFormat === 'openai') {
-      const adapter = new GenericOpenAIAdapter(row.name);
-      adapterRegistry.register(adapter);
-    }
-
-    const adapter = adapterRegistry.get(row.name);
-    const baseUrl = row.base_url || template?.baseUrl;
-    const authMethod = row.auth_method || 'api_key';
-
-    // OAuth token initialization
-    if (authMethod === 'oauth' && row.oauth_access_token && adapter && baseUrl) {
-      let accessToken: string;
-      try {
-        accessToken = decrypt(row.oauth_access_token);
-      } catch {
-        accessToken = row.oauth_access_token; // already plaintext
-      }
-
-      // Check if token is expired — try to refresh
-      if (row.oauth_token_expires_at && new Date(row.oauth_token_expires_at) < new Date(Date.now() + 60000)) {
-        if (row.oauth_refresh_token && template?.oauthConfig) {
-          try {
-            const { OAuthService } = await import('@dmr-x/oauth');
-            const oauthService = new OAuthService();
-            let refreshToken: string;
-            try {
-              refreshToken = decrypt(row.oauth_refresh_token);
-            } catch {
-              refreshToken = row.oauth_refresh_token;
-            }
-            const newTokens = await oauthService.refreshAccessToken(template.oauthConfig, refreshToken);
-            accessToken = newTokens.accessToken;
-            const encAccess = encrypt(newTokens.accessToken);
-            const encRefresh = newTokens.refreshToken ? encrypt(newTokens.refreshToken) : row.oauth_refresh_token;
-            db.prepare(
-              `UPDATE providers SET oauth_access_token = ?, oauth_refresh_token = ?, oauth_token_expires_at = ?, updated_at = datetime('now') WHERE id = ?`
-            ).run(encAccess, encRefresh, newTokens.expiresAt?.toISOString() || null, row.id);
-            logger.info({ providerId: row.name }, 'Refreshed OAuth token on startup');
-          } catch (err) {
-            logger.warn({ providerId: row.name, err }, 'Failed to refresh OAuth token on startup');
-          }
-        }
-      }
-
-      try {
-        await adapterRegistry.initialize(row.name, {
-          baseUrl,
-          accessToken,
-          authMethod: 'oauth',
-        });
-        logger.info({ providerId: row.name }, 'Initialized adapter with OAuth token');
-      } catch (err) {
-        logger.warn({ providerId: row.name, err }, 'Failed to initialize adapter with OAuth token');
-      }
-    } else if (adapter && baseUrl && (apiKey || !template?.envKey)) {
-      try {
-        await adapterRegistry.initialize(row.name, {
-          baseUrl,
-          apiKey: apiKey || '',
-        });
-        logger.info({ providerId: row.name }, 'Initialized adapter from DB/Env');
-      } catch (err) {
-        logger.warn({ providerId: row.name, err }, 'Failed to initialize adapter on startup');
-      }
-    }
-  }
-
-  // Activate models for providers that have keys or don't need one
-  const allProviders = db.prepare(
-    `SELECT id, name, config, is_healthy, auth_method, oauth_access_token FROM providers`
-  ).all() as any[];
-  for (const p of allProviders) {
-    const cfg = JSON.parse(p.config || '{}');
-    const template = PROVIDER_CATALOG.find(t => t.id === p.name);
-    const needsNoKey = template?.envKey === '';
-
-    // Ensure keyless providers (like Pollinations) are always healthy
-    if (needsNoKey && !p.is_healthy) {
-      db.prepare(
-        `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`
-      ).run(p.id);
-      logger.info({ provider: p.name }, 'Re-activated keyless provider');
-    }
-
-    const hasOAuthToken = p.auth_method === 'oauth' && !!p.oauth_access_token;
-    if (cfg.hasKey || hasOAuthToken || needsNoKey) {
-      const updated = db.prepare(
-        `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
-         WHERE provider_id = ? AND is_active = 0`
-      ).run(p.id);
-      if (updated.changes > 0) {
-        logger.info({ provider: p.name, models: updated.changes }, 'Activated models for provider');
-      }
-    }
-  }
 
   // Warn if encryption is not configured
   if (!process.env.DMRX_ENCRYPTION_KEY) {
@@ -359,6 +294,11 @@ export async function createServer() {
   server.decorate('registerToolHandler', registerToolHandler);
   server.decorate('rateLimitService', rateLimitService);
   server.decorate('quotaService', quotaService);
+  // Telemetry reference (must exist before the background start below) —
+  // the onResponse hook reads it. Recording is a no-op if the underlying
+  // OTel SDK hasn't finished starting yet.
+  const telemetry = getTelemetryService();
+  server.decorate('telemetry', telemetry);
 
   // Initialize Benchmark services
   const judgeService = new JudgeService(router);
@@ -380,7 +320,17 @@ export async function createServer() {
   router.setAdapterExecutor({
     execute: async (providerId: string, _modelId: string, request: UnifiedRequest) => {
       const adapter = (server as any).getAdapter(providerId);
-      if (!adapter) throw new Error(`Adapter not found: ${providerId}`);
+      if (!adapter) {
+        // Surface this as a typed 503, not a plain 500. The provider row
+        // exists in the DB (the router selected it) but its adapter isn't
+        // registered in the in-memory registry — typically because the
+        // provider was just activated and the registry hasn't been reloaded
+        // yet, or because the adapter type is unknown. A bare `Error` would
+        // bubble to the generic error handler and return 500 with no
+        // actionable detail; ProviderUnavailableError returns 503 with a
+        // message the UI can render.
+        throw new ProviderUnavailableError([providerId], 5);
+      }
       return adapter.execute(request);
     },
   });
@@ -475,14 +425,20 @@ export async function createServer() {
   }, OAUTH_REFRESH_INTERVAL);
   oauthRefreshTimer.unref();
 
-// Start telemetry service (fire-and-forget — must not crash the server)
-   try {
-     const telemetry = getTelemetryService();
-     await telemetry.start();
-     logger.info('Telemetry service started');
-   } catch (err) {
-     logger.warn({ err }, 'Failed to start telemetry service — continuing without telemetry');
-   }
+// Start telemetry service in the background — must not block the listener.
+// Telemetry has a broken OpenTelemetry import on this OTel version
+// (ATTR_SERVICE_NAME was renamed in 1.27+, but we're pinned to 1.25.0)
+// and PrometheusExporter construction can hang on some systems. Either
+// failure would otherwise keep the gateway from ever calling .listen().
+// We log the outcome asynchronously so it's still visible.
+void (async () => {
+  try {
+    await telemetry.start();
+    logger.info('Telemetry service started');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to start telemetry service — continuing without telemetry');
+  }
+})();
 
   // CORS — never use wildcard origin; always use explicit origins
   const defaultOrigins = [
@@ -502,9 +458,11 @@ export async function createServer() {
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-free-tier-strategy'],
   });
 
-  // Rate limiting
+  // Rate limiting. The default of 600 req/min is generous — admin dashboards
+  // with 4-5 panels each refetching every 5-15s would otherwise trip a
+  // 100/min limit. Bump the default; operators can still tighten via env.
   await server.register(rateLimit, {
-    max: parseInt(process.env.DMRX_RATE_LIMIT_MAX || '100', 10),
+    max: parseInt(process.env.DMRX_RATE_LIMIT_MAX || '600', 10),
     timeWindow: process.env.DMRX_RATE_LIMIT_WINDOW || '1 minute',
   });
 
@@ -560,28 +518,138 @@ export async function createServer() {
     return payload;
   });
 
+  // Telemetry: record request count + latency per request, token usage
+  // and errors when the route handler populated `request.metrics`.
+  // Route handlers can set:
+  //   (request as any).metrics = {
+  //     providerId, modelId, modality,
+  //     tokens?: { prompt, completion, total, costUsd? },
+  //     errorCode?: string,    // present if the request errored
+  //   }
+  // The hook is fire-and-forget — telemetry must never break the request.
+  server.addHook('onResponse', async (request, reply) => {
+    try {
+      const metrics = (request as any).metrics as
+        | {
+            providerId?: string;
+            modelId?: string;
+            modality?: string;
+            tokens?: {
+              prompt: number;
+              completion: number;
+              total: number;
+              costUsd?: number;
+            };
+            errorCode?: string;
+          }
+        | undefined;
+      if (!metrics?.providerId || !metrics.modelId) return;
+
+      const statusCode = reply.statusCode;
+      const latencyMs = Date.now() - ((request as any).startTime ?? Date.now());
+
+      telemetry.recordRequest({
+        providerId: metrics.providerId,
+        modelId: metrics.modelId,
+        modality: metrics.modality ?? 'unknown',
+        statusCode,
+      });
+      telemetry.recordLatency({
+        providerId: metrics.providerId,
+        modelId: metrics.modelId,
+        modality: metrics.modality ?? 'unknown',
+        latencyMs,
+      });
+      if (metrics.errorCode) {
+        telemetry.recordError({
+          providerId: metrics.providerId,
+          modelId: metrics.modelId,
+          modality: metrics.modality ?? 'unknown',
+          errorCode: metrics.errorCode,
+        });
+      }
+      if (metrics.tokens) {
+        telemetry.recordTokens({
+          providerId: metrics.providerId,
+          modelId: metrics.modelId,
+          promptTokens: metrics.tokens.prompt,
+          completionTokens: metrics.tokens.completion,
+          totalTokens: metrics.tokens.total,
+          costUsd: metrics.tokens.costUsd,
+        });
+      }
+    } catch (err) {
+      // Telemetry failures must never affect the request
+      logger.debug({ err }, 'telemetry onResponse hook failed');
+    }
+  });
+
+  // Stamp start time on every request so latency is computable
+  server.addHook('onRequest', async (request) => {
+    (request as any).startTime = Date.now();
+  });
+
   // Health checks
   server.get('/health', async () => ({ status: 'ok' }));
 
   server.get('/healthz', async (_request, reply) => {
-    const checks: Record<string, string> = {};
+    const checks: Record<string, { status: string; detail?: string }> = {};
     let healthy = true;
 
-    // Check SQLite
+    // 1) SQLite read
     try {
       const db = getDb();
       db.prepare('SELECT 1').get();
-      checks.sqlite = 'ok';
-    } catch {
-      checks.sqlite = 'fail';
+      checks.db_read = { status: 'ok' };
+    } catch (err) {
+      checks.db_read = { status: 'fail', detail: err instanceof Error ? err.message : String(err) };
       healthy = false;
     }
 
-    const status = healthy ? 'ok' : 'degraded';
-    if (!healthy) {
-      reply.status(503);
+    // 2) SQLite write — catches read-only filesystems / locked DB
+    try {
+      const db = getDb();
+      db.exec('CREATE TEMP TABLE IF NOT EXISTS _hc(id INTEGER); DROP TABLE _hc;');
+      checks.db_write = { status: 'ok' };
+    } catch (err) {
+      checks.db_write = { status: 'fail', detail: err instanceof Error ? err.message : String(err) };
+      healthy = false;
     }
-    return { status, checks };
+
+    // 3) Router has loaded at least one candidate (otherwise no requests can be served)
+    try {
+      const router = (server as any).router;
+      const count = router?.getCandidateCount?.() ?? 0;
+      if (count > 0) {
+        checks.candidates = { status: 'ok', detail: `${count} candidates` };
+      } else {
+        checks.candidates = { status: 'fail', detail: 'no routing candidates loaded' };
+        // Degraded but not necessarily fatal — still report so an operator can see it
+      }
+    } catch (err) {
+      checks.candidates = { status: 'fail', detail: err instanceof Error ? err.message : String(err) };
+    }
+
+    // 4) Memory pressure — RSS compared against DMRX_MEMORY_LIMIT
+    try {
+      const rss = process.memoryUsage().rss;
+      if (rss < MEMORY_LIMIT) {
+        checks.memory = { status: 'ok', detail: `${Math.round(rss / 1024 / 1024)}MB / ${Math.round(MEMORY_LIMIT / 1024 / 1024)}MB` };
+      } else {
+        checks.memory = { status: 'fail', detail: `rss ${Math.round(rss / 1024 / 1024)}MB exceeds limit ${Math.round(MEMORY_LIMIT / 1024 / 1024)}MB` };
+        healthy = false;
+      }
+    } catch (err) {
+      checks.memory = { status: 'fail', detail: err instanceof Error ? err.message : String(err) };
+    }
+
+    const status = healthy ? 'ok' : 'degraded';
+    if (!healthy) reply.status(503);
+    return {
+      status,
+      checks,
+      uptime: Math.round(process.uptime()),
+    };
   });
 
   server.get('/ready', async (_request, reply) => {
@@ -603,6 +671,67 @@ export async function createServer() {
 
   server.get('/livez', async () => ({ status: 'alive' }));
 
+  // Error handler — must be set BEFORE server.register(...) so that the
+  // custom shape (`{ error: { message, type, code } }`) is captured by
+  // child contexts. Setting it after register means the child context
+  // (admin, chat, etc.) keeps Fastify's default shape
+  // (`{ statusCode, code, error: "Bad Request", message }`), which the
+  // UI surfaces as the unhelpful string "Bad Request".
+  server.setErrorHandler((error, request, reply) => {
+    const statusCode = error.statusCode || 500;
+    const code = error.code || 'INTERNAL_ERROR';
+
+    // Always log full error server-side (with request id so logs and
+    // client payloads are correlatable)
+    logger.error(
+      { err: error, req: request, requestId: request.id },
+      `Request error: ${error.message}`,
+    );
+
+    // For 500+ errors, hide all internal details from clients — unless
+    // DMRX_LOCAL_MODE=true (dev), where we surface the real message so
+    // the UI toast and gateway log line up while debugging.
+    const isDev = process.env.DMRX_LOCAL_MODE === 'true' || process.env.NODE_ENV !== 'production';
+    const clientMessage = statusCode >= 500 && !isDev ? 'Internal server error' : error.message;
+    const clientType = statusCode >= 500 && !isDev ? 'server_error' : code;
+
+    const errorBody: Record<string, unknown> = {
+      message: clientMessage,
+      type: clientType,
+      code: statusCode >= 500 && !isDev ? 'internal_error' : code.toLowerCase(),
+    };
+
+    // For 5xx, include the request id so users can quote it in support
+    // tickets (matches the pattern used by Stripe, GitHub, Cloudflare).
+    // The x-request-id response header carries the same value.
+    if (statusCode >= 500) {
+      errorBody.request_id = request.id;
+      if (isDev) {
+        // Dev-only: surface the real error so the UI toast and pino log
+        // line up. Production keeps `error.message` out of the wire.
+        errorBody.dev_message = error.message;
+        errorBody.dev_stack = error.stack;
+      }
+
+      // Surface 5xx to the live telemetry SSE stream so the observability
+      // dashboard can show them in real time. Uses optional chaining so
+      // tests / alternate builds without the publish function still work.
+      (server as any).recordTelemetryEvent?.({
+        level: 'error',
+        service: 'gateway',
+        message: error.message,
+        metadata: {
+          path: request.url,
+          method: request.method,
+          statusCode,
+          requestId: request.id,
+        },
+      });
+    }
+
+    reply.status(statusCode).send({ error: errorBody });
+  });
+
 // Routes
    await server.register(chatRoutes, { prefix: '/v1' });
    await server.register(anthropicRoutes, { prefix: '/v1' });
@@ -610,6 +739,7 @@ export async function createServer() {
    await server.register(modelsRoutes, { prefix: '/v1' });
    await server.register(imagesRoutes, { prefix: '/v1' });
    await server.register(embeddingsRoutes, { prefix: '/v1' });
+   await server.register(rerankRoutes, { prefix: '/v1' });
    await server.register(audioRoutes, { prefix: '/v1' });
    await server.register(audioSeparationRoutes, { prefix: '/v1' });
    await server.register(ocrRoutes, { prefix: '/v1' });
@@ -618,6 +748,7 @@ export async function createServer() {
    await server.register(adminRoutes, { prefix: '/v1' });
    await server.register(toolsRoutes, { prefix: '/v1' });
    await server.register(agenticRoutes, { prefix: '/v1' });
+   await server.register(conversationRoutes, { prefix: '/v1' });
 
   // SPA fallback: serve index.html for non-API GET requests.
   server.setNotFoundHandler(async (request, reply) => {
@@ -627,27 +758,6 @@ export async function createServer() {
     }
     const indexHtml = await fs.promises.readFile(path.join(uiDir, 'index.html'), 'utf8');
     return reply.type('text/html').send(indexHtml);
-  });
-
-  // Error handler
-  server.setErrorHandler((error, request, reply) => {
-    const statusCode = error.statusCode || 500;
-    const code = error.code || 'INTERNAL_ERROR';
-
-    // Always log full error server-side
-    logger.error({ err: error, req: request }, `Request error: ${error.message}`);
-
-    // For 500+ errors, hide all internal details from clients
-    const clientMessage = statusCode >= 500 ? 'Internal server error' : error.message;
-    const clientType = statusCode >= 500 ? 'server_error' : code;
-
-    reply.status(statusCode).send({
-      error: {
-        message: clientMessage,
-        type: clientType,
-        code: statusCode >= 500 ? 'internal_error' : code.toLowerCase(),
-      },
-    });
   });
 
   // Cleanup on close
@@ -674,5 +784,229 @@ export async function createServer() {
     }
   }
 
-  return server;
+  // ---------------------------------------------------------------------------
+  // Background initialisation
+  //
+  // The following work does NOT need to block the listener. Moving it off the
+  // boot path is what gets the gateway from "5+ minutes to /health" to
+  // "sub-second to /health" on a cold start.
+  // ---------------------------------------------------------------------------
+  const runBackgroundInit = (): void => {
+    const initStart = Date.now();
+    logger.info('Background initialisation started');
+
+    void (async () => {
+      // 1) Auto-register any new catalog items
+      try {
+        const newlyRegistered = await autoRegisterProviders();
+        if (newlyRegistered.length > 0) {
+          logger.info(
+            { count: newlyRegistered.length },
+            'Auto-registered new catalog providers',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to auto-register providers');
+      }
+
+      // 2) Backfill model profiles for any OpenAI-compatible provider whose
+      //    catalog entry was empty but whose DB row already existed before
+      //    the live-discovery logic shipped.
+      try {
+        const backfilled = await discoverMissingModels();
+        if (backfilled > 0) {
+          logger.info(
+            { count: backfilled },
+            'Backfilled missing model profiles via /v1/models discovery',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to backfill missing models');
+      }
+
+      // 3) Load all registered providers from DB and initialise adapters
+      const registeredProviders = db.prepare('SELECT * FROM providers').all() as any[];
+
+      for (const row of registeredProviders) {
+        const template = PROVIDER_CATALOG.find((t) => t.id === row.name);
+        let config: any;
+        try {
+          config = JSON.parse(row.config || '{}');
+        } catch {
+          config = {};
+        }
+        // Prefer the new provider_keys table (migration 015). The legacy
+        // config.apiKey column is still used as a fallback so providers
+        // that existed before the migration keep working without an
+        // explicit backfill.
+        const activeCredential = loadActiveProviderCredential(row.id);
+        let apiKey = activeCredential.apiKey;
+        if (!apiKey) {
+          decryptConfigApiKey(config);
+          apiKey =
+            config.apiKey || (row.api_key_ref ? process.env[row.api_key_ref] : undefined);
+        }
+
+        // Register a GenericOpenAIAdapter on demand for OpenAI-compatible rows.
+        // Catalog rows go through `template.apiFormat === 'openai'`. Custom
+        // providers added via the dialog (e.g. tokenrouter) have no catalog
+        // template, so we also accept `adapter_type === 'openai' | 'generic-openai'`
+        // directly. Without this, every gateway restart loses the custom
+        // adapter and the next chat request fails with "Adapter not found".
+        const isOpenaiCompatRow =
+          template?.apiFormat === 'openai' ||
+          row.adapter_type === 'openai' ||
+          row.adapter_type === 'generic-openai';
+        if (!adapterRegistry.get(row.name) && isOpenaiCompatRow) {
+          const adapter = new GenericOpenAIAdapter(row.name);
+          adapterRegistry.register(adapter);
+        }
+
+        const adapter = adapterRegistry.get(row.name);
+        const baseUrl = row.base_url || template?.baseUrl;
+        const authMethod = row.auth_method || 'api_key';
+
+        // OAuth flow
+        if (authMethod === 'oauth' && row.oauth_access_token && adapter && baseUrl) {
+          let accessToken: string;
+          try {
+            accessToken = decrypt(row.oauth_access_token);
+          } catch {
+            accessToken = row.oauth_access_token; // already plaintext
+          }
+
+          if (
+            row.oauth_token_expires_at &&
+            new Date(row.oauth_token_expires_at) < new Date(Date.now() + 60_000)
+          ) {
+            if (row.oauth_refresh_token && template?.oauthConfig) {
+              try {
+                const { OAuthService } = await import('@dmr-x/oauth');
+                const oauthService = new OAuthService();
+                let refreshToken: string;
+                try {
+                  refreshToken = decrypt(row.oauth_refresh_token);
+                } catch {
+                  refreshToken = row.oauth_refresh_token;
+                }
+                const newTokens = await oauthService.refreshAccessToken(
+                  template.oauthConfig,
+                  refreshToken,
+                );
+                accessToken = newTokens.accessToken;
+                const encAccess = encrypt(newTokens.accessToken);
+                const encRefresh = newTokens.refreshToken
+                  ? encrypt(newTokens.refreshToken)
+                  : row.oauth_refresh_token;
+                db.prepare(
+                  `UPDATE providers SET oauth_access_token = ?, oauth_refresh_token = ?, oauth_token_expires_at = ?, updated_at = datetime('now') WHERE id = ?`,
+                ).run(
+                  encAccess,
+                  encRefresh,
+                  newTokens.expiresAt?.toISOString() || null,
+                  row.id,
+                );
+                logger.info({ providerId: row.name }, 'Refreshed OAuth token on startup');
+              } catch (err) {
+                logger.warn(
+                  { providerId: row.name, err },
+                  'Failed to refresh OAuth token on startup',
+                );
+              }
+            }
+          }
+
+          try {
+            await adapterRegistry.initialize(row.name, {
+              baseUrl,
+              accessToken,
+              authMethod: 'oauth',
+            });
+            logger.info({ providerId: row.name }, 'Initialized adapter with OAuth token');
+          } catch (err) {
+            logger.warn(
+              { providerId: row.name, err },
+              'Failed to initialize adapter with OAuth token',
+            );
+          }
+          continue;
+        }
+
+        // API-key flow
+        if (adapter && baseUrl && (apiKey || !template?.envKey)) {
+          try {
+            await adapterRegistry.initialize(row.name, {
+              baseUrl,
+              apiKey: apiKey || '',
+            });
+            logger.info({ providerId: row.name }, 'Initialized adapter from DB/Env');
+          } catch (err) {
+            logger.warn(
+              { providerId: row.name, err },
+              'Failed to initialize adapter on startup',
+            );
+          }
+        }
+      }
+
+      // 4) Activate models for providers that have keys (or are keyless)
+      try {
+        const allProviders = db
+          .prepare(
+            `SELECT id, name, config, is_healthy, auth_method, oauth_access_token FROM providers`,
+          )
+          .all() as any[];
+        for (const p of allProviders) {
+          const cfg = JSON.parse(p.config || '{}');
+          const template = PROVIDER_CATALOG.find((t) => t.id === p.name);
+          const needsNoKey = template?.envKey === '';
+
+          if (needsNoKey && !p.is_healthy) {
+            db.prepare(
+              `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`,
+            ).run(p.id);
+            logger.info({ provider: p.name }, 'Re-activated keyless provider');
+          }
+
+          const hasOAuthToken = p.auth_method === 'oauth' && !!p.oauth_access_token;
+          if (cfg.hasKey || hasOAuthToken || needsNoKey) {
+            const updated = db
+              .prepare(
+                `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+                 WHERE provider_id = ? AND is_active = 0`,
+              )
+              .run(p.id);
+            if (updated.changes > 0) {
+              logger.info(
+                { provider: p.name, models: updated.changes },
+                'Activated models for provider',
+              );
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to activate models during background init');
+      }
+
+      // 5) Refresh the candidate set so any newly-registered providers
+      //    or model profiles become routable.
+      try {
+        const candidates = registryService.getCandidates();
+        router.setCandidates(candidates);
+        logger.info(
+          { count: candidates.length },
+          'Refreshed routing candidates after background init',
+        );
+      } catch (err) {
+        logger.warn({ err }, 'Failed to refresh candidates after background init');
+      }
+
+      logger.info(
+        { durationMs: Date.now() - initStart },
+        'Background initialisation complete',
+      );
+    })();
+  };
+
+  return { server, runBackgroundInit };
 }

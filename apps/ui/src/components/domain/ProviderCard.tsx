@@ -5,6 +5,7 @@ import { Card } from '@/components/primitives/Card';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { StatusPill } from '@/components/primitives/StatusPill';
+import { TierBadge } from '@/components/domain/TierBadge';
 import type { ApiProvider } from '@/types/api';
 
 export interface ProviderCardProps {
@@ -44,8 +45,9 @@ export function ProviderCard({
             {provider.name.slice(0, 2)}
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <h4 className="text-sm font-semibold text-fg truncate">{provider.name}</h4>
+              <TierBadge tier={provider.tier} />
               {provider.priority != null && provider.priority > 0 && (
                 <Badge tone="warning" size="sm" icon={<Zap className="size-2.5" />}>
                   P{provider.priority}
@@ -73,7 +75,15 @@ export function ProviderCard({
               )}
             </Button>
           )}
-          <Button size="icon-sm" variant="ghost" aria-label="More">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="More"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect?.(provider);
+            }}
+          >
             <MoreHorizontal className="size-3.5" />
           </Button>
         </div>
@@ -89,11 +99,18 @@ export function ProviderCard({
             {provider.authType}
           </Badge>
         )}
-        {provider.capabilities?.length > 0 && (
+        {/* Show "N keys" when more than one is attached so the user
+            knows to open the drawer for rotation / second-key flow. */}
+        {provider.keys && provider.keys.length > 1 && (
+          <Badge tone="muted" size="sm" icon={<KeyRound className="size-2.5" />}>
+            {provider.keys.length} keys
+          </Badge>
+        )}
+        {provider.capabilities?.length ? (
           <Badge tone="muted" size="sm">
             {provider.capabilities.length} capabilities
           </Badge>
-        )}
+        ) : null}
       </div>
 
       <div className="px-4 pb-4 flex items-center justify-between gap-2 border-t border-border pt-3">

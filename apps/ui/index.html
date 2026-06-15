@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -9,6 +9,27 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <title>DMR-X Console</title>
+    <script>
+      // Apply the persisted theme to <html> *before* the first paint so users
+      // who chose light mode never see a dark flash. The store's `theme` key
+      // is the same one used by the Topbar switcher; if it's missing or
+      // malformed, default to dark.
+      (function () {
+        try {
+          var raw = localStorage.getItem('dmrx-ui');
+          var theme = 'dark';
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            // zustand `persist` wraps state in { state, version }.
+            var stored = parsed && (parsed.state || parsed);
+            if (stored && stored.theme === 'light') theme = 'light';
+          }
+          if (theme === 'dark') document.documentElement.classList.add('dark');
+        } catch (_) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

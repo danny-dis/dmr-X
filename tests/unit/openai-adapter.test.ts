@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { OpenAIAdapter } from '@dmr-x/adapters';
-import type { ProviderConfig, UnifiedRequest } from '@dmr-x/adapters';
+import type { ProviderConfig } from '@dmr-x/adapters';
+import type { UnifiedRequest } from '@dmr-x/core';
 
 describe('OpenAIAdapter', () => {
   let adapter: OpenAIAdapter;
@@ -200,7 +201,8 @@ describe('OpenAIAdapter', () => {
       globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 
       const models = await adapter.listModels();
-      expect(models.length).toBe(2);
+      // Remote models (2) + hardcoded Sora video models (3) = 5
+      expect(models.length).toBe(5);
       expect(models[0].modelId).toBe('gpt-4o');
     });
   });

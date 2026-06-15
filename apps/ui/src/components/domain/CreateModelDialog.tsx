@@ -43,6 +43,18 @@ const EMPTY: FormState = {
   tier: 'standard',
 };
 
+// Map the dialog's human-friendly tier labels to the backend's
+// capability_tier enum (see CreateModelSchema in admin.routes.ts).
+// `standard` is the common default; `premium` upgrades to brain (top of
+// the routing chain); `economy` falls back to worker (cheapest tier);
+// `experimental` opts into specialist for newer/non-mainline capabilities.
+const TIER_TO_CAPABILITY_TIER: Record<string, string> = {
+  standard: 'executor',
+  premium: 'brain',
+  economy: 'worker',
+  experimental: 'specialist',
+};
+
 export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModelDialogProps) {
   const [form, setForm] = React.useState<FormState>(EMPTY);
   const [submitting, setSubmitting] = React.useState(false);
@@ -82,15 +94,19 @@ export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModel
     if (!validate()) return;
     setSubmitting(true);
     try {
+      // The gateway Zod schema expects snake_case field names with a strict
+      // capability_tier enum. The dialog's `tier` selector uses human-friendly
+      // labels that don't match the enum directly, so map them to the closest
+      // capability_tier value before sending.
       await Admin.createModel({
-        name: form.name.trim(),
-        providerId: form.providerId,
+        model_id: form.name.trim(),
+        provider_id: form.providerId,
         modality: form.modality as any,
-        contextWindow: Number(form.contextWindow) || 0,
-        inputCostPer1k: Number(form.inputCostPer1k) || 0,
-        outputCostPer1k: Number(form.outputCostPer1k) || 0,
-        tier: form.tier as any,
-      });
+        context_window: Number(form.contextWindow) || 0,
+        input_cost_per_1k: Number(form.inputCostPer1k) || 0,
+        output_cost_per_1k: Number(form.outputCostPer1k) || 0,
+        capability_tier: TIER_TO_CAPABILITY_TIER[form.tier] ?? 'executor',
+      } as any);
       toast.success('Model created', { description: form.name });
       onCreated?.();
       onOpenChange(false);

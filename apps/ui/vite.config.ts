@@ -25,6 +25,22 @@ export default defineConfig({
         target: process.env.VITE_GATEWAY_URL || 'http://localhost:3000',
         changeOrigin: true,
       },
+      '/health': {
+        target: process.env.VITE_GATEWAY_URL || 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/healthz': {
+        target: process.env.VITE_GATEWAY_URL || 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/ready': {
+        target: process.env.VITE_GATEWAY_URL || 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/livez': {
+        target: process.env.VITE_GATEWAY_URL || 'http://localhost:3000',
+        changeOrigin: true,
+      },
     },
   },
 });

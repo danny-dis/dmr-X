@@ -25,7 +25,7 @@
     "@modelcontextprotocol/sdk": "1.12.1",
     "@types/inquirer": "9.0.9",
     "turbo": "2.5.0",
-    "typescript": "5.4.0",
+    "typescript": "5.9.3",
     "vite": "6.4.2",
     "vitest": "3.1.1"
   },

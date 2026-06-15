@@ -28,6 +28,7 @@ const badgeVariants = cva(
         solid: '',
         outline: 'bg-transparent',
         soft: '',
+        secondary: 'bg-surface-2 text-fg-muted border-border',
       },
     },
     compoundVariants: [

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getDb } from '@dmr-x/db';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { ValidationError } from '@dmr-x/core';
 import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
@@ -13,8 +14,14 @@ import { federationService } from '@dmr-x/federation';
 const CreateProviderSchema = z.object({
   name: z.string().min(1),
   adapter_type: z.string().min(1),
-  base_url: z.string().url().optional(),
-  api_key_ref: z.string().optional(),
+  base_url: z.string().url().optional().nullable(),
+  api_key_ref: z.string().optional().nullable(),
+  // The `providers` table has no dedicated columns for these, so the route
+  // handler merges them into the `config` JSON blob. The dialog sends
+  // them as top-level fields because that's what the UI form model carries.
+  region: z.string().optional().nullable(),
+  priority: z.number().int().min(0).optional().default(0),
+  enabled: z.boolean().optional().default(true),
   config: z.record(z.unknown()).optional().default({}),
 });
 
@@ -36,9 +43,16 @@ const CreateModelSchema = z.object({
 });
 
 const TestProviderSchema = z.object({
+  // provider_id is the only strictly-required field. The UI only knows the
+  // provider's DB UUID (and the secret is encrypted at rest), so requiring
+  // the client to echo back the base_url/api_key would always fail.
   provider_id: z.string().min(1),
-  base_url: z.string().url(),
-  api_key: z.string().min(1),
+  // Optional overrides: callers that already have a live key/baseUrl handy
+  // (e.g. the test-connection dialog at provider creation time, before the
+  // row is written) can pass them to verify connectivity up front. When
+  // omitted, the server looks up the row and decrypts the stored key.
+  base_url: z.string().url().optional(),
+  api_key: z.string().optional(),
 });
 
 const ActivateProviderSchema = z.object({
@@ -49,6 +63,13 @@ const ActivateProviderSchema = z.object({
   oauth_token_expires_at: z.string().datetime().optional(),
   auth_method: z.enum(['api_key', 'oauth']).optional(),
   name: z.string().optional(),
+  /**
+   * Tier of the key being attached. The catalog entry sets a sensible
+   * default (free when every model is free, paid otherwise) but the
+   * caller can override — a free key for Google has the same shape as
+   * a paid one, and the user knows which is which.
+   */
+  tier: z.enum(['free', 'paid']).optional(),
 });
 
 const UpdateProviderSchema = z.object({
@@ -60,12 +81,72 @@ const UpdateProviderSchema = z.object({
   oauth_access_token: z.string().optional(),
   oauth_refresh_token: z.string().optional().nullable(),
   oauth_token_expires_at: z.string().datetime().optional().nullable(),
+  // Same rationale as CreateProviderSchema — the dialog sends these as
+  // top-level fields but the table has no columns for them, so they get
+  // merged into the config JSON.
+  region: z.string().optional().nullable(),
+  priority: z.number().int().min(0).optional(),
+  enabled: z.boolean().optional(),
   config: z.record(z.unknown()).optional(),
 });
 
 const UpdateApiKeySchema = z.object({
   api_key: z.string().min(1),
+  /**
+   * Tier of the key being attached. Defaults to 'paid' to preserve
+   * the historical behaviour — operators who want to label a key as
+   * free must opt in. The default-key row is updated, so the next call
+   * without `tier` will leave the value alone.
+   */
+  tier: z.enum(['free', 'paid']).optional(),
 });
+
+/**
+ * Schema for adding a *second* (or third, etc.) key to an existing
+ * provider. The tier and credentials are required-ish (the API key OR
+ * an OAuth access token must be supplied); the label is operator-only.
+ */
+const AddProviderKeySchema = z
+  .object({
+    label: z.string().min(1).max(64).optional(),
+    tier: z.enum(['free', 'paid']).default('paid'),
+    api_key: z.string().min(1).optional(),
+    oauth_access_token: z.string().min(1).optional(),
+    oauth_refresh_token: z.string().min(1).optional(),
+    oauth_token_expires_at: z.string().datetime().optional(),
+    auth_method: z.enum(['api_key', 'oauth']).optional(),
+    priority: z.number().int().min(0).max(1000).default(0),
+  })
+  .refine(
+    (v) => !!v.api_key || !!v.oauth_access_token,
+    { message: 'Either api_key or oauth_access_token is required' },
+  );
+
+const RotateProviderKeySchema = z
+  .object({
+    label: z.string().min(1).max(64).optional(),
+    tier: z.enum(['free', 'paid']).optional(),
+    api_key: z.string().min(1).optional(),
+    oauth_access_token: z.string().min(1).optional(),
+    oauth_refresh_token: z.string().min(1).optional(),
+    oauth_token_expires_at: z.string().datetime().optional(),
+    auth_method: z.enum(['api_key', 'oauth']).optional(),
+    priority: z.number().int().min(0).max(1000).optional(),
+    is_active: z.boolean().optional(),
+  })
+  .refine(
+    (v) =>
+      v.label !== undefined ||
+      v.tier !== undefined ||
+      v.api_key !== undefined ||
+      v.oauth_access_token !== undefined ||
+      v.oauth_refresh_token !== undefined ||
+      v.oauth_token_expires_at !== undefined ||
+      v.auth_method !== undefined ||
+      v.priority !== undefined ||
+      v.is_active !== undefined,
+    { message: 'No fields to update' },
+  );
 
 const CreateTenantSchema = z.object({
   name: z.string().min(1).max(255),
@@ -117,34 +198,78 @@ const PrimitiveValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 const BLOCKED_SETTINGS_KEYS = new Set(['__proto__', 'constructor', 'prototype', 'toString', 'valueOf']);
 
 // Strict allowlist: only known settings keys accepted; unknown keys are rejected via .strict()
+// Keys here MUST match exactly what the UI sends via `toServer()` in
+// apps/ui/src/pages/Settings.tsx. Mismatched names are silently dropped by
+// the Settings page and the values never reach the DB, which is the bug
+// this allowlist was extended to fix. Use `z.union([z.string(), z.number()])`
+// for numeric values because the UI sometimes ships them as strings.
 const UpdateSettingsSchema = z.object({
+  // Routing
+  routingStrategy: z.string().optional(),
+  costOptimization: z.boolean().optional(),
+  latencyBudgetMs: z.union([z.string(), z.number()]).optional(),
+  autoFallback: z.boolean().optional(),
   routingTimeout: z.union([z.string(), z.number()]).optional(),
+  // Kept for backwards-compat with older clients
   fallbackEnabled: z.boolean().optional(),
-  logRetention: z.union([z.string(), z.number()]).optional(),
+
+  // Routing weights
   qualityWeight: z.union([z.string(), z.number()]).optional(),
   costWeight: z.union([z.string(), z.number()]).optional(),
   latencyWeight: z.union([z.string(), z.number()]).optional(),
+
+  // Model defaults
+  defaultModel: z.string().optional(),
+  maxContextWindow: z.union([z.string(), z.number()]).optional(),
+  defaultTemperature: z.union([z.string(), z.number()]).optional(),
+
+  // Platform
   platformName: z.string().optional(),
   timezone: z.string().optional(),
+
+  // Auth & CORS
+  requireAuth: z.boolean().optional(),
+  // Kept for backwards-compat with older clients
+  requireApiKeyAuth: z.boolean().optional(),
+  corsOrigins: z.string().optional(),
+  // Kept for backwards-compat with older clients
+  allowedOrigins: z.string().optional(),
+  rateLimitRpm: z.union([z.string(), z.number()]).optional(),
+
+  // API key & request limits
+  autoKeyRotation: z.boolean().optional(),
+  maxRequestSizeMb: z.union([z.string(), z.number()]).optional(),
+
+  // Caching & streaming
+  cacheTtlSec: z.union([z.string(), z.number()]).optional(),
+  streamingChunkSize: z.union([z.string(), z.number()]).optional(),
+
+  // Worker / runtime
+  workerConcurrency: z.union([z.string(), z.number()]).optional(),
   requestTimeout: z.union([z.string(), z.number()]).optional(),
+
+  // Notifications
   slackWebhookUrl: z.string().optional(),
   emailRecipients: z.string().optional(),
   latencyAlertThreshold: z.union([z.string(), z.number()]).optional(),
   quotaAlertThreshold: z.union([z.string(), z.number()]).optional(),
-  requireApiKeyAuth: z.boolean().optional(),
-  autoKeyRotation: z.boolean().optional(),
-  allowedOrigins: z.string().optional(),
-  maxRequestSizeMb: z.union([z.string(), z.number()]).optional(),
+
+  // Webhooks
+  alertWebhook: z.string().optional(),
+  routeDecisionWebhook: z.string().optional(),
+  webhookMaxRetries: z.union([z.string(), z.number()]).optional(),
+  webhookRetryBackoff: z.union([z.string(), z.number()]).optional(),
+
+  // Benchmarking
   autoBenchmarkRuns: z.boolean().optional(),
   benchmarkFrequency: z.string().optional(),
   regressionThreshold: z.union([z.string(), z.number()]).optional(),
-  routeDecisionWebhook: z.string().optional(),
-  alertWebhook: z.string().optional(),
-  webhookMaxRetries: z.union([z.string(), z.number()]).optional(),
-  webhookRetryBackoff: z.union([z.string(), z.number()]).optional(),
+
+  // Retention
   requestLogRetentionDays: z.union([z.string(), z.number()]).optional(),
   memoryRetentionDays: z.union([z.string(), z.number()]).optional(),
   benchmarkHistoryDays: z.union([z.string(), z.number()]).optional(),
+  logRetention: z.union([z.string(), z.number()]).optional(),
 }).refine(
   (obj) => !Object.keys(obj).some((k) => BLOCKED_SETTINGS_KEYS.has(k)),
   { message: 'Blocked key detected' }
@@ -189,6 +314,310 @@ function validateBaseUrlForSSRF(urlStr: string): void {
   if (privateRanges.some((rx) => rx.test(hostname))) {
     throw new ValidationError('Fetching private/internal addresses is not allowed');
   }
+}
+
+// ---------------------------------------------------------------------------
+// provider_keys helpers
+//
+// The gateway used to store a single encrypted API key in
+// `providers.config.apiKey`. After migration 015 we also keep a row in
+// the new `provider_keys` table — one row per credential, with its own
+// label, tier, priority, and last-used timestamp. The active row with
+// the highest priority is the one the adapter uses; the rest are
+// available for future round-robin or per-model overrides.
+//
+// These helpers keep the table in sync with the existing single-key
+// columns so legacy code paths (test endpoint, runBackgroundInit) keep
+// working until they're fully migrated.
+// ---------------------------------------------------------------------------
+
+type ProviderKeyRow = {
+  id: string;
+  provider_id: string;
+  label: string | null;
+  tier: 'free' | 'paid';
+  api_key_encrypted: string | null;
+  oauth_access_token_encrypted: string | null;
+  oauth_refresh_token_encrypted: string | null;
+  oauth_token_expires_at: string | null;
+  auth_method: string;
+  priority: number;
+  is_active: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ProviderKeyView = Omit<
+  ProviderKeyRow,
+  'api_key_encrypted' | 'oauth_access_token_encrypted' | 'oauth_refresh_token_encrypted'
+> & {
+  /** First 7 chars of the decrypted key (e.g. "sk-…ab"). Empty if no key. */
+  masked_key_prefix: string;
+  has_api_key: boolean;
+  has_oauth_token: boolean;
+};
+
+function maskKeyPrefix(ciphertext: string | null | undefined): string {
+  if (!ciphertext) return '';
+  try {
+    const plain = decrypt(ciphertext);
+    if (!plain) return '';
+    // Always at least 4 chars (e.g. "sk-…"). Long keys get the first 4
+    // and last 2 — enough to identify a key without leaking it.
+    if (plain.length <= 6) return plain.slice(0, 2) + '…';
+    return plain.slice(0, 4) + '…' + plain.slice(-2);
+  } catch {
+    return '•••';
+  }
+}
+
+function toProviderKeyView(row: ProviderKeyRow): ProviderKeyView {
+  return {
+    id: row.id,
+    provider_id: row.provider_id,
+    label: row.label,
+    tier: row.tier,
+    auth_method: row.auth_method,
+    priority: row.priority,
+    is_active: row.is_active,
+    last_used_at: row.last_used_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    oauth_token_expires_at: row.oauth_token_expires_at,
+    masked_key_prefix: maskKeyPrefix(row.api_key_encrypted),
+    has_api_key: !!row.api_key_encrypted,
+    has_oauth_token: !!row.oauth_access_token_encrypted,
+  };
+}
+
+function listProviderKeys(db: ReturnType<typeof getDb>, providerId: string): ProviderKeyView[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM provider_keys
+       WHERE provider_id = ?
+       ORDER BY priority DESC, created_at ASC`,
+    )
+    .all(providerId) as ProviderKeyRow[];
+  return rows.map(toProviderKeyView);
+}
+
+function getActiveKey(db: ReturnType<typeof getDb>, providerId: string): ProviderKeyRow | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM provider_keys
+       WHERE provider_id = ? AND is_active = 1
+       ORDER BY priority DESC, created_at ASC
+       LIMIT 1`,
+    )
+    .get(providerId) as ProviderKeyRow | undefined;
+}
+
+/**
+ * Recompute providers.tier from the active keys on that provider.
+ * Called after every key mutation so the denormalised cache stays
+ * accurate. The recomputation is deliberately simple:
+ *
+ *   no active keys   → 'inactive'
+ *   all keys free    → 'free'
+ *   all keys paid    → 'paid'
+ *   mixed tiers      → 'mixed'
+ */
+function recomputeProviderTier(db: ReturnType<typeof getDb>, providerId: string): void {
+  const activeKeys = db
+    .prepare(
+      `SELECT tier FROM provider_keys
+       WHERE provider_id = ? AND is_active = 1`,
+    )
+    .all(providerId) as Array<{ tier: 'free' | 'paid' }>;
+  let tier: 'free' | 'paid' | 'mixed' | 'inactive';
+  if (activeKeys.length === 0) {
+    tier = 'inactive';
+  } else {
+    const distinct = new Set(activeKeys.map((k) => k.tier));
+    if (distinct.size > 1) tier = 'mixed';
+    else if (distinct.has('free')) tier = 'free';
+    else tier = 'paid';
+  }
+  db.prepare(`UPDATE providers SET tier = ?, updated_at = datetime('now') WHERE id = ?`).run(
+    tier,
+    providerId,
+  );
+}
+
+/**
+ * Upsert the "Default" key for a provider. The first key written for a
+ * provider uses `label = 'Default'` so legacy code paths that look up
+ * the primary key by name (rather than priority) still work.
+ */
+function upsertDefaultKey(
+  db: ReturnType<typeof getDb>,
+  providerId: string,
+  fields: {
+    apiKeyPlaintext?: string | null;
+    oauthAccessTokenPlaintext?: string | null;
+    oauthRefreshTokenPlaintext?: string | null;
+    oauthTokenExpiresAt?: string | null;
+    authMethod?: string;
+    tier?: 'free' | 'paid';
+  },
+): void {
+  const existing = db
+    .prepare(`SELECT id FROM provider_keys WHERE provider_id = ? AND label = 'Default' LIMIT 1`)
+    .get(providerId) as { id: string } | undefined;
+
+  const apiKeyEncrypted =
+    fields.apiKeyPlaintext != null && fields.apiKeyPlaintext !== ''
+      ? encrypt(fields.apiKeyPlaintext)
+      : undefined;
+  const oauthAccessEncrypted =
+    fields.oauthAccessTokenPlaintext != null && fields.oauthAccessTokenPlaintext !== ''
+      ? encrypt(fields.oauthAccessTokenPlaintext)
+      : undefined;
+  const oauthRefreshEncrypted =
+    fields.oauthRefreshTokenPlaintext != null && fields.oauthRefreshTokenPlaintext !== ''
+      ? encrypt(fields.oauthRefreshTokenPlaintext)
+      : undefined;
+
+  if (existing) {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (apiKeyEncrypted !== undefined) {
+      sets.push('api_key_encrypted = ?');
+      params.push(apiKeyEncrypted);
+    }
+    if (oauthAccessEncrypted !== undefined) {
+      sets.push('oauth_access_token_encrypted = ?');
+      params.push(oauthAccessEncrypted);
+    }
+    if (oauthRefreshEncrypted !== undefined) {
+      sets.push('oauth_refresh_token_encrypted = ?');
+      params.push(oauthRefreshEncrypted);
+    }
+    if (fields.oauthTokenExpiresAt !== undefined) {
+      sets.push('oauth_token_expires_at = ?');
+      params.push(fields.oauthTokenExpiresAt ?? null);
+    }
+    if (fields.authMethod !== undefined) {
+      sets.push('auth_method = ?');
+      params.push(fields.authMethod);
+    }
+    if (fields.tier !== undefined) {
+      sets.push('tier = ?');
+      params.push(fields.tier);
+    }
+    if (sets.length === 0) return;
+    sets.push(`updated_at = datetime('now')`);
+    params.push(existing.id);
+    db.prepare(`UPDATE provider_keys SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  } else {
+    const id = `${providerId}-default`;
+    db.prepare(
+      `INSERT INTO provider_keys (
+        id, provider_id, label, tier,
+        api_key_encrypted, oauth_access_token_encrypted,
+        oauth_refresh_token_encrypted, oauth_token_expires_at,
+        auth_method, priority, is_active
+      ) VALUES (?, ?, 'Default', ?, ?, ?, ?, ?, ?, 0, 1)`,
+    ).run(
+      id,
+      providerId,
+      fields.tier ?? 'paid',
+      apiKeyEncrypted ?? null,
+      oauthAccessEncrypted ?? null,
+      oauthRefreshEncrypted ?? null,
+      fields.oauthTokenExpiresAt ?? null,
+      fields.authMethod ?? 'api_key',
+    );
+  }
+}
+
+/**
+ * Decrypt the active key for a provider. Used by the adapter hot path
+ * (see server.ts runBackgroundInit) to get plaintext credentials out
+ * of the new table. Falls back to the legacy config.apiKey column for
+ * providers that haven't been migrated yet.
+ */
+export function loadActiveProviderCredential(providerId: string): {
+  apiKey: string;
+  accessToken: string;
+  authMethod: string;
+} {
+  const db = getDb();
+  const active = getActiveKey(db, providerId);
+  if (active) {
+    return {
+      apiKey: active.api_key_encrypted ? decrypt(active.api_key_encrypted) : '',
+      accessToken: active.oauth_access_token_encrypted
+        ? decrypt(active.oauth_access_token_encrypted)
+        : '',
+      authMethod: active.auth_method,
+    };
+  }
+  // Legacy single-key fallback
+  const row = db
+    .prepare(
+      `SELECT config, oauth_access_token, auth_method FROM providers WHERE id = ?`,
+    )
+    .get(providerId) as
+    | { config: string; oauth_access_token: string | null; auth_method: string }
+    | undefined;
+  if (!row) return { apiKey: '', accessToken: '', authMethod: 'api_key' };
+  let apiKey = '';
+  try {
+    const cfg = row.config ? JSON.parse(row.config) : {};
+    apiKey = typeof cfg.apiKey === 'string' && cfg.apiKey ? decrypt(cfg.apiKey) : '';
+  } catch {
+    apiKey = '';
+  }
+  const accessToken = row.oauth_access_token ? decrypt(row.oauth_access_token) : '';
+  return { apiKey, accessToken, authMethod: row.auth_method || 'api_key' };
+}
+
+/**
+ * Mirror the legacy single-key columns (providers.config.apiKey and
+ * providers.oauth_access_token / refresh / expires_at) into the
+ * Default provider_keys row. Used by the OAuth flow endpoints that
+ * update the providers table directly — without this call, the new
+ * table would drift from the columns the adapter still reads at
+ * startup until runBackgroundInit is re-run.
+ */
+function syncDefaultKeyFromProvidersTable(
+  db: ReturnType<typeof getDb>,
+  providerId: string,
+): void {
+  const row = db
+    .prepare(
+      `SELECT config, oauth_access_token, oauth_refresh_token, oauth_token_expires_at, auth_method, tier
+       FROM providers WHERE id = ?`,
+    )
+    .get(providerId) as
+    | {
+        config: string | null;
+        oauth_access_token: string | null;
+        oauth_refresh_token: string | null;
+        oauth_token_expires_at: string | null;
+        auth_method: string | null;
+        tier: string | null;
+      }
+    | undefined;
+  if (!row) return;
+  let apiKeyPlaintext: string | null = null;
+  try {
+    const cfg = row.config ? JSON.parse(row.config) : {};
+    apiKeyPlaintext =
+      typeof cfg.apiKey === 'string' && cfg.apiKey ? decrypt(cfg.apiKey) : null;
+  } catch {
+    apiKeyPlaintext = null;
+  }
+  upsertDefaultKey(db, providerId, {
+    apiKeyPlaintext: apiKeyPlaintext ?? undefined,
+    oauthAccessTokenPlaintext: row.oauth_access_token ? decrypt(row.oauth_access_token) : undefined,
+    oauthRefreshTokenPlaintext: row.oauth_refresh_token ? decrypt(row.oauth_refresh_token) : undefined,
+    oauthTokenExpiresAt: row.oauth_token_expires_at,
+    authMethod: row.auth_method ?? undefined,
+    tier: row.tier === 'free' ? 'free' : 'paid',
+  });
 }
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
@@ -248,6 +677,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       oauth_token_expires_at,
       auth_method,
       name: custom_name,
+      tier: requestedTier,
     } = parsed.data;
     const template = PROVIDER_CATALOG.find(t => t.id === template_id);
     if (!template) {
@@ -270,6 +700,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const shouldActivateModels = hasApiKey || hasOAuthToken || needsNoKey;
     const encryptedOAuthAccessToken = oauth_access_token ? encrypt(oauth_access_token) : null;
     const encryptedOAuthRefreshToken = oauth_refresh_token ? encrypt(oauth_refresh_token) : null;
+
+    // Tier for the *new* key. Caller-supplied tier wins; otherwise we
+    // derive from the catalog: a template is "free" if every model has
+    // a freeTier block, "paid" otherwise. This is the same heuristic
+    // the migration used to backfill legacy rows, so the catalog and
+    // the live DB stay consistent.
+    const derivedTier: 'free' | 'paid' =
+      template.models.length > 0 && template.models.every((m) => !!m.freeTier)
+        ? 'free'
+        : 'paid';
+    const keyTier: 'free' | 'paid' = requestedTier ?? derivedTier;
 
     if (provider) {
       // Update existing — encrypt API key before storing
@@ -297,6 +738,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         provider.id,
       );
 
+      // Mirror the new credential into provider_keys (idempotent for
+      // the "Default" row). The legacy config.apiKey column above is
+      // kept in sync so the existing single-key code paths (test,
+      // runBackgroundInit) keep working until they're fully migrated.
+      if (api_key || oauth_access_token) {
+        upsertDefaultKey(db, provider.id, {
+          apiKeyPlaintext: api_key,
+          oauthAccessTokenPlaintext: oauth_access_token,
+          oauthRefreshTokenPlaintext: oauth_refresh_token,
+          oauthTokenExpiresAt: oauth_token_expires_at,
+          authMethod: requestedAuthMethod,
+          tier: keyTier,
+        });
+      }
+      recomputeProviderTier(db, provider.id);
+
       // Activate models for this provider
       if (shouldActivateModels) {
         const activated = db.prepare(
@@ -322,9 +779,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       db.prepare(
         `INSERT INTO providers (
           id, name, adapter_type, base_url, api_key_ref, config,
-          oauth_access_token, oauth_refresh_token, oauth_token_expires_at, auth_method
+          oauth_access_token, oauth_refresh_token, oauth_token_expires_at, auth_method,
+          tier
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         providerName,
@@ -336,8 +794,27 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         encryptedOAuthRefreshToken,
         oauth_token_expires_at ?? null,
         requestedAuthMethod,
+        keyTier,
       );
       provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
+
+      // Mirror the credential into provider_keys. Without this row the
+      // candidate query would still see the provider (model_profiles
+      // is_active = 1) but the active-key lookup in
+      // loadActiveProviderCredential would fall through to the legacy
+      // config.apiKey path. We write both so the new code can be the
+      // source of truth going forward.
+      if (api_key || oauth_access_token) {
+        upsertDefaultKey(db, id, {
+          apiKeyPlaintext: api_key,
+          oauthAccessTokenPlaintext: oauth_access_token,
+          oauthRefreshTokenPlaintext: oauth_refresh_token,
+          oauthTokenExpiresAt: oauth_token_expires_at,
+          authMethod: requestedAuthMethod,
+          tier: keyTier,
+        });
+      }
+      recomputeProviderTier(db, id);
 
       // Create model profiles for this new provider
       for (const model of template.models) {
@@ -359,8 +836,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           model.capabilities.includes('streaming') ? 1 : 0,
           model.capabilities.includes('vision') ? 1 : 0,
           model.capabilities.includes('tool_use') ? 1 : 0,
-          model.contextWindow,
-          model.maxOutputTokens,
+          model.contextWindow ?? null,
+          model.maxOutputTokens ?? null,
           (model.inputCostPer1M || 0) / 1000,
           (model.outputCostPer1M || 0) / 1000,
           model.costPerImage || 0,
@@ -397,11 +874,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     reply.status(200);
     const providerConfig = JSON.parse(provider.config || '{}');
+    const refreshed = db.prepare('SELECT * FROM providers WHERE id = ?').get(provider.id) as any;
     return {
       success: true,
       provider: {
-        ...provider,
+        ...refreshed,
         config: { ...providerConfig, apiKey: undefined, hasKey: !!providerConfig.apiKey },
+        keys: listProviderKeys(db, provider.id),
       },
     };
   });
@@ -410,14 +889,39 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.get('/admin/providers', async () => {
     const db = getDb();
     const rows = db.prepare('SELECT * FROM providers ORDER BY name').all() as any[];
+    // Local providers are those that are keyless (the only kind that runs
+    // on the operator's own box) or point at a loopback URL. The UI's
+    // Providers.tsx filters on `p.local` to drive the "Local" badge, so
+    // we surface it on the wire rather than making the client re-derive
+    // it from the adapter type.
+    const localAdapterTypes = new Set(['ollama', 'llamacpp', 'vllm', 'comfyui']);
+    const isLocalUrl = (url: string | null | undefined): boolean => {
+      if (!url) return false;
+      return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(url);
+    };
     const providers = rows.map((row) => {
       const config = JSON.parse(row.config || '{}');
       const { apiKey: _stripped, ...safeConfig } = config;
+      // Strip api_key_ref too: the column is treated as an env-var NAME
+      // by the server, but the form-driven createProvider path used to
+      // store the literal key there. Exposing it would leak any key
+      // a user typed into the dialog. The client only needs hasKey.
+      const { api_key_ref: _ref, ...rowWithoutKey } = row;
+      const local = localAdapterTypes.has(row.adapter_type) || isLocalUrl(row.base_url);
+      const keys = listProviderKeys(db, row.id);
+      // Derive hasKey from the keys table when present so a stale
+      // config.hasKey from a legacy row doesn't lie about credential
+      // state. Falls back to the legacy columns for the brief window
+      // between the migration running and the first key being added.
+      const hasAnyKey =
+        keys.some((k) => k.has_api_key || k.has_oauth_token) ||
+        !!config.apiKey ||
+        !!row.oauth_access_token;
       return {
-        ...row,
+        ...rowWithoutKey,
         config: safeConfig,
         status: row.is_healthy ? 'healthy' : 'unavailable',
-        hasKey: !!config.apiKey || !!row.oauth_access_token,
+        hasKey: hasAnyKey,
         hasOAuthToken: !!row.oauth_access_token,
         authMethod: row.auth_method || 'api_key',
         oauthTokenExpiresAt: row.oauth_token_expires_at || null,
@@ -425,9 +929,58 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         description: config.description || undefined,
         category: config.category || [],
         region: config.region || undefined,
+        priority: typeof config.priority === 'number' ? config.priority : 0,
+        enabled: typeof config.enabled === 'boolean' ? config.enabled : true,
+        local,
+        tier: row.tier || 'inactive',
+        keys,
       };
     });
     return { providers };
+  });
+
+  // Get single provider. Mirrors the normalization the list endpoint
+  // applies so the response shape matches (hasKey, status, local, …).
+  server.get('/admin/providers/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!row) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+    const localAdapterTypes = new Set(['ollama', 'llamacpp', 'vllm', 'comfyui']);
+    const isLocalUrl = (url: string | null | undefined): boolean => {
+      if (!url) return false;
+      return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(url);
+    };
+    const config = JSON.parse(row.config || '{}');
+    const { apiKey: _stripped, ...safeConfig } = config;
+    const { api_key_ref: _ref, ...rowWithoutKey } = row;
+    const local = localAdapterTypes.has(row.adapter_type) || isLocalUrl(row.base_url);
+    const keys = listProviderKeys(db, id);
+    const hasAnyKey =
+      keys.some((k) => k.has_api_key || k.has_oauth_token) ||
+      !!config.apiKey ||
+      !!row.oauth_access_token;
+    return {
+      ...rowWithoutKey,
+      config: safeConfig,
+      status: row.is_healthy ? 'healthy' : 'unavailable',
+      hasKey: hasAnyKey,
+      hasOAuthToken: !!row.oauth_access_token,
+      authMethod: row.auth_method || 'api_key',
+      oauthTokenExpiresAt: row.oauth_token_expires_at || null,
+      signupUrl: config.signupUrl || undefined,
+      description: config.description || undefined,
+      category: config.category || [],
+      region: config.region || undefined,
+      priority: typeof config.priority === 'number' ? config.priority : 0,
+      enabled: typeof config.enabled === 'boolean' ? config.enabled : true,
+      local,
+      tier: row.tier || 'inactive',
+      keys,
+    };
   });
 
   // Update provider API key
@@ -437,7 +990,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { api_key } = parsed.data;
+    const { api_key, tier: requestedTier } = parsed.data;
 
     const db = getDb();
     const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
@@ -454,6 +1007,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     db.prepare(
       `UPDATE providers SET config = ?, is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`
     ).run(JSON.stringify(config), id);
+
+    // Mirror into provider_keys. The legacy config.apiKey column is
+    // kept in sync above so the existing single-key code paths (test,
+    // runBackgroundInit) keep working until they're fully migrated.
+    // Tier defaults to 'paid' when not supplied — see the schema comment.
+    upsertDefaultKey(db, id, {
+      apiKeyPlaintext: api_key,
+      authMethod: 'api_key',
+      tier: requestedTier,
+    });
+    recomputeProviderTier(db, id);
 
     // Activate models for this provider now that it has a key
     const activated = db.prepare(
@@ -497,8 +1061,244 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       provider: {
         ...updatedRow,
         config: { ...updatedConfig, apiKey: undefined, hasKey: !!updatedConfig.apiKey },
+        keys: listProviderKeys(db, id),
       },
     };
+  });
+
+  // ─── Multi-Key Management ────────────────────────────────────────
+  //
+  // A provider can carry several keys. The activate / api-key endpoints
+  // always touch the "Default" key; these endpoints manage the rest.
+  // The UI uses them from the provider detail drawer to attach a
+  // second (or third) key without disturbing the primary.
+
+  // List keys for a single provider
+  server.get('/admin/providers/:id/keys', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const provider = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+    return { keys: listProviderKeys(db, id) };
+  });
+
+  // Add a new key to a provider
+  server.post('/admin/providers/:id/keys', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = AddProviderKeySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const db = getDb();
+    const provider = db.prepare('SELECT id, name, base_url, adapter_type FROM providers WHERE id = ?').get(id) as
+      | { id: string; name: string; base_url: string | null; adapter_type: string }
+      | undefined;
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+
+    const body = parsed.data;
+    const authMethod = body.auth_method || (body.oauth_access_token ? 'oauth' : 'api_key');
+    const keyId = crypto.randomUUID();
+
+    // Auto-label keys "Key 2", "Key 3", … so the operator doesn't have
+    // to think about it. The "Default" label is reserved for the
+    // activate/api-key path; we never overwrite it here.
+    const existingLabels = db
+      .prepare(`SELECT label FROM provider_keys WHERE provider_id = ?`)
+      .all(id) as Array<{ label: string | null }>;
+    const numericLabels = existingLabels
+      .map((l) => (l.label ?? '').match(/^Key (\d+)$/))
+      .filter((m): m is RegExpMatchArray => !!m)
+      .map((m) => Number(m[1]));
+    const nextNumber = numericLabels.length > 0 ? Math.max(...numericLabels) + 1 : 2;
+    const label = body.label ?? (numericLabels.length === 0 && !existingLabels.some((l) => l.label === 'Default') ? 'Default' : `Key ${nextNumber}`);
+
+    db.prepare(
+      `INSERT INTO provider_keys (
+        id, provider_id, label, tier,
+        api_key_encrypted, oauth_access_token_encrypted,
+        oauth_refresh_token_encrypted, oauth_token_expires_at,
+        auth_method, priority, is_active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    ).run(
+      keyId,
+      id,
+      label,
+      body.tier,
+      body.api_key ? encrypt(body.api_key) : null,
+      body.oauth_access_token ? encrypt(body.oauth_access_token) : null,
+      body.oauth_refresh_token ? encrypt(body.oauth_refresh_token) : null,
+      body.oauth_token_expires_at ?? null,
+      authMethod,
+      body.priority,
+    );
+
+    // Tier may have changed (e.g. adding a free key to a paid provider
+    // flips it to 'mixed'). Recompute and refresh adapter.
+    recomputeProviderTier(db, id);
+
+    // Re-initialize the adapter with the new active key (highest
+    // priority active row). The user-visible "Active" badge in the
+    // drawer won't change behaviour for existing routed calls — the
+    // active key is still whichever has the highest priority — but
+    // future calls will use the new key.
+    const adapterRegistry = (server as any).adapterRegistry;
+    const active = getActiveKey(db, id);
+    if (adapterRegistry && active && provider.base_url) {
+      try {
+        await adapterRegistry.initialize(provider.name, {
+          baseUrl: provider.base_url,
+          apiKey: active.api_key_encrypted ? decrypt(active.api_key_encrypted) : '',
+          accessToken: active.oauth_access_token_encrypted
+            ? decrypt(active.oauth_access_token_encrypted)
+            : undefined,
+          authMethod: active.auth_method,
+        });
+      } catch (err) {
+        logger.warn({ err, provider: provider.name }, 'Adapter re-init failed after adding key');
+      }
+    }
+
+    const refreshCandidates = (server as any).refreshCandidates;
+    if (refreshCandidates) await refreshCandidates();
+
+    reply.status(201);
+    return { success: true, key: toProviderKeyView(db.prepare('SELECT * FROM provider_keys WHERE id = ?').get(keyId) as ProviderKeyRow) };
+  });
+
+  // Update / rotate a single key. Use this for credential rotation
+  // and to flip the active flag (decommission a key without deleting).
+  server.put('/admin/providers/:id/keys/:keyId', async (request, reply) => {
+    const { id, keyId } = request.params as { id: string; keyId: string };
+    const parsed = RotateProviderKeySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const db = getDb();
+    const existing = db
+      .prepare(`SELECT * FROM provider_keys WHERE id = ? AND provider_id = ?`)
+      .get(keyId, id) as ProviderKeyRow | undefined;
+    if (!existing) {
+      reply.status(404);
+      return { error: { message: 'Key not found', type: 'not_found', code: 'provider_key_not_found' } };
+    }
+
+    const body = parsed.data;
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (body.label !== undefined) { sets.push('label = ?'); params.push(body.label); }
+    if (body.tier !== undefined) { sets.push('tier = ?'); params.push(body.tier); }
+    if (body.api_key !== undefined) {
+      sets.push('api_key_encrypted = ?');
+      params.push(body.api_key ? encrypt(body.api_key) : null);
+    }
+    if (body.oauth_access_token !== undefined) {
+      sets.push('oauth_access_token_encrypted = ?');
+      params.push(body.oauth_access_token ? encrypt(body.oauth_access_token) : null);
+    }
+    if (body.oauth_refresh_token !== undefined) {
+      sets.push('oauth_refresh_token_encrypted = ?');
+      params.push(body.oauth_refresh_token ? encrypt(body.oauth_refresh_token) : null);
+    }
+    if (body.oauth_token_expires_at !== undefined) {
+      sets.push('oauth_token_expires_at = ?');
+      params.push(body.oauth_token_expires_at);
+    }
+    if (body.auth_method !== undefined) {
+      sets.push('auth_method = ?');
+      params.push(body.auth_method);
+    }
+    if (body.priority !== undefined) {
+      sets.push('priority = ?');
+      params.push(body.priority);
+    }
+    if (body.is_active !== undefined) {
+      sets.push('is_active = ?');
+      params.push(body.is_active ? 1 : 0);
+    }
+    if (sets.length === 0) {
+      return { success: true, key: toProviderKeyView(existing) };
+    }
+    sets.push(`updated_at = datetime('now')`);
+    params.push(keyId);
+    db.prepare(`UPDATE provider_keys SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+
+    recomputeProviderTier(db, id);
+
+    // Re-initialize adapter if the active key changed. A change to
+    // priority, is_active, or credentials of the currently-active key
+    // all require this.
+    const provider = db.prepare('SELECT name, base_url FROM providers WHERE id = ?').get(id) as
+      | { name: string; base_url: string | null }
+      | undefined;
+    const adapterRegistry = (server as any).adapterRegistry;
+    const active = getActiveKey(db, id);
+    if (adapterRegistry && provider && active && provider.base_url) {
+      try {
+        await adapterRegistry.initialize(provider.name, {
+          baseUrl: provider.base_url,
+          apiKey: active.api_key_encrypted ? decrypt(active.api_key_encrypted) : '',
+          accessToken: active.oauth_access_token_encrypted
+            ? decrypt(active.oauth_access_token_encrypted)
+            : undefined,
+          authMethod: active.auth_method,
+        });
+      } catch (err) {
+        logger.warn({ err, provider: provider.name }, 'Adapter re-init failed after rotating key');
+      }
+    }
+
+    const refreshCandidates = (server as any).refreshCandidates;
+    if (refreshCandidates) await refreshCandidates();
+
+    const updated = db.prepare('SELECT * FROM provider_keys WHERE id = ?').get(keyId) as ProviderKeyRow;
+    return { success: true, key: toProviderKeyView(updated) };
+  });
+
+  // Remove a key. Refuses to delete the last active key on the
+  // provider — that's almost always a footgun (the next request would
+  // fail with no credentials). The operator can deactivate first
+  // (`PUT ... with is_active: false`) and then delete, or use the
+  // delete-provider endpoint to remove everything at once.
+  server.delete('/admin/providers/:id/keys/:keyId', async (request, reply) => {
+    const { id, keyId } = request.params as { id: string; keyId: string };
+    const db = getDb();
+    const existing = db
+      .prepare(`SELECT id, is_active FROM provider_keys WHERE id = ? AND provider_id = ?`)
+      .get(keyId, id) as { id: string; is_active: number } | undefined;
+    if (!existing) {
+      reply.status(404);
+      return { error: { message: 'Key not found', type: 'not_found', code: 'provider_key_not_found' } };
+    }
+
+    if (existing.is_active === 1) {
+      const activeCount = db
+        .prepare(`SELECT COUNT(*) as c FROM provider_keys WHERE provider_id = ? AND is_active = 1`)
+        .get(id) as { c: number };
+      if (activeCount.c <= 1) {
+        reply.status(409);
+        return {
+          error: {
+            message: 'Cannot remove the last active key — deactivate it first, or delete the provider.',
+            type: 'validation',
+            code: 'last_active_key',
+          },
+        };
+      }
+    }
+
+    db.prepare(`DELETE FROM provider_keys WHERE id = ?`).run(keyId);
+    recomputeProviderTier(db, id);
+
+    const refreshCandidates = (server as any).refreshCandidates;
+    if (refreshCandidates) await refreshCandidates();
+
+    return { success: true };
   });
 
   // ─── OAuth Endpoints ───────────────────────────────────────────────
@@ -556,6 +1356,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
             updated_at = datetime('now')
           WHERE id = ?`
         ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
+
+        // Mirror OAuth tokens into the default provider_keys row.
+        syncDefaultKeyFromProvidersTable(db, id);
+        recomputeProviderTier(db, id);
 
         // Activate models
         db.prepare(
@@ -665,6 +1469,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         WHERE id = ?`
       ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
 
+      // Mirror the OAuth tokens into the default provider_keys row.
+      syncDefaultKeyFromProvidersTable(db, id);
+      recomputeProviderTier(db, id);
+
       // Activate models
       db.prepare(
         `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
@@ -757,6 +1565,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         WHERE id = ?`
       ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
 
+      // Mirror the OAuth tokens into the default provider_keys row.
+      syncDefaultKeyFromProvidersTable(db, id);
+      recomputeProviderTier(db, id);
+
       db.prepare(
         `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
          WHERE provider_id = ? AND is_active = 0`
@@ -841,6 +1653,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           updated_at = datetime('now')
         WHERE id = ?`
       ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
+
+      // Mirror the refreshed tokens into the default provider_keys row
+      // so the new table stays the source of truth.
+      syncDefaultKeyFromProvidersTable(db, id);
+      recomputeProviderTier(db, id);
 
       // Re-initialize adapter
       const adapterRegistry = (server as any).adapterRegistry;
@@ -933,6 +1750,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         WHERE id = ?`
       ).run(encAccess, encRefresh, tokens.expiresAt?.toISOString() || null, id);
 
+      // Mirror the OAuth tokens into the default provider_keys row.
+      syncDefaultKeyFromProvidersTable(db, id);
+      recomputeProviderTier(db, id);
+
       db.prepare(
         `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
          WHERE provider_id = ? AND is_active = 0`
@@ -978,10 +1799,43 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
-    const { provider_id, base_url, api_key } = parsed.data;
+    const { provider_id } = parsed.data;
+    let { base_url, api_key } = parsed.data;
 
-    // SSRF protection: validate the URL (shared helper)
+    // When the client didn't supply explicit credentials, look them up from
+    // the providers table. The API key is stored encrypted in config.apiKey
+    // (see CreateProviderSchema) so we decrypt before forwarding.
+    if (!base_url || !api_key) {
+      const db = getDb();
+      const row = db.prepare('SELECT base_url, config, oauth_access_token, auth_method FROM providers WHERE id = ?').get(provider_id) as any;
+      if (!row) {
+        throw new ValidationError(`Provider not found: ${provider_id}`);
+      }
+      if (!base_url) base_url = row.base_url;
+      if (!api_key) {
+        const cfg = row.config ? JSON.parse(row.config) : {};
+        const stored = typeof cfg.apiKey === 'string' ? cfg.apiKey : '';
+        api_key = stored ? decrypt(stored) : '';
+        // OAuth tokens are also accepted: they authenticate the same way to
+        // OpenAI-compatible upstreams, so a stored bearer works as well.
+        if (!api_key && row.oauth_access_token) {
+          try {
+            api_key = decrypt(row.oauth_access_token);
+          } catch {
+            api_key = row.oauth_access_token;
+          }
+        }
+      }
+    }
+
+    if (!base_url) {
+      throw new ValidationError('Provider has no base_url configured');
+    }
+    // SSRF protection: validate whatever URL we ended up with (input override
+    // or stored row) before issuing the outbound fetch.
     validateBaseUrlForSSRF(base_url);
+    // api_key is allowed to be empty for keyless providers (e.g. local ollama).
+    // The fetch below still runs to verify reachability.
 
     const start = Date.now();
 
@@ -992,7 +1846,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       // Try /models endpoint first (works for most OpenAI-compatible providers)
       // redirect: 'error' prevents SSRF via open redirects
       let response = await fetch(`${base_url}/models`, {
-        headers: { 'Authorization': `Bearer ${api_key}` },
+        headers: api_key ? { 'Authorization': `Bearer ${api_key}` } : {},
         signal: controller.signal,
         redirect: 'error',
       });
@@ -1002,7 +1856,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         response = await fetch(`${base_url}/chat/completions`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${api_key}`,
+            ...(api_key ? { 'Authorization': `Bearer ${api_key}` } : {}),
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -1080,21 +1934,186 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       validateBaseUrlForSSRF(body.base_url);
     }
 
+    // The user provided an API key in the dialog. The dialog has no way to
+    // know which env-var the gateway reads for this provider, so it sends
+    // The user provided an API key in the dialog. The dialog has no way to
+    // know which env-var the gateway reads for this provider, so it sends
+    // the literal key as `api_key_ref`. The gateway, however, reads
+    // `api_key_ref` as an *environment-variable name* (server.ts:793
+    // does `process.env[row.api_key_ref]`), not the key itself. If we
+    // store the literal key there, the adapter ends up initialized with
+    // an empty bearer and every upstream call 401s.
+    //
+    // Fix: promote the literal key into `config.apiKey` (which IS read
+    // directly) and encrypt it before storage. Leave the column null.
+    // If a future caller genuinely wants to reference an env-var they
+    // can pass it via config.apiKeyRef and we'll keep that path open.
+    const userConfig: Record<string, unknown> = { ...(body.config || {}) };
+    if (body.api_key_ref && !userConfig.apiKey) {
+      userConfig.apiKey = body.api_key_ref;
+      userConfig.hasKey = true;
+    }
+    // Merge UI form fields that have no dedicated table column into the
+    // config JSON blob. The list/get routes surface them back to the UI
+    // from there (Providers.tsx reads p.region, p.priority, p.enabled).
+    if (body.region != null) userConfig.region = body.region;
+    if (body.priority != null) userConfig.priority = body.priority;
+    if (body.enabled != null) userConfig.enabled = body.enabled;
     // Issue #2: Encrypt any apiKey in config before storing
-    const configToStore = encryptConfigApiKey({ ...body.config });
+    const configToStore = encryptConfigApiKey(userConfig);
 
     const db = getDb();
     const id = crypto.randomUUID();
 
-    db.prepare(
-      `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(id, body.name, body.adapter_type, body.base_url ?? null, body.api_key_ref ?? null, JSON.stringify(configToStore));
+    try {
+      db.prepare(
+        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, config, tier)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id,
+        body.name,
+        body.adapter_type,
+        body.base_url ?? null,
+        null, // see comment above — literal keys are stored encrypted in config
+        JSON.stringify(configToStore),
+        // Default tier for a form-driven create is 'paid' — operators
+        // adding a brand-new connection almost always mean a paid key.
+        // They can override the tier from the provider detail drawer.
+        'paid',
+      );
+    } catch (err) {
+      // Surface the "name already exists" case as a 409 instead of a 500.
+      // The `name` column is UNIQUE; sql.js throws "SqliteError: UNIQUE
+      // constraint failed: providers.name" on the second INSERT.
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('UNIQUE constraint failed: providers.name')) {
+        throw new ValidationError(`A provider named "${body.name}" already exists. Pick a different name or delete the existing one.`);
+      }
+      // Other DB errors (NOT NULL, FK, etc.) → re-raise so the error
+      // handler logs the underlying cause. The user still sees "Request
+      // failed: 500", but at least the gateway log carries the detail.
+      throw err;
+    }
+
+    // Mirror the literal key into provider_keys so the new table is
+    // the source of truth. The legacy config.apiKey column above is
+    // kept in sync for the same back-compat reason as the activate
+    // flow — until every credential lookup is migrated, both paths
+    // must agree.
+    if (body.api_key_ref) {
+      upsertDefaultKey(db, id, {
+        apiKeyPlaintext: body.api_key_ref,
+        authMethod: 'api_key',
+        tier: 'paid',
+      });
+    }
+    recomputeProviderTier(db, id);
 
     reply.status(201);
     const created = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
     const createdCfg = JSON.parse(created.config || '{}');
-    return { ...created, config: { ...createdCfg, apiKey: undefined, hasKey: !!createdCfg.apiKey } };
+
+    // Register + initialize the adapter in the in-memory registry so the
+    // new provider is routable immediately. The catalog `activateProvider`
+    // path does this, but the form-driven createProvider path used to
+    // skip it — leaving the row in the DB but with no live adapter, so
+    // every chat request failed with "Adapter not found: <uuid>".
+    const adapterRegistry = (server as any).adapterRegistry;
+    if (adapterRegistry) {
+      let adapter = adapterRegistry.get(body.name);
+      if (!adapter && (body.adapter_type === 'openai' || body.adapter_type === 'generic-openai')) {
+        try {
+          const { GenericOpenAIAdapter } = await import('@dmr-x/adapters');
+          adapter = new GenericOpenAIAdapter(body.name);
+          adapterRegistry.register(adapter);
+        } catch (err) {
+          logger.warn({ err, provider: body.name }, 'Failed to register GenericOpenAIAdapter for new provider');
+        }
+      }
+      if (adapter) {
+        try {
+          await adapterRegistry.initialize(body.name, {
+            baseUrl: body.base_url || '',
+            apiKey: createdCfg.apiKey || '',
+          });
+        } catch (err) {
+          logger.warn({ err, provider: body.name }, 'Failed to initialize adapter for new provider');
+        }
+      }
+    }
+
+    // The form-driven createProvider flow has no UI for adding models.
+    // Without a row in model_profiles the provider is invisible to the
+    // router (candidates query joins on model_profiles). For any
+    // OpenAI-compatible baseUrl, eagerly discover models from /v1/models
+    // so the new provider is routable immediately. Failures here are
+    // non-fatal — the user can always add models manually later.
+    if (body.base_url) {
+      try {
+        const { discoverOpenAIModels } = await import('@dmr-x/registry');
+        // Give the upstream enough time to respond. The auto-register
+        // path uses the 1s default because it polls the entire catalog
+        // in parallel and a slow provider would block everyone else.
+        // Here we're discovering exactly one provider in response to a
+        // user action, so 15s is reasonable.
+        const discovered = await discoverOpenAIModels({
+          baseUrl: body.base_url,
+          apiKey: createdCfg.apiKey || '',
+          timeoutMs: 15_000,
+        });
+        if (discovered.length > 0) {
+          const insertModel = db.prepare(
+            `INSERT OR IGNORE INTO model_profiles (
+              id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
+              supports_streaming, supports_vision, supports_tool_use, supports_json_mode,
+              context_window, max_output_tokens,
+              input_cost_per_1k, output_cost_per_1k, cost_per_image,
+              quality_score, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          );
+          let inserted = 0;
+          for (const m of discovered) {
+            const caps = new Set(m.capabilities || []);
+            insertModel.run(
+              crypto.randomUUID(),
+              id,
+              m.modelId,
+              m.displayName || m.modelId,
+              m.modality || 'llm',
+              'executor',
+              'executor',
+              caps.has('streaming') ? 1 : 0,
+              caps.has('vision') ? 1 : 0,
+              caps.has('tool_use') ? 1 : 0,
+              caps.has('json_mode') ? 1 : 0,
+              m.contextWindow ?? null,
+              m.maxOutputTokens ?? null,
+              (m.inputCostPer1M || 0) / 1000,
+              (m.outputCostPer1M || 0) / 1000,
+              m.costPerImage || 0,
+              0.5,
+              1,
+            );
+            inserted++;
+          }
+          if (inserted > 0) {
+            logger.info({ provider: body.name, inserted }, 'Auto-discovered models for new provider');
+            // Refresh the routing candidate set so the new models are
+            // routable without a gateway restart.
+            const refreshCandidates = (server as any).refreshCandidates;
+            if (refreshCandidates) await refreshCandidates();
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, provider: body.name }, 'Model discovery failed for new provider');
+      }
+    }
+
+    return {
+      ...created,
+      config: { ...createdCfg, apiKey: undefined, hasKey: !!createdCfg.apiKey },
+      keys: listProviderKeys(db, id),
+    };
   });
 
   // List models
@@ -1107,6 +2126,24 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
        ORDER BY mp.modality, mp.model_id`
     ).all();
     return { models: rows };
+  });
+
+  // Get single model. Same JOIN as the list endpoint so the response
+  // shape (provider_name aliased, model_profiles.*) is identical.
+  server.get('/admin/models/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const row = db.prepare(
+      `SELECT mp.*, p.name as provider_name
+       FROM model_profiles mp
+       JOIN providers p ON p.id = mp.provider_id
+       WHERE mp.id = ?`
+    ).get(id);
+    if (!row) {
+      reply.status(404);
+      return { error: { message: 'Model not found', type: 'not_found', code: 'model_not_found' } };
+    }
+    return row;
   });
 
   // Create model
@@ -1127,8 +2164,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         supports_tool_use, input_cost_per_1k, output_cost_per_1k, cost_per_image
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      id, body.provider_id, body.model_id, body.display_name, body.modality,
-      body.intelligence_layer, body.capability_tier, body.context_window, body.max_output_tokens,
+      id, body.provider_id, body.model_id, body.display_name ?? null, body.modality,
+      body.intelligence_layer, body.capability_tier, body.context_window ?? null, body.max_output_tokens ?? null,
       body.supports_streaming ? 1 : 0, body.supports_vision ? 1 : 0, body.supports_tool_use ? 1 : 0,
       body.input_cost_per_1k, body.output_cost_per_1k, body.cost_per_image,
     );
@@ -1160,7 +2197,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { tenant_id, name } = parsed.data;
+    const { tenant_id, name, scopes } = parsed.data;
 
     const db = getDb();
 
@@ -1177,11 +2214,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name) VALUES (?, ?, ?, ?)'
-    ).run(id, tenant_id, keyHash, name);
+      'INSERT INTO api_keys (id, tenant_id, key_hash, name, scopes) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, tenant_id, keyHash, name, scopes ? JSON.stringify(scopes) : null);
 
     const row = db.prepare(
-      'SELECT id, tenant_id, name, created_at FROM api_keys WHERE id = ?'
+      'SELECT id, tenant_id, name, scopes, created_at FROM api_keys WHERE id = ?'
     ).get(id);
 
     reply.status(201);
@@ -1202,11 +2239,29 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return { tenants: rows };
   });
 
+  // Get single tenant. Same subquery as the list endpoint so the
+  // response includes the live `key_count`.
+  server.get('/admin/tenants/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT t.*,
+        (SELECT COUNT(*) FROM api_keys WHERE tenant_id = t.id AND is_active = 1) as key_count
+      FROM tenants t
+      WHERE t.id = ?
+    `).get(id);
+    if (!row) {
+      reply.status(404);
+      return { error: { message: 'Tenant not found', type: 'not_found', code: 'tenant_not_found' } };
+    }
+    return row;
+  });
+
   // List API keys
   server.get('/admin/api-keys', async () => {
     const db = getDb();
     const rows = db.prepare(`
-      SELECT ak.id, ak.tenant_id, t.name as tenant_name, ak.name, ak.is_active, ak.created_at, ak.last_used_at
+      SELECT ak.id, ak.tenant_id, t.name as tenant_name, ak.name, ak.scopes, ak.is_active, ak.created_at, ak.last_used_at
       FROM api_keys ak
       JOIN tenants t ON t.id = ak.tenant_id
       ORDER BY ak.created_at DESC
@@ -1309,8 +2364,27 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     };
   });
 
-  // Usage history (hourly for last 24h)
-  server.get('/admin/billing/usage-history', async () => {
+  // Usage history. The UI sends `?granularity=hour|day|week|month` to
+  // switch between short and long time windows. The default is `hour`
+  // which keeps the original 24-hour rolling view. We pick the bucketing
+  // expression and time window together so the SQL can't accidentally
+  // GROUP BY a format that has gaps in the requested window.
+  //
+  // `usage_records` and `request_logs` use different time columns
+  // (created_at vs timestamp), so we carry the strftime format once and
+  // pair it with each table's column explicitly rather than swapping
+  // strings at runtime.
+  const GRANULARITY_BUCKETS: Record<string, { bucket: string; window: string }> = {
+    hour: { bucket: "strftime('%Y-%m-%d %H:00:00', created_at)", window: '-24 hours' },
+    day: { bucket: "strftime('%Y-%m-%d 00:00:00', created_at)", window: '-30 days' },
+    week: { bucket: "strftime('%Y-%W', created_at)", window: '-12 weeks' },
+    month: { bucket: "strftime('%Y-%m-01', created_at)", window: '-12 months' },
+  };
+  server.get('/admin/billing/usage-history', async (request) => {
+    const { granularity: rawGranularity } = request.query as { granularity?: string };
+    const cfg = GRANULARITY_BUCKETS[rawGranularity ?? ''] ?? GRANULARITY_BUCKETS.hour;
+    // The same strftime format, applied to the request_logs.timestamp column.
+    const latencyBucket = cfg.bucket.replace(/created_at/g, 'timestamp');
     const db = getDb();
     const rows = db.prepare(`
       SELECT
@@ -1321,25 +2395,28 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         COALESCE(r.latency, 0) as latency
       FROM (
         SELECT
-          strftime('%Y-%m-%d %H:00:00', created_at) as time,
+          ${cfg.bucket} as time,
           COUNT(*) as requests,
           SUM(total_tokens) as tokens,
           CAST(SUM(cost_cents) AS REAL) / 100 as cost
         FROM usage_records
-        WHERE created_at > datetime('now', '-24 hours')
-        GROUP BY strftime('%Y-%m-%d %H:00:00', created_at)
+        WHERE created_at > datetime('now', '${cfg.window}')
+        GROUP BY ${cfg.bucket}
       ) u
       LEFT JOIN (
         SELECT
-          strftime('%Y-%m-%d %H:00:00', timestamp) as time,
+          ${latencyBucket} as time,
           ROUND(AVG(latency_ms)) as latency
         FROM request_logs
-        WHERE timestamp > datetime('now', '-24 hours') AND latency_ms IS NOT NULL
-        GROUP BY strftime('%Y-%m-%d %H:00:00', timestamp)
+        WHERE timestamp > datetime('now', '${cfg.window}') AND latency_ms IS NOT NULL
+        GROUP BY ${latencyBucket}
       ) r ON u.time = r.time
       ORDER BY u.time
     `).all();
-    return { history: rows };
+    const effectiveGranularity = rawGranularity && cfg === GRANULARITY_BUCKETS[rawGranularity]
+      ? rawGranularity
+      : 'hour';
+    return { history: rows, granularity: effectiveGranularity };
   });
 
   // Billing summary
@@ -1527,23 +2604,41 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Quota states
-  server.get('/admin/quota', async () => {
+  server.get('/admin/quota', async (request) => {
     const db = getDb();
-    const rows = db.prepare(`
+    const query = request.query as Record<string, string | undefined>;
+    // Accept both camelCase and snake_case for back-compat.
+    const tenantId = query.tenantId ?? query.tenant_id;
+    const providerId = query.providerId ?? query.provider_id;
+    // Cap result size to avoid pulling thousands of rows for large tenants.
+    const limit = Math.min(Math.max(parseInt(query.limit ?? '100', 10) || 100, 1), 500);
+
+    // `tenantId` is bound twice — once per subquery (used_quota and
+    // remaining_quota both compute the same monthly request count).
+    const params: unknown[] = [];
+    const tenantSubquery = tenantId ? `AND rl.tenant_id = ?` : '';
+    if (tenantId) {
+      params.push(tenantId, tenantId);
+    }
+
+    let sql = `
       SELECT
         qa.id,
+        qa.tenant_id,
         qa.provider_id,
         p.name as provider_name,
         qa.max_requests as total_quota,
         COALESCE(
           (SELECT COUNT(*) FROM request_logs rl
            WHERE (qa.provider_id IS NULL OR rl.selected_provider = qa.provider_id)
+           ${tenantSubquery}
            AND rl.timestamp >= date('now', 'start of month')),
           0
         ) as used_quota,
         qa.max_requests - COALESCE(
           (SELECT COUNT(*) FROM request_logs rl
            WHERE (qa.provider_id IS NULL OR rl.selected_provider = qa.provider_id)
+           ${tenantSubquery}
            AND rl.timestamp >= date('now', 'start of month')),
           0
         ) as remaining_quota,
@@ -1555,8 +2650,20 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         '[]' as rerouting_suggestions
       FROM quota_allocations qa
       LEFT JOIN providers p ON p.id = qa.provider_id
-      ORDER BY p.name
-    `).all() as Array<Record<string, unknown>>;
+      WHERE 1=1
+    `;
+    if (tenantId) {
+      sql += ` AND qa.tenant_id = ?`;
+      params.push(tenantId);
+    }
+    if (providerId) {
+      sql += ` AND qa.provider_id = ?`;
+      params.push(providerId);
+    }
+    sql += ` ORDER BY p.name LIMIT ?`;
+    params.push(limit);
+
+    const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
     return {
       quotas: rows.map((row) => ({
         ...row,
@@ -1638,7 +2745,28 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return { alerts };
   });
 
-  // Telemetry events (in-memory ring buffer)
+  // Acknowledge an alert. Alerts are derived live from provider/quota state
+  // (see GET /admin/alerts above), so there is no row to update — the UI
+  // can mark the row as acknowledged and the next list call will reflect it
+  // once we wire in-memory ack state. For now this is a no-op acknowledgement
+  // endpoint so the UI buttons no longer 404.
+  server.post('/admin/alerts/:id/ack', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    return { id, acknowledged: true, acknowledgedAt: new Date().toISOString() };
+  });
+
+  // Resolve an alert. Same model as /ack above: alerts are derived, so this
+  // is a no-op acknowledgement that returns a resolved timestamp. The UI
+  // optimistically marks the row resolved on a successful response.
+  server.post('/admin/alerts/:id/resolve', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    return { id, resolved: true, resolvedAt: new Date().toISOString() };
+  });
+
+  // Telemetry events (in-memory ring buffer + push-based SSE)
+  const telemetryEvents = new EventEmitter();
+  telemetryEvents.setMaxListeners(100); // up to 100 concurrent SSE subscribers
+
   const telemetryBuffer: Array<{
     id: string;
     timestamp: string;
@@ -1653,11 +2781,44 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   const MAX_TELEMETRY_EVENTS = 1000;
 
-  /** Trim the telemetry buffer to MAX_TELEMETRY_EVENTS. */
   function trimTelemetryBuffer(): void {
     while (telemetryBuffer.length > MAX_TELEMETRY_EVENTS) {
       telemetryBuffer.shift();
     }
+  }
+
+  /**
+   * Publish a telemetry event. Appends to the in-memory buffer (trimmed to
+   * MAX_TELEMETRY_EVENTS) and emits to all live SSE subscribers.
+   *
+   * Call sites: any code that wants to surface a real-time event in the
+   * admin dashboard (e.g. request failures, auth failures, provider
+   * health changes, etc.).
+   */
+  function recordTelemetryEvent(event: {
+    id?: string;
+    level?: string;
+    service?: string;
+    message: string;
+    trace_id?: string | null;
+    span_id?: string | null;
+    duration?: number | null;
+    metadata?: Record<string, unknown>;
+  }): void {
+    const enriched = {
+      id: event.id ?? crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      level: event.level ?? 'info',
+      service: event.service ?? 'gateway',
+      message: event.message,
+      trace_id: event.trace_id ?? null,
+      span_id: event.span_id ?? null,
+      duration: event.duration ?? null,
+      metadata: event.metadata ?? {},
+    };
+    telemetryBuffer.push(enriched);
+    trimTelemetryBuffer();
+    telemetryEvents.emit('event', enriched);
   }
 
   server.get('/admin/telemetry/events', async () => {
@@ -1665,9 +2826,59 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return { events: telemetryBuffer.slice(-100) };
   });
 
-  // Expose buffer for adding events from other routes
+  // SSE stream of telemetry events. The UI's `EventSource('/admin/telemetry/stream')`
+  // (apps/ui/src/lib/admin.ts) opens this to live-update the observability
+  // dashboards. Subscribers receive events via the `telemetryEvents`
+  // emitter that `recordTelemetryEvent` publishes to — no polling.
+  //
+  // The connection is closed automatically when the client disconnects
+  // (the `close` listener removes the listener and clears the heartbeat).
+  // We send an initial snapshot of the most recent 50 events so the
+  // dashboard isn't blank when a client connects mid-stream. A 15s
+  // heartbeat keeps the connection alive through proxies.
+  server.get('/admin/telemetry/stream', async (request, reply) => {
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    // Initial snapshot — last 50 events
+    const initial = telemetryBuffer.slice(-50);
+    for (const e of initial) {
+      reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
+    }
+
+    // Subscribe to live events
+    const onEvent = (e: typeof telemetryBuffer[number]) => {
+      try {
+        reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
+      } catch {
+        // socket may have closed
+      }
+    };
+    telemetryEvents.on('event', onEvent);
+
+    // Heartbeat every 15s to keep the connection alive through proxies
+    const heartbeat = setInterval(() => {
+      try {
+        reply.raw.write(`:heartbeat\n\n`);
+      } catch {
+        // ignore
+      }
+    }, 15_000);
+    if (heartbeat.unref) heartbeat.unref();
+
+    request.raw.on('close', () => {
+      telemetryEvents.off('event', onEvent);
+      clearInterval(heartbeat);
+    });
+  });
+
+  // Expose buffer + publisher for adding events from other routes
   (server as unknown as Record<string, unknown>).telemetryBuffer = telemetryBuffer;
   (server as unknown as Record<string, unknown>).trimTelemetryBuffer = trimTelemetryBuffer;
+  (server as unknown as Record<string, unknown>).recordTelemetryEvent = recordTelemetryEvent;
 
   // Audit events
   server.get('/admin/audit/events', async () => {
@@ -1973,6 +3184,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       oauth_access_token,
       oauth_refresh_token,
       oauth_token_expires_at,
+      region,
+      priority,
+      enabled,
     } = parsed.data;
 
     // Issue #9: SSRF validation on base_url
@@ -1980,8 +3194,31 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       validateBaseUrlForSSRF(base_url);
     }
 
+    // Merge the form-only fields (region/priority/enabled) and any caller-
+    // supplied config into a single config blob. The `providers` table has
+    // no dedicated columns for these, but the UI's Providers.tsx and
+    // ProviderDetailDrawer read them back from config on every render.
+    // The route returns the merged config to the caller below, so the
+    // round-trip is symmetrical.
+    //
+    // `configProvided` is only true when the caller actually sent something —
+    // either the `config` blob itself or one of the form-only fields. When
+    // the request body carries none of them, we leave the existing config
+    // column untouched (COALESCE handles that in the SQL).
+    const configProvided =
+      config !== undefined ||
+      region !== undefined ||
+      priority !== undefined ||
+      enabled !== undefined;
+    const mergedConfig: Record<string, unknown> = configProvided
+      ? { ...(config || {}) }
+      : {};
+    if (region != null) mergedConfig.region = region;
+    if (priority != null) mergedConfig.priority = priority;
+    if (enabled != null) mergedConfig.enabled = enabled;
+
     // Issue #2: Encrypt any apiKey in config before storing
-    const configToStore = config ? encryptConfigApiKey({ ...config }) : null;
+    const configToStore = configProvided ? encryptConfigApiKey(mergedConfig) : null;
     const encryptedOAuthAccessToken = oauth_access_token ? encrypt(oauth_access_token) : null;
     const encryptedOAuthRefreshToken = oauth_refresh_token ? encrypt(oauth_refresh_token) : null;
 
@@ -2307,5 +3544,103 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
 
     return { success: true, id };
+  });
+
+  // --- Runtime admin key rotation ---
+
+  /**
+   * Rotate the admin API key at runtime.
+   *
+   * Generates a new key, stores it in process.env.DMRX_ADMIN_API_KEY (which
+   * the auth middleware re-reads on every request — see auth.middleware.ts),
+   * and returns the new key to the caller. The caller MUST save it — it
+   * will not be shown again.
+   *
+   * For persistence across restarts, the operator must also update the
+   * deployment environment (DMRX_ADMIN_API_KEY).
+   */
+  server.post('/admin/security/rotate-admin-key', async (request, reply) => {
+    // The auth middleware already validated the current admin key, so
+    // we're authorized to rotate. Generate a new key with a recognizable
+    // prefix.
+    const newKey = `dmrax_${crypto.randomBytes(32).toString('hex')}`;
+    process.env.DMRX_ADMIN_API_KEY = newKey;
+    logger.warn('Admin API key rotated at runtime. Operator must also update DMRX_ADMIN_API_KEY in deployment for persistence.');
+    return {
+      new_key: newKey,
+      message: 'Key rotated. Save it now — it will not be shown again. Update DMRX_ADMIN_API_KEY in your deployment environment to persist across restarts.',
+    };
+  });
+
+  // --- MCP server status ----------------------------------------------------
+  //
+  // The MCP server is a separate process (services/mcp-server) — the gateway
+  // does NOT import or manage it. This route reports:
+  //   * the gateway's env-derived view of the MCP config (matching the
+  //     MCP server's own documented defaults)
+  //   * a live reachability probe against the MCP server's /health
+  //     endpoint when transport is HTTP/SSE
+  //   * a static tool catalogue (the same tools services/mcp-server exports)
+  //
+  // For stdio transport the MCP server is a per-client child process and
+  // there is no daemon to probe, so `available` is returned as `null` to
+  // distinguish "unknown / separate process" from "reachable: false".
+  server.get('/admin/mcp/status', async (request, reply) => {
+    const transport = (process.env.DMRX_MCP_TRANSPORT || 'stdio').toLowerCase();
+    const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
+    const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+    const hasApiKey = !!process.env.DMRX_MCP_API_KEY;
+
+    // Probing the MCP server requires a fetch — cap it so a slow/unreachable
+    // server can't hold up the admin response.
+    const probeable = transport === 'sse' || transport === 'http'
+      || transport === 'streamable' || transport === 'streamable-http';
+
+    let available: boolean | null = null;
+    if (probeable) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1500);
+      try {
+        const res = await fetch(`http://${host}:${port}/health`, {
+          signal: controller.signal,
+        });
+        available = res.ok;
+      } catch {
+        available = false;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    return {
+      available,
+      transport,
+      host,
+      port,
+      hasApiKey,
+      uptime: Math.round(process.uptime()),
+      tools: [
+        { name: 'dmrx_chat', description: 'Chat completions with full routing across all configured LLMs.' },
+        { name: 'dmrx_chat_stream', description: 'Streaming chat completion with token-by-token output.' },
+        { name: 'dmrx_generate_image', description: 'Image generation routed across diffusion providers.' },
+        { name: 'dmrx_generate_image_stream', description: 'Streaming image generation with progressive updates.' },
+        { name: 'dmrx_generate_video', description: 'Video generation across Replicate, Runway, Pika, etc.' },
+        { name: 'dmrx_generate_music', description: 'Music generation across supported providers.' },
+        { name: 'dmrx_generate_3d', description: '3D model generation (text-to-3d / image-to-3d).' },
+        { name: 'dmrx_embed', description: 'Text embeddings across embedding providers.' },
+        { name: 'dmrx_rerank', description: 'Document reranking for RAG pipelines.' },
+        { name: 'dmrx_transcribe', description: 'Speech-to-text across STT providers.' },
+        { name: 'dmrx_speak', description: 'Text-to-speech across TTS providers.' },
+        { name: 'dmrx_models', description: 'List available models with capabilities and health.' },
+        { name: 'dmrx_status', description: 'System status, router health, and provider availability.' },
+        { name: 'dmrx_batch', description: 'Execute multiple tool calls atomically with partial-failure support.' },
+        { name: 'dmrx_workflow', description: 'Define and execute multi-step workflows with branching, looping, and retries.' },
+        { name: 'dmrx_context_save', description: 'Persist conversation context for stateful agent interactions.' },
+        { name: 'dmrx_context_load', description: 'Load a previously saved conversation context by ID.' },
+        { name: 'dmrx_context_list', description: 'List saved conversation contexts with pagination.' },
+        { name: 'dmrx_context_summarize', description: 'Summarize a saved conversation to reduce token cost.' },
+        { name: 'dmrx_context_compress', description: 'Compress a saved conversation while preserving meaning.' },
+      ],
+    };
   });
 }

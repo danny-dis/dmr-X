@@ -78,9 +78,9 @@ describe('CompositeExecutor + WorkerPoolFanout integration', () => {
 
     // Build a DecomposedTask with a single parallel group of 3 sub-tasks.
     const subTasks: SubTask[] = [
-      { id: 's1', description: 'task 1', specializations: ['code'], dependsOn: [], estimatedTokens: 100 },
-      { id: 's2', description: 'task 2', specializations: ['analysis'], dependsOn: [], estimatedTokens: 100 },
-      { id: 's3', description: 'task 3', specializations: ['docs'], dependsOn: [], estimatedTokens: 100 },
+      { id: 's1', description: 'task 1', specializations: ['backend_api'], dependsOn: [], estimatedTokens: 100, priority: 1, canParallel: true, modality: 'llm' },
+      { id: 's2', description: 'task 2', specializations: ['data_modeling'], dependsOn: [], estimatedTokens: 100, priority: 1, canParallel: true, modality: 'llm' },
+      { id: 's3', description: 'task 3', specializations: ['documentation'], dependsOn: [], estimatedTokens: 100, priority: 1, canParallel: true, modality: 'llm' },
     ];
     const decomposed: DecomposedTask = {
       id: 't1',
@@ -88,6 +88,7 @@ describe('CompositeExecutor + WorkerPoolFanout integration', () => {
       subTasks,
       executionPlan: {
         groups: [{ id: 'g1', subTaskIds: ['s1', 's2', 's3'], type: 'parallel' }],
+        totalEstimatedTokens: 300,
         estimatedDurationMs: 1000,
       },
       requiresOrchestration: true,
@@ -107,6 +108,8 @@ describe('CompositeExecutor + WorkerPoolFanout integration', () => {
     const request: UnifiedRequest = {
       modality: 'llm',
       messages: [{ role: 'user', content: 'big composite prompt that mentions backend and frontend and database' }],
+      stream: false,
+      metadata: {},
     };
 
     const result = await composite.execute(decomposed, [], request);
@@ -137,8 +140,8 @@ describe('CompositeExecutor + WorkerPoolFanout integration', () => {
     const composite = new CompositeExecutor(new SpecialistRouter(), adapter); // no fanout
 
     const subTasks: SubTask[] = [
-      { id: 'a', description: 'A', specializations: ['code'], dependsOn: [], estimatedTokens: 100 },
-      { id: 'b', description: 'B', specializations: ['code'], dependsOn: [], estimatedTokens: 100 },
+      { id: 'a', description: 'A', specializations: ['backend_api'], dependsOn: [], estimatedTokens: 100, priority: 1, canParallel: true, modality: 'llm' },
+      { id: 'b', description: 'B', specializations: ['backend_api'], dependsOn: [], estimatedTokens: 100, priority: 1, canParallel: true, modality: 'llm' },
     ];
     const decomposed: DecomposedTask = {
       id: 't2',
@@ -146,6 +149,7 @@ describe('CompositeExecutor + WorkerPoolFanout integration', () => {
       subTasks,
       executionPlan: {
         groups: [{ id: 'g1', subTaskIds: ['a', 'b'], type: 'parallel' }],
+        totalEstimatedTokens: 200,
         estimatedDurationMs: 500,
       },
       requiresOrchestration: false,
@@ -161,6 +165,8 @@ describe('CompositeExecutor + WorkerPoolFanout integration', () => {
     const request: UnifiedRequest = {
       modality: 'llm',
       messages: [{ role: 'user', content: 'a plain prompt' }],
+      stream: false,
+      metadata: {},
     };
 
     const result = await composite.execute(decomposed, [], request);

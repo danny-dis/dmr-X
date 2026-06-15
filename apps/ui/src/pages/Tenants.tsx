@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { Users, Plus, Search, KeyRound, Shield, Mail, Calendar, Save } from 'lucide-react';
+import { Users, Plus, Search, KeyRound, Mail, Calendar, Save, Trash2, Lock } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Card } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
 import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
@@ -27,28 +27,113 @@ export function TenantsPage() {
 
   const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 15000 });
 
-  const filtered = (tenants.data ?? []).filter((t) =>
-    query ? `${t.name} ${t.email ?? ''}`.toLowerCase().includes(query.toLowerCase()) : true
-  );
-  const selected = (tenants.data ?? []).find((t) => t.id === selectedTenant);
-
   const keys = useApiData<ApiKey[]>(
     () => Admin.listApiKeys().then(allKeys => allKeys.filter(k => k.tenant_id === selectedTenant)),
     [selectedTenant],
     { enabled: !!selectedTenant, refetchInterval: 15000 }
   );
 
-  React.useEffect(() => {
-    if (!selectedTenant && tenants.data && tenants.data.length > 0) {
-      setSelectedTenant(tenants.data[0].id);
-    }
-  }, [tenants.data, selectedTenant]);
-
   const [settingsName, setSettingsName] = React.useState('');
   const [settingsEmail, setSettingsEmail] = React.useState('');
   const [settingsTier, setSettingsTier] = React.useState('free');
   const [settingsSuspended, setSettingsSuspended] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+
+  // Tenant delete: two-step inline confirm (mirrors ProviderDetailDrawer / ModelDetailDrawer).
+  const [confirmingDelete, setConfirmingDelete] = React.useState(false);
+  const [deletingTenant, setDeletingTenant] = React.useState(false);
+
+  // API key revoke: two-step inline confirm + optimistic remove from the local list.
+  const [confirmingRevokeId, setConfirmingRevokeId] = React.useState<string | null>(null);
+  const [optimisticallyHidden, setOptimisticallyHidden] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
+  const filtered = (tenants.data ?? []).filter((t) =>
+    query ? `${t.name} ${t.email ?? ''}`.toLowerCase().includes(query.toLowerCase()) : true
+  );
+  const selected = (tenants.data ?? []).find((t) => t.id === selectedTenant);
+
+  // Keys for the selected tenant, minus any that we've optimistically removed.
+  const visibleKeys = React.useMemo(
+    () => (keys.data ?? []).filter((k) => !optimisticallyHidden.has(k.id)),
+    [keys.data, optimisticallyHidden],
+  );
+
+  // Auto-cancel the inline-confirm state after a short window so the user doesn't
+  // get stuck in "Click again to confirm" if they change their mind.
+  React.useEffect(() => {
+    if (!confirmingDelete) return;
+    const t = setTimeout(() => setConfirmingDelete(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirmingDelete]);
+  React.useEffect(() => {
+    if (!confirmingRevokeId) return;
+    const t = setTimeout(() => setConfirmingRevokeId(null), 3000);
+    return () => clearTimeout(t);
+  }, [confirmingRevokeId]);
+  // Reset the confirm state when the selected tenant changes (a new selection
+  // shouldn't inherit a half-finished confirmation).
+  React.useEffect(() => {
+    setConfirmingDelete(false);
+  }, [selectedTenant]);
+
+  const handleDeleteTenant = async () => {
+    if (!selected) return;
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
+    setConfirmingDelete(false);
+    setDeletingTenant(true);
+    try {
+      await Admin.deleteTenant(selected.id);
+      toast.success('Tenant deleted', { description: selected.name });
+      if (selectedTenant === selected.id) setSelectedTenant(null);
+      await tenants.refetch();
+    } catch (err) {
+      toast.error('Failed to delete tenant', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setDeletingTenant(false);
+    }
+  };
+
+  const handleRevokeKey = async (id: string) => {
+    if (confirmingRevokeId !== id) {
+      setConfirmingRevokeId(id);
+      return;
+    }
+    setConfirmingRevokeId(null);
+    // Optimistic remove so the card disappears immediately.
+    setOptimisticallyHidden((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    try {
+      await Admin.revokeApiKey(id);
+      toast.success('API key revoked');
+      await keys.refetch();
+    } catch (err) {
+      // Restore on failure.
+      setOptimisticallyHidden((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      toast.error('Failed to revoke API key', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  React.useEffect(() => {
+    if (!selectedTenant && tenants.data && tenants.data.length > 0) {
+      setSelectedTenant(tenants.data[0].id);
+    }
+  }, [tenants.data, selectedTenant]);
 
   React.useEffect(() => {
     if (selected) {
@@ -172,10 +257,38 @@ export function TenantsPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button variant="secondary" size="sm">
-                      <Shield className="size-3" />
-                      Edit
-                    </Button>
+                    {(() => {
+                      const protectedTenant =
+                        selected.name === 'default' || selected.name === 'local';
+                      return (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleDeleteTenant}
+                          loading={deletingTenant}
+                          disabled={protectedTenant}
+                          title={
+                            protectedTenant
+                              ? `Cannot delete the "${selected.name}" tenant`
+                              : confirmingDelete
+                                ? 'Click again to confirm'
+                                : 'Delete tenant'
+                          }
+                          className={confirmingDelete ? 'border-danger/40 text-danger' : ''}
+                        >
+                          {protectedTenant ? (
+                            <Lock className="size-3" />
+                          ) : (
+                            <Trash2 className="size-3" />
+                          )}
+                          {protectedTenant
+                            ? 'Protected'
+                            : confirmingDelete
+                              ? 'Click again'
+                              : 'Delete'}
+                        </Button>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -200,19 +313,14 @@ export function TenantsPage() {
                         <Skeleton key={i} className="h-20 w-full" />
                       ))}
                     </div>
-                  ) : keys.data && keys.data.length > 0 ? (
+                  ) : visibleKeys.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {keys.data.map((k) => (
+                      {visibleKeys.map((k) => (
                         <ApiKeyCard
                           key={k.id}
                           apiKey={k}
-                          onRevoke={async (id) => {
-                            if (confirm('Are you sure you want to revoke this API key?')) {
-                              await Admin.revokeApiKey(id);
-                              toast.success('API key revoked');
-                              void keys.refetch();
-                            }
-                          }}
+                          revoking={confirmingRevokeId === k.id}
+                          onRevoke={() => void handleRevokeKey(k.id)}
                         />
                       ))}
                     </div>
@@ -327,6 +435,8 @@ export function TenantsPage() {
         open={createTenantOpen}
         onOpenChange={setCreateTenantOpen}
         onCreated={async (tenantId) => {
+          // Clear the search so the new tenant is always visible after creation.
+          setQuery('');
           await tenants.refetch();
           setSelectedTenant(tenantId);
         }}

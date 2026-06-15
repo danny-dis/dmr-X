@@ -158,7 +158,36 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       throw this.handleAdapterError(error, 'chat');
     }
 
-    const data: any = await response.json();
+    const rawText = await response.text();
+    let data: any;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (parseErr) {
+      // Some OpenAI-compatible providers (Pollinations legacy, Cloudflare
+      // misconfigurations, etc.) return a non-JSON error body on 2xx
+      // or send plain text. Surface the upstream body in the error so
+      // the user can see WHY the provider failed instead of "Request
+      // failed: 500".
+      throw new ProviderError(
+        `${this.providerId} chat: upstream returned non-JSON response (${response.status}): ${rawText.slice(0, 200)}`,
+        this.providerId,
+        response.status || 502,
+      );
+    }
+
+    if (data && data.error) {
+      // Upstream returned an error envelope (e.g. Pollinations 429 with
+      // { error: "Queue full...", status: 429 }). Throw as a ProviderError
+      // so the router's fallback chain picks it up — and so the message
+      // actually reaches the user.
+      const status = data.status || response.status || 502;
+      throw new ProviderError(
+        `${this.providerId} chat: ${typeof data.error === 'string' ? data.error : JSON.stringify(data.error)}`,
+        this.providerId,
+        status,
+      );
+    }
+
     const latencyMs = Date.now() - start;
 
     return {

@@ -28,10 +28,18 @@ export interface ApiProvider {
   id: string;
   name: string;
   adapter_type?: string;
+  /** @deprecated Use adapter_type. camelCase alias. */
+  adapterType?: string;
   base_url?: string | null;
+  /** @deprecated Use base_url. camelCase alias. */
+  baseUrl?: string | null;
   api_key_ref?: string | null;
+  /** @deprecated Use api_key_ref. camelCase alias. */
+  apiKeyRef?: string | null;
+  /** @deprecated Server does not currently return this field. */
   enabled?: boolean;
   status?: ProviderStatus;
+  /** @deprecated Server does not currently return this field. */
   health?: {
     status: 'ok' | 'degraded' | 'down' | 'unknown';
     latencyMs?: number;
@@ -43,9 +51,12 @@ export interface ApiProvider {
   hasKey?: boolean;
   hasOAuthToken?: boolean;
   oauthTokenExpiresAt?: string | null;
+  /** @deprecated Server does not currently return this field. */
   priority?: number;
+  /** @deprecated Server does not currently return this field. */
   capabilities?: Modality[];
   models?: ApiModel[];
+  /** @deprecated Server does not currently return this field. */
   modelCount?: number;
   local?: boolean;
   region?: string;
@@ -53,32 +64,129 @@ export interface ApiProvider {
   description?: string;
   createdAt?: string;
   config?: Record<string, unknown>;
+  /**
+   * Tier of the connection. Derived from the set of active provider
+   * keys attached to this provider. 'inactive' means no active keys.
+   * The UI uses this to render a Free / Paid / Free+Paid badge and to
+   * filter the Free Tier page.
+   */
+  tier?: ProviderTier;
+  /**
+   * Every key attached to this provider. The active row with the
+   * highest priority is the one the adapter uses; the rest are
+   * available for rotation or future round-robin. Ciphertext is never
+   * returned — only the masked prefix and metadata.
+   */
+  keys?: ApiProviderKey[];
+}
+
+/**
+ * Tier of a provider connection. Server-derived; the UI must NOT
+ * recompute it from `keys` (the denormalised cache is the source of
+ * truth at the API layer).
+ */
+export type ProviderTier = 'free' | 'paid' | 'mixed' | 'inactive';
+
+/**
+ * Per-key tier — narrower than ProviderTier because a single key can
+ * only be free or paid. The provider-level tier collapses to
+ * 'mixed' when the connection carries at least one of each.
+ */
+export type ProviderKeyTier = 'free' | 'paid';
+
+export interface ApiProviderKey {
+  id: string;
+  provider_id: string;
+  label: string | null;
+  tier: ProviderKeyTier;
+  auth_method: AuthMethod | string;
+  priority: number;
+  is_active: boolean;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+  oauth_token_expires_at: string | null;
+  /**
+   * First 4 + last 2 characters of the decrypted key, joined by '…'
+   * (e.g. "sk-1…yz"). Empty when no key is attached (e.g. an
+   * OAuth-only key). '•••' when the ciphertext can't be decrypted.
+   */
+  masked_key_prefix: string;
+  has_api_key: boolean;
+  has_oauth_token: boolean;
 }
 
 export interface ApiModel {
   id: string;
   provider_id: string;
+  /** @deprecated Use provider_id. camelCase alias. */
+  providerId?: string;
   provider?: string;
   provider_name?: string;
+  /** @deprecated Use provider_name. camelCase alias. */
+  providerName?: string;
+  /**
+   * Upstream model identifier (e.g. "gpt-4o-mini", "claude-3-5-sonnet"). This
+   * is the value the provider API actually expects, distinct from `id`
+   * which is the local model_profiles row UUID. The playground, model
+   * picker, and any other UI that lets the user target a specific model
+   * must send `model_id` (or its camelCase alias) — never the row UUID.
+   */
+  model_id?: string;
+  /** @deprecated Use model_id. camelCase alias. */
+  modelId?: string;
   name: string;
   display_name?: string | null;
+  /** @deprecated Use display_name. camelCase alias. */
+  displayName?: string | null;
   modality: Modality;
   intelligence_layer?: IntelligenceLayer;
+  /** @deprecated Use intelligence_layer. camelCase alias. */
+  intelligenceLayer?: IntelligenceLayer;
   capability_tier?: CapabilityTier;
+  /** @deprecated Use capability_tier. camelCase alias. */
+  capabilityTier?: CapabilityTier;
   context_window?: number | null;
+  /** @deprecated Use context_window. camelCase alias. */
+  contextWindow?: number | null;
   max_output_tokens?: number | null;
+  /** @deprecated Use max_output_tokens. camelCase alias. */
+  maxOutputTokens?: number | null;
   input_cost_per_1k?: number;
+  /** @deprecated Use input_cost_per_1k. camelCase alias. */
+  inputCostPer1k?: number;
   output_cost_per_1k?: number;
+  /** @deprecated Use output_cost_per_1k. camelCase alias. */
+  outputCostPer1k?: number;
   cost_per_image?: number;
+  /** @deprecated Use cost_per_image. camelCase alias. */
+  costPerImage?: number;
+  /** @deprecated Server does not return `tier`; use `capability_tier` (or `capabilityTier` alias) instead. */
   tier?: CostTier | string;
   quality_score?: number;
+  /** @deprecated Use quality_score. camelCase alias. */
+  qualityScore?: number;
   supports_streaming?: boolean;
+  /** @deprecated Use supports_streaming. camelCase alias. */
+  supportsStreaming?: boolean;
   supports_vision?: boolean;
+  /** @deprecated Use supports_vision. camelCase alias. */
+  supportsVision?: boolean;
   supports_tool_use?: boolean;
+  /** @deprecated Use supports_tool_use. camelCase alias. */
+  supportsToolUse?: boolean;
   supports_reasoning?: boolean;
+  /** @deprecated Use supports_reasoning. camelCase alias. */
+  supportsReasoning?: boolean;
   supports_function_call?: boolean;
+  /** @deprecated Use supports_function_call. camelCase alias. */
+  supportsFunctionCall?: boolean;
   is_active?: boolean;
+  /** @deprecated Use is_active. camelCase alias. */
+  isActive?: boolean;
   created_at?: string;
+  /** @deprecated Use created_at. camelCase alias. */
+  createdAt?: string;
 }
 
 export interface ApiTenant {
@@ -88,19 +196,30 @@ export interface ApiTenant {
   tier?: string;
   tokens_used?: number;
   tokens_limit?: number;
+  /** @deprecated Use tokens_limit. camelCase alias. */
+  tokensLimit?: number;
   requests_used?: number;
   requests_limit?: number;
+  /** @deprecated Use requests_limit. camelCase alias. */
+  requestsLimit?: number;
   cost_used?: number;
   cost_limit?: number;
+  /** @deprecated Use cost_limit. camelCase alias. */
+  costLimit?: number;
   suspended?: boolean;
   created_at?: string;
+  /** @deprecated Use created_at. camelCase alias. */
+  createdAt?: string;
 }
 
 export interface ApiKey {
   id: string;
   name: string;
-  key: string;
+  /** Plaintext key — only present on the create response. List responses omit this. */
+  key?: string;
   tenant_id: string;
+  /** Joined tenant name — only present on list responses, not on the create response. */
+  tenant_name?: string;
   scopes?: string[];
   last_used_at?: string;
   is_active: number;
@@ -141,12 +260,17 @@ export interface ApiQuotaState {
 }
 
 export interface ApiUsagePoint {
-  t: number;
+  t?: number | string;
+  time?: number | string;
   requests?: number;
   tokens?: number;
   cost?: number;
+  latency?: number;
+  /** @deprecated Server returns a single latency value, not percentiles. */
   latencyP50?: number;
+  /** @deprecated Server returns a single latency value, not percentiles. */
   latencyP95?: number;
+  /** @deprecated Server returns a single latency value, not percentiles. */
   latencyP99?: number;
   cacheHits?: number;
   fallbacks?: number;
@@ -177,40 +301,73 @@ export interface ApiBillingSummary {
 
 export interface ApiAlert {
   id: string;
-  title: string;
-  message?: string;
+  type?: string;
+  timestamp?: string;
+  message: string;
   severity: AlertSeverity;
   source?: string;
   acknowledged?: boolean;
   acknowledgedAt?: string;
   resolved?: boolean;
   resolvedAt?: string;
-  at?: string;
   details?: Record<string, unknown>;
+  /** @deprecated Server uses `message` for both title and body. Kept for UI convenience. */
+  title?: string;
+  /** @deprecated Mirror of `timestamp`. */
+  at?: string;
 }
 
 export interface ApiAuditEvent {
   id: string;
-  actor: string;
-  action: string;
-  resource: string;
+  timestamp?: string;
+  event_type?: string;
+  severity?: 'info' | 'warning' | 'error';
+  actor?: string;
+  tenant_id?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  ip_address?: string | null;
+  /** @deprecated Server does not return this field. Use `event_type` / `description`. */
+  action?: string;
+  /** @deprecated Server does not return this field. */
+  resource?: string;
+  /** @deprecated Server does not return this field. */
   target?: string;
+  /** @deprecated Server does not return this field. Use `description` or `metadata`. */
   detail?: string;
+  /** @deprecated Mirror of `timestamp`. */
   at?: string;
+  /** @deprecated Use `ip_address`. */
   ip?: string;
 }
 
 export interface ApiTelemetryEvent {
-  id: string;
-  kind: TelemetryKind;
-  status?: TelemetryStatus;
-  tenant?: string;
-  model?: string;
-  provider?: string;
-  latencyMs?: number;
-  tokens?: number;
-  cost?: number;
+  id?: string;
+  timestamp?: string;
+  level?: string;
+  service?: string;
   message?: string;
+  trace_id?: string | null;
+  span_id?: string | null;
+  duration?: number | null;
+  metadata?: Record<string, unknown>;
+  /** @deprecated Server does not return this field. Use `service` / `metadata` instead. */
+  kind?: TelemetryKind;
+  /** @deprecated Server does not return this field. Use `level` instead. */
+  status?: TelemetryStatus;
+  /** @deprecated Server does not return this field. Use `metadata.tenant_id`. */
+  tenant?: string;
+  /** @deprecated Server does not return this field. Use `metadata.model`. */
+  model?: string;
+  /** @deprecated Server does not return this field. Use `metadata.provider`. */
+  provider?: string;
+  /** @deprecated Server does not return this field. Use `duration`. */
+  latencyMs?: number;
+  /** @deprecated Server does not return this field. Use `metadata.token_count`. */
+  tokens?: number;
+  /** @deprecated Server does not return this field. Use `metadata.cost`. */
+  cost?: number;
+  /** @deprecated Mirror of `timestamp`. */
   at?: string;
 }
 
@@ -354,6 +511,7 @@ export interface ApiCatalogEntry {
     tokenResponseType?: string;
   };
   models?: { id: string; name: string; modality: Modality }[];
+  signupUrl?: string;
 }
 
 export interface ApiHealthResponse {
@@ -363,21 +521,52 @@ export interface ApiHealthResponse {
   checks?: { name: string; status: 'ok' | 'fail'; latencyMs?: number; message?: string }[];
 }
 
+export interface ApiMcpTool {
+  name: string;
+  description?: string;
+}
+
+export interface ApiMcpStatus {
+  /**
+   * Whether the MCP server is currently reachable. `null` means the
+   * server runs in stdio mode (per-client child process) so the
+   * gateway cannot probe it — render an "unknown / separate process"
+   * indicator in that case.
+   */
+  available: boolean | null;
+  transport: 'stdio' | 'sse' | 'http' | string;
+  host: string;
+  port: number;
+  hasApiKey: boolean;
+  uptime?: number;
+  tools: ApiMcpTool[];
+}
+
 export interface ApiDashboardStats {
+  // UI-friendly aliases (preferred for components)
   requests24h?: number;
-  requestsDelta?: number;
   cost24h?: number;
-  costDelta?: number;
   avgLatencyMs?: number;
   latencyDelta?: number;
   totalProviders?: number;
   onlineProviders?: number;
-  activeTenants?: number;
   totalTokens24h?: number;
   totalCost24h?: number;
   successRate?: number;
   fallbackRate?: number;
-  cacheHitRate?: number;
+
+  // Raw server fields (snake_case)
+  total_requests?: number;
+  success_rate?: number;
+  avg_latency?: number;
+  token_usage?: number;
+  daily_spend?: number;
+  quota_remaining?: number;
+  active_models?: number;
+  provider_health?: number;
+  fallback_rate?: number;
+  worker_utilization?: number;
+  system_status?: string;
 }
 
 export interface ApiProviderTestResult {
@@ -398,4 +587,66 @@ export interface ApiProviderOAuthStart {
   pkce?: { codeVerifier: string; codeChallenge: string; method: string };
   flow: 'authorization_code' | 'pkce' | 'device_code' | 'client_credentials';
   expiresAt?: string;
+}
+
+export interface ApiRerankResult {
+  id?: string;
+  model?: string;
+  results: Array<{
+    index: number;
+    relevance_score: number;
+    document?: string;
+  }>;
+  fallback?: boolean;
+}
+
+// ----------------------------------------------------------------------------
+// Agentic / tool-loop event shapes
+//
+// `/v1/agentic/chat` and `/v1/tools/loop` both stream SSE responses with the
+// shape `event: <name>\ndata: <json>\n\n`. These types document the event
+// names the server emits so UI code can narrow on them safely. The Playground
+// currently stores the raw parsed payload as `{ name, data }` — these shapes
+// are exported for callers that want stricter typing.
+// ----------------------------------------------------------------------------
+
+/** Discriminated union of event names the Playground knows how to render. */
+export type ApiAgenticEventName =
+  | 'turn'
+  | 'step'
+  | 'tool_calls'
+  | 'tool_results'
+  | 'approval_required'
+  | 'error'
+  | 'done'
+  | 'message';
+
+/** Payload of an SSE event from the agentic or tool-loop endpoint. */
+export interface ApiAgenticEvent {
+  name: ApiAgenticEventName | string;
+  data: Record<string, unknown>;
+}
+
+/** `/v1/agentic/chat` `turn` event payload. */
+export interface ApiAgenticTurnEvent {
+  turn: number;
+  conversationId: string;
+  message: { role: string; content?: string; tool_calls?: unknown[] };
+  model?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  finish_reason?: string;
+}
+
+/** `/v1/tools/loop` `step` event payload (OpenAI-style chat.completion). */
+export interface ApiToolLoopStepEvent {
+  step: number;
+  object: 'chat.completion';
+  id: string;
+  model?: string;
+  choices: Array<{
+    index: number;
+    message: { role: string; content?: string; tool_calls?: unknown[] };
+    finish_reason?: string;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }

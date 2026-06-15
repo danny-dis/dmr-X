@@ -5,10 +5,16 @@ import { cn } from '@/lib/utils';
 export interface CodeProps extends React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
   copyable?: boolean;
+  /**
+   * Optional language identifier for syntax labelling (e.g. "json", "bash").
+   * The component doesn't apply highlighting itself; this is metadata that
+   * downstream tools (or `data-language` selectors) can pick up.
+   */
+  language?: string;
 }
 
 export const Code = React.forwardRef<HTMLElement, CodeProps>(
-  ({ className, inline = true, copyable = false, children, ...props }, ref) => {
+  ({ className, inline = true, copyable = false, language, children, ...props }, ref) => {
     const [copied, setCopied] = React.useState(false);
     const text = typeof children === 'string' ? children : '';
 
@@ -30,6 +36,7 @@ export const Code = React.forwardRef<HTMLElement, CodeProps>(
             'rounded-md border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg',
             className
           )}
+          data-language={language}
           {...props}
         >
           {children}
@@ -45,6 +52,7 @@ export const Code = React.forwardRef<HTMLElement, CodeProps>(
             'font-mono text-[11px] leading-relaxed text-fg',
             className
           )}
+          data-language={language}
         >
           <code ref={ref} {...props}>
             {children}

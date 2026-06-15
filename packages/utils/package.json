@@ -20,6 +20,6 @@
     "pino": "9.0.0"
   },
   "devDependencies": {
-    "typescript": "5.4.0"
+    "typescript": "5.9.3"
   }
 }
