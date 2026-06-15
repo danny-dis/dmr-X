@@ -80,6 +80,14 @@ function validateStartupConfig(): void {
     errors.push('DMRX_MEMORY_LIMIT must be between 64MB and 16GB');
   }
 
+  // Compression threshold — accepts a byte count. 0 disables compression
+  // entirely; values below 1024 are clamped up to 1024 to avoid CPU cost
+  // on tiny JSON envelopes. SSE streams are skipped regardless.
+  const compressThreshold = parseInt(process.env.DMRX_COMPRESS_THRESHOLD || '1024', 10);
+  if (!Number.isFinite(compressThreshold) || compressThreshold < 0 || compressThreshold > 1024 * 1024) {
+    errors.push('DMRX_COMPRESS_THRESHOLD must be between 0 (off) and 1048576');
+  }
+
   // Verify DMRX_TRUST_PROXY parses
   parseTrustProxy(process.env.DMRX_TRUST_PROXY);
 

@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
+import fastifyCompress from '@fastify/compress';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -471,6 +472,17 @@ void (async () => {
     limits: {
       fileSize: 25 * 1024 * 1024, // 25MB max
     },
+  });
+
+  // Response compression — gzip / brotli / deflate. We only compress
+  // responses >= DMRX_COMPRESS_THRESHOLD bytes (default 1 KB) to avoid
+  // the CPU cost on tiny JSON envelopes (the typical `{ "error": ... }`
+  // body is < 200 bytes). Set the env var to 0 to disable. SSE streams
+  // are skipped by the plugin because of their streaming Content-Type.
+  const compressThreshold = parseInt(process.env.DMRX_COMPRESS_THRESHOLD || '1024', 10);
+  await server.register(fastifyCompress, {
+    threshold: Math.max(1024, compressThreshold),
+    encodings: ['gzip', 'deflate', 'br'],
   });
 
   // Serve UI static files

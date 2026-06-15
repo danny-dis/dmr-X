@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.1.1 — Finish-Up (2026-06-15)
+
+### Production Hardening
+- **Response compression** — `@fastify/compress` registered in the gateway with gzip / deflate / brotli encodings. Configurable via `DMRX_COMPRESS_THRESHOLD` (default 1024 bytes; 0 disables). SSE streams are skipped automatically by the plugin. Closes the deferred item from the v0.1.0 production-readiness audit.
+
+### Observability
+- **Prometheus alert rules** — `monitoring/prometheus-alerts.yml` ships 11 alert rules across 4 groups: availability, latency, cost, and gateway health. 5 page-severity, 5 ticket-severity, plus the dashboard-health `up` alert.
+- **Grafana dashboard** — `monitoring/grafana-dashboard.json` is a 10-panel importable dashboard with template variables for `provider` and `modality`. Stat row has threshold coloring for healthy providers, RPS, error rate, and cost/min.
+- **Monitoring README** — `monitoring/README.md` documents the metric reference, alert summary table, scrape config, and recommended deployment.
+
+### Testing
+- **Workspace split** — `vitest.workspace.ts` splits the suite into `unit` and `e2e` projects. New scripts: `bun run test:unit` and `bun run test:e2e`. The `e2e` project is configured for `singleFork`, 30s timeouts, and `bail: 1` so a broken gateway fails fast.
+- **3 new compression tests** — covers large-response compression, sub-threshold pass-through, and missing `accept-encoding` pass-through.
+
+### Versioning
+- All 5 workspace packages bumped to `0.1.1`.
+
 ## Unreleased — Production Readiness (2026-06-12)
 
 ### Bug Fixes

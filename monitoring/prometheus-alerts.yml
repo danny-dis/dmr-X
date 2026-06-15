@@ -1,0 +1,183 @@
+# Prometheus alert rules for DMR-X.
+#
+# Drop into Prometheus via:
+#   rule_files:
+#     - /etc/prometheus/rules/dmr-x.yml
+#
+# Severity mapping:
+#   page   — wake someone up (production traffic broken)
+#   ticket — investigate next business day
+#   info   — dashboard-only, no action
+groups:
+  - name: dmr-x.availability
+    interval: 30s
+    rules:
+      - alert: DmrxHighErrorRate
+        # > 10% errors over 5m on the dominant provider is a page.
+        expr: |
+          (
+            sum by (provider_id) (rate(dmr_error_count_total[5m]))
+            /
+            sum by (provider_id) (rate(dmr_request_count_total[5m]))
+          ) > 0.10
+          and
+          sum by (provider_id) (rate(dmr_request_count_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: page
+          service: dmr-x
+        annotations:
+          summary: "DMR-X provider {{ $labels.provider_id }} error rate > 10% (5m)"
+          description: |
+            {{ $value | humanizePercentage }} of requests to {{ $labels.provider_id }}
+            are erroring. Check provider health and recent model changes.
+
+      - alert: DmrxProviderDown
+        # Health gauge reads 0 — health checker has marked it unhealthy.
+        expr: dmr_provider_health == 0
+        for: 2m
+        labels:
+          severity: page
+          service: dmr-x
+        annotations:
+          summary: "DMR-X provider {{ $labels.provider_id }} marked unhealthy"
+          description: |
+            The health checker has reported {{ $labels.provider_id }} unhealthy for
+            2 minutes. Verify the upstream API is reachable from the gateway host.
+
+      - alert: DmrxAllProvidersUnhealthy
+        # Every provider is unhealthy — gateway cannot serve any request.
+        expr: sum(dmr_provider_health) == 0
+        for: 1m
+        labels:
+          severity: page
+          service: dmr-x
+        annotations:
+          summary: "DMR-X has no healthy providers"
+          description: |
+            All upstream providers are reporting unhealthy. The gateway will return
+            503 for every request. Check network egress and provider status pages.
+
+  - name: dmr-x.latency
+    interval: 30s
+    rules:
+      - alert: DmrxHighP99Latency
+        # Streaming chat p99 > 30s for 10m — users are waiting too long.
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, provider_id, modality) (rate(dmr_request_latency_ms_bucket[5m]))
+          ) > 30000
+        for: 10m
+        labels:
+          severity: page
+          service: dmr-x
+        annotations:
+          summary: "DMR-X p99 latency > 30s on {{ $labels.provider_id }} ({{ $labels.modality }})"
+          description: |
+            99th-percentile latency for {{ $labels.provider_id }} ({{ $labels.modality }})
+            is {{ $value | humanize }}ms. Investigate upstream slowdown or consider
+            raising the free-tier fallback threshold.
+
+      - alert: DmrxHighP95Latency
+        # Non-page threshold for SLO dashboards.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, provider_id, modality) (rate(dmr_request_latency_ms_bucket[5m]))
+          ) > 15000
+        for: 15m
+        labels:
+          severity: ticket
+          service: dmr-x
+        annotations:
+          summary: "DMR-X p95 latency > 15s on {{ $labels.provider_id }} ({{ $labels.modality }})"
+          description: |
+            p95 latency is {{ $value | humanize }}ms for 15m. Not yet a page, but
+            trending into the user-visible zone.
+
+      - alert: DmrxSlowTTFT
+        # Time-to-first-token > 5s on streaming — UX impact.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, provider_id) (rate(dmr_ttft_latency_ms_bucket[5m]))
+          ) > 5000
+        for: 10m
+        labels:
+          severity: ticket
+          service: dmr-x
+        annotations:
+          summary: "DMR-X p95 TTFT > 5s on {{ $labels.provider_id }}"
+          description: |
+            Streaming responses from {{ $labels.provider_id }} are taking
+            {{ $value | humanize }}ms to emit the first token. The user sees
+            a stalled "thinking" indicator.
+
+  - name: dmr-x.cost
+    interval: 1m
+    rules:
+      - alert: DmrxCostBurnHigh
+        # > $5/min sustained for 5m — a runaway loop or bad client.
+        expr: sum(rate(dmr_cost_estimate_usd_total[5m])) * 60 > 5
+        for: 5m
+        labels:
+          severity: page
+          service: dmr-x
+        annotations:
+          summary: "DMR-X cost rate > $5/min"
+          description: |
+            Spend rate is {{ $value | humanizeDuration }}. Investigate top
+            consumers: `topk(5, sum by (provider_id, model_id) (rate(dmr_cost_estimate_usd_total[5m])))`.
+
+      - alert: DmrxCostSpike
+        # Per-minute cost > 3x the 1h baseline — could be a misbehaving client.
+        expr: |
+          sum(rate(dmr_cost_estimate_usd_total[5m])) * 60
+          >
+          3 * avg_over_time(sum(rate(dmr_cost_estimate_usd_total[1h]))[1h:5m]) * 60
+          and
+          sum(rate(dmr_cost_estimate_usd_total[1h])) * 60 > 0.5
+        for: 10m
+        labels:
+          severity: ticket
+          service: dmr-x
+        annotations:
+          summary: "DMR-X cost > 3x hourly baseline"
+          description: |
+            Current spend is {{ $value | humanizeDuration }}, more than 3x the
+            rolling 1h baseline. A misbehaving client or compromised key is the
+            most likely cause.
+
+  - name: dmr-x.health
+    interval: 30s
+    rules:
+      - alert: DmrxGatewayDown
+        # /healthz scrape has been failing — gateway process is down.
+        expr: up{job="dmr-x"} == 0
+        for: 1m
+        labels:
+          severity: page
+          service: dmr-x
+        annotations:
+          summary: "DMR-X gateway scrape failing"
+          description: |
+            Prometheus cannot scrape DMR-X at {{ $labels.instance }} for 1m.
+            The gateway process may be down, restarting, or the metrics port
+            is unreachable.
+
+      - alert: DmrxHighMemory
+        # RSS > 80% of DMRX_MEMORY_LIMIT — heading toward OOM.
+        # Exposed via the /healthz `memory` check; alert if we have
+        # node-exporter sidecar data.
+        expr: |
+          (process_resident_memory_bytes{job="dmr-x"})
+          /
+          (1024 * 1024 * 1024 * 1.5) > 0.8
+        for: 5m
+        labels:
+          severity: ticket
+          service: dmr-x
+        annotations:
+          summary: "DMR-X memory > 80% of limit"
+          description: |
+            RSS is {{ $value | humanizePercentage }} of the 1.5GB limit.
+            Look for memory leaks in conversation persistence, telemetry buffers,
+            or the in-process routing candidate cache.

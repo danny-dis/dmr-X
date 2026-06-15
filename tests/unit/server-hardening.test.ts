@@ -346,3 +346,50 @@ describe('Deepened /healthz', () => {
     expect(body.uptime).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe('Fastify compression', () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    // We import fastifyCompress lazily so a failure to install the
+    // dep surfaces only when this test runs, not in unrelated suites.
+    const fastifyCompress = (await import('@fastify/compress')).default;
+    app = Fastify({ logger: false });
+    await app.register(fastifyCompress, { threshold: 1024 });
+    app.get('/big', async () => ({
+      // ~10 KB JSON — well over the 1 KB threshold
+      data: 'x'.repeat(10_000),
+    }));
+    app.get('/small', async () => ({ ok: true }));
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('compresses large responses when the client accepts gzip', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/big',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    expect(res.headers['content-encoding']).toBe('gzip');
+    // The on-the-wire byte count should be smaller than the original.
+    expect(res.rawPayload.length).toBeLessThan(10_000);
+  });
+
+  it('does not compress responses below the threshold', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/small',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    expect(res.headers['content-encoding']).toBeUndefined();
+  });
+
+  it('passes through uncompressed when client does not send accept-encoding', async () => {
+    const res = await app.inject({ method: 'GET', url: '/big' });
+    expect(res.headers['content-encoding']).toBeUndefined();
+  });
+});

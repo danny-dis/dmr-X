@@ -1,0 +1,208 @@
+{
+  "title": "DMR-X Gateway",
+  "uid": "dmr-x",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["dmr-x", "gateway", "ai"],
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "provider",
+        "label": "Provider",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(dmr_request_count_total, provider_id)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "modality",
+        "label": "Modality",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(dmr_request_count_total, modality)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Healthy providers",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(dmr_provider_health)",
+          "legendFormat": "healthy"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 3 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Requests / sec (1m)",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(dmr_request_count_total[1m]))" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Error rate (5m)",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(dmr_error_count_total[5m])) / clamp_min(sum(rate(dmr_request_count_total[5m])), 0.001)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.05 },
+              { "color": "red", "value": 0.10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Cost / min",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(dmr_cost_estimate_usd_total[5m])) * 60" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request rate by provider",
+      "gridPos": { "x": 0, "y": 4, "w": 8, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (provider_id) (rate(dmr_request_count_total{provider_id=~\"$provider\"}[1m]))",
+          "legendFormat": "{{provider_id}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "p50 / p95 / p99 latency",
+      "gridPos": { "x": 8, "y": 4, "w": 8, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(dmr_request_latency_ms_bucket[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(dmr_request_latency_ms_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(dmr_request_latency_ms_bucket[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Time to first token (p95)",
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, provider_id) (rate(dmr_ttft_latency_ms_bucket[5m])))",
+          "legendFormat": "{{provider_id}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Tokens / min by type",
+      "gridPos": { "x": 8, "y": 12, "w": 8, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (token_type) (rate(dmr_token_usage_total[1m])) * 60",
+          "legendFormat": "{{token_type}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Error rate by error code",
+      "gridPos": { "x": 0, "y": 20, "w": 8, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (error_code) (rate(dmr_error_count_total[5m]))",
+          "legendFormat": "{{error_code}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Cost rate by provider",
+      "gridPos": { "x": 8, "y": 20, "w": 8, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum by (provider_id) (rate(dmr_cost_estimate_usd_total[5m])) * 60",
+          "legendFormat": "{{provider_id}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } }
+    }
+  ]
+}

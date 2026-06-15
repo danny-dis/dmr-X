@@ -1,6 +1,6 @@
 {
   "name": "dmr-x",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Universal AI routing and orchestration platform",
   "license": "BSL-1.1",
@@ -17,6 +17,8 @@
     "build:ui": "bun run --cwd apps/ui build",
     "start": "bun run --cwd apps/gateway start",
     "test": "bun vitest run",
+    "test:unit": "bun vitest run --project unit",
+    "test:e2e": "bun vitest run --project e2e",
     "test:watch": "bun vitest",
     "lint": "turbo lint",
     "clean": "turbo clean"
