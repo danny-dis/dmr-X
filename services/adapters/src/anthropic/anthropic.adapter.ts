@@ -162,6 +162,9 @@ export class AnthropicAdapter extends BaseAdapter {
           temperature: request.temperature,
           stream: true,
         }),
+        // Forward the caller's AbortSignal so a client disconnect
+        // (e.g. SSE consumer gone) cancels the upstream request.
+        signal: options?.signal,
         timeoutMs: options?.timeoutMs ?? 120000,
       });
     } catch (err) {
@@ -193,6 +196,19 @@ export class AnthropicAdapter extends BaseAdapter {
       },
       { dataRequired: true },
     );
+
+    // Wire external abort signal → cancel the upstream body read. Without
+    // this, a client-disconnect AbortController would let the Anthropic
+    // response keep draining after the consumer has gone.
+    if (options?.signal) {
+      const signal = options.signal;
+      if (signal.aborted) {
+        void eventStream.cancel(signal.reason);
+      } else {
+        const onAbort = () => { void eventStream.cancel(signal.reason); };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
 
     let index = 0;
 

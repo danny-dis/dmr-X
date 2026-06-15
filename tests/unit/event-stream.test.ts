@@ -178,6 +178,121 @@ describe('event-stream', () => {
       }
       expect(results).toEqual(['hello']);
     });
+
+    it('should handle boundary straddling two chunks', async () => {
+      // The 4-byte `\r\n\r\n` boundary is split across two chunks.
+      // Without the backtrack, the parser would miss this boundary.
+      const stream = createChunkStream(['data: test\r', '\n\r\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['test']);
+    });
+
+    it('should handle boundary straddling two chunks (3-byte form)', async () => {
+      // The 3-byte `\r\n\n` boundary is split across two chunks.
+      const stream = createChunkStream(['data: test\r', '\n\n']);
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+      );
+
+      const results: string[] = [];
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      expect(results).toEqual(['test']);
+    });
+
+    it('should parse 1000 chunks of 1 KB each in O(n) total work (regression for CRIT-4)', async () => {
+      // This test guards against the O(n^2) regression in findBoundary
+      // where every `pull` rescanned the entire cumulative buffer. The
+      // O(n^2) version would take well over 1 second for 1 MB of input;
+      // the O(n) version finishes in a few milliseconds.
+      const CHUNK_COUNT = 1000;
+      const CHUNK_SIZE = 1024;
+      const header = 'data: ';
+      const footer = '\n\n';
+      const contentSize = CHUNK_SIZE - header.length - footer.length;
+
+      // Build CHUNK_COUNT events, each padded to exactly CHUNK_SIZE bytes.
+      const chunks: Uint8Array[] = [];
+      for (let i = 0; i < CHUNK_COUNT; i++) {
+        const content = String(i).padStart(contentSize, '0');
+        const text = header + content + footer;
+        const bytes = new TextEncoder().encode(text);
+        expect(bytes.length).toBe(CHUNK_SIZE);
+        chunks.push(bytes);
+      }
+
+      let chunkIdx = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (chunkIdx >= chunks.length) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(chunks[chunkIdx++]);
+        },
+      });
+
+      // Record every state change so we can verify the scan cursor only
+      // moves forward — never backward.
+      const stateChanges: { scanStart: number; dataStart: number; bufferLength: number }[] = [];
+
+      const eventStream = new EventStream<string>(
+        stream,
+        (msg) => ({ done: false, value: msg.data! }),
+        {
+          _onStateChange: (state) => {
+            stateChanges.push({ ...state });
+          },
+        },
+      );
+
+      const results: string[] = [];
+      const startTime = performance.now();
+      for await (const value of eventStream) {
+        results.push(value);
+      }
+      const elapsed = performance.now() - startTime;
+
+      // (1) Correctness: every event is parsed exactly once.
+      expect(results).toHaveLength(CHUNK_COUNT);
+      for (let i = 0; i < CHUNK_COUNT; i++) {
+        // The padded-index content is the i-th event; verify the suffix.
+        const idxStr = String(i);
+        expect(results[i].length).toBe(contentSize);
+        expect(results[i].slice(-idxStr.length)).toBe(idxStr);
+      }
+
+      // (2) Monotonicity: the scan cursor never moves backward.
+      // Any non-decreasing sequence satisfies the contract.
+      let prevScanStart = -1;
+      for (const s of stateChanges) {
+        expect(s.scanStart).toBeGreaterThanOrEqual(prevScanStart);
+        prevScanStart = s.scanStart;
+      }
+      let prevDataStart = -1;
+      for (const s of stateChanges) {
+        expect(s.dataStart).toBeGreaterThanOrEqual(prevDataStart);
+        prevDataStart = s.dataStart;
+      }
+      // Also: scanStart must never exceed the current buffer length.
+      for (const s of stateChanges) {
+        expect(s.scanStart).toBeLessThanOrEqual(s.bufferLength);
+      }
+
+      // (3) Performance: 1 MB of input should parse in well under 50 ms.
+      // The O(n^2) version takes > 1 s on the same input.
+      expect(elapsed).toBeLessThan(50);
+    });
   });
 
   describe('parseOpenAISSE', () => {

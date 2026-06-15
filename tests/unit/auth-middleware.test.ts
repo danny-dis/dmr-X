@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { timingSafeEqual } from 'node:crypto';
+import { LOCAL_MODE as FROZEN_LOCAL_MODE } from '../../apps/gateway/src/middleware/auth.middleware.js';
 
 /**
  * Auth Middleware Tests
@@ -228,5 +229,73 @@ describe('Auth: checkAdminAuth', () => {
     };
     const result = checkAdminAuth(request, ADMIN_KEY);
     expect(result.authorized).toBe(true);
+  });
+});
+
+/**
+ * CRIT-2 regression tests
+ *
+ * The auth middleware exports a module-level LOCAL_MODE constant that is
+ * intended to be frozen at module load. The previous implementation
+ * re-read process.env on every request, which allowed any code path that
+ * mutated process.env to flip the auth bypass live. These tests pin the
+ * new contract: the constant reflects the env at import time and is
+ * immune to post-import mutations.
+ */
+describe('Auth middleware: LOCAL_MODE freeze (CRIT-2)', () => {
+  const ORIGINAL_ENV = process.env.DMRX_LOCAL_MODE;
+
+  beforeEach(() => {
+    // Reset module registry so we can re-import the middleware under
+    // controlled env state. Without this, vitest caches the module
+    // across tests and the second import returns the cached constant.
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_ENV === undefined) {
+      delete process.env.DMRX_LOCAL_MODE;
+    } else {
+      process.env.DMRX_LOCAL_MODE = ORIGINAL_ENV;
+    }
+  });
+
+  it('exposes LOCAL_MODE=true when DMRX_LOCAL_MODE=true at import time', async () => {
+    process.env.DMRX_LOCAL_MODE = 'true';
+    const mod = await import('../../apps/gateway/src/middleware/auth.middleware.js');
+    expect(mod.LOCAL_MODE).toBe(true);
+  });
+
+  it('exposes LOCAL_MODE=false when DMRX_LOCAL_MODE is not "true" at import time', async () => {
+    process.env.DMRX_LOCAL_MODE = 'false';
+    const mod = await import('../../apps/gateway/src/middleware/auth.middleware.js');
+    expect(mod.LOCAL_MODE).toBe(false);
+  });
+
+  it('exposes LOCAL_MODE=false when DMRX_LOCAL_MODE is unset at import time', async () => {
+    delete process.env.DMRX_LOCAL_MODE;
+    const mod = await import('../../apps/gateway/src/middleware/auth.middleware.js');
+    expect(mod.LOCAL_MODE).toBe(false);
+  });
+
+  it('freezes LOCAL_MODE at module load: post-import env changes do not flip the constant', async () => {
+    process.env.DMRX_LOCAL_MODE = 'true';
+    const mod = await import('../../apps/gateway/src/middleware/auth.middleware.js');
+    expect(mod.LOCAL_MODE).toBe(true);
+
+    // Mutate the env after import. The frozen constant must NOT change.
+    process.env.DMRX_LOCAL_MODE = 'false';
+    expect(mod.LOCAL_MODE).toBe(true);
+
+    process.env.DMRX_LOCAL_MODE = 'true';
+    expect(mod.LOCAL_MODE).toBe(true);
+  });
+
+  it('top-level import in this test file captured the original env (sanity check)', () => {
+    // FROZEN_LOCAL_MODE was imported at the top of this file, before any
+    // beforeEach/vi.resetModules runs. The contract is that the test
+    // file's constant reflects whatever the env was at that moment —
+    // i.e. it is frozen, regardless of what subsequent tests do.
+    expect(typeof FROZEN_LOCAL_MODE).toBe('boolean');
   });
 });

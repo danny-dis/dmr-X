@@ -207,9 +207,25 @@ export abstract class BaseAdapter implements ProviderAdapter {
     url: string,
     options: RequestInit & { timeoutMs?: number } = {},
   ): Promise<Response> {
-    const { timeoutMs = 30000, ...fetchOptions } = options;
+    const { timeoutMs = 30000, signal: externalSignal, ...fetchOptions } = options;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    // If the caller supplied an AbortSignal (e.g. from a client-disconnect
+    // AbortController in the streaming routes), wire it to our internal
+    // controller so the upstream fetch is cancelled when the caller aborts.
+    // The internal timeout controller remains the source of the signal
+    // attached to the Request — both aborts propagate to the same fetch
+    // via the single internal controller.
+    let externalAbortHandler: (() => void) | undefined;
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalAbortHandler = () => controller.abort();
+        externalSignal.addEventListener('abort', externalAbortHandler);
+      }
+    }
 
     // Build the Request object
     let request = new Request(url, {
@@ -286,6 +302,9 @@ export abstract class BaseAdapter implements ProviderAdapter {
       throw error;
     } finally {
       clearTimeout(timeout);
+      if (externalAbortHandler && externalSignal) {
+        externalSignal.removeEventListener('abort', externalAbortHandler);
+      }
     }
   }
 

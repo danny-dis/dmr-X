@@ -4,9 +4,16 @@ import { EventStream, logger, type SseMessage } from '@dmr-x/utils';
 /**
  * Parse an OpenAI-compatible SSE response into StreamChunks.
  * Uses the robust EventStream parser that handles multiple boundary formats.
+ *
+ * If `options.signal` is provided and aborts while we're still reading the
+ * upstream body, the underlying ReadableStream is cancelled. This is what
+ * lets a client-disconnect AbortController in a streaming route propagate
+ * all the way down to the provider connection — without it, the body would
+ * keep draining into the void after the response had already been torn down.
  */
 export function createOpenAISSEIterator(
-  response: Response
+  response: Response,
+  options?: { signal?: AbortSignal },
 ): AsyncIterable<StreamChunk> {
   const body = response.body;
   if (!body) {
@@ -51,6 +58,24 @@ export function createOpenAISSEIterator(
       return { done: false, value: undefined as unknown as StreamChunk };
     },
   );
+
+  // Wire external abort signal → cancel the upstream ReadableStream.
+  // This is the propagation point for client-disconnect AbortControllers
+  // in the streaming routes. If the signal fires after the stream has
+  // already finished, the cancel is a no-op.
+  if (options?.signal) {
+    const signal = options.signal;
+    if (signal.aborted) {
+      // Already aborted — cancel synchronously and let the consumer
+      // observe a done iterator.
+      void eventStream.cancel(signal.reason);
+    } else {
+      const onAbort = () => {
+        void eventStream.cancel(signal.reason);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
 
   return eventStream;
 }

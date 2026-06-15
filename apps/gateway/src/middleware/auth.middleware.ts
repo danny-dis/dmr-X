@@ -23,7 +23,14 @@ const PUBLIC_FILE_EXTENSIONS = new Set([
 ]);
 
 // WARNING: Local mode disables all authentication. Never enable in production.
-const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
+//
+// CRIT-2: DMRX_LOCAL_MODE is read exactly ONCE, at module load, and frozen
+// into a module-level constant. The previous implementation re-read
+// process.env on every single request, which meant any code path that
+// mutated process.env (or a child process that inherited the env) could
+// flip the auth bypass live, without a restart, and without being
+// observable in the startup log. To toggle local mode, restart the gateway.
+export const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 logger.info({ localMode: LOCAL_MODE, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY, envValue: process.env.DMRX_LOCAL_MODE }, 'Auth middleware status');
 
 function extractApiKey(request: FastifyRequest): string | undefined {
@@ -68,14 +75,13 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // (see POST /v1/admin/security/rotate-admin-key) takes effect immediately
     // instead of requiring a gateway restart.
     const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
-    // Re-read LOCAL_MODE on every request as well, so toggling the env var
-    // at runtime (and the equivalent admin rotation flow) flips the bypass
-    // without a restart.
-    const localMode = process.env.DMRX_LOCAL_MODE === 'true';
+    // LOCAL_MODE is intentionally frozen at module load (see top of file)
+    // so a runtime mutation of process.env cannot flip the auth bypass.
+    // Toggling local mode requires a gateway restart.
 
     // Admin routes: skip auth in local mode for UI access
     if (pathname.startsWith('/v1/admin')) {
-      if (localMode) return;
+      if (LOCAL_MODE) return;
       if (!adminApiKey || adminApiKey === 'replace-with-admin-key') {
         logger.error('Admin API accessed but DMRX_ADMIN_API_KEY is not set or default. Blocking for safety.');
         (server as any).recordTelemetryEvent?.({
@@ -117,7 +123,7 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     }
 
     // Local mode: skip tenant API key check for public API routes only
-    if (localMode) {
+    if (LOCAL_MODE) {
       logger.warn('LOCAL MODE ACTIVE — tenant API key check is disabled. Do not use in production.');
       const db = getDb();
       const tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined;

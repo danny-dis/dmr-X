@@ -91,6 +91,23 @@ function validateStartupConfig(): void {
   // Verify DMRX_TRUST_PROXY parses
   parseTrustProxy(process.env.DMRX_TRUST_PROXY);
 
+  // CRIT-2: Validate DMRX_LOCAL_MODE unconditionally. The previous
+  // implementation only checked this inside the `if (isProduction)`
+  // branch, so a missing or misconfigured NODE_ENV (e.g. unset, or set
+  // to "staging" in a prod-like deploy) would silently boot the gateway
+  // with authentication disabled. We now compute the policy up-front
+  // and treat the prod + local-mode combination as a fatal startup
+  // error — unless the operator explicitly opts in via
+  // DMRX_ALLOW_LOCAL_MODE=true (used by tests / CI).
+  const localModeRequested = process.env.DMRX_LOCAL_MODE === 'true';
+  const localModeOptIn = process.env.DMRX_ALLOW_LOCAL_MODE === 'true';
+  if (localModeRequested && isProduction && !localModeOptIn) {
+    errors.push(
+      'DMRX_LOCAL_MODE=true is not permitted in production. ' +
+      'Unset it, or set DMRX_ALLOW_LOCAL_MODE=true (tests/CI only).',
+    );
+  }
+
   if (!isProduction) {
     return failIfInvalid(errors);
   }
@@ -98,10 +115,6 @@ function validateStartupConfig(): void {
   const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
   const encryptionKey = process.env.DMRX_ENCRYPTION_KEY;
   const corsOrigin = process.env.DMRX_CORS_ORIGIN;
-
-  if (process.env.DMRX_LOCAL_MODE === 'true') {
-    errors.push('DMRX_LOCAL_MODE must be false in production');
-  }
 
   if (
     !adminApiKey?.trim() ||

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getDb } from '@dmr-x/db';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { Agent } from 'undici';
 import { ValidationError } from '@dmr-x/core';
 import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
@@ -10,6 +11,7 @@ import { memoryService, retentionManager } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
 import { workersService } from '@dmr-x/workers';
 import { federationService } from '@dmr-x/federation';
+import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 
 const CreateProviderSchema = z.object({
   name: z.string().min(1),
@@ -275,46 +277,85 @@ const UpdateSettingsSchema = z.object({
   { message: 'Blocked key detected' }
 );
 
-// SSRF validation: block private/internal IP ranges and non-http(s) protocols
-function validateBaseUrlForSSRF(urlStr: string): void {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(urlStr);
-  } catch {
-    throw new ValidationError('Invalid base_url');
-  }
+// ---------------------------------------------------------------------------
+// HIGH-4: Zod validation on the remaining admin routes that previously
+// accepted `request.body as any` and relied on inline `if (!field)` checks.
+// Each schema mirrors the shape that the admin UI / API sends; the route
+// handlers now use `safeParse` and surface a 400 ValidationError with the
+// zod issue list. SSRF is NOT validated here (that's the SSRF agent's
+// job) — only that the URL is a syntactically valid http(s) URL.
+// ---------------------------------------------------------------------------
 
-  const allowedProtocols = ['http:', 'https:'];
-  if (!allowedProtocols.includes(parsedUrl.protocol)) {
-    throw new ValidationError('Only http and https protocols are allowed');
-  }
+/** POST /admin/memory */
+const CreateMemoryItemSchema = z.object({
+  content: z.string().min(1).max(1_000_000),
+  namespace: z.string().min(1).max(128).optional(),
+  source: z.string().min(1).max(128).optional(),
+  retentionDays: z.number().int().min(1).max(3650).optional(),
+  metadata: z.record(z.unknown()).optional(),
+  tenantId: z.string().min(1).max(128).optional(),
+});
 
-  const hostname = parsedUrl.hostname.toLowerCase();
+/** POST /admin/memory/search */
+const SearchMemorySchema = z.object({
+  query: z.string().min(1).max(10_000),
+  tenantId: z.string().min(1).max(128).optional(),
+  namespace: z.string().min(1).max(128).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+  minScore: z.number().min(0).max(1).optional(),
+});
 
-  // Block localhost and common private/internal hostnames explicitly
-  const blockedHostnames = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', 'ip6-localhost', 'ip6-loopback'];
-  if (blockedHostnames.includes(hostname)) {
-    throw new ValidationError('Fetching private/internal addresses is not allowed');
-  }
+/** POST /admin/workers */
+const RegisterWorkerSchema = z.object({
+  name: z.string().min(1).max(128),
+  type: z.string().min(1).max(64).optional(),
+});
 
-  const privateRanges = [
-    /^127\./,
-    /^10\./,
-    /^172\.(1[6-9]|2\d|3[01])\./,
-    /^192\.168\./,
-    /^169\.254\./,
-    /^0\./,
-    /^::1$/,
-    /^\[::1\]$/,
-    /^fc/i,
-    /^fd/i,
-    /^fe80/i,
-  ];
+/** POST /admin/federation — URL is validated for syntactic shape only */
+const RegisterFederationNodeSchema = z.object({
+  name: z.string().min(1).max(128),
+  url: z.string().url().refine(
+    (u) => {
+      try {
+        const proto = new URL(u).protocol;
+        return proto === 'http:' || proto === 'https:';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'url must be a valid http(s) URL' },
+  ),
+  region: z.string().min(1).max(64).optional().nullable(),
+  apiKey: z.string().min(1).max(2048).optional().nullable(),
+  privacyLevel: z.enum(['anonymized', 'private', 'public']).optional(),
+});
 
-  if (privateRanges.some((rx) => rx.test(hostname))) {
-    throw new ValidationError('Fetching private/internal addresses is not allowed');
-  }
-}
+/** POST /admin/benchmarks/battle */
+const RunArenaBattleSchema = z.object({
+  modelA: z.string().uuid(),
+  modelB: z.string().uuid(),
+  prompt: z.string().min(1).max(100_000).optional(),
+});
+
+/** POST /admin/playground/feedback */
+const PlaygroundFeedbackSchema = z.object({
+  modelId: z.string().uuid().optional(),
+  requestId: z.string().min(1).max(256).optional(),
+  competitorModelId: z.string().uuid().optional().nullable(),
+  userId: z.string().min(1).max(128).optional().nullable(),
+  rating: z.number().int().min(1).max(5).optional().nullable(),
+  feedbackText: z.string().max(10_000).optional().nullable(),
+  implicitSignals: z.record(z.unknown()).optional(),
+  isWinner: z.boolean().optional().nullable(),
+}).refine(
+  (v) => v.modelId !== undefined || v.requestId !== undefined,
+  { message: 'Either modelId or requestId is required' },
+);
+
+// SSRF validation is defined in `./admin-ssrf.ts` so it can be unit-tested
+// in isolation (no Fastify / DB dependencies). The new implementation resolves
+// the hostname via DNS, blocks the resolved IP, and returns a `lookup` that
+// callers can wire into fetch's `dispatcher` to prevent DNS rebinding.
 
 // ---------------------------------------------------------------------------
 // provider_keys helpers
@@ -688,9 +729,14 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const providerName = custom_name || template_id;
     let provider = db.prepare('SELECT * FROM providers WHERE name = ?').get(providerName) as any;
 
-    // SSRF validation for base URL
+    // SSRF validation for base URL: resolve the host and reject private/
+    // loopback/link-local IPs (see admin-ssrf.ts for the full rationale,
+    // including DNS-rebinding protection). The returned lookup is unused
+    // here because the activate path itself doesn't issue an outbound
+    // fetch — but we still await it so the validation result is captured
+    // before we persist the base URL.
     if (template.baseUrl) {
-      validateBaseUrlForSSRF(template.baseUrl);
+      await validateBaseUrlForSSRF(template.baseUrl);
     }
 
     const hasApiKey = !!api_key;
@@ -1397,7 +1443,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       try {
         const { OAuthService } = await import('@dmr-x/oauth');
         const oauthService = new OAuthService();
-        const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.DMRX_PORT || 3000}`;
+        // Use the real `PORT` env var (read in main.ts:139), not the
+        // phantom `DMRX_PORT` that nothing sets — non-default deployments
+        // were getting silently-wrong OAuth callback URLs (CRIT-3).
+        const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.PORT || 3000}`;
         const result = oauthService.generateAuthorizationUrl(provider.name, oauthConfig, gatewayBaseUrl);
         return { authorizationUrl: result.authorizationUrl, state: result.state, flow: 'authorization_code' };
       } catch (err) {
@@ -1451,7 +1500,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     try {
       const { OAuthService } = await import('@dmr-x/oauth');
       const oauthService = new OAuthService();
-      const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.DMRX_PORT || 3000}`;
+      // CRIT-3: use `PORT` (the real env var, read in main.ts:139) instead
+      // of the phantom `DMRX_PORT` that nothing set.
+      const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.PORT || 3000}`;
       const tokens = await oauthService.handleAuthorizationCode(provider.name, template.oauthConfig, code, state, gatewayBaseUrl);
 
       const encAccess = encrypt(tokens.accessToken);
@@ -1547,7 +1598,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     try {
       const { OAuthService } = await import('@dmr-x/oauth');
       const oauthService = new OAuthService();
-      const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.DMRX_PORT || 3000}`;
+      // CRIT-3: use `PORT` (the real env var, read in main.ts:139) instead
+      // of the phantom `DMRX_PORT` that nothing set.
+      const gatewayBaseUrl = `${request.protocol}://${request.hostname}:${process.env.PORT || 3000}`;
       const tokens = await oauthService.handleAuthorizationCode(provider.name, template.oauthConfig, code, state, gatewayBaseUrl);
 
       const encAccess = encrypt(tokens.accessToken);
@@ -1831,9 +1884,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!base_url) {
       throw new ValidationError('Provider has no base_url configured');
     }
-    // SSRF protection: validate whatever URL we ended up with (input override
-    // or stored row) before issuing the outbound fetch.
-    validateBaseUrlForSSRF(base_url);
+    // SSRF protection: resolve the host, reject private/loopback/link-local
+    // IPs, and capture a `lookup` that pins the outbound connection to the
+    // validated IP — preventing a DNS-rebinding attack where the host
+    // resolves to a public IP at validation time and `127.0.0.1` at fetch
+    // time. See admin-ssrf.ts for the full rationale.
+    const validated: ValidatedURL = await validateBaseUrlForSSRF(base_url);
+    const ssrfDispatcher = new Agent({ connect: { lookup: validated.lookup } });
     // api_key is allowed to be empty for keyless providers (e.g. local ollama).
     // The fetch below still runs to verify reachability.
 
@@ -1849,6 +1906,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         headers: api_key ? { 'Authorization': `Bearer ${api_key}` } : {},
         signal: controller.signal,
         redirect: 'error',
+        dispatcher: ssrfDispatcher,
       });
 
       // If /models fails, try /chat/completions with a minimal request
@@ -1866,6 +1924,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           }),
           signal: controller.signal,
           redirect: 'error',
+          dispatcher: ssrfDispatcher,
         });
       }
 
@@ -1929,9 +1988,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     const body = parsed.data;
 
-    // Issue #9: SSRF validation on base_url
+    // Issue #9: SSRF validation on base_url — resolve the host, reject
+    // private/loopback/link-local IPs, and (if a fetch follows) pin the
+    // connection to the validated IP via the returned `lookup`.
     if (body.base_url) {
-      validateBaseUrlForSSRF(body.base_url);
+      await validateBaseUrlForSSRF(body.base_url);
     }
 
     // The user provided an API key in the dialog. The dialog has no way to
@@ -2925,11 +2986,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   server.post('/admin/memory', async (request, reply) => {
-    const { tenantId, content, namespace, source, retentionDays, metadata } = request.body as any;
-    if (!content) {
-      reply.status(400);
-      return { error: { message: 'content is required', type: 'validation', code: 'missing_content' } };
+    const parsed = CreateMemoryItemSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
+    const { tenantId, content, namespace, source, retentionDays, metadata } = parsed.data;
     const item = await memoryService.create({
       tenantId: tenantId || 'local',
       content,
@@ -2943,7 +3004,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   server.post('/admin/memory/search', async (request) => {
-    const { tenantId, query, namespace, limit, minScore } = request.body as any;
+    const parsed = SearchMemorySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const { tenantId, query, namespace, limit, minScore } = parsed.data;
     const results = await memoryService.search({ tenantId, query, namespace, limit, minScore });
     return { items: results };
   });
@@ -3001,11 +3066,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   server.post('/admin/workers', async (request, reply) => {
-    const { name, type } = request.body as any;
-    if (!name) {
-      reply.status(400);
-      return { error: { message: 'name is required', type: 'validation', code: 'missing_name' } };
+    const parsed = RegisterWorkerSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
+    const { name, type } = parsed.data;
     const worker = workersService.register({ name, type });
     reply.status(201);
     return worker;
@@ -3036,11 +3101,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   server.post('/admin/federation', async (request, reply) => {
-    const { name, url, region, apiKey, privacyLevel } = request.body as any;
-    if (!name || !url) {
-      reply.status(400);
-      return { error: { message: 'name and url are required', type: 'validation', code: 'missing_fields' } };
+    const parsed = RegisterFederationNodeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
+    const { name, url, region, apiKey, privacyLevel } = parsed.data;
+    // SSRF protection: the federation prober and PeerClient both issue
+    // outbound fetches against this URL, so validate it here too. This
+    // resolves the host, rejects private/loopback/link-local IPs, and
+    // hands back a `lookup` the caller could use to pin a follow-up
+    // fetch (the prober does its own dispatching, so we just need the
+    // guard at registration time).
+    await validateBaseUrlForSSRF(url);
     const node = federationService.register({ name, url, region, apiKey, privacyLevel });
     reply.status(201);
     return node;
@@ -3189,9 +3261,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       enabled,
     } = parsed.data;
 
-    // Issue #9: SSRF validation on base_url
+    // Issue #9: SSRF validation on base_url — resolve the host and reject
+    // private/loopback/link-local IPs (see admin-ssrf.ts).
     if (base_url) {
-      validateBaseUrlForSSRF(base_url);
+      await validateBaseUrlForSSRF(base_url);
     }
 
     // Merge the form-only fields (region/priority/enabled) and any caller-
@@ -3455,23 +3528,23 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Run manual arena battle
   server.post('/admin/benchmarks/battle', async (request) => {
-    const { modelA, modelB } = request.body as any;
-    const { benchmarkService } = server as any;
-    
-    if (!modelA || !modelB) {
-      throw new ValidationError('modelA and modelB (profile IDs) are required');
+    const parsed = RunArenaBattleSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
+    const { modelA, modelB, prompt } = parsed.data;
+    const { benchmarkService } = server as any;
 
     if (!benchmarkService) {
       throw new ValidationError('Benchmark service not initialized');
     }
 
-    // Trigger in background
-    // Pick a random prompt from LLM_BENCHMARKS
+    // Trigger in background. If the caller passed a custom `prompt`, use it;
+    // otherwise pick a random prompt from LLM_BENCHMARKS as before.
     const benchmark = await import('@dmr-x/benchmark');
-    const prompt = benchmark.LLM_BENCHMARKS[Math.floor(Math.random() * benchmark.LLM_BENCHMARKS.length)];
+    const chosenPrompt = prompt ?? benchmark.LLM_BENCHMARKS[Math.floor(Math.random() * benchmark.LLM_BENCHMARKS.length)];
 
-    benchmarkService.runArenaBattle(modelA, modelB, prompt).catch((err: any) => {
+    benchmarkService.runArenaBattle(modelA, modelB, chosenPrompt).catch((err: any) => {
       logger.error({ err }, 'Manual arena battle failed');
     });
 
@@ -3480,17 +3553,21 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Playground feedback capture
   server.post('/admin/playground/feedback', async (request) => {
-    const body = request.body as any;
+    const parsed = PlaygroundFeedbackSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const body = parsed.data;
     const db = getDb();
-    
-    let modelId = body.modelId;
-    let competitorModelId = body.competitorModelId;
+
+    let modelId = body.modelId ?? null;
+    let competitorModelId = body.competitorModelId ?? null;
 
     // If modelId is missing, look it up from request logs
     if (!modelId && body.requestId) {
       const log = db.prepare(`
-        SELECT mp.id 
-        FROM request_logs rl 
+        SELECT mp.id
+        FROM request_logs rl
         JOIN model_profiles mp ON mp.provider_id = rl.selected_provider AND mp.model_id = rl.selected_model
         WHERE rl.request_id = ?
       `).get(body.requestId) as any;
@@ -3510,13 +3587,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
-      body.requestId,
+      body.requestId ?? null,
       modelId,
       body.userId ?? null,
       body.rating ?? null,
       body.feedbackText ?? null,
       JSON.stringify(body.implicitSignals ?? {}),
-      body.isWinner ?? null,
+      body.isWinner === undefined ? null : (body.isWinner ? 1 : 0),
       competitorModelId ?? null
     );
 
@@ -3524,11 +3601,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (body.isWinner && competitorModelId) {
       const modelA = db.prepare('SELECT elo_rating FROM model_profiles WHERE id = ?').get(modelId) as any;
       const modelB = db.prepare('SELECT elo_rating FROM model_profiles WHERE id = ?').get(competitorModelId) as any;
-      
+
       if (modelA && modelB) {
         const benchmark = await import('@dmr-x/benchmark');
         const update = benchmark.calculateEloUpdate(modelA.elo_rating, modelB.elo_rating, 1.0, 16); // High K for human feedback
-        
+
         db.transaction(() => {
           db.prepare('UPDATE model_profiles SET elo_rating = ? WHERE id = ?').run(update.newRatingA, modelId);
           db.prepare('UPDATE model_profiles SET elo_rating = ? WHERE id = ?').run(update.newRatingB, competitorModelId);

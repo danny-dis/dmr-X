@@ -101,18 +101,36 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
 
       const adapter = (server as any).getAdapter(plan.primary.providerId);
       if (adapter) {
+        // CRIT-5: AbortController wired to client disconnect — see
+        // chat.routes.ts for the full rationale.
+        const controller = new AbortController();
+        const onClientClose = () => controller.abort();
+        request.raw.on('close', onClientClose);
+
         try {
           const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
-          const stream = adapter.executeStream(routedRequest);
+          const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
           for await (const sseLine of createGeminiSSEStream(stream, {
             model: plan.primary.modelId,
             requestId,
           })) {
-            reply.raw.write(sseLine);
+            if (controller.signal.aborted) break;
+            // Backpressure: pause writing if the response buffer is full.
+            if (!reply.raw.write(sseLine)) {
+              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+            }
           }
         } catch (streamError) {
-          logger.error({ err: streamError, requestId }, 'Gemini streaming error');
-          reply.raw.write(`data: ${JSON.stringify({ error: { message: 'Stream failed', code: 500 } })}\n\n`);
+          if (controller.signal.aborted) {
+            logger.debug({ requestId }, 'Gemini stream aborted by client disconnect');
+          } else {
+            logger.error({ err: streamError, requestId }, 'Gemini streaming error');
+            if (!reply.raw.write(`data: ${JSON.stringify({ error: { message: 'Stream failed', code: 500 } })}\n\n`)) {
+              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+            }
+          }
+        } finally {
+          request.raw.off('close', onClientClose);
         }
       } else {
         reply.raw.write(`data: ${JSON.stringify({ error: { message: 'No adapter available for provider', code: 503 } })}\n\n`);

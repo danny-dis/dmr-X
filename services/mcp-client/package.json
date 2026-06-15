@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/mcp-client",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.12.1",
+    "@modelcontextprotocol/sdk": "^1.25.2",
     "@dmr-x/core": "*",
     "@dmr-x/adapters": "*",
     "@dmr-x/utils": "*"

@@ -119,27 +119,46 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       const adapter = (server as any).getAdapter(plan.primary.providerId);
       if (adapter) {
+        // CRIT-5: wire an AbortController to the client request lifecycle.
+        // When the SSE consumer disconnects (browser tab close, curl cancel,
+        // proxy timeout), `request.raw` fires `close` and we abort the
+        // upstream fetch — otherwise the provider keeps generating tokens
+        // and billing the customer for bytes that go straight into /dev/null.
+        const controller = new AbortController();
+        const onClientClose = () => controller.abort();
+        request.raw.on('close', onClientClose);
+
         try {
           const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
-          const stream = adapter.executeStream(routedRequest);
+          const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
           for await (const chunk of stream) {
+            if (controller.signal.aborted) break;
+            let data: string;
             if (chunk.type === 'token') {
-              reply.raw.write(`data: ${JSON.stringify({
+              data = `data: ${JSON.stringify({
                 id: requestId,
                 object: 'chat.completion.chunk',
                 choices: [{ index: 0, delta: chunk.data, finish_reason: null }],
-              })}\n\n`);
+              })}\n\n`;
             } else if (chunk.type === 'done') {
-              reply.raw.write(`data: ${JSON.stringify({
+              data = `data: ${JSON.stringify({
                 id: requestId,
                 object: 'chat.completion.chunk',
                 choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              })}\n\n`);
+              })}\n\n`;
             } else if (chunk.type === 'error') {
               logger.error({ requestId, chunkError: chunk.data }, 'Adapter stream error chunk');
-              reply.raw.write(`data: ${JSON.stringify({
+              data = `data: ${JSON.stringify({
                 error: { message: 'Stream error', type: 'stream_error' },
-              })}\n\n`);
+              })}\n\n`;
+            } else {
+              continue;
+            }
+            // Backpressure: Node's stream.write returns false when the
+            // kernel buffer is full. If we ignore that, a slow consumer
+            // accumulates memory in the response buffer until OOM.
+            if (!reply.raw.write(data)) {
+              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
             }
           }
           // Record usage after successful stream completion (fire-and-forget)
@@ -154,21 +173,31 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record streaming usage');
           }
         } catch (streamError) {
-          logger.error({ err: streamError, requestId }, 'Streaming error');
-          (server as any).recordTelemetryEvent?.({
-            level: 'error',
-            service: 'gateway',
-            message: streamError instanceof Error ? streamError.message : 'Streaming error',
-            metadata: {
-              path: request.url,
-              providerId: plan.primary.providerId,
-              modelId: plan.primary.modelId,
-              requestId,
-            },
-          });
-          reply.raw.write(`data: ${JSON.stringify({
-            error: { message: 'Stream failed', type: 'stream_error' },
-          })}\n\n`);
+          // AbortError is the expected outcome of a client disconnect — log
+          // at debug, not error, so it doesn't pollute the error dashboard.
+          if (controller.signal.aborted) {
+            logger.debug({ requestId, provider: plan.primary.providerId }, 'Stream aborted by client disconnect');
+          } else {
+            logger.error({ err: streamError, requestId }, 'Streaming error');
+            (server as any).recordTelemetryEvent?.({
+              level: 'error',
+              service: 'gateway',
+              message: streamError instanceof Error ? streamError.message : 'Streaming error',
+              metadata: {
+                path: request.url,
+                providerId: plan.primary.providerId,
+                modelId: plan.primary.modelId,
+                requestId,
+              },
+            });
+            if (!reply.raw.write(`data: ${JSON.stringify({
+              error: { message: 'Stream failed', type: 'stream_error' },
+            })}\n\n`)) {
+              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+            }
+          }
+        } finally {
+          request.raw.off('close', onClientClose);
         }
       } else {
         reply.raw.write(`data: ${JSON.stringify({

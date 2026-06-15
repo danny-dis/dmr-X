@@ -197,6 +197,9 @@ export class OllamaAdapter extends BaseAdapter {
           num_predict: request.max_tokens,
         },
       }),
+      // Forward the caller's AbortSignal so a client disconnect
+      // (e.g. SSE consumer gone) cancels the upstream request.
+      signal: options?.signal,
       timeoutMs: options?.timeoutMs ?? 120000,
     });
 

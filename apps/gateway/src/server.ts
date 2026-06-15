@@ -701,9 +701,12 @@ void (async () => {
     );
 
     // For 500+ errors, hide all internal details from clients — unless
-    // DMRX_LOCAL_MODE=true (dev), where we surface the real message so
-    // the UI toast and gateway log line up while debugging.
-    const isDev = process.env.DMRX_LOCAL_MODE === 'true' || process.env.NODE_ENV !== 'production';
+    // we're in dev / local-mode, where we surface the real message so
+    // the UI toast and gateway log line up while debugging. CRIT-2:
+    // LOCAL_MODE is the frozen module-level constant — re-reading
+    // process.env here would re-introduce the live-bypass vulnerability
+    // that the constant was added to prevent.
+    const isDev = LOCAL_MODE || process.env.NODE_ENV !== 'production';
     const clientMessage = statusCode >= 500 && !isDev ? 'Internal server error' : error.message;
     const clientType = statusCode >= 500 && !isDev ? 'server_error' : code;
 

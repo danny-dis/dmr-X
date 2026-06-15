@@ -402,13 +402,16 @@ export class OpenAIAdapter extends BaseAdapter {
           max_tokens: request.max_tokens,
           stream: true,
         }),
+        // Forward the caller's AbortSignal so a client disconnect
+        // (e.g. SSE consumer gone) cancels the upstream request.
+        signal: options?.signal,
         timeoutMs: options?.timeoutMs ?? 120000,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'stream');
     }
 
-    yield* createOpenAISSEIterator(response);
+    yield* createOpenAISSEIterator(response, { signal: options?.signal });
   }
 
   async listModels(): Promise<ModelInfo[]> {
