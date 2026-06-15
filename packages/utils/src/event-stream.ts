@@ -33,7 +33,17 @@ export class EventStream<T> extends ReadableStream<T> {
        * Intended for tests and instrumentation. Not part of the stable API.
        * @internal
        */
-      _onStateChange?: (state: { bufferLength: number; dataStart: number; scanStart: number }) => void;
+      _onStateChange?: (state: {
+        bufferLength: number;
+        dataStart: number;
+        scanStart: number;
+        /**
+         * Cumulative bytes examined by findBoundary over the lifetime of
+         * the stream. The O(n) parser keeps this linear in the total
+         * input size; an O(n^2) parser would make it quadratic.
+         */
+        totalScanned: number;
+      }) => void;
     },
   ) {
     const upstream = responseBody.getReader();
@@ -46,12 +56,17 @@ export class EventStream<T> extends ReadableStream<T> {
     // Index of the first byte that has not yet been scanned for a boundary.
     // Bytes in [0, scanStart) are guaranteed to never be re-scanned.
     let scanStart = 0;
+    // Cumulative bytes examined by findBoundary over the lifetime of the
+    // stream. The O(n) parser keeps this O(n) total; an O(n^2) parser
+    // (which rescanned the entire cumulative buffer on every pull) would
+    // make it ~n^2/2.
+    let totalScanned = 0;
     const state = { eventId: undefined as string | undefined };
     const dataRequired = opts?.dataRequired ?? true;
     const onStateChange = opts?._onStateChange;
 
     const emitState = () => {
-      onStateChange?.({ bufferLength: buffer.length, dataStart, scanStart });
+      onStateChange?.({ bufferLength: buffer.length, dataStart, scanStart, totalScanned });
     };
 
     super({
@@ -60,6 +75,7 @@ export class EventStream<T> extends ReadableStream<T> {
           while (true) {
             // Single-pass scan: only look at bytes from scanStart onward.
             // Total work is O(n) over the lifetime of the stream, not O(n^2).
+            totalScanned += buffer.length - scanStart;
             const match = findBoundary(buffer, scanStart);
             if (!match) {
               const chunk = await upstream.read();
