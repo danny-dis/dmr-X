@@ -1,0 +1,19 @@
+apiVersion: 1
+
+# Grafana dashboard provisioning for DMR-X.
+# Mounted at /etc/grafana/provisioning/dashboards/dmr-x.yml inside
+# the grafana container. Picks up every *.json in the mounted
+# dashboards directory and imports it on startup.
+
+providers:
+  - name: 'dmr-x'
+    orgId: 1
+    folder: 'DMR-X'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

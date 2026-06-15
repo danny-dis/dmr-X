@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.2.0 — Production Ready (2026-06-15)
+
+### Deployment infrastructure
+- **Hardened Dockerfile** — multi-stage build with non-root user, tini as PID 1, HEALTHCHECK, OCI labels. Single-arch binary variant (distroless static) for the smallest possible image.
+- **Production docker-compose** (`docker-compose.prod.yml`) — full stack with the gateway, Prometheus, Alertmanager, Grafana, Loki, Promtail, and a cron-driven SQLite backup service. Healthchecks, restart policies, resource limits, and secrets-via-env all wired up.
+- **CI workflow** (`.github/workflows/ci.yml`) — parallel jobs for typecheck, unit tests, build, security audit, and a smoke-test E2E. Concurrency cancel-on-push to save minutes.
+- **Release workflow** (`.github/workflows/release.yml`) — multi-arch binaries (linux/darwin/windows × amd64/arm64), multi-arch container image, cosign keyless signing, CycloneDX SBOM, GitHub release with auto-generated notes from CHANGELOG.
+- **Grafana provisioning** — datasources and dashboards auto-imported on container start. No manual UI import step.
+- **Alertmanager routing** — page / ticket / info severities with PagerDuty + Slack integration skeletons, inhibition rules to suppress noise.
+
+### Operations
+- **Operational runbook** (`RUNBOOK.md`) — diagnose / mitigate / recover / postmortem procedures for every page-severity alert. Includes deployment, escalation, and useful commands.
+- **SQLite backup tooling** (`scripts/backup/`) — online `sqlite3 .backup` snapshots, integrity-checked, optionally uploaded to S3, with rotation. Restore procedure documented.
+- **k6 load test suite** (`scripts/loadtest/`) — smoke, baseline, stress, and streaming tests. Thresholds for SLO breach detection. Output JSON for trend tracking.
+- **SLO definitions** (`docs/SLO.md`) — 99.9% availability, latency budgets per endpoint, burn-rate alerts. Includes the Google SRE workbook-style multi-window alerts.
+
+### Security
+- **SECURITY.md** — supported versions, disclosure process, residual vulnerability tracking table with mitigations for each.
+- **LICENSES.md** — accepted/disallowed dependency licenses, SBOM generation, manual license-check procedure.
+- **Banned-pattern CI gate** — fails the build on hardcoded secrets (`AKIA…`, `ghp_…`, PEM keys, `sk-…`) and `@ts-nocheck`.
+- **FTS5-tolerant migration runner** — `packages/db/src/client.ts` now handles SQLite builds without FTS5 (some sql.js WASM distributions) by splitting migration 012 and skipping the FTS5 virtual table. Conversation search degrades gracefully; the rest of the schema still applies.
+
+### Verification
+- `bun run test:unit` — 524 passed, 19 e2e skipped, 0 failed
+- `bun x tsc --noEmit` — all 23 packages / services / apps clean
+- `bun run build` — 23/23 tasks built successfully
+- `bun audit` — 8 residual (documented in SECURITY.md, 4 patched via overrides, 2 false-positives on stale DB, 2 mitigated by config)
+
 ## v0.1.1 — Finish-Up (2026-06-15)
 
 ### Production Hardening

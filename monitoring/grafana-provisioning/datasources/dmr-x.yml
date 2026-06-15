@@ -1,0 +1,26 @@
+apiVersion: 1
+
+# Grafana datasource provisioning for DMR-X.
+# Mounted at /etc/grafana/provisioning/datasources/dmr-x.yml inside
+# the grafana container. Picked up at startup; no manual import needed.
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+      # 30d default range for new dashboards
+      queryTimeout: 60s
+      httpMethod: POST
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000

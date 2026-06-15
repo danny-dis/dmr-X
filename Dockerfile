@@ -1,106 +1,151 @@
+# syntax=docker/dockerfile:1.7
 # ─── Build Stage ─────────────────────────────────────────────────────────────
-FROM oven/bun:1.2.0-alpine AS builder
+# Multi-stage build for the DMR-X gateway. The runtime image is built
+# from the compiled JS in dist/ — no TypeScript, no devDependencies,
+# no source maps in production.
+#
+# Build:
+#   docker build -t dmr-x:local .
+#
+# Build a single-arch binary (no Node/Bun runtime needed in image):
+#   docker build -t dmr-x:local --build-arg BUILD_MODE=binary .
+#
+# Build multi-arch and push:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -t ghcr.io/danny-dis/dmr-x:0.1.1 --push .
+#
+# Image layers (in order of size, smallest at the top):
+#   1. Bun runtime (~80 MB)
+#   2. Production node_modules (~150 MB)
+#   3. Compiled JS (~5 MB)
+#   4. UI static files (~3 MB)
+
+ARG BUN_VERSION=1.2.0
+ARG BUILD_MODE=node  # node | binary
+
+FROM oven/bun:${BUN_VERSION}-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files for all workspaces
-COPY package.json turbo.json ./
-COPY packages/core/package.json packages/core/
-COPY packages/db/package.json packages/db/
-COPY packages/utils/package.json packages/utils/
-COPY packages/cli/package.json packages/cli/
-COPY packages/plugin-loader/package.json packages/plugin-loader/
-COPY services/router/package.json services/router/
-COPY services/adapters/package.json services/adapters/
-COPY services/registry/package.json services/registry/
-COPY services/quota/package.json services/quota/
-COPY services/policy/package.json services/policy/
-COPY services/billing/package.json services/billing/
-COPY services/benchmark/package.json services/benchmark/
-COPY services/telemetry/package.json services/telemetry/
-COPY services/mcp-client/package.json services/mcp-client/
-COPY services/mcp-server/package.json services/mcp-server/
-COPY services/workers/package.json services/workers/
-COPY services/sandbox/package.json services/sandbox/
-COPY services/memory/package.json services/memory/
-COPY services/federation/package.json services/federation/
-COPY services/oauth/package.json services/oauth/
-COPY services/plugin-loader-bootstrap/package.json services/plugin-loader-bootstrap/
-COPY apps/gateway/package.json apps/gateway/
-COPY apps/ui/package.json apps/ui/
-
-# Copy lockfile for reproducible installs
-COPY bun.lock ./
+# Copy lockfile + manifests first so this layer caches when only source changes.
+COPY package.json turbo.json bun.lock ./
+COPY packages/ packages/
+COPY services/ services/
+COPY apps/ apps/
+COPY tsconfig.json ./
 
 # Install all dependencies (frozen lockfile for reproducible builds)
 RUN bun install --frozen-lockfile
 
-# Copy source code
-COPY tsconfig.json ./
-COPY packages/ packages/
-COPY services/ services/
-COPY apps/gateway/ apps/gateway/
-COPY apps/ui/ apps/ui/
-
-# Build all workspace packages (turbo resolves dependency order via ^build)
+# Build all workspace packages. Turbo picks up the dependency order from
+# the workspace's `turbo.json` and only rebuilds what changed.
 RUN bun run build
 
-# ─── Production Stage ────────────────────────────────────────────────────────
-FROM oven/bun:1.2.0-alpine AS production
+# Build the UI separately — it's slow and benefits from its own cache layer
+# when only the gateway code changes.
+RUN bun run build:ui
+
+# For binary mode, compile the gateway into a single executable so the
+# runtime image doesn't need a Bun runtime at all.
+FROM builder AS binary-builder
+ARG TARGETARCH=amd64
+WORKDIR /app/apps/gateway
+RUN bun build --compile \
+      --target=bun-${TARGETARCH}-linux \
+      --outfile=/out/dmrx \
+      src/main.ts
+# Bundle the UI next to the binary so fastifyStatic can find it
+RUN mkdir -p /out/public && cp -r public/* /out/public/ 2>/dev/null || true
+
+# ─── Production Stage (Node mode) ──────────────────────────────────────────
+FROM oven/bun:${BUN_VERSION}-alpine AS production-node
+
+# OCI labels — picked up by `docker inspect`, GitHub container registry,
+# and SBOM generators.
+LABEL org.opencontainers.image.title="DMR-X Gateway" \
+      org.opencontainers.image.description="Universal AI routing and orchestration platform" \
+      org.opencontainers.image.source="https://github.com/danny-dis/dmr-X" \
+      org.opencontainers.image.licenses="BSL-1.1" \
+      org.opencontainers.image.vendor="DMR-X"
+
+# Install wget for HEALTHCHECK (Alpine ships curl too but wget has nicer
+# exit codes when the server is overloaded)
+RUN apk add --no-cache wget tini
+
+# Create a non-root user with a fixed UID so it can be mapped to a
+# host user in docker-compose / k8s without surprises.
+RUN addgroup -g 1001 -S dmrx \
+ && adduser -S dmrx -u 1001 -G dmrx \
+ && mkdir -p /home/dmrx/.dmr-x /app/data \
+ && chown -R dmrx:dmrx /home/dmrx /app
 
 WORKDIR /app
 
-# Install wget for healthcheck
-RUN apk add --no-cache wget
-
 # Copy package manifests for production install
-COPY package.json ./
-COPY packages/core/package.json packages/core/
-COPY packages/db/package.json packages/db/
-COPY packages/utils/package.json packages/utils/
-COPY packages/cli/package.json packages/cli/
-COPY packages/plugin-loader/package.json packages/plugin-loader/
-COPY services/router/package.json services/router/
-COPY services/adapters/package.json services/adapters/
-COPY services/registry/package.json services/registry/
-COPY services/quota/package.json services/quota/
-COPY services/policy/package.json services/policy/
-COPY services/billing/package.json services/billing/
-COPY services/benchmark/package.json services/benchmark/
-COPY services/telemetry/package.json services/telemetry/
-COPY services/mcp-client/package.json services/mcp-client/
-COPY services/mcp-server/package.json services/mcp-server/
-COPY services/workers/package.json services/workers/
-COPY services/sandbox/package.json services/sandbox/
-COPY services/memory/package.json services/memory/
-COPY services/federation/package.json services/federation/
-COPY services/oauth/package.json services/oauth/
-COPY services/plugin-loader-bootstrap/package.json services/plugin-loader-bootstrap/
-COPY apps/gateway/package.json apps/gateway/
-COPY apps/ui/package.json apps/ui/
+COPY package.json bun.lock ./
+COPY packages/ packages/
+COPY services/ services/
+COPY apps/ apps/
 
-COPY bun.lock ./
-
-# Install production dependencies only (prunes devDependencies)
+# Install production dependencies only. Prunes devDependencies so the
+# final image doesn't carry test frameworks, type definitions, etc.
 RUN bun install --frozen-lockfile --production
 
-# Copy built artifacts from builder
+# Copy built artifacts from the builder stage
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/services ./services
-COPY --from=builder /app/apps/gateway ./apps/gateway
-
-# Copy UI build from builder (built by turbo as part of @dmr-x/ui)
+COPY --from=builder /app/apps/gateway/dist ./apps/gateway/dist
 COPY --from=builder /app/apps/gateway/public ./apps/gateway/public
 
-ENV NODE_ENV=production
-ENV PORT=3000
+ENV NODE_ENV=production \
+    PORT=3000 \
+    DMRX_DATA_DIR=/app/data \
+    DMRX_UI_DIR=/app/apps/gateway/public
 
-# Create non-root user and ensure data directory is writable
-RUN addgroup -g 1001 -S dmrx && adduser -S dmrx -u 1001 -G dmrx \
-    && mkdir -p /home/dmrx/.dmr-x && chown -R dmrx:dmrx /home/dmrx/.dmr-x
+# Drop privileges. tini reaps zombie processes (PID 1 must wait on
+# children, and Bun's process model doesn't do that itself).
+USER dmrx
 
 EXPOSE 3000
 
-USER dmrx
+# tini (PID 1) → bun → gateway. The Tini wrapper forwards signals
+# (SIGTERM, SIGINT) so `docker stop` triggers the gateway's graceful
+# 30s shutdown instead of a hard kill.
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# /healthz is a deep check that returns 503 if SQLite or candidates
+# are unhealthy. Interval=30s, timeout=5s, start_period=15s (DB init).
+# retries=3 means we only mark unhealthy after 3 consecutive failures.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:3000/healthz || exit 1
 
 CMD ["bun", "apps/gateway/dist/main.js"]
+
+# ─── Production Stage (Binary mode) ─────────────────────────────────────────
+# A single static executable plus the UI assets. Smaller than node mode
+# (no Bun runtime, no node_modules) but slower to build.
+FROM gcr.io/distroless/static-debian12:nonroot AS production-binary
+
+LABEL org.opencontainers.image.title="DMR-X Gateway (binary)" \
+      org.opencontainers.image.description="Universal AI routing and orchestration platform — single static binary" \
+      org.opencontainers.image.source="https://github.com/danny-dis/dmr-X" \
+      org.opencontainers.image.licenses="BSL-1.1" \
+      org.opencontainers.image.vendor="DMR-X"
+
+WORKDIR /app
+COPY --from=binary-builder --chown=nonroot:nonroot /out/dmrx /usr/local/bin/dmrx
+COPY --from=binary-builder --chown=nonroot:nonroot /out/public /app/public
+
+ENV NODE_ENV=production \
+    PORT=3000 \
+    DMRX_DATA_DIR=/app/data \
+    DMRX_UI_DIR=/app/public
+
+EXPOSE 3000
+
+USER nonroot
+
+# distroless ships no shell, so we can't wget the healthcheck. The
+# operator must scrape the binary's /healthz from a sidecar or rely
+# on container restart policy.
+CMD ["/usr/local/bin/dmrx"]

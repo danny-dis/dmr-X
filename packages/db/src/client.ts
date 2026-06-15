@@ -15,6 +15,36 @@ const log = {
 let db: SqlJsDatabase | null = null;
 let dbPath = '';
 
+// ---------------------------------------------------------------------------
+// FTS5 splitter
+// ---------------------------------------------------------------------------
+
+/**
+ * Splits a migration SQL string into a sequence of statements, isolating
+ * FTS5 virtual tables and any statement that references them. The result
+ * is a series of SQL statements that are safe to run on a SQLite build
+ * that doesn't include the FTS5 module.
+ */
+function splitFt5(sql: string): string[] {
+  const ftsTableMatch = /CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s+USING\s+fts5/i.exec(sql);
+  if (!ftsTableMatch) {
+    return [sql];
+  }
+  const ftsTable = ftsTableMatch[1];
+  const statements = sql
+    .split(/;\s*(?:\n|$)/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => s + ';');
+
+  return statements.filter((stmt) => {
+    const upper = stmt.toUpperCase();
+    if (upper.includes('USING FTS5')) return false;
+    if (upper.includes(` ${ftsTable.toUpperCase()}`)) return false;
+    return true;
+  });
+}
+
 async function saveDatabase(): Promise<void> {
   if (!db || !dbPath) return;
   try {
@@ -300,6 +330,31 @@ export async function initDb(): Promise<DatabaseWrapper> {
         log.info(`Migration ${mig.filename}: column already exists, skipping`);
         const retryStmt = db.prepare(
           'INSERT OR IGNORE INTO schema_version (version, filename) VALUES (?, ?)'
+        );
+        retryStmt.bind([mig.version, mig.filename]);
+        retryStmt.step();
+        retryStmt.free();
+      } else if (msg.includes('no such module: fts5')) {
+        // FTS5 is not compiled into this SQLite build (the sql.js WASM
+        // shipping with some Bun versions doesn't include it). The
+        // conversation search feature will be unavailable, but the
+        // rest of the migration is safe to apply. Split the SQL and
+        // drop any FTS5 statements, then retry.
+        log.warn(
+          `Migration ${mig.filename}: FTS5 module unavailable, applying migration without the search index`,
+        );
+        const statements = splitFt5(mig.sql);
+        for (const stmt of statements) {
+          if (!stmt.trim()) continue;
+          try {
+            db.exec(stmt);
+          } catch (e2: unknown) {
+            const m2 = e2 instanceof Error ? e2.message : String(e2);
+            log.warn(`Migration ${mig.filename}: skipping statement (${m2})`);
+          }
+        }
+        const retryStmt = db.prepare(
+          'INSERT OR IGNORE INTO schema_version (version, filename) VALUES (?, ?)',
         );
         retryStmt.bind([mig.version, mig.filename]);
         retryStmt.step();

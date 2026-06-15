@@ -1,134 +1,267 @@
-name: Build & Release
+name: Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.2.0)'
+        required: true
+
+# Releases can take a while (multi-arch builds). Set a 60-min budget.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
+  packages: write
+  id-token: write  # for cosign keyless signing
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            platform: windows
-            arch: x64
-            build_cmd: build:exe
-            binary: dmrx.exe
-            archive_format: zip
-          - os: ubuntu-latest
-            platform: linux
-            arch: x64
-            build_cmd: build:exe:linux
-            binary: dmrx-linux
-            archive_format: tar.gz
-          - os: macos-latest
-            platform: darwin
-            arch: x64
-            build_cmd: build:exe:macos
-            binary: dmrx-darwin
-            archive_format: tar.gz
-
-    runs-on: ${{ matrix.os }}
-
+  binaries:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.0
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Build all packages
         run: bun run build
-
       - name: Build UI
-        run: bun run --cwd apps/ui build
+        run: bun run build:ui
 
-      - name: Compile binary
+      # Linux x64
+      - name: Compile Linux x64
         working-directory: apps/gateway
-        run: bun run ${{ matrix.build_cmd }}
+        run: |
+          bun build --compile --target=bun-linux-x64 \
+            --outfile=dist/dmrx-linux-x64 src/main.ts
+          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
+          tar -czf dmrx-linux-x64.tar.gz -C dist dmrx-linux-x64 public
+          mv dmrx-linux-x64.tar.gz dist/
 
-      - name: Package release
+      # Linux arm64
+      - name: Compile Linux arm64
+        working-directory: apps/gateway
+        run: |
+          bun build --compile --target=bun-linux-arm64 \
+            --outfile=dist/dmrx-linux-arm64 src/main.ts
+          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
+          tar -czf dmrx-linux-arm64.tar.gz -C dist dmrx-linux-arm64 public
+          mv dmrx-linux-arm64.tar.gz dist/
+
+      # macOS x64
+      - name: Compile macOS x64
+        working-directory: apps/gateway
+        run: |
+          bun build --compile --target=bun-darwin-x64 \
+            --outfile=dist/dmrx-darwin-x64 src/main.ts
+          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
+          tar -czf dmrx-darwin-x64.tar.gz -C dist dmrx-darwin-x64 public
+          mv dmrx-darwin-x64.tar.gz dist/
+
+      # macOS arm64 (Apple Silicon)
+      - name: Compile macOS arm64
+        working-directory: apps/gateway
+        run: |
+          bun build --compile --target=bun-darwin-arm64 \
+            --outfile=dist/dmrx-darwin-arm64 src/main.ts
+          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
+          tar -czf dmrx-darwin-arm64.tar.gz -C dist dmrx-darwin-arm64 public
+          mv dmrx-darwin-arm64.tar.gz dist/
+
+      # Windows x64
+      - name: Compile Windows x64
+        working-directory: apps/gateway
         shell: bash
         run: |
-          PLATFORM=${{ matrix.platform }}
-          ARCH=${{ matrix.arch }}
-          BINARY=${{ matrix.binary }}
-          FINAL_NAME="dmrx"
-          if [ "$PLATFORM" = "windows" ]; then FINAL_NAME="dmrx.exe"; fi
+          bun build --compile --target=bun-windows-x64 \
+            --outfile=dist/dmrx-windows-x64.exe src/main.ts
+          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
+          powershell -NoProfile -Command "Compress-Archive -Path 'dist/dmrx-windows-x64.exe','public' -DestinationPath 'dist/dmrx-windows-x64.zip' -Force"
 
-          mkdir -p "release/dmrx-${PLATFORM}-${ARCH}"
-          cp "apps/gateway/dist/${BINARY}" "release/dmrx-${PLATFORM}-${ARCH}/${FINAL_NAME}"
-          cp -r apps/gateway/public "release/dmrx-${PLATFORM}-${ARCH}/"
+      - name: Compute checksums
+        working-directory: apps/gateway
+        run: |
+          for f in dist/*.tar.gz dist/*.zip; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" | tee -a checksums.txt
+          done
 
-          # Install scripts
-          if [ "$PLATFORM" = "windows" ]; then
-            cp scripts/install.bat "release/dmrx-${PLATFORM}-${ARCH}/"
-          else
-            cp scripts/install.sh "release/dmrx-${PLATFORM}-${ARCH}/"
-            chmod +x "release/dmrx-${PLATFORM}-${ARCH}/install.sh"
-            chmod +x "release/dmrx-${PLATFORM}-${ARCH}/${FINAL_NAME}"
-          fi
-
-          # README
-          RUN_CMD="./dmrx"
-          DATA_DIR="~/.dmr-x"
-          if [ "$PLATFORM" = "windows" ]; then
-            RUN_CMD="dmrx.exe"
-            DATA_DIR='%USERPROFILE%\.dmr-x'
-          fi
-          printf '%s\n' \
-            "DMR-X - AI Model Router Proxy" \
-            "==============================" \
-            "" \
-            "Quick Start:" \
-            "  1. Run: ${RUN_CMD}" \
-            "  2. Open http://localhost:3000 in your browser" \
-            "  3. Add your API keys on the Provider Keys page" \
-            "" \
-            "Data is stored in: ${DATA_DIR}" \
-            > "release/dmrx-${PLATFORM}-${ARCH}/README.txt"
-
-          # Create archive
-          cd release
-          if [ "${{ matrix.archive_format }}" = "zip" ]; then
-            7z a "dmrx-${PLATFORM}-${ARCH}.zip" "dmrx-${PLATFORM}-${ARCH}/"
-          else
-            tar -czf "dmrx-${PLATFORM}-${ARCH}.tar.gz" "dmrx-${PLATFORM}-${ARCH}/"
-          fi
-
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dmrx-${{ matrix.platform }}-${{ matrix.arch }}
+          name: binaries
           path: |
-            release/dmrx-${{ matrix.platform }}-${{ matrix.arch }}.zip
-            release/dmrx-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+            apps/gateway/dist/*.tar.gz
+            apps/gateway/dist/*.zip
+            apps/gateway/checksums.txt
 
-  release:
-    needs: build
+  container:
+    name: Build & push container
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-
+    timeout-minutes: 45
+    needs: binaries
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Download all artifacts
+      - name: Extract version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Multi-arch node image (Bun runtime + compiled JS)
+      - name: Build and push (node, multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          target: production-node
+          push: true
+          tags: |
+            ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+            ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}-node
+            ghcr.io/danny-dis/dmr-x:latest
+          labels: |
+            org.opencontainers.image.title=DMR-X Gateway
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=https://github.com/danny-dis/dmr-X
+            org.opencontainers.image.licenses=BSL-1.1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Single-arch binary image (linux/amd64 only — distroless static variant)
+      - name: Build and push (binary, amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          target: production-binary
+          build-args: |
+            BUILD_MODE=binary
+            TARGETARCH=amd64
+          push: true
+          tags: |
+            ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}-binary
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Sign the images with cosign keyless (uses OIDC token from GHA)
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign node image
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign sign --yes ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          artifact: ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [binaries, container]
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Extract version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="v${{ inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Read CHANGELOG
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          V="${VERSION#v}"
+          awk -v ver="$V" '
+            /^## / {
+              if (in_section && found) exit
+              if ($0 ~ "## " ver " ") { in_section=1; found=1 }
+            }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "## $VERSION" > release-notes.md
+            echo "" >> release-notes.md
+            echo "See [CHANGELOG.md](https://github.com/danny-dis/dmr-X/blob/$VERSION/CHANGELOG.md) for the full list of changes." >> release-notes.md
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           files: |
-            artifacts/**/*.zip
-            artifacts/**/*.tar.gz
+            artifacts/binaries/*.tar.gz
+            artifacts/binaries/*.zip
+            artifacts/binaries/checksums.txt
+            artifacts/sbom/sbom.cdx.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

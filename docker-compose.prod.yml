@@ -1,0 +1,282 @@
+# Production docker-compose for DMR-X.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# What you get:
+#   - gateway           DMR-X gateway on :3000
+#   - backup            Cron-driven SQLite backup to /var/backups/dmr-x
+#   - prometheus        Metrics scrape on :9090
+#   - alertmanager      Alert routing on :9093
+#   - grafana           Dashboards on :3001 (admin/password from .env.prod)
+#   - loki              Log aggregation on :3100
+#   - promtail          Shipper: docker logs -> loki
+#
+# Required env vars in .env.prod:
+#   DMRX_ADMIN_API_KEY              32+ char admin key
+#   DMRX_ENCRYPTION_KEY             64 hex chars (32 bytes)
+#   DMRX_CORS_ORIGIN                e.g. https://app.example.com
+#   GRAFANA_ADMIN_PASSWORD          strong password
+#   GRAFANA_OAUTH_CLIENT_ID         (optional) for SSO
+#   GRAFANA_OAUTH_CLIENT_SECRET     (optional)
+#   S3_BACKUP_BUCKET                (optional) for off-site SQLite backups
+#   S3_BACKUP_ACCESS_KEY            (optional)
+#   S3_BACKUP_SECRET_KEY            (optional)
+#
+# Volumes persist data across restarts. Back up the `dmr-x-data` volume
+# or configure S3_BACKUP_* to ship snapshots off-host.
+
+networks:
+  dmr-x:
+    driver: bridge
+
+volumes:
+  dmr-x-data:
+  dmr-x-backups:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
+  loki-data:
+
+x-restart-policy: &restart
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  # ─── Gateway ────────────────────────────────────────────────────────────────
+  gateway:
+    image: ghcr.io/danny-dis/dmr-x:${DMRX_VERSION:-latest}
+    container_name: dmr-x-gateway
+    hostname: dmr-x-gateway
+    networks: [dmr-x]
+    ports:
+      - "${DMRX_GATEWAY_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      LOG_LEVEL: info
+      DMRX_LOCAL_MODE: "false"
+      DMRX_ADMIN_API_KEY: ${DMRX_ADMIN_API_KEY:?DMRX_ADMIN_API_KEY is required}
+      DMRX_ENCRYPTION_KEY: ${DMRX_ENCRYPTION_KEY:?DMRX_ENCRYPTION_KEY is required}
+      DMRX_CORS_ORIGIN: ${DMRX_CORS_ORIGIN:?DMRX_CORS_ORIGIN is required}
+      DMRX_COMPRESS_THRESHOLD: ${DMRX_COMPRESS_THRESHOLD:-1024}
+      DMRX_RATE_LIMIT_MAX: ${DMRX_RATE_LIMIT_MAX:-600}
+      DMRX_RATE_LIMIT_WINDOW: ${DMRX_RATE_LIMIT_WINDOW:-1 minute}
+      DMRX_BODY_LIMIT: ${DMRX_BODY_LIMIT:-10mb}
+      DMRX_REQUEST_TIMEOUT: ${DMRX_REQUEST_TIMEOUT:-60000}
+      DMRX_KEEPALIVE_TIMEOUT: ${DMRX_KEEPALIVE_TIMEOUT:-65000}
+      DMRX_CONNECTION_TIMEOUT: ${DMRX_CONNECTION_TIMEOUT:-10000}
+      DMRX_MAX_PARAM_LENGTH: ${DMRX_MAX_PARAM_LENGTH:-200}
+      DMRX_TRUST_PROXY: ${DMRX_TRUST_PROXY:-true}
+      DMRX_MEMORY_LIMIT: ${DMRX_MEMORY_LIMIT:-1.5gb}
+      DMRX_DATA_DIR: /app/data
+      # Provider keys (set the ones you actually use)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    volumes:
+      - dmr-x-data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+        reservations:
+          memory: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+        labels: "service,env"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    <<: *restart
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+    labels:
+      service: dmr-x
+      env: production
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9464"
+      prometheus.io/path: "/metrics"
+
+  # ─── SQLite Backup ──────────────────────────────────────────────────────────
+  # Cron-driven backups of the gateway's SQLite database. The
+  # `sqlite3 .backup` command takes a consistent online snapshot
+  # without locking the gateway process.
+  #
+  # Schedule is configurable via BACKUP_CRON. Default: every 6h.
+  backup:
+    image: alpine:3.20
+    container_name: dmr-x-backup
+    hostname: dmr-x-backup
+    networks: [dmr-x]
+    environment:
+      BACKUP_CRON: ${BACKUP_CRON:-0 */6 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      S3_BACKUP_BUCKET: ${S3_BACKUP_BUCKET:-}
+      S3_BACKUP_ACCESS_KEY: ${S3_BACKUP_ACCESS_KEY:-}
+      S3_BACKUP_SECRET_KEY: ${S3_BACKUP_SECRET_KEY:-}
+      S3_BACKUP_REGION: ${S3_BACKUP_REGION:-us-east-1}
+    volumes:
+      - dmr-x-data:/source:ro
+      - dmr-x-backups:/backups
+      - ./scripts/backup:/scripts:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        apk add --no-cache sqlite bash curl dcron tini aws-cli 2>/dev/null || \
+        apk add --no-cache sqlite bash curl dcron tini
+        mkdir -p /backups
+        # Add the cron job
+        echo "$${BACKUP_CRON} /scripts/backup.sh >> /var/log/backup.log 2>&1" > /etc/crontabs/root
+        # Touch the log file so tail doesn't fail
+        : > /var/log/backup.log
+        # Run an initial backup so the volume has at least one snapshot
+        /scripts/backup.sh
+        # Start cron in the foreground
+        exec /sbin/tini -- crond -f -L /var/log/backup.log
+    <<: *restart
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  # ─── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: dmr-x-prometheus
+    hostname: dmr-x-prometheus
+    networks: [dmr-x]
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus-alerts.yml:/etc/prometheus/rules/dmr-x.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=10GB
+      - --web.enable-lifecycle
+      - --web.external-url=${PROMETHEUS_EXTERNAL_URL:-http://localhost:9090}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:9090/-/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    <<: *restart
+
+  # ─── Alertmanager ──────────────────────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: dmr-x-alertmanager
+    hostname: dmr-x-alertmanager
+    networks: [dmr-x]
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    <<: *restart
+
+  # ─── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: dmr-x-grafana
+    hostname: dmr-x-grafana
+    networks: [dmr-x]
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: ""
+      GF_FEATURE_TOGGLES_ENABLE: ""
+      # Use a built-in Prometheus datasource provisioned at startup
+      GF_DATASOURCES_DEFAULT_NAME: Prometheus
+    volumes:
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/dmr-x.json:ro
+      - grafana-data:/var/lib/grafana
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    <<: *restart
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  # ─── Loki (log aggregation) ───────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: dmr-x-loki
+    hostname: dmr-x-loki
+    networks: [dmr-x]
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/config.yml
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    <<: *restart
+
+  # ─── Promtail (log shipper) ────────────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: dmr-x-promtail
+    hostname: dmr-x-promtail
+    networks: [dmr-x]
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+    <<: *restart
+    depends_on:
+      loki:
+        condition: service_healthy

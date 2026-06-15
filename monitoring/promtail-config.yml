@@ -1,0 +1,49 @@
+# Promtail config for shipping docker logs to Loki.
+# Mounted at /etc/promtail/config.yml inside the promtail container.
+
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Docker container logs (JSON driver)
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["service=dmr-x"]
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+      - source_labels: ['__meta_docker_compose_service']
+        target_label: 'service'
+      - source_labels: ['__meta_docker_compose_project']
+        target_label: 'project'
+      - source_labels: ['__meta_docker_container_label_env']
+        target_label: 'env'
+    pipeline_stages:
+      # Parse the JSON-formatted log line from the gateway
+      - match:
+          selector: '{service="dmr-x-gateway"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  time: time
+                  msg: msg
+                  reqId: reqId
+            - labels:
+                level:
+            - timestamp:
+                source: time
+                format: "2006-01-02T15:04:05.000Z0700"

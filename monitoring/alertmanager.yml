@@ -1,0 +1,94 @@
+# Alertmanager configuration for DMR-X.
+#
+# Mounted at /etc/alertmanager/alertmanager.yml inside the alertmanager
+# container. The `route` block decides where each alert goes; `receivers`
+# defines the destinations. Replace the placeholder URLs with your
+# real PagerDuty / Slack / Opsgenie integrations.
+
+global:
+  resolve_timeout: 5m
+
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'severity', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Page-severity alerts: send to PagerDuty AND post to #incidents
+    - matchers:
+        - severity = "page"
+      receiver: 'pagerduty-and-slack'
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true
+
+    # Ticket-severity: just Slack, no page
+    - matchers:
+        - severity = "ticket"
+      receiver: 'slack-tickets'
+      group_wait: 1m
+      repeat_interval: 24h
+      continue: true
+
+    # Info: dashboard-only, suppress noise
+    - matchers:
+        - severity = "info"
+      receiver: 'null'
+
+receivers:
+  - name: 'default'
+    webhook_configs:
+      - url: http://localhost:9099/default
+
+  - name: 'pagerduty-and-slack'
+    pagerduty_configs:
+      - routing_key: ${PAGERDUTY_ROUTING_KEY}
+        send_resolved: true
+        severity: '{{ .CommonLabels.severity }}'
+        description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+    slack_configs:
+      - api_url: ${SLACK_INCIDENTS_WEBHOOK}
+        channel: '#incidents'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          {{ end }}
+
+  - name: 'slack-tickets'
+    slack_configs:
+      - api_url: ${SLACK_TICKETS_WEBHOOK}
+        channel: '#ops-tickets'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          {{ end }}
+
+  - name: 'null'
+
+inhibit_rules:
+  # If a provider is down, suppress the per-provider error rate alert
+  - source_matchers:
+      - alertname = "DmrxProviderDown"
+    target_matchers:
+      - alertname = "DmrxHighErrorRate"
+  # If all providers are down, suppress individual provider-down alerts
+  - source_matchers:
+      - alertname = "DmrxAllProvidersUnhealthy"
+    target_matchers:
+      - alertname = "DmrxProviderDown"
+  # Gateway-down suppresses everything else
+  - source_matchers:
+      - alertname = "DmrxGatewayDown"
+    target_matchers:
+      - severity =~ "page|ticket"
