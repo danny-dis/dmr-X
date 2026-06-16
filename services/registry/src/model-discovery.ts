@@ -8,6 +8,7 @@
  */
 
 import { logger } from '@dmr-x/utils';
+import net from 'node:net';
 
 export interface DiscoveredModel {
   modelId: string;
@@ -29,9 +30,58 @@ export interface ModelDiscoveryOptions {
   fetchImpl?: typeof fetch;
   /** Hard timeout in ms; default 5000 */
   timeoutMs?: number;
+  /**
+   * Injected for tests; defaults to a 250ms TCP probe. Returns true when
+   * the host:port is reachable (i.e. the local model server is actually
+   * running). Set to `() => Promise.resolve(true)` to disable the probe.
+   */
+  isReachable?: (url: URL) => Promise<boolean>;
 }
 
 const TIMEOUT_MS = 1000;
+const LOCAL_REACHABILITY_TIMEOUT_MS = 250;
+
+/**
+ * Quick TCP probe for localhost-style URLs. Returns false fast (sub-250ms)
+ * when nothing is listening on the port, so we never fire the real fetch
+ * at a closed port — that was leaking unhandled rejections from the boot
+ * path on dev machines that don't run the local model stack.
+ */
+function defaultIsReachable(url: URL, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!isLocalishHost(url.hostname)) {
+      resolve(true);
+      return;
+    }
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    try {
+      socket.connect(Number(url.port) || (url.protocol === 'https:' ? 443 : 80), url.hostname);
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+function isLocalishHost(host: string): boolean {
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '[::1]' ||
+    host === '::1' ||
+    host === '0.0.0.0'
+  );
+}
 
 /**
  * Fetch and normalize models from an OpenAI-compatible provider.
@@ -40,10 +90,35 @@ const TIMEOUT_MS = 1000;
 export async function discoverOpenAIModels(
   options: ModelDiscoveryOptions
 ): Promise<DiscoveredModel[]> {
-  const { baseUrl, apiKey = '', fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = options;
+  const {
+    baseUrl,
+    apiKey = '',
+    fetchImpl = fetch,
+    timeoutMs = TIMEOUT_MS,
+    isReachable = (u) => defaultIsReachable(u, LOCAL_REACHABILITY_TIMEOUT_MS),
+  } = options;
 
   if (!baseUrl) {
     logger.warn('discoverOpenAIModels called with empty baseUrl');
+    return [];
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    logger.warn({ baseUrl }, 'discoverOpenAIModels called with invalid baseUrl');
+    return [];
+  }
+
+  // Short-circuit localhost URLs whose port isn't accepting connections.
+  // The real /v1/models fetch below would otherwise ECONNREFUSED on every
+  // boot for any developer who hasn't started the local model stack.
+  if (!(await isReachable(parsed))) {
+    logger.debug(
+      { baseUrl, host: parsed.hostname, port: parsed.port },
+      'Skipping model discovery: upstream port is not accepting connections',
+    );
     return [];
   }
 

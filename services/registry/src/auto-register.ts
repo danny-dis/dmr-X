@@ -1,9 +1,34 @@
 import { getDb } from '@dmr-x/db';
 import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
-import { PROVIDER_CATALOG } from './provider-catalog.js';
+import { PROVIDER_CATALOG, type ProviderTemplate } from './provider-catalog.js';
 import { discoverOpenAIModels, type DiscoveredModel } from './model-discovery.js';
 import crypto from 'node:crypto';
 import type { CapabilityTier } from '@dmr-x/core';
+
+/**
+ * True when a catalog entry points at a default-localhost URL AND the user
+ * has not set the envKey override. Such providers are auto-registered but
+ * will fail any /v1/models probe with ECONNREFUSED on every boot, which used
+ * to surface as an unhandled rejection in the background init path.
+ *
+ * Skip /v1/models discovery for these — there's nothing to discover until
+ * the user actually runs the local stack (or points the env var elsewhere).
+ */
+function isLocalProviderUnconfigured(template: ProviderTemplate): boolean {
+  if (!template.baseUrl || !template.envKey) return false;
+  let host: string;
+  try {
+    host = new URL(template.baseUrl).hostname;
+  } catch {
+    return false;
+  }
+  const isLocalHost =
+    host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+  return isLocalHost && !process.env[template.envKey];
+}
+
+// Re-export so callers can use the same short-circuit
+export { isLocalProviderUnconfigured };
 
 /**
  * Classify a model's capability tier based on its properties.
@@ -223,24 +248,34 @@ export async function autoRegisterProviders(): Promise<string[]> {
           });
         }
       } else if (template.apiFormat === 'openai' && template.baseUrl) {
-        // Live discovery for catalog entries that don't pre-declare models
-        try {
-          const discovered = await discoverOpenAIModels({
-            baseUrl: template.baseUrl,
-            apiKey: apiKey || '',
-          });
-          if (discovered.length > 0) {
-            modelsForInsert = discovered;
-            logger.info(
-              { provider: template.id, count: discovered.length },
-              'Discovered models from provider /v1/models',
+        // Live discovery for catalog entries that don't pre-declare models.
+        // Skip unconfigured local providers (ollama/vllm/llamacpp/localai with
+        // no env var set) — they'd just ECONNREFUSED against a closed port and
+        // used to leak an unhandled rejection from the background init path.
+        if (isLocalProviderUnconfigured(template)) {
+          logger.info(
+            { provider: template.id },
+            'Skipping /v1/models discovery: local provider has no env override',
+          );
+        } else {
+          try {
+            const discovered = await discoverOpenAIModels({
+              baseUrl: template.baseUrl,
+              apiKey: apiKey || '',
+            });
+            if (discovered.length > 0) {
+              modelsForInsert = discovered;
+              logger.info(
+                { provider: template.id, count: discovered.length },
+                'Discovered models from provider /v1/models',
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              { err, provider: template.id },
+              'Model discovery failed during first register; provider will have no models',
             );
           }
-        } catch (err) {
-          logger.warn(
-            { err, provider: template.id },
-            'Model discovery failed during first register; provider will have no models',
-          );
         }
       }
 
@@ -331,6 +366,9 @@ export async function discoverMissingModels(): Promise<number> {
   const eligible: Array<{ providerId: string; templateId: string; baseUrl: string }> = [];
   for (const template of PROVIDER_CATALOG) {
     if (template.apiFormat !== 'openai' || !template.baseUrl) continue;
+    // Skip unconfigured local providers — their /v1/models is guaranteed to
+    // ECONNREFUSED on every boot until the user actually runs the local stack.
+    if (isLocalProviderUnconfigured(template)) continue;
 
     const row = db
       .prepare('SELECT id FROM providers WHERE name = ?')

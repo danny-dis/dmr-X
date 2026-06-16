@@ -181,4 +181,106 @@ describe('discoverOpenAIModels', () => {
     expect(result).toHaveLength(2);
     expect(result.map((r) => r.modelId)).toEqual(['good', 'also-good']);
   });
+
+  it('returns empty list and skips fetch when isReachable returns false', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ id: 'm1' }] }) }) as Response);
+    const isReachable = vi.fn(async () => false);
+    const result = await discoverOpenAIModels({
+      baseUrl: 'http://localhost:11434/v1',
+      fetchImpl,
+      isReachable,
+    });
+    expect(result).toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(isReachable).toHaveBeenCalledTimes(1);
+  });
+
+  it('proceeds with fetch when isReachable returns true', async () => {
+    const fetchImpl = makeFetch([
+      { url: /.*/, status: 200, body: { data: [{ id: 'm1' }] } },
+    ]);
+    const isReachable = vi.fn(async () => true);
+    const result = await discoverOpenAIModels({
+      baseUrl: 'http://localhost:11434/v1',
+      fetchImpl,
+      isReachable,
+    });
+    expect(result).toHaveLength(1);
+    expect(isReachable).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns empty list for invalid baseUrl without probing or fetching', async () => {
+    const fetchImpl = vi.fn();
+    const isReachable = vi.fn();
+    const result = await discoverOpenAIModels({
+      baseUrl: 'not-a-url',
+      fetchImpl,
+      isReachable,
+    });
+    expect(result).toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(isReachable).not.toHaveBeenCalled();
+  });
+});
+
+describe('isLocalProviderUnconfigured', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('returns true for a localhost baseUrl with the envKey unset', async () => {
+    delete process.env.OLLAMA_BASE_URL;
+    const { isLocalProviderUnconfigured } = await import(
+      '../../services/registry/src/auto-register.js'
+    );
+    expect(
+      isLocalProviderUnconfigured({
+        id: 'ollama',
+        envKey: 'OLLAMA_BASE_URL',
+        baseUrl: 'http://localhost:11434/v1',
+      } as any),
+    ).toBe(true);
+  });
+
+  it('returns false when the envKey is set to a non-empty value', async () => {
+    process.env.VLLM_BASE_URL = 'http://localhost:8000';
+    const { isLocalProviderUnconfigured } = await import(
+      '../../services/registry/src/auto-register.js'
+    );
+    expect(
+      isLocalProviderUnconfigured({
+        id: 'vllm',
+        envKey: 'VLLM_BASE_URL',
+        baseUrl: 'http://localhost:8000/v1',
+      } as any),
+    ).toBe(false);
+  });
+
+  it('returns false for non-localhost baseUrl', async () => {
+    delete process.env.SOME_REMOTE_URL;
+    const { isLocalProviderUnconfigured } = await import(
+      '../../services/registry/src/auto-register.js'
+    );
+    expect(
+      isLocalProviderUnconfigured({
+        id: 'remote',
+        envKey: 'SOME_REMOTE_URL',
+        baseUrl: 'https://api.example.com/v1',
+      } as any),
+    ).toBe(false);
+  });
+
+  it('returns false when baseUrl or envKey is missing', async () => {
+    const { isLocalProviderUnconfigured } = await import(
+      '../../services/registry/src/auto-register.js'
+    );
+    expect(isLocalProviderUnconfigured({ id: 'x', envKey: undefined, baseUrl: 'http://localhost:1' } as any)).toBe(false);
+    expect(isLocalProviderUnconfigured({ id: 'x', envKey: 'X', baseUrl: '' } as any)).toBe(false);
+    expect(isLocalProviderUnconfigured({ id: 'x', envKey: '', baseUrl: 'http://localhost:1' } as any)).toBe(false);
+  });
 });
