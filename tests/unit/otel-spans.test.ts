@@ -200,7 +200,7 @@ describe('HIGH-3: OTel instrumentation', () => {
 
   it('emits a span with SpanStatusCode.ERROR for a 500 response', async () => {
     harness.app.get('/boom', async (_req, reply) => {
-      reply.code(500);
+      reply.status(500);
       return { error: 'kaboom' };
     });
     const res = await harness.app.inject({ method: 'GET', url: '/boom' });

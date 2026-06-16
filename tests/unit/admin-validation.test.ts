@@ -138,10 +138,10 @@ function buildApp(opts: {
   app.post('/admin/memory', async (req, reply) => {
     const p = CreateMemoryItemSchema.safeParse(req.body);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid request', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
-    reply.code(successStatus);
+    reply.status(successStatus);
     return ok(req);
   });
 
@@ -149,7 +149,7 @@ function buildApp(opts: {
   app.post('/admin/memory/search', async (req, reply) => {
     const p = SearchMemorySchema.safeParse(req.body);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid request', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
     return ok(req);
@@ -159,10 +159,10 @@ function buildApp(opts: {
   app.post('/admin/workers', async (req, reply) => {
     const p = RegisterWorkerSchema.safeParse(req.body);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid request', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
-    reply.code(successStatus);
+    reply.status(successStatus);
     return ok(req);
   });
 
@@ -170,10 +170,10 @@ function buildApp(opts: {
   app.post('/admin/federation', async (req, reply) => {
     const p = RegisterFederationNodeSchema.safeParse(req.body);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid request', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
-    reply.code(successStatus);
+    reply.status(successStatus);
     return ok(req);
   });
 
@@ -181,7 +181,7 @@ function buildApp(opts: {
   app.post('/admin/benchmarks/battle', async (req, reply) => {
     const p = RunArenaBattleSchema.safeParse(req.body);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid request', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
     return ok(req);
@@ -191,7 +191,7 @@ function buildApp(opts: {
   app.post('/admin/playground/feedback', async (req, reply) => {
     const p = PlaygroundFeedbackSchema.safeParse(req.body);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid request', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
     return ok(req);
@@ -201,7 +201,7 @@ function buildApp(opts: {
   app.post<{ Params: { id: string } }>('/conversations/:id/messages/batch', async (req, reply) => {
     const p = BatchAddMessagesSchema.safeParse(req.body);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid request', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
     return ok(req);
@@ -211,7 +211,7 @@ function buildApp(opts: {
   app.get('/conversations', async (req, reply) => {
     const p = ListConversationsQuerySchema.safeParse(req.query);
     if (!p.success) {
-      reply.code(400);
+      reply.status(400);
       return { error: { message: 'Invalid query', type: 'validation', code: 'invalid', details: p.error.errors } };
     }
     return ok(req);

@@ -244,7 +244,7 @@ describe('event-stream', () => {
 
       // Record every state change so we can verify the scan cursor only
       // moves forward — never backward.
-      const stateChanges: { scanStart: number; dataStart: number; bufferLength: number }[] = [];
+      const stateChanges: { scanStart: number; dataStart: number; bufferLength: number; totalScanned: number }[] = [];
 
       const eventStream = new EventStream<string>(
         stream,

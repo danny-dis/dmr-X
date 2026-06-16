@@ -100,7 +100,11 @@ export async function createServer() {
     requestTimeout: REQUEST_TIMEOUT,
     keepAliveTimeout: KEEPALIVE_TIMEOUT,
     connectionTimeout: CONNECTION_TIMEOUT,
-    maxParamLength: MAX_PARAM_LENGTH,
+    // fastify 5: per-router options must be nested under `routerOptions`
+    // (top-level keys are deprecated as of v5 and will be removed in v6).
+    routerOptions: {
+      maxParamLength: MAX_PARAM_LENGTH,
+    },
     trustProxy: TRUST_PROXY,
   });
 
@@ -829,8 +833,13 @@ void (async () => {
   // (`{ statusCode, code, error: "Bad Request", message }`), which the
   // UI surfaces as the unhelpful string "Bad Request".
   server.setErrorHandler((error, request, reply) => {
-    const statusCode = error.statusCode || 500;
-    const code = error.code || 'INTERNAL_ERROR';
+    // fastify 5 typed the error parameter as `unknown` (it was `FastifyError`
+    // in v4). Cast to any to preserve the previous access pattern — the
+    // existing `error.statusCode / error.code / error.message / error.stack`
+    // shape is unchanged at runtime, so this is a TS-only adjustment.
+    const err = error as any;
+    const statusCode = err.statusCode || 500;
+    const code = err.code || 'INTERNAL_ERROR';
 
     // OpenTelemetry: record the exception on the active span (started in
     // the onRequest hook) so the trace UI can show the failure mode.
@@ -838,9 +847,9 @@ void (async () => {
     try {
       const span = (request as any).openTelemetrySpan as Span | undefined;
       if (span && span.isRecording()) {
-        span.recordException(error);
+        span.recordException(err);
         span.setAttribute('error.type', code);
-        span.setAttribute('error.message', error.message);
+        span.setAttribute('error.message', err.message);
       }
     } catch {
       // swallow — telemetry must never break the error path
@@ -849,8 +858,8 @@ void (async () => {
     // Always log full error server-side (with request id so logs and
     // client payloads are correlatable)
     logger.error(
-      { err: error, req: request, requestId: request.id },
-      `Request error: ${error.message}`,
+      { err, req: request, requestId: request.id },
+      `Request error: ${err.message}`,
     );
 
     // For 500+ errors, hide all internal details from clients — unless
@@ -860,7 +869,7 @@ void (async () => {
     // process.env here would re-introduce the live-bypass vulnerability
     // that the constant was added to prevent.
     const isDev = LOCAL_MODE || process.env.NODE_ENV !== 'production';
-    const clientMessage = statusCode >= 500 && !isDev ? 'Internal server error' : error.message;
+    const clientMessage = statusCode >= 500 && !isDev ? 'Internal server error' : err.message;
     const clientType = statusCode >= 500 && !isDev ? 'server_error' : code;
 
     const errorBody: Record<string, unknown> = {
@@ -877,8 +886,8 @@ void (async () => {
       if (isDev) {
         // Dev-only: surface the real error so the UI toast and pino log
         // line up. Production keeps `error.message` out of the wire.
-        errorBody.dev_message = error.message;
-        errorBody.dev_stack = error.stack;
+        errorBody.dev_message = err.message;
+        errorBody.dev_stack = err.stack;
       }
 
       // Surface 5xx to the live telemetry SSE stream so the observability
@@ -887,7 +896,7 @@ void (async () => {
       (server as any).recordTelemetryEvent?.({
         level: 'error',
         service: 'gateway',
-        message: error.message,
+        message: err.message,
         metadata: {
           path: request.url,
           method: request.method,
@@ -922,7 +931,7 @@ void (async () => {
   server.setNotFoundHandler(async (request, reply) => {
     const pathname = request.url.split('?')[0];
     if (request.method !== 'GET' || pathname.startsWith('/v1/') || pathname.startsWith('/health')) {
-      return reply.code(404).send({ error: 'Not Found' });
+      return reply.status(404).send({ error: 'Not Found' });
     }
     const indexHtml = await fs.promises.readFile(path.join(uiDir, 'index.html'), 'utf8');
     return reply.type('text/html').send(indexHtml);

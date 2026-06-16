@@ -124,7 +124,7 @@ describe('Fastify server hardening', () => {
     });
 
     app.get('/echo', async () => ({ ok: true }));
-    app.post('/echo', async (request) => ({ body: request.body }));
+    app.post('/echo', async (request) => ({ body: request.body as any }));
     app.get('/ip', async (request) => ({ ip: request.ip }));
 
     app.setErrorHandler((error, request, reply) => {
@@ -255,7 +255,7 @@ describe('Fastify server hardening', () => {
 
   it('does NOT include request_id in 4xx error responses', async () => {
     app.get('/notfound', async (_request, reply) => {
-      return reply.code(404).send({ error: 'gone' });
+      return reply.status(404).send({ error: 'gone' });
     });
     // Trigger the error handler via an unhandled throw
     app.get('/badrequest', async (_request, _reply) => {
