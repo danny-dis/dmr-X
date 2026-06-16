@@ -108,7 +108,15 @@ export class Router {
     const conversationHash = hashConversation(messages);
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
 
-    if (conversationHash) {
+    // Parse an optional `providerName/modelId` prefix out of the requested
+    // model. The prefix is only honored when it names a known provider —
+    // model ids legitimately contain slashes (e.g. `qwen/qwen3-coder`), so an
+    // unrecognised prefix is left intact as part of the model id.
+    const modelTarget = this.parseModelTarget(request.model);
+
+    // An explicit provider pin bypasses sticky sessions: the caller asked for
+    // a specific provider, so a previously-stuck different provider must not win.
+    if (conversationHash && !modelTarget.providerName) {
       const sticky = await getStickyProvider(
         conversationHash,
         this.config.rateLimitService,
@@ -231,21 +239,26 @@ export class Router {
     // Step 1.5: Resolve meta-model aliases to filtered candidates
     // (still inside the classify stage semantically — keeps the trace tidy
     // because meta-model resolution is a sub-step of "what is this request?".)
-    let pipelineCandidates = this.candidates;
+    // When the caller pins a provider explicitly, constrain the candidate pool
+    // to that provider before any selection or scoring happens.
+    const scopedCandidates = modelTarget.providerName
+      ? this.candidates.filter(c => c.providerName === modelTarget.providerName)
+      : this.candidates;
+    let pipelineCandidates = scopedCandidates;
     let metaModelFilteredFree = false;
-    if (request.model && isMetaModel(request.model)) {
-      const resolution = resolveMetaModel(request.model, this.candidates);
+    if (modelTarget.modelId && isMetaModel(modelTarget.modelId)) {
+      const resolution = resolveMetaModel(modelTarget.modelId, scopedCandidates);
       if (resolution) {
-        logger.info({ metaModel: request.model, candidateCount: resolution.resolved.length }, 'Resolved meta-model');
+        logger.info({ metaModel: modelTarget.modelId, candidateCount: resolution.resolved.length }, 'Resolved meta-model');
         pipelineCandidates = resolution.resolved;
         // Flag when meta-model already filtered to free-only (skip redundant pipeline filtering)
-        if (request.model === 'free' || request.model.startsWith('free-')) {
+        if (modelTarget.modelId === 'free' || modelTarget.modelId.startsWith('free-')) {
           metaModelFilteredFree = true;
         }
       } else {
-        logger.warn({ metaModel: request.model, totalCandidates: this.candidates.length }, 'Meta-model resolved to zero candidates');
+        logger.warn({ metaModel: modelTarget.modelId, totalCandidates: scopedCandidates.length }, 'Meta-model resolved to zero candidates');
         throw new ProviderUnavailableError(
-          this.candidates.map(c => `${c.providerId}/${c.modelId}`),
+          scopedCandidates.map(c => `${c.providerId}/${c.modelId}`),
           0
         );
       }
@@ -260,16 +273,18 @@ export class Router {
     const directSelection = tracer.startActiveSpan('router.select_candidates', (span) => {
       try {
         span.setAttribute('router.candidate_pool_size', pipelineCandidates.length);
-        span.setAttribute('router.is_meta_model', request.model ? isMetaModel(request.model) : false);
-        if (request.model && !isMetaModel(request.model)) {
+        span.setAttribute('router.is_meta_model', modelTarget.modelId ? isMetaModel(modelTarget.modelId) : false);
+        if (modelTarget.modelId && !isMetaModel(modelTarget.modelId)) {
+          // pipelineCandidates is already scoped to the pinned provider (if any),
+          // so this exact-match is naturally constrained to that provider.
           const directMatch = pipelineCandidates.find(
-            (c) => c.modelId === request.model && c.isHealthy
+            (c) => c.modelId === modelTarget.modelId && c.isHealthy
           );
           if (directMatch) {
             span.setAttribute('router.selection', 'direct_model');
             span.setAttribute('router.selected_provider', directMatch.providerId);
             span.setAttribute('router.selected_model', directMatch.modelId);
-            logger.info({ model: request.model, provider: directMatch.providerName }, 'Direct model selection');
+            logger.info({ model: modelTarget.modelId, provider: directMatch.providerName }, 'Direct model selection');
             return {
               providerId: directMatch.providerId,
               modelId: directMatch.modelId,
@@ -513,17 +528,21 @@ export class Router {
       'Task decomposed'
     );
 
-    // Step 1.5: Resolve meta-model aliases
-    let compositeCandidates = this.candidates;
-    if (request.model && isMetaModel(request.model)) {
-      const resolution = resolveMetaModel(request.model, this.candidates);
+    // Step 1.5: Resolve meta-model aliases (honoring any explicit provider pin)
+    const compositeModelTarget = this.parseModelTarget(request.model);
+    const compositeScoped = compositeModelTarget.providerName
+      ? this.candidates.filter(c => c.providerName === compositeModelTarget.providerName)
+      : this.candidates;
+    let compositeCandidates = compositeScoped;
+    if (compositeModelTarget.modelId && isMetaModel(compositeModelTarget.modelId)) {
+      const resolution = resolveMetaModel(compositeModelTarget.modelId, compositeScoped);
       if (resolution) {
-        logger.info({ metaModel: request.model, candidateCount: resolution.resolved.length }, 'Resolved meta-model for composite');
+        logger.info({ metaModel: compositeModelTarget.modelId, candidateCount: resolution.resolved.length }, 'Resolved meta-model for composite');
         compositeCandidates = resolution.resolved;
       } else {
-        logger.warn({ metaModel: request.model, totalCandidates: this.candidates.length }, 'Meta-model resolved to zero candidates (composite)');
+        logger.warn({ metaModel: compositeModelTarget.modelId, totalCandidates: compositeScoped.length }, 'Meta-model resolved to zero candidates (composite)');
         throw new ProviderUnavailableError(
-          this.candidates.map(c => `${c.providerId}/${c.modelId}`),
+          compositeScoped.map(c => `${c.providerId}/${c.modelId}`),
           0
         );
       }
@@ -596,6 +615,32 @@ export class Router {
         .join('\n');
     }
     return request.prompt || '';
+  }
+
+  /**
+   * Parse an optional `providerName/modelId` prefix from the requested model.
+   *
+   * The prefix is only treated as a provider pin when it matches a known
+   * provider name in the current candidate set. Model ids legitimately contain
+   * slashes (e.g. `qwen/qwen3-coder`, `meta-llama/llama-3.1-8b`), so an
+   * unrecognised prefix is left as part of the model id and routed normally.
+   *
+   * Examples (assuming `pollinations` and `openrouter-free` are known providers):
+   *   "pollinations/openai-fast"          → { providerName: "pollinations", modelId: "openai-fast" }
+   *   "openrouter-free/qwen/qwen3-coder"  → { providerName: "openrouter-free", modelId: "qwen/qwen3-coder" }
+   *   "qwen/qwen3-coder"                  → { modelId: "qwen/qwen3-coder" }  (qwen is not a provider)
+   *   "free-smart"                        → { modelId: "free-smart" }
+   */
+  private parseModelTarget(model: string | undefined): { providerName?: string; modelId: string } {
+    if (!model) return { modelId: '' };
+    const slash = model.indexOf('/');
+    if (slash <= 0) return { modelId: model };
+    const providerName = model.slice(0, slash);
+    const rest = model.slice(slash + 1);
+    if (rest && this.candidates.some(c => c.providerName === providerName)) {
+      return { providerName, modelId: rest };
+    }
+    return { modelId: model };
   }
 
   /**

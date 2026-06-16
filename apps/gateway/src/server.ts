@@ -324,7 +324,7 @@ export async function createServer() {
   });
 
   router.setAdapterExecutor({
-    execute: async (providerId: string, _modelId: string, request: UnifiedRequest) => {
+    execute: async (providerId: string, modelId: string, request: UnifiedRequest) => {
       const adapter = (server as any).getAdapter(providerId);
       if (!adapter) {
         // Surface this as a typed 503, not a plain 500. The provider row
@@ -337,7 +337,15 @@ export async function createServer() {
         // message the UI can render.
         throw new ProviderUnavailableError([providerId], 5);
       }
-      return adapter.execute(request);
+      // Send the model the router actually selected — NOT the raw inbound
+      // string. `request.model` may carry a `providerName/model` prefix
+      // (e.g. "pollinations/openai-fast") or a meta-model alias (e.g.
+      // "free-smart"); the resolved bare model id is in `modelId`. The
+      // streaming path already substitutes this (chat.routes.ts); doing it
+      // here keeps non-streaming execution consistent and stops the alias /
+      // prefixed string from leaking to upstream providers as a model name.
+      const outboundRequest = modelId ? { ...request, model: modelId } : request;
+      return adapter.execute(outboundRequest);
     },
   });
 
