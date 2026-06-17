@@ -21,6 +21,8 @@ export interface DiscoveredModel {
   costPerImage: number;
   capabilities: string[];
   specializations: string[];
+  /** If true, this model is only available via OAuth subscription auth (not API key) */
+  subscriptionOnly?: boolean;
 }
 
 export interface ModelDiscoveryOptions {

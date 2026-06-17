@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Star, StarOff, MoreHorizontal, Zap, Cpu, Server, KeyRound } from 'lucide-react';
+import { Star, StarOff, MoreHorizontal, Zap, Cpu, Server, KeyRound, Crown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/primitives/Card';
 import { Badge } from '@/components/primitives/Badge';
@@ -97,6 +97,11 @@ export function ProviderCard({
         {provider.authType && (
           <Badge tone="muted" size="sm" icon={<KeyRound className="size-2.5" />}>
             {provider.authType}
+          </Badge>
+        )}
+        {provider.authType === 'oauth' && (
+          <Badge tone="info" size="sm" icon={<Crown className="size-2.5" />}>
+            Subscription Active
           </Badge>
         )}
         {/* Show "N keys" when more than one is attached so the user

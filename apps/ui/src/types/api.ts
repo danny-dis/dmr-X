@@ -85,7 +85,7 @@ export interface ApiProvider {
  * recompute it from `keys` (the denormalised cache is the source of
  * truth at the API layer).
  */
-export type ProviderTier = 'free' | 'paid' | 'mixed' | 'inactive';
+export type ProviderTier = 'free' | 'paid' | 'mixed' | 'inactive' | 'subscription';
 
 /**
  * Per-key tier — narrower than ProviderTier because a single key can

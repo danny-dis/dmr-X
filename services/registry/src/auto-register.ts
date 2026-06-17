@@ -95,8 +95,8 @@ function insertModelProfiles(
       supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
       context_window, max_output_tokens,
       input_cost_per_1k, output_cost_per_1k, cost_per_image,
-      quality_score, is_active
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      quality_score, is_active, subscription_only
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let count = 0;
@@ -126,6 +126,7 @@ function insertModelProfiles(
       m.costPerImage,
       0.5,
       isActive ? 1 : 0,
+      m.subscriptionOnly ? 1 : 0,
     );
     if (result.changes > 0) {
       count += 1;

@@ -19,6 +19,7 @@ export class RegistryService {
         mp.intelligence_layer as "intelligenceLayer",
         mp.capability_tier as "capabilityTier",
         p.is_healthy as "isHealthy",
+        p.auth_method as "authMethod",
         mp.quality_score as "qualityScore",
         mp.elo_rating as "eloRating",
         mp.avg_latency_ms as "avgLatencyMs",
@@ -39,10 +40,12 @@ export class RegistryService {
         mp.rate_limit_tpd as "rateLimitTpd",
         mp.monthly_token_budget as "monthlyTokenBudget",
         mp.intelligence_rank as "intelligenceRank",
-        mp.speed_rank as "speedRank"
+        mp.speed_rank as "speedRank",
+        mp.subscription_only as "subscriptionOnly"
       FROM model_profiles mp
       JOIN providers p ON p.id = mp.provider_id
       WHERE mp.is_active = 1 AND p.is_healthy = 1
+        AND (mp.subscription_only = 0 OR p.auth_method = 'oauth')
       ${modality ? 'AND mp.modality = ?' : ''}
       ORDER BY mp.quality_score DESC
     `;
@@ -67,6 +70,7 @@ export class RegistryService {
       maxOutputTokens: row.maxOutputTokens || undefined,
       contextLength: row.contextWindow || undefined,
       isHealthy: row.isHealthy === 1 || row.isHealthy === true,
+      subscriptionOnly: row.subscriptionOnly === 1 || row.subscriptionOnly === true,
       freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
         intelligenceRank: row.intelligenceRank ?? 0,
         speedRank: row.speedRank ?? 0,

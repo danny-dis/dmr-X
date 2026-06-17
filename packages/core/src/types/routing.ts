@@ -65,6 +65,8 @@ export interface ProviderModel {
     monthlyTokenBudget: number;
     rateLimits: { rpm: number; rpd: number; tpm: number; tpd: number };
   };
+  /** If true, this model is only available via OAuth subscription auth (not API key) */
+  subscriptionOnly?: boolean;
 }
 
 export type CandidateSet = ProviderModel[];

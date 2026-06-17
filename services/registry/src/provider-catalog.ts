@@ -50,6 +50,8 @@ export interface ModelTemplate {
   capabilities: string[];
   specializations: string[];
   freeTier?: FreeTierInfo;
+  /** If true, this model is only available via OAuth subscription auth (not API key) */
+  subscriptionOnly?: boolean;
 }
 
 export interface FreeTierInfo {
@@ -101,6 +103,10 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       // Video generation (Sora 2)
       { id: 'sora-2', modalities: ['video'], capabilities: ['text2video', 'img2video', 'video_edit', 'video_extend', 'native_audio'], specializations: ['creative'] },
       { id: 'sora-2-pro', modalities: ['video'], capabilities: ['text2video', 'img2video', 'video_edit', 'video_extend', 'native_audio', '4k_output'], specializations: ['creative'] },
+      // Subscription-only models (ChatGPT Plus/Pro via Codex OAuth)
+      { id: 'gpt-5.5-codex', modalities: ['llm'], contextWindow: 1000000, maxOutputTokens: 32768, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['reasoning', 'coding'], subscriptionOnly: true },
+      { id: 'gpt-5.4-codex', modalities: ['llm'], contextWindow: 1000000, maxOutputTokens: 32768, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['general', 'coding'], subscriptionOnly: true },
+      { id: 'gpt-5.3-codex', modalities: ['llm'], contextWindow: 1000000, maxOutputTokens: 32768, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['general', 'coding'], subscriptionOnly: true },
     ],
     streaming: true,
     toolCalling: true,
@@ -108,6 +114,16 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'Industry standard. GPT-4o, o3, DALL-E, Whisper, embeddings.',
     region: 'us',
     signupUrl: 'https://platform.openai.com/signup',
+    oauthConfig: {
+      flow: 'device_code',
+      deviceCodeUrl: 'https://auth0.openai.com/oauth/device/code',
+      tokenUrl: 'https://auth0.openai.com/oauth/token',
+      clientIdEnvKey: 'OPENAI_CODEX_OAUTH_CLIENT_ID',
+      scopes: ['openid', 'profile', 'email', 'offline_access'],
+      audience: 'https://api.openai.com/v1',
+      redirectPath: '/v1/admin/providers/:id/oauth/callback',
+      tokenResponseType: 'access_refresh',
+    },
   },
 
   {
@@ -125,6 +141,10 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'claude-3.5-haiku', modalities: ['llm'], contextWindow: 200000, inputCostPer1M: 0.8, outputCostPer1M: 4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'bulk_generation'] },
       { id: 'claude-opus-4-7', modalities: ['llm'], contextWindow: 200000, maxOutputTokens: 64000, inputCostPer1M: 15, outputCostPer1M: 75, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['reasoning', 'coding', 'analysis'] },
       { id: 'claude-haiku-latest', modalities: ['llm'], contextWindow: 200000, maxOutputTokens: 8192, inputCostPer1M: 0.25, outputCostPer1M: 1.25, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['fast', 'cheap'] },
+      // Subscription-only models (Claude Pro/Max via OAuth)
+      { id: 'claude-opus-4-8', modalities: ['llm'], contextWindow: 200000, maxOutputTokens: 64000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['reasoning', 'coding', 'analysis'], subscriptionOnly: true },
+      { id: 'claude-sonnet-4-6', modalities: ['llm'], contextWindow: 200000, maxOutputTokens: 64000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['general', 'coding'], subscriptionOnly: true },
+      { id: 'claude-fable-5', modalities: ['llm'], contextWindow: 200000, maxOutputTokens: 64000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['reasoning', 'coding'], subscriptionOnly: true },
     ],
     streaming: true,
     toolCalling: true,
@@ -132,6 +152,15 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'Claude models. Best for UI, frontend, creative, code review.',
     region: 'us',
     signupUrl: 'https://console.anthropic.com/',
+    oauthConfig: {
+      flow: 'device_code',
+      deviceCodeUrl: 'https://claude.ai/oauth/device/code',
+      tokenUrl: 'https://claude.ai/oauth/token',
+      clientIdEnvKey: 'ANTHROPIC_CLAUDE_OAUTH_CLIENT_ID',
+      scopes: ['openid', 'profile', 'email', 'offline_access'],
+      redirectPath: '/v1/admin/providers/:id/oauth/callback',
+      tokenResponseType: 'access_refresh',
+    },
   },
 
   {
@@ -187,6 +216,37 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     envKey: 'GOOGLE_API_KEY',
     description: 'Google Veo 3.1 video generation.',
     region: 'us',
+  },
+
+  {
+    id: 'github-copilot',
+    name: 'GitHub Copilot',
+    category: 'cloud_llm',
+    baseUrl: 'https://api.githubcopilot.com',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    models: [
+      { id: 'gpt-4o-copilot', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['coding'], subscriptionOnly: true },
+      { id: 'claude-sonnet-4-copilot', modalities: ['llm'], contextWindow: 200000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['coding'], subscriptionOnly: true },
+      { id: 'o3-mini-copilot', modalities: ['llm'], contextWindow: 200000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'reasoning'], specializations: ['reasoning', 'coding'], subscriptionOnly: true },
+      { id: 'gpt-4o-mini-copilot', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision'], specializations: ['fast', 'coding'], subscriptionOnly: true },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'GITHUB_TOKEN',
+    description: 'GitHub Copilot models. Requires GitHub Copilot subscription.',
+    region: 'global',
+    signupUrl: 'https://github.com/features/copilot',
+    oauthConfig: {
+      flow: 'device_code',
+      deviceCodeUrl: 'https://github.com/login/device/code',
+      tokenUrl: 'https://github.com/login/oauth/access_token',
+      clientIdEnvKey: 'GITHUB_COPILOT_OAUTH_CLIENT_ID',
+      scopes: ['read:user', 'copilot'],
+      redirectPath: '/v1/admin/providers/:id/oauth/callback',
+      tokenResponseType: 'access_refresh',
+    },
   },
 
   {

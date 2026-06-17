@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Zap, CreditCard, Layers, CircleOff, KeyRound } from 'lucide-react';
+import { Zap, CreditCard, Layers, CircleOff, KeyRound, Crown } from 'lucide-react';
 import { Badge } from '@/components/primitives/Badge';
 import type { ProviderTier } from '@/types/api';
 
@@ -10,7 +10,7 @@ export interface TierBadgeProps {
 }
 
 /**
- * Renders a single Free / Paid / Free+Paid / No-key badge for a
+ * Renders a single Free / Paid / Free+Paid / Subscription / No-key badge for a
  * provider connection. The tone mapping follows the existing Badge
  * component's vocabulary (success / warning / primary / muted) so
  * Free stays visually distinct from Paid.
@@ -38,6 +38,13 @@ export function TierBadge({ tier, size = 'sm', className }: TierBadgeProps) {
     return (
       <Badge tone="primary" size={size} icon={<Layers className="size-2.5" />} className={className}>
         Free + Paid
+      </Badge>
+    );
+  }
+  if (resolved === 'subscription') {
+    return (
+      <Badge tone="info" size={size} icon={<Crown className="size-2.5" />} className={className}>
+        Subscription
       </Badge>
     );
   }
