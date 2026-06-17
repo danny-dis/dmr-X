@@ -1036,12 +1036,15 @@ void (async () => {
         // Catalog rows go through `template.apiFormat === 'openai'`. Custom
         // providers added via the dialog (e.g. tokenrouter) have no catalog
         // template, so we also accept `adapter_type === 'openai' | 'generic-openai'`
-        // directly. Without this, every gateway restart loses the custom
-        // adapter and the next chat request fails with "Adapter not found".
+        // directly. The 'google' provider uses the GenericOpenAIAdapter for the
+        // OpenAI-compatible surface of generativelanguage.googleapis.com, so we
+        // also check for 'google'. Without this, every gateway restart loses the
+        // custom adapter and the next chat request fails with "Adapter not found".
         const isOpenaiCompatRow =
           template?.apiFormat === 'openai' ||
           row.adapter_type === 'openai' ||
-          row.adapter_type === 'generic-openai';
+          row.adapter_type === 'generic-openai' ||
+          row.adapter_type === 'google';
         if (!adapterRegistry.get(row.name) && isOpenaiCompatRow) {
           const adapter = new GenericOpenAIAdapter(row.name);
           adapterRegistry.register(adapter);
