@@ -20,7 +20,7 @@ import { logger } from '@dmr-x/utils';
 // The OTel API resolves this lazily through the global provider, so it is always
 // safe to call tracer.startActiveSpan(...) — pre-SDK, the spans go to a no-op
 // provider and incur only the cost of one context lookup.
-const tracer = trace.getTracer('dmr-x-gateway', '0.2.0');
+const tracer = trace.getTracer('dmr-x-gateway', '0.4.0');
 
 export interface RouterConfig {
   epsilon?: number;
@@ -31,6 +31,8 @@ export interface RouterConfig {
   quotaService?: QuotaService;
   policyService?: PolicyService;
   freeTierStrategy?: FreeTierStrategy;
+  /** Default cost filter for meta-model aliases ('all' or 'free'). Overridden by per-request x-cost-filter header. */
+  metaModelCostFilter?: 'free' | 'all';
   onProviderSuccess?: (providerId: string) => void;
   onProviderFailure?: (providerId: string) => void;
 }
@@ -42,11 +44,20 @@ export class Router {
   private specialistRouter: SpecialistRouter;
   private compositeExecutor: CompositeExecutor | null = null;
   private thompsonSampler: ThompsonSampler;
+  private workerPool: WorkerPoolFanout | null = null;
 
   constructor(private readonly config: RouterConfig = {}) {
     this.taskDecomposer = new TaskDecomposer();
     this.specialistRouter = new SpecialistRouter();
     this.thompsonSampler = new ThompsonSampler();
+  }
+
+  /**
+   * Return the internal ThompsonSampler instance. Used by the RewardUpdater
+   * to train the bandit on request outcomes.
+   */
+  getSampler(): ThompsonSampler {
+    return this.thompsonSampler;
   }
 
   setCandidates(candidates: CandidateSet): void {
@@ -57,21 +68,42 @@ export class Router {
     return this.candidates.length;
   }
 
+  /**
+   * Return the profile for a specific provider/model pair from the current
+   * candidate set. Used to retrieve quality scores and costs for reward
+   * calculation.
+   */
+  getCandidate(providerId: string, modelId: string): ProviderModel | undefined {
+    return this.candidates.find(
+      (c) => c.providerId === providerId && c.modelId === modelId
+    );
+  }
+
   setAdapterExecutor(executor: AdapterExecutor): void {
     this.adapterExecutor = executor;
     // Wire the WorkerPoolFanout opt-in: when DMRX_WORKER_POOL_FANOUT=true the
     // gateway registers itself as a worker and tracks every parallel sub-task
     // as a WorkerJob in the SQLite `worker_jobs` table (and the /v1/admin/workers API).
-    const workerPool = new WorkerPoolFanout(executor, {
+    this.workerPool = new WorkerPoolFanout(executor, {
       enabled: process.env.DMRX_WORKER_POOL_FANOUT === 'true',
     });
     this.compositeExecutor = new CompositeExecutor(
       this.specialistRouter,
       executor,
-      workerPool,
+      this.workerPool,
     );
     if (process.env.DMRX_WORKER_POOL_FANOUT === 'true') {
       logger.info('WorkerPoolFanout enabled (DMRX_WORKER_POOL_FANOUT=true)');
+    }
+  }
+
+  /**
+   * Shutdown the router and its components.
+   * Drains the worker pool if it was enabled.
+   */
+  shutdown(): void {
+    if (this.workerPool) {
+      this.workerPool.shutdown();
     }
   }
 
@@ -245,16 +277,19 @@ export class Router {
       ? this.candidates.filter(c => c.providerName === modelTarget.providerName)
       : this.candidates;
     let pipelineCandidates = scopedCandidates;
+    // Cost filter: per-request header overrides router-level env var default
+    const costFilterOverride = (request as any).metadata?.costFilter as 'free' | 'all' | undefined
+      || this.config.metaModelCostFilter;
+
     let metaModelFilteredFree = false;
     if (modelTarget.modelId && isMetaModel(modelTarget.modelId)) {
-      const resolution = resolveMetaModel(modelTarget.modelId, scopedCandidates);
+      const resolution = resolveMetaModel(modelTarget.modelId, scopedCandidates, costFilterOverride);
       if (resolution) {
-        logger.info({ metaModel: modelTarget.modelId, candidateCount: resolution.resolved.length }, 'Resolved meta-model');
+        logger.info({ metaModel: modelTarget.modelId, candidateCount: resolution.resolved.length, costFilter: resolution.costFilter }, 'Resolved meta-model');
         pipelineCandidates = resolution.resolved;
-        // Flag when meta-model already filtered to free-only (skip redundant pipeline filtering)
-        if (modelTarget.modelId === 'free' || modelTarget.modelId.startsWith('free-')) {
+        // Flag when meta-model filtered to free-only (skip redundant pipeline filtering)
+        if (resolution.costFilter === 'free')
           metaModelFilteredFree = true;
-        }
       } else {
         logger.warn({ metaModel: modelTarget.modelId, totalCandidates: scopedCandidates.length }, 'Meta-model resolved to zero candidates');
         throw new ProviderUnavailableError(
@@ -534,10 +569,12 @@ export class Router {
       ? this.candidates.filter(c => c.providerName === compositeModelTarget.providerName)
       : this.candidates;
     let compositeCandidates = compositeScoped;
+    const compositeCostFilterOverride = (request as any).metadata?.costFilter as 'free' | 'all' | undefined
+      || this.config.metaModelCostFilter;
     if (compositeModelTarget.modelId && isMetaModel(compositeModelTarget.modelId)) {
-      const resolution = resolveMetaModel(compositeModelTarget.modelId, compositeScoped);
+      const resolution = resolveMetaModel(compositeModelTarget.modelId, compositeScoped, compositeCostFilterOverride);
       if (resolution) {
-        logger.info({ metaModel: compositeModelTarget.modelId, candidateCount: resolution.resolved.length }, 'Resolved meta-model for composite');
+        logger.info({ metaModel: compositeModelTarget.modelId, candidateCount: resolution.resolved.length, costFilter: resolution.costFilter }, 'Resolved meta-model for composite');
         compositeCandidates = resolution.resolved;
       } else {
         logger.warn({ metaModel: compositeModelTarget.modelId, totalCandidates: compositeScoped.length }, 'Meta-model resolved to zero candidates (composite)');
@@ -629,7 +666,7 @@ export class Router {
    *   "pollinations/openai-fast"          → { providerName: "pollinations", modelId: "openai-fast" }
    *   "openrouter-free/qwen/qwen3-coder"  → { providerName: "openrouter-free", modelId: "qwen/qwen3-coder" }
    *   "qwen/qwen3-coder"                  → { modelId: "qwen/qwen3-coder" }  (qwen is not a provider)
-   *   "free-smart"                        → { modelId: "free-smart" }
+   *   "auto-smart"                        → { modelId: "auto-smart" }
    */
   private parseModelTarget(model: string | undefined): { providerName?: string; modelId: string } {
     if (!model) return { modelId: '' };

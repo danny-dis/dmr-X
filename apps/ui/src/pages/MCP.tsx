@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Cpu, Server, Hammer as Tool, Network, Globe, Info, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Cpu, Server, Hammer as Tool, Network, Globe, Info, RefreshCw, AlertTriangle, Play, ChevronDown } from 'lucide-react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Badge } from '@/components/primitives/Badge';
@@ -9,7 +9,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitive
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import type { ApiMcpStatus } from '@/types/api';
+import { apiPost } from '@/lib/api';
+import type { ApiMcpStatus, ApiMcpTool } from '@/types/api';
 
 export function MCPPage() {
   // The MCP server is a separate process. The gateway's admin endpoint
@@ -18,8 +19,16 @@ export function MCPPage() {
   // For stdio the process is per-client, so `available` is `null` and we
   // render an "unknown" pill.
   const mcp = useApiData<ApiMcpStatus>(Admin.getMcpStatus, [], { refetchInterval: 30_000 });
+  const mcpTools = useApiData<ApiMcpTool[]>(Admin.listMcpTools, [], { refetchInterval: 60_000 });
+
+  const [selectedTool, setSelectedTool] = React.useState<string>('');
+  const [toolParams, setToolParams] = React.useState<string>('{}');
+  const [toolResult, setToolResult] = React.useState<any>(null);
+  const [toolError, setToolError] = React.useState<string | null>(null);
+  const [isExecuting, setIsExecuting] = React.useState(false);
 
   const data = mcp.data;
+  const tools = mcpTools.data;
   const transport = data?.transport ?? 'stdio';
   const host = data?.host ?? '127.0.0.1';
   const port = data?.port ?? 3100;
@@ -144,23 +153,27 @@ export function MCPPage() {
         <Card className="lg:col-span-2">
           <Tabs defaultValue="tools">
             <div className="px-5 pt-4 border-b border-border">
-              <TabsList className="mb-[-1px]">
-                <TabsTrigger value="tools" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
-                  <Tool className="size-3.5 mr-2" />
-                  Available Tools
-                  {data && (
-                    <Badge tone="muted" size="sm" className="ml-2">{data.tools.length}</Badge>
-                  )}
-                </TabsTrigger>
-                <TabsTrigger value="aggregation" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
-                  <Network className="size-3.5 mr-2" />
-                  Aggregation
-                </TabsTrigger>
-                <TabsTrigger value="setup" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
-                  <Globe className="size-3.5 mr-2" />
-                  Setup Guide
-                </TabsTrigger>
-              </TabsList>
+<TabsList className="mb-[-1px]">
+                 <TabsTrigger value="tools" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Tool className="size-3.5 mr-2" />
+                   Available Tools
+                   {data && (
+                     <Badge tone="muted" size="sm" className="ml-2">{data.tools.length}</Badge>
+                   )}
+                 </TabsTrigger>
+                 <TabsTrigger value="test" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Play className="size-3.5 mr-2" />
+                   Test Tool
+                 </TabsTrigger>
+                 <TabsTrigger value="aggregation" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Network className="size-3.5 mr-2" />
+                   Aggregation
+                 </TabsTrigger>
+                 <TabsTrigger value="setup" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Globe className="size-3.5 mr-2" />
+                   Setup Guide
+                 </TabsTrigger>
+               </TabsList>
             </div>
 
             <TabsContent value="tools" className="p-0">
@@ -175,7 +188,7 @@ export function MCPPage() {
                 </div>
               ) : (
                 <div className="divide-y divide-border">
-                  {(data?.tools ?? []).map((tool) => (
+                  {(tools ?? data?.tools ?? []).map((tool) => (
                     <div key={tool.name} className="p-4 hover:bg-surface-1 transition-colors">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm font-mono font-semibold text-primary">{tool.name}</span>
@@ -184,11 +197,68 @@ export function MCPPage() {
                       <p className="text-xs text-fg-muted">{tool.description}</p>
                     </div>
                   ))}
-                  {data && data.tools.length === 0 && (
+                  {(tools ?? data?.tools ?? []).length === 0 && (
                     <div className="p-8 text-center text-xs text-fg-muted">
                       No tools available. Check the MCP server configuration.
                     </div>
                   )}
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="test" className="p-4 space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-fg-subtle uppercase">Tool</label>
+                <select
+                  value={selectedTool}
+                  onChange={(e) => setSelectedTool(e.target.value)}
+                  className="w-full p-2 text-xs bg-surface-2 border border-border rounded"
+                >
+                  <option value="">Select a tool...</option>
+                  {(tools ?? []).map((tool) => (
+                    <option key={tool.name} value={tool.name}>{tool.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-fg-subtle uppercase">Parameters (JSON)</label>
+                <textarea
+                  value={toolParams}
+                  onChange={(e) => setToolParams(e.target.value)}
+                  placeholder='{"prompt": "your prompt here"}'
+                  className="w-full h-32 p-2 text-xs font-mono bg-surface-2 border border-border rounded resize-none"
+                />
+              </div>
+              <button
+                type="button"
+                disabled={!selectedTool || isExecuting}
+                onClick={async () => {
+                  setIsExecuting(true);
+                  setToolError(null);
+                  setToolResult(null);
+                  try {
+                    const params = JSON.parse(toolParams);
+                    const result = await Admin.executeMcpTool({ tool: selectedTool, parameters: params });
+                    setToolResult(result);
+                  } catch (err: any) {
+                    setToolError(err.message);
+                  } finally {
+                    setIsExecuting(false);
+                  }
+                }}
+                className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded hover:bg-primary/80 disabled:opacity-50"
+              >
+                {isExecuting ? 'Executing...' : 'Execute'}
+              </button>
+              {toolError && (
+                <div className="p-3 rounded-lg bg-danger/5 border border-danger/20 text-xs text-danger">{toolError}</div>
+              )}
+              {toolResult && (
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-fg-subtle uppercase">Result</label>
+                  <pre className="p-3 text-xs font-mono bg-surface-2 rounded overflow-x-auto">
+                    {JSON.stringify(toolResult, null, 2)}
+                  </pre>
                 </div>
               )}
             </TabsContent>

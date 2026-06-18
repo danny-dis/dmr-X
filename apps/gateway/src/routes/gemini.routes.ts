@@ -76,6 +76,7 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
       requestId,
       tenant: (request as any).tenant,
       apiFormat: 'gemini',
+      costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
     });
 
     if (body.stream) {

@@ -9,6 +9,7 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  responseType?: 'json' | 'blob';
 }
 
 export class ApiError extends Error {
@@ -80,8 +81,18 @@ export function setTenantToken(token: string | null): void {
   }
 }
 
+export async function fetchAuthenticated(path: string, opts: RequestInit = {}): Promise<Response> {
+  const url = buildUrl(path);
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(getTokenForPath(path) ? { Authorization: `Bearer ${getTokenForPath(path)}` } : {}),
+    ...opts.headers,
+  };
+  return await fetch(url, { ...opts, headers });
+}
+
 export async function api<T = unknown>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, query, headers = {}, signal, timeoutMs = 30_000 } = opts;
+  const { method = 'GET', body, query, headers = {}, signal, timeoutMs = 30_000, responseType = 'json' } = opts;
   const controller = signal ? null : new AbortController();
   const sig = signal ?? controller?.signal;
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -94,12 +105,26 @@ export async function api<T = unknown>(path: string, opts: RequestOptions = {}):
       signal: sig,
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'application/json',
+        Accept: responseType === 'blob' ? '*/*' : 'application/json',
         ...(getTokenForPath(path) ? { Authorization: `Bearer ${getTokenForPath(path)}` } : {}),
         ...headers,
       },
       body: body == null ? undefined : JSON.stringify(body),
     });
+    
+    if (responseType === 'blob') {
+      if (!res.ok) {
+        const text = await res.text();
+        let parsed: unknown = text;
+        try {
+          parsed = JSON.parse(text);
+        } catch {}
+        const message = typeof parsed === 'object' && parsed !== null && 'message' in parsed ? (parsed as any).message : `Request failed: ${res.status}`;
+        throw new ApiError(message, res.status, parsed);
+      }
+      return (await res.blob()) as T;
+    }
+
     const text = await res.text();
     let parsed: unknown = undefined;
     if (text) {

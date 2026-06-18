@@ -117,7 +117,7 @@ async function buildHarness(): Promise<TestHarness> {
   // name to get a fresh `ProxyTracer` (or we re-use the same name and
   // trust the proxy's caching — both work here because they end up at
   // the same provider).
-  const tracer = trace.getTracer(TRACER_NAME, '0.2.0');
+  const tracer = trace.getTracer(TRACER_NAME, '0.4.0');
 
   const app = Fastify({ logger: false });
 
@@ -238,7 +238,7 @@ describe('HIGH-3: OTel instrumentation', () => {
     // (Fastify's own async-context handling means `tracer.startActiveSpan`
     // alone cannot reach the active context started in `onRequest`).
     harness.app.get('/probe', async () => {
-      const tracer = trace.getTracer(TRACER_NAME, '0.2.0');
+      const tracer = trace.getTracer(TRACER_NAME, '0.4.0');
       // Use a synthetic parent context. In the real gateway, the route
       // handler would pick up the parent context from
       // `request.openTelemetryContext` (set in the onRequest hook). The
@@ -309,7 +309,7 @@ describe('HIGH-3: OTel instrumentation', () => {
 
   it('records exceptions on a span that throws', async () => {
     harness.app.get('/fail', async () => {
-      const tracer = trace.getTracer(TRACER_NAME, '0.2.0');
+      const tracer = trace.getTracer(TRACER_NAME, '0.4.0');
       return tracer.startActiveSpan('operation', async (span) => {
         try {
           throw new Error('synthetic failure');

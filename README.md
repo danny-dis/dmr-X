@@ -6,7 +6,7 @@ Universal AI routing and orchestration platform. A single gateway that accepts r
 
 - **Multi-Format API** — native OpenAI, Anthropic, and Gemini endpoints from one gateway
 - **Dynamic Routing** — cost/latency/quality scoring with fallback chains and Thompson Sampling bandit
-- **Meta-Model Aliases** — `free-coding`, `free-smart`, `free-agentic`, `free-fast`, `free` for automatic provider selection
+- **Meta-Model Aliases** — `auto-coding`, `auto-smart`, `auto-agentic`, `auto-fast`, `auto` for automatic provider selection
 - **18 Provider Adapters** — OpenAI, Anthropic, Google, Mistral, Cohere, Ollama, Replicate, Stability, ElevenLabs, Deepgram, Jina, ComfyUI, FAL.ai, Runway, Veo, Kokoro, Piper, TEI, plus GenericOpenAI for any OAI-compatible provider
 - **Zero External Dependencies** — SQLite via sql.js, no Redis/Postgres required
 - **Single Binary Distribution** — compile to standalone executable for Windows, Linux, macOS
@@ -149,13 +149,13 @@ Instead of hard-coding a model name, use a **meta-model alias** — DMR-X picks 
 
 | Alias | Picks |
 |-------|-------|
-| `free` | Any free model |
-| `free-fast` | Fastest free model |
-| `free-smart` | Most capable free model |
-| `free-agentic` | Best free model for tool use (64K+ context) |
-| `free-coding` | Best free model for code generation |
+| `auto` | Auto-pick best model (paid + free) |
+| `auto-fast` | Fastest model (paid + free) |
+| `auto-smart` | Most capable model (paid + free) |
+| `auto-agentic` | Best model for tool use (64K+ context) |
+| `auto-coding` | Best model for code generation |
 
-Use them exactly like a model name: `"model": "free-coding"`.
+Use them exactly like a model name: `"model": "auto-coding"`.
 
 See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and SDK integration guides for Claude Code, Cursor, Continue, and more.
 

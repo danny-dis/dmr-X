@@ -221,6 +221,8 @@ export interface ApiKey {
   /** Joined tenant name — only present on list responses, not on the create response. */
   tenant_name?: string;
   scopes?: string[];
+  /** Per-key tool restrictions (glob patterns like "dmrx_chat", "dmrx_*", or "*") */
+  allowed_tools?: string[];
   last_used_at?: string;
   is_active: number;
   created_at?: string;
@@ -524,6 +526,19 @@ export interface ApiHealthResponse {
 export interface ApiMcpTool {
   name: string;
   description?: string;
+  /** Optional parameter schema (Zod-like shape) for the tool */
+  params?: Record<string, unknown>;
+}
+
+export interface ApiMcpToolExecute {
+  tool: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface ApiMcpToolResult {
+  success: boolean;
+  result?: unknown;
+  error?: string;
 }
 
 export interface ApiMcpStatus {

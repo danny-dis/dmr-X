@@ -34,6 +34,11 @@ export function BenchmarksPage() {
   const [modelIds, setModelIds] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
 
+  const [arenaDialogOpen, setArenaDialogOpen] = React.useState(false);
+  const [modelA, setModelA] = React.useState('');
+  const [modelB, setModelB] = React.useState('');
+  const [submittingArena, setSubmittingArena] = React.useState(false);
+
   const handleRunBenchmark = async () => {
     setSubmitting(true);
     try {
@@ -49,6 +54,20 @@ export function BenchmarksPage() {
       toast.error('Failed to start benchmark');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleRunArenaBattle = async () => {
+    setSubmittingArena(true);
+    try {
+      await Admin.runArenaBattle(modelA, modelB);
+      toast.success('Arena battle started');
+      setArenaDialogOpen(false);
+      battles.refetch();
+    } catch {
+      toast.error('Failed to start arena battle');
+    } finally {
+      setSubmittingArena(false);
     }
   };
 
@@ -185,6 +204,12 @@ export function BenchmarksPage() {
         </TabsContent>
 
         <TabsContent value="arena" className="mt-4">
+          <div className="flex justify-end mb-4">
+            <Button size="sm" onClick={() => setArenaDialogOpen(true)}>
+              <Swords className="size-3 mr-1" />
+              Run Arena Battle
+            </Button>
+          </div>
           <div className="grid grid-cols-1 gap-4">
             {battles.isLoading ? (
               <Skeleton className="h-64 w-full" />
@@ -317,6 +342,34 @@ export function BenchmarksPage() {
             </DialogClose>
             <Button onClick={handleRunBenchmark} loading={submitting}>
               Run Test
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={arenaDialogOpen} onOpenChange={setArenaDialogOpen}>
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>Run Arena Battle</DialogTitle>
+            <DialogDescription>Pit two models against each other in a blind comparison.</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Model A ID</label>
+                <Input value={modelA} onChange={(e) => setModelA(e.target.value)} placeholder="gpt-4o" />
+              </div>
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Model B ID</label>
+                <Input value={modelB} onChange={(e) => setModelB(e.target.value)} placeholder="claude-3-5-sonnet" />
+              </div>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost">Cancel</Button>
+            </DialogClose>
+            <Button onClick={handleRunArenaBattle} loading={submittingArena}>
+              Run Battle
             </Button>
           </DialogFooter>
         </DialogContent>

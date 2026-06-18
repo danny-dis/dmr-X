@@ -22,6 +22,9 @@ import type {
   ApiCatalogEntry,
   ApiHealthResponse,
   ApiMcpStatus,
+  ApiMcpTool,
+  ApiMcpToolExecute,
+  ApiMcpToolResult,
   ApiProviderTestResult,
   ApiProviderOAuthStart,
   ApiMemorySearch,
@@ -111,17 +114,29 @@ export const Admin = {
     const list = Array.isArray(res) ? res : (res as { providers?: ApiProvider[] })?.providers ?? [];
     return list.map(toCamelProvider);
   },
+  // TODO: Unused in frontend.
+  // getProvider: async (id: string): Promise<ApiProvider> => {
+  //   const p = await apiGet<ApiProvider>(`/admin/providers/${id}`);
+  //   return toCamelProvider(p);
+  // },
+  // TODO: Unused in frontend.
+  // TODO: Unused in frontend.
+  // getProvider: async (id: string): Promise<ApiProvider> => {
+  //   const p = await apiGet<ApiProvider>(`/admin/providers/${id}`);
+  //   return toCamelProvider(p);
+  // },
   getProvider: async (id: string): Promise<ApiProvider> => {
     const p = await apiGet<ApiProvider>(`/admin/providers/${id}`);
     return toCamelProvider(p);
   },
-  createProvider: (body: Partial<ApiProvider>) =>
+  createProvider: (body: Partial<ApiProvider> & { tier?: 'free' | 'paid' }) =>
     apiPost<ApiProvider>('/admin/providers', {
       name: body.name,
       adapter_type: body.adapterType ?? body.adapter_type,
       base_url: body.baseUrl ?? body.base_url,
       api_key_ref: body.apiKeyRef ?? body.api_key_ref,
       config: body.config ?? {},
+      tier: body.tier,
     }),
   activateProvider: (body: {
     template_id: string;
@@ -131,6 +146,7 @@ export const Admin = {
     oauth_token_expires_at?: string;
     auth_method?: 'api_key' | 'oauth';
     name?: string;
+    tier?: 'free' | 'paid';
   }) => apiPost<{ success: boolean; provider: ApiProvider }>('/admin/providers/activate', body),
   updateProvider: (id: string, body: Partial<ApiProvider>) =>
     apiPut<ApiProvider>(`/admin/providers/${id}`, {
@@ -209,8 +225,14 @@ export const Admin = {
   testProvider: (id: string) => apiPost<ApiProviderTestResult>('/admin/providers/test', { provider_id: id }).then(normalizeProviderTestResult),
   startProviderOAuth: (id: string) =>
     apiPost<ApiProviderOAuthStart>(`/admin/providers/${id}/oauth/authorize`),
+  // TODO: Unused in frontend.
+  // completeProviderOAuth: (id: string, code: string, state: string) =>
+  //   apiPost<ApiProvider>(`/admin/providers/${id}/oauth/callback`, { code, state }),
   completeProviderOAuth: (id: string, code: string, state: string) =>
     apiPost<ApiProvider>(`/admin/providers/${id}/oauth/callback`, { code, state }),
+  // TODO: Unused in frontend.
+  // refreshProviderOAuth: (id: string) =>
+  //   apiPost<{ success: boolean; expiresAt?: string | null }>(`/admin/providers/${id}/oauth/refresh`),
   refreshProviderOAuth: (id: string) =>
     apiPost<{ success: boolean; expiresAt?: string | null }>(`/admin/providers/${id}/oauth/refresh`),
   getProviderOAuthStatus: (id: string) =>
@@ -229,6 +251,11 @@ export const Admin = {
     const list = Array.isArray(res) ? res : (res as { models?: ApiModel[] })?.models ?? [];
     return list.map(toCamelModel);
   },
+  // TODO: Unused in frontend.
+  // getModel: async (id: string): Promise<ApiModel> => {
+  //   const m = await apiGet<ApiModel>(`/admin/models/${id}`);
+  //   return toCamelModel(m);
+  // },
   getModel: async (id: string): Promise<ApiModel> => {
     const m = await apiGet<ApiModel>(`/admin/models/${id}`);
     return toCamelModel(m);
@@ -243,6 +270,11 @@ export const Admin = {
     const list = Array.isArray(res) ? res : (res as { tenants?: ApiTenant[] })?.tenants ?? [];
     return list.map(toCamelTenant);
   },
+  // TODO: Unused in frontend.
+  // getTenant: async (id: string): Promise<ApiTenant> => {
+  //   const t = await apiGet<ApiTenant>(`/admin/tenants/${id}`);
+  //   return toCamelTenant(t);
+  // },
   getTenant: async (id: string): Promise<ApiTenant> => {
     const t = await apiGet<ApiTenant>(`/admin/tenants/${id}`);
     return toCamelTenant(t);
@@ -284,10 +316,21 @@ export const Admin = {
       key: k.key && k.key.length > 0 ? k.key : undefined,
     }));
   },
-  createApiKey: (body: { tenant_id: string; name?: string; scopes?: string[] }) =>
+  createApiKey: (body: { tenant_id: string; name?: string; scopes?: string[]; allowed_tools?: string[] }) =>
     apiPost<ApiKey & { key: string }>('/admin/api-keys', body),
   revokeApiKey: (id: string) =>
     apiDelete<{ ok: true }>(`/admin/api-keys/${id}`),
+
+  // MCP Tools
+  listMcpTools: () => apiGet<{ tools: ApiMcpTool[] }>('/admin/mcp/tools').then(r => r.tools),
+  executeMcpTool: (body: ApiMcpToolExecute) =>
+    apiPost<ApiMcpToolResult>('/admin/mcp/tools/execute', body),
+
+  // API Key Tool Restrictions
+  getApiKeyTools: (id: string) =>
+    apiGet<{ allowed_tools: string[] }>(`/admin/api-keys/${id}/tools`).then(r => r.allowed_tools),
+  setApiKeyTools: (id: string, allowed_tools: string[]) =>
+    apiPut<{ allowed_tools: string[] }>(`/admin/api-keys/${id}/tools`, { allowed_tools }),
 
 // Routing & quota
   listRouteDecisions: (query?: { limit?: number }) =>
@@ -306,6 +349,8 @@ export const Admin = {
   // Observability
   listAlerts: () =>
     apiGet<{ alerts: ApiAlert[] }>('/admin/alerts').then(r => r.alerts.map(normalizeAlert)),
+  // Alerts are currently derived from transient state and are not persistent.
+  // TODO: Implement backend persistence for alert acknowledgment/resolution.
   acknowledgeAlert: (id: string) =>
     apiPost<ApiAlert>(`/admin/alerts/${id}/ack`),
   resolveAlert: (id: string) =>
@@ -314,19 +359,47 @@ export const Admin = {
     apiGet<{ events: ApiAuditEvent[] }>('/admin/audit/events').then(r => r.events.map(normalizeAuditEvent)),
   listTelemetry: () =>
     apiGet<{ events: ApiTelemetryEvent[] }>('/admin/telemetry/events').then(r => r.events.map(normalizeTelemetryEvent)),
-  streamTelemetry: (signal: AbortSignal, onEvent: (e: ApiTelemetryEvent) => void) => {
-    const url = '/admin/telemetry/stream';
-    const ev = new EventSource(buildSseUrl(url));
-    ev.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data) as ApiTelemetryEvent;
-        onEvent(data);
-      } catch {
-        // ignore
+  streamTelemetry: async (signal: AbortSignal, onEvent: (e: ApiTelemetryEvent) => void) => {
+    const token = getTokenForPath('/admin/telemetry/stream');
+    const url = buildSseUrl(token ? `/admin/telemetry/stream?token=${token}` : '/admin/telemetry/stream');
+
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'text/event-stream',
+      },
+      signal,
+    });
+
+    if (!res.ok || !res.body) throw new Error('Failed to connect to telemetry stream');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              onEvent(normalizeTelemetryEvent(JSON.parse(line.slice(6))));
+            } catch {
+              // ignore invalid JSON
+            }
+          }
+        }
       }
-    };
-    signal.addEventListener('abort', () => ev.close());
-    return ev;
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        console.error('Telemetry stream error:', err);
+      }
+    }
   },
 
   // Benchmarks
@@ -335,12 +408,20 @@ export const Admin = {
   getBattles: () => apiGet<{ battles: any[] }>('/admin/benchmarks/battles').then(r => r.battles),
   runArenaBattle: (modelA: string, modelB: string) => apiPost('/admin/benchmarks/battle', { modelA, modelB }),
   submitFeedback: (feedback: any) => apiPost('/admin/playground/feedback', feedback),
+  // Batch add messages
+  batchAddMessages: (conversationId: string, messages: any[]) =>
+    apiPost<{ success: boolean; count: number }>(`/conversations/${conversationId}/messages/batch`, {
+      messages,
+    }),
+
   // Policies
   listPolicies: () => apiGet<{ policies: ApiPolicyRule[] }>('/admin/policies').then(r => r.policies ?? []),
   upsertPolicy: (body: Partial<ApiPolicyRule>) => apiPost<ApiPolicyRule>('/admin/policies', body),
   updatePolicy: (id: string, body: Partial<ApiPolicyRule>) =>
     apiPut<ApiPolicyRule>(`/admin/policies/${id}`, body),
+  // TODO: Unused in frontend.
   deletePolicy: (id: string) => apiDelete<{ ok: true }>(`/admin/policies/${id}`),
+
 
   // Memory
   searchMemory: (body: ApiMemorySearch) => apiPost<ApiMemoryItem[]>('/admin/memory/search', body),
@@ -395,19 +476,6 @@ export const Admin = {
   // Rotate the admin API key at runtime. Returns the new key (one-time display).
   rotateAdminKey: () =>
     apiPost<{ new_key: string; message: string }>('/admin/security/rotate-admin-key'),
-
-  // Rerank documents
-  rerankDocuments: (body: { model?: string; query: string; documents: string[]; top_n?: number }) =>
-    apiPost<ApiRerankResult>('/v1/rerank', body),
-
-  // Agentic / tool-loop helpers. The Playground currently uses raw fetch
-  // (see usePlaygroundStore) so it can stream the SSE response body itself;
-  // these wrappers are kept for symmetry with the rest of the admin client
-  // and for non-streaming callers that just want the full payload.
-  agenticChat: (body: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>('/v1/agentic/chat', body),
-  toolLoop: (body: Record<string, unknown>) =>
-    apiPost<Record<string, unknown>>('/v1/tools/loop', body),
 };
 
 function buildSseUrl(path: string): string {

@@ -53,6 +53,11 @@ const CreateProviderSchema = z.object({
   priority: z.number().int().min(0).optional().default(0),
   enabled: z.boolean().optional().default(true),
   config: z.record(z.unknown()).optional().default({}),
+  /** Tier of the key being attached. Defaults to 'paid' for backward
+   * compatibility — operators who want to label a key as free must opt in.
+   * When the dialog is opened from the Free Tier page, the UI passes
+   * 'free' explicitly. */
+  tier: z.enum(['free', 'paid']).default('paid'),
 });
 
 const CreateModelSchema = z.object({
@@ -186,6 +191,7 @@ const CreateApiKeySchema = z.object({
   tenant_id: z.string().uuid(),
   name: z.string().max(255).optional(),
   scopes: z.array(z.string()).optional(),
+  allowed_tools: z.array(z.string()).optional(),
 });
 
 const CreateTenantApiKeySchema = z.object({
@@ -220,6 +226,15 @@ const UpdatePolicySchema = z.object({
   conditions: z.record(z.unknown()).optional(),
   priority: z.number().int().min(0).optional(),
   enabled: z.boolean().optional(),
+});
+
+const McpToolExecuteSchema = z.object({
+  tool: z.string().min(1),
+  parameters: z.record(z.unknown()).optional(),
+});
+
+const ApiKeyToolsSchema = z.object({
+  allowed_tools: z.array(z.string()),
 });
 
 const PrimitiveValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
@@ -2065,10 +2080,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         body.base_url ?? null,
         null, // see comment above — literal keys are stored encrypted in config
         JSON.stringify(configToStore),
-        // Default tier for a form-driven create is 'paid' — operators
-        // adding a brand-new connection almost always mean a paid key.
-        // They can override the tier from the provider detail drawer.
-        'paid',
+        // Tier from the request body; defaults to 'paid' in the schema
+        // for backward compat. The Free Tier page passes 'free' explicitly.
+        body.tier,
       );
     } catch (err) {
       // Surface the "name already exists" case as a 409 instead of a 500.
@@ -2093,7 +2107,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       upsertDefaultKey(db, id, {
         apiKeyPlaintext: body.api_key_ref,
         authMethod: 'api_key',
-        tier: 'paid',
+        tier: body.tier,
       });
     }
     recomputeProviderTier(db, id);
@@ -2286,7 +2300,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { tenant_id, name, scopes } = parsed.data;
+    const { tenant_id, name, scopes, allowed_tools } = parsed.data;
 
     const db = getDb();
 
@@ -2303,11 +2317,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name, scopes) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, tenant_id, keyHash, name, scopes ? JSON.stringify(scopes) : null);
+      'INSERT INTO api_keys (id, tenant_id, key_hash, name, scopes, allowed_tools) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, tenant_id, keyHash, name, scopes ? JSON.stringify(scopes) : null, allowed_tools ? JSON.stringify(allowed_tools) : null);
 
     const row = db.prepare(
-      'SELECT id, tenant_id, name, scopes, created_at FROM api_keys WHERE id = ?'
+      'SELECT id, tenant_id, name, scopes, allowed_tools, created_at FROM api_keys WHERE id = ?'
     ).get(id);
 
     reply.status(201);
@@ -3763,5 +3777,278 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         { name: 'dmrx_context_compress', description: 'Compress a saved conversation while preserving meaning.' },
       ],
     };
+  });
+
+  // MCP tools list endpoint (replaces hardcoded list in /admin/mcp/status)
+  server.get('/admin/mcp/tools', async () => {
+    // Tool definitions are defined in services/mcp-server/src/tools.ts
+    // Keeping a copy here for the admin API to report available tools
+    const mcpTools = [
+      { name: 'dmrx_chat', description: 'Send a chat completion request through DMR-X. Automatically routes to the best available LLM based on quality, cost, and latency targets.' },
+      { name: 'dmrx_chat_stream', description: 'Streaming chat completion with token-by-token output via streaming response.' },
+      { name: 'dmrx_generate_image', description: 'Generate images through DMR-X. Automatically routes to the best available diffusion model.' },
+      { name: 'dmrx_generate_image_stream', description: 'Streaming image generation with progressive updates.' },
+      { name: 'dmrx_generate_video', description: 'Generate videos through DMR-X. Routes to the best video model (Runway, Pika, Replicate, etc.).' },
+      { name: 'dmrx_generate_music', description: 'Generate music through DMR-X. Routes to music generation providers (Suno, Udio, Replicate/MusicGen).' },
+      { name: 'dmrx_embed', description: 'Get text embeddings through DMR-X. Routes to the best embedding model for the given input.' },
+      { name: 'dmrx_rerank', description: 'Rerank documents by relevance to a query through DMR-X. Routes to the best reranking model.' },
+      { name: 'dmrx_transcribe', description: 'Transcribe audio to text through DMR-X. Routes to the best STT model.' },
+      { name: 'dmrx_speak', description: 'Convert text to speech through DMR-X. Routes to the best TTS model.' },
+      { name: 'dmrx_models', description: 'List available models in DMR-X, optionally filtered by modality or provider.' },
+      { name: 'dmrx_status', description: 'Get DMR-X system status including router health, provider availability, and configuration.' },
+      { name: 'dmrx_batch', description: 'Execute multiple MCP tool calls atomically. Returns aggregated results with individual outcomes.' },
+      { name: 'dmrx_workflow', description: 'Define and execute multi-step workflows with branching, looping, and retry policies.' },
+      { name: 'dmrx_context_save', description: 'Persist conversation context for stateful agent interactions across sessions.' },
+      { name: 'dmrx_context_load', description: 'Load a previously saved conversation context by ID.' },
+      { name: 'dmrx_context_list', description: 'List saved conversation contexts with pagination.' },
+      { name: 'dmrx_context_summarize', description: 'Generate a contextual summary of a saved conversation to reduce token cost.' },
+      { name: 'dmrx_context_compress', description: 'Compress a saved conversation while preserving meaning.' },
+      { name: 'dmrx_generate_3d', description: 'Generate 3D models through DMR-X. Routes to text-to-3d or image-to-3d models.' },
+    ];
+    return { tools: mcpTools };
+  });
+
+  // Execute an MCP tool directly (for testing)
+  server.post('/admin/mcp/tools/execute', async (request, reply) => {
+    const parsed = McpToolExecuteSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const { tool, parameters } = parsed.data;
+    const router = (server as any).router;
+
+    try {
+      const requestId = crypto.randomUUID();
+
+      // Map MCP tool names to their respective routing
+      if (tool === 'dmrx_chat') {
+        const request = {
+          ...parameters,
+          modality: 'llm' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/chat/completions',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_embed') {
+        const request = {
+          ...parameters,
+          modality: 'embedding' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/embeddings',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_rerank') {
+        const request = {
+          ...parameters,
+          modality: 'reranking' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/rerank',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_generate_image') {
+        const request = {
+          ...parameters,
+          modality: 'diffusion' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/images/generations',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_transcribe') {
+        const request = {
+          ...parameters,
+          modality: 'audio_stt' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/audio/transcriptions',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_speak') {
+        const request = {
+          ...parameters,
+          modality: 'audio_tts' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/audio/speech',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_generate_video') {
+        const request = {
+          ...parameters,
+          modality: 'video' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/video/generations',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_generate_music') {
+        const request = {
+          ...parameters,
+          modality: 'music' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/music/generations',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_generate_3d') {
+        const request = {
+          ...parameters,
+          modality: '3d' as const,
+          stream: false,
+          metadata: { requestId },
+        };
+        const { response } = await router.route(request, {
+          path: '/v1/3d/generate',
+          qualityTarget: 'balanced',
+        });
+        return { success: true, result: response };
+      }
+
+      if (tool === 'dmrx_models') {
+        const allCandidates = [...router.getCandidates()];
+        const modality = parameters?.modality;
+        const provider = parameters?.provider;
+        let models = allCandidates;
+        if (modality) {
+          models = models.filter((m: any) => m.modality === modality);
+        }
+        if (provider) {
+          models = models.filter((m: any) =>
+            m.providerId.toLowerCase().includes(String(provider).toLowerCase())
+          );
+        }
+        return { success: true, result: { models } };
+      }
+
+      if (tool === 'dmrx_status') {
+        const candidates = router.getCandidates();
+        return {
+          success: true,
+          result: {
+            status: 'ok',
+            version: process.env.npm_package_version || '0.4.0',
+            uptime: Math.round(process.uptime()),
+            candidates: candidates.length,
+          },
+        };
+      }
+
+      // Batch and context tools require more complex handling - return not implemented
+      if (tool.startsWith('dmrx_context_') || tool === 'dmrx_batch' || tool === 'dmrx_workflow') {
+        reply.status(501);
+        return {
+          success: false,
+          error: `Tool "${tool}" requires streaming context management - use the MCP server directly or /v1/tools/execute endpoint`,
+        };
+      }
+
+      reply.status(404);
+      return { success: false, error: `Tool "${tool}" not implemented in admin API` };
+    } catch (error: any) {
+      logger.error({ err: error, tool }, 'MCP tool execution failed');
+      (server as any).recordTelemetryEvent?.({
+        level: 'error',
+        service: 'gateway',
+        message: error.message,
+        metadata: { path: request.url, tool },
+      });
+      reply.status(500);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Get allowed tools for an API key
+  server.get('/admin/api-keys/:id/tools', async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const db = getDb();
+    const row = db.prepare(
+      'SELECT id, name, allowed_tools FROM api_keys WHERE id = ?'
+    ).get(id) as { id: string; name: string; allowed_tools: string | null } | undefined;
+
+    if (!row) {
+      reply.status(404);
+      return { error: { message: 'API key not found' } };
+    }
+
+    const allowedTools = row.allowed_tools
+      ? JSON.parse(row.allowed_tools) as string[]
+      : [];
+
+    return { allowed_tools: allowedTools };
+  });
+
+  // Set allowed tools for an API key
+  server.put('/admin/api-keys/:id/tools', async (request, reply) => {
+    const parsed = ApiKeyToolsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const id = (request.params as { id: string }).id;
+    const { allowed_tools } = parsed.data;
+
+    const db = getDb();
+    const existing = db.prepare(
+      'SELECT id FROM api_keys WHERE id = ?'
+    ).get(id) as { id: string } | undefined;
+
+    if (!existing) {
+      reply.status(404);
+      return { error: { message: 'API key not found' } };
+    }
+
+    db.prepare(
+      'UPDATE api_keys SET allowed_tools = ?, updated_at = datetime(\'now\') WHERE id = ?'
+    ).run(JSON.stringify(allowed_tools), id);
+
+    const row = db.prepare(
+      'SELECT id, name, allowed_tools FROM api_keys WHERE id = ?'
+    ).get(id);
+
+    return { ...row, allowed_tools };
   });
 }

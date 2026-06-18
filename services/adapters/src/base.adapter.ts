@@ -34,7 +34,7 @@ import {
 // `adapter.fetch` spans get the active gateway request as their parent
 // because they are called from `router.execute`, which runs inside the
 // `http.request` span started in apps/gateway/src/server.ts.
-const tracer = trace.getTracer('dmr-x-gateway', '0.2.0');
+const tracer = trace.getTracer('dmr-x-gateway', '0.4.0');
 
 /**
  * HTTP status codes that trigger automatic retry.

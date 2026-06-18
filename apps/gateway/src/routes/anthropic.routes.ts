@@ -81,6 +81,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
       requestId,
       tenant: (request as any).tenant,
       apiFormat: 'anthropic',
+      costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
     });
 
     if (body.stream) {

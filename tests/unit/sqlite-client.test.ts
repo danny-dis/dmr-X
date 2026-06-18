@@ -45,13 +45,13 @@ afterEach(async () => {
 
 describe('sqlite-client', () => {
   describe('DatabaseWrapper', () => {
-    it('initializes sql.js and applies all 17 migrations', async () => {
+    it('initializes sql.js and applies all 18 migrations', async () => {
       const wrapper = await initDb();
       // The schema_version table is created by migration 002 and
-      // every subsequent migration appends a row. After 17 successful
-      // migrations the highest version should be 17.
+      // every subsequent migration appends a row. After 18 successful
+      // migrations the highest version should be 18.
       const row = wrapper.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-      expect(row.v).toBe(17);
+      expect(row.v).toBe(18);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

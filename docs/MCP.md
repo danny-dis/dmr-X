@@ -375,7 +375,7 @@ const result = await client.callTool({
   name: "dmrx_chat",
   arguments: {
     messages: [{ role: "user", content: "Hello!" }],
-    model: "free-coding",
+    model: "auto-coding",
   },
 });
 ```
