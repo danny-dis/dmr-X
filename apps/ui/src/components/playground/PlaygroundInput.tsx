@@ -7,7 +7,7 @@ import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { Badge } from '@/components/primitives/Badge';
-import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X } from 'lucide-react';
+import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useApiData } from '@/hooks/useApiData';
 import type { ApiModel } from '@/types/api';
@@ -32,10 +32,12 @@ export function PlaygroundInput() {
     mode,
     model,
     config,
+    costFilter,
     isTemporary,
     isStreaming,
     setMode,
     setModel,
+    setCostFilter,
     setConfig,
     setTools,
     toggleTemporary,
@@ -187,7 +189,11 @@ export function PlaygroundInput() {
                 <SelectValue placeholder="Select model" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="free">Free (Auto-route)</SelectItem>
+                <SelectItem value="auto">Auto (best model)</SelectItem>
+                <SelectItem value="auto-fast">Auto-Fast</SelectItem>
+                <SelectItem value="auto-smart">Auto-Smart</SelectItem>
+                <SelectItem value="auto-agentic">Auto-Agentic</SelectItem>
+                <SelectItem value="auto-coding">Auto-Coding</SelectItem>
                 {filteredModels.map((m) => (
                   <SelectItem key={m.id} value={m.id}>
                     {m.name} <span className="text-fg-subtle ml-1">· {m.provider}</span>
@@ -204,6 +210,35 @@ export function PlaygroundInput() {
             >
               <Settings2 className="size-4" />
             </Button>
+
+            {/* Cost Filter Toggle — only visible for meta-model aliases */}
+            {model.startsWith('auto') && (
+              <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setCostFilter('all')}
+                  className={cn(
+                    'flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                    costFilter === 'all' ? 'bg-primary text-primary-foreground' : 'text-fg-muted hover:text-fg'
+                  )}
+                  title="Route through all providers (paid + free)"
+                >
+                  <Coins className="size-2.5" />
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCostFilter('free')}
+                  className={cn(
+                    'flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                    costFilter === 'free' ? 'bg-primary text-primary-foreground' : 'text-fg-muted hover:text-fg'
+                  )}
+                  title="Route through free providers only (zero-cost)"
+                >
+                  Free
+                </button>
+              </div>
+            )}
           </div>
           
           <div className="flex items-center gap-3">

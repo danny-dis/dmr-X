@@ -18,7 +18,7 @@ const EXAMPLES = {
   -H "Authorization: Bearer $DMRX_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "free",
+    "model": "auto",
     "messages": [
       {"role": "user", "content": "Hello, world!"}
     ]
@@ -32,7 +32,7 @@ const EXAMPLES = {
   -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "free",
+    "model": "auto",
     "max_tokens": 1024,
     "messages": [
       {"role": "user", "content": "Hello, world!"}
@@ -79,7 +79,7 @@ const EXAMPLES = {
   -H "Authorization: Bearer $DMRX_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "free",
+    "model": "auto",
     "messages": [
       {"role": "user", "content": "Search for DMR-X"}
     ],
@@ -221,11 +221,11 @@ export function ConnectPage() {
           </CardHeader>
           <CardContent className="px-0 flex flex-col gap-1.5">
             {[
-              { name: 'free', desc: 'Auto-pick best free model' },
-              { name: 'free-fast', desc: 'Fastest free model' },
-              { name: 'free-smart', desc: 'Smartest free model' },
-              { name: 'free-agentic', desc: 'Best for agentic/tool use' },
-              { name: 'free-coding', desc: 'Best for code generation' },
+              { name: 'auto', desc: 'Auto-pick best model (paid + free)' },
+              { name: 'auto-fast', desc: 'Fastest model' },
+              { name: 'auto-smart', desc: 'Smartest model' },
+              { name: 'auto-agentic', desc: 'Best for agentic/tool use' },
+              { name: 'auto-coding', desc: 'Best for code generation' },
             ].map((a) => (
               <div
                 key={a.name}

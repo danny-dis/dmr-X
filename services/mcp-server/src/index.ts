@@ -117,34 +117,77 @@ const configFileForAuth = loadConfigFile();
 const MCP_API_KEYS = parseApiKeys(configFileForAuth);
 
 /**
+ * Checks the Authorization header against the configured API keys.
+ * Returns an object with authorized: boolean and allowedTools: string[] if the key is authorized.
+ * Sends a 401 response and returns authorized: false if unauthorized.
+ */
+function checkAuthAndGetAllowedTools(
+  req: { headers: Record<string, string | string[] | undefined> },
+  res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body: string) => void }
+): { authorized: boolean; allowedTools?: string[] } {
+  if (MCP_API_KEYS.length === 0) return { authorized: true };
+
+  const authHeader = req.headers['authorization'];
+  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized — missing Bearer token' }));
+    return { authorized: false };
+  }
+
+  const token = authHeader.slice(7); // strip "Bearer "
+  const tokenBuf = Buffer.from(token, 'utf8');
+
+  // 1. Check detailed keyRestrictions/apiKeysConfig in configuration file
+  const keyConfigs = configFileForAuth?.apiKeysConfig || [];
+  for (const kc of keyConfigs) {
+    if (typeof kc.key !== 'string') continue;
+    const keyBuf = Buffer.from(kc.key, 'utf8');
+    if (tokenBuf.length === keyBuf.length && timingSafeEqual(tokenBuf, keyBuf)) {
+      return { authorized: true, allowedTools: kc.allowedTools };
+    }
+  }
+
+  // 2. Check JSON env var DMRX_MCP_API_KEYS_CONFIG
+  const envConfigRaw = process.env.DMRX_MCP_API_KEYS_CONFIG;
+  if (envConfigRaw) {
+    try {
+      const parsed = JSON.parse(envConfigRaw);
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (entry && typeof entry === 'object' && typeof entry.key === 'string') {
+            const keyBuf = Buffer.from(entry.key, 'utf8');
+            if (tokenBuf.length === keyBuf.length && timingSafeEqual(tokenBuf, keyBuf)) {
+              return { authorized: true, allowedTools: entry.allowedTools };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse DMRX_MCP_API_KEYS_CONFIG env var:', e);
+    }
+  }
+
+  // 3. Fallback to simple comma-separated check
+  for (const validKey of MCP_API_KEYS) {
+    const keyBuf = Buffer.from(validKey, 'utf8');
+    if (tokenBuf.length === keyBuf.length && timingSafeEqual(tokenBuf, keyBuf)) {
+      return { authorized: true };
+    }
+  }
+
+  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Unauthorized — invalid Bearer token' }));
+  return { authorized: false };
+}
+
+/**
  * Checks the Authorization header against the configured API keys using
  * timing-safe comparison to prevent timing attacks.
  * Returns true if the request is authorized (or no keys are configured).
  * Sends a 401 response and returns false if unauthorized.
  */
 function checkAuth(req: { headers: Record<string, string | string[] | undefined> }, res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body: string) => void }): boolean {
-  if (MCP_API_KEYS.length === 0) return true;
-
-  const authHeader = req.headers['authorization'];
-  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized — missing Bearer token' }));
-    return false;
-  }
-
-  const token = authHeader.slice(7); // strip "Bearer "
-  const tokenBuf = Buffer.from(token, 'utf8');
-
-  for (const validKey of MCP_API_KEYS) {
-    const keyBuf = Buffer.from(validKey, 'utf8');
-    // Buffers must be same length for timingSafeEqual; pad shorter one
-    if (tokenBuf.length !== keyBuf.length) continue;
-    if (timingSafeEqual(tokenBuf, keyBuf)) return true;
-  }
-
-  res.writeHead(401, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Unauthorized — invalid Bearer token' }));
-  return false;
+  return checkAuthAndGetAllowedTools(req, res).authorized;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +422,7 @@ async function buildConfig(): Promise<BuiltConfig> {
         enableDecomposition: resolveConfigBool(configFile, 'router.enableDecomposition', 'DMRX_ENABLE_DECOMPOSITION', false),
       },
       adapterConfigs,
+      allowedTools: configFile?.allowedTools || (process.env.DMRX_MCP_ALLOWED_TOOLS ? process.env.DMRX_MCP_ALLOWED_TOOLS.split(',').map((t) => t.trim()) : undefined),
       externalMcpClient: externalMcpClient ?? undefined,
     },
     externalMcpClient,
@@ -425,9 +469,13 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     if (url.pathname === '/sse' && req.method === 'GET') {
-      if (!checkAuth(req, res)) return;
+      const authResult = checkAuthAndGetAllowedTools(req, res);
+      if (!authResult.authorized) return;
       // Create a new SSE session
-      const { server } = createDMRXMcpServer(config);
+      const { server } = createDMRXMcpServer({
+        ...config,
+        allowedTools: authResult.allowedTools,
+      });
       const transport = new SSEServerTransport('/messages', res);
       const sessionId = transport.sessionId;
 
@@ -526,7 +574,8 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     if (url.pathname === '/mcp') {
-      if (!checkAuth(req, res)) return;
+      const authResult = checkAuthAndGetAllowedTools(req, res);
+      if (!authResult.authorized) return;
       // Check for existing session
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
@@ -540,7 +589,10 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 
       // New session
       if (req.method === 'POST') {
-        const { server } = createDMRXMcpServer(config);
+        const { server } = createDMRXMcpServer({
+          ...config,
+          allowedTools: authResult.allowedTools,
+        });
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid: string) => {

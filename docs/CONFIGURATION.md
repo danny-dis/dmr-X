@@ -29,6 +29,7 @@ This page documents **every** `DMRX_*` environment variable the gateway understa
 | `DMRX_MEMORY_LIMIT` | `1572864000` (1.5 GB) | No | RSS threshold for `/healthz` to report `memory: fail`. Accepts `1.5gb`, `512mb`, plain numbers. Must be 64 MB – 16 GB. |
 | `DMRX_COMPRESS_THRESHOLD` | `1024` (1 KB) | No | Response compression threshold in bytes. Responses smaller than this are sent uncompressed. Set to `0` to disable compression. SSE streams are skipped regardless. Must be 0 – 1 048 576. |
 | `DMRX_FREE_TIER_STRATEGY` | `none` | No | Free-tier routing strategy: `none`, `prioritize`, `load_balance`, `fallback`. |
+| `DMRX_META_MODEL_COST_FILTER` | `all` | No | Default cost filter for meta-model aliases (`auto`, `auto-fast`, etc.). `all` routes through all providers (paid + free); `free` restricts to zero-cost providers only. Per-request override via `x-cost-filter` header. |
 | `DMRX_WORKER_POOL_FANOUT` | `false` | No | Opt-in flag that wires `WorkerPoolFanout` into the router pipeline for parallel sub-task dispatch. Set to `true` to enable. |
 
 ## Server Limits (production hardening)
@@ -86,6 +87,7 @@ Security headers are automatically applied:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DMRX_FREE_TIER_STRATEGY` | `none` | Free-tier routing strategy: `none`, `prioritize`, `load_balance`, `fallback`. |
+| `DMRX_META_MODEL_COST_FILTER` | `all` | Default cost filter for meta-model aliases (`auto`, `auto-fast`, etc.). `all` routes through all providers (paid + free); `free` restricts to zero-cost providers only. Per-request override via `x-cost-filter` header. |
 | `DMRX_WORKER_POOL_FANOUT` | `false` | Opt-in Worker-Pool Fanout layer — when `true`, the router dispatches parallel sub-task groups via `WorkerPoolFanout` and records each as a `WorkerJob` in the `workers` / `worker_jobs` tables. |
 
 Strategies:

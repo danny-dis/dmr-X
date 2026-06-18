@@ -57,6 +57,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         requestId,
         tenant: (request as any).tenant,
         freeTierStrategy: (request.headers['x-free-tier-strategy'] as string) || undefined,
+        costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
       },
     };
 

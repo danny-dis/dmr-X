@@ -7,6 +7,15 @@ export default defineConfig({
   esbuild: {
     loader: 'tsx',
     include: /.*\.tsx?$/,
+    target: 'es2022',
+  },
+  build: {
+    target: 'es2022',
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      target: 'es2022',
+    },
   },
   resolve: {
     alias: {

@@ -21,7 +21,7 @@ export function PlaygroundSidebar() {
   const { data: conversationsData, isLoading } = useApiData(
     () => fetch('/v1/conversations', {
       headers: {
-        'Authorization': `Bearer ${localStorage.getItem('dmrx_token') || ''}`,
+        'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
       },
     }).then(r => r.json()),
     [],

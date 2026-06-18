@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { usePlaygroundStore, Message } from '@/store/usePlaygroundStore';
+import { Admin } from '@/lib/admin';
 import { Button } from '@/components/primitives/Button';
 import { Copy, Check, ThumbsUp, ThumbsDown, RotateCcw, Clock, Zap, DollarSign, Info } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -29,16 +30,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   const handleFeedback = async (rating: 'up' | 'down') => {
     try {
-      await fetch('/v1/admin/playground/feedback', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('dmrx_token') || ''}`,
-        },
-        body: JSON.stringify({
-          requestId: message.id,
-          rating: rating === 'up' ? 1 : -1,
-        }),
+      await Admin.submitFeedback({
+        requestId: message.id,
+        rating: rating === 'up' ? 1 : -1,
       });
       setFeedback(rating);
     } catch (error) {

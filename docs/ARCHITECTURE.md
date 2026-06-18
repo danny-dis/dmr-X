@@ -232,13 +232,14 @@ The router is a multi-stage pipeline that selects the best provider for each req
 
 ## Meta-Model Resolution
 
-Meta-model aliases (`free`, `free-fast`, `free-smart`, `free-agentic`, `free-coding`) are resolved at request time by the router pipeline. The resolution:
+Meta-model aliases (`auto`, `auto-fast`, `auto-smart`, `auto-agentic`, `auto-coding`) are resolved at request time by the router pipeline. The resolution:
 
-1. Filters to free-tier providers only
-2. Applies the alias-specific scoring (speed, quality, context length, specialization)
-3. Selects the best match dynamically
+1. Applies the alias-specific scoring (speed, quality, context length, specialization)
+2. Selects the best match dynamically from all providers (paid + free)
 
-If no free provider is available, the gateway returns `503 No available providers` instead of silently falling back to paid models.
+By default, all meta-model aliases route through all providers (paid + free). To restrict to free-only providers, pass `costFilter='free'` to `resolveMetaModel` or set `DMRX_META_MODEL_COST_FILTER=free` globally.
+
+If no provider matches the criteria at all, the gateway returns `503 No available providers`.
 
 ## Security Model
 

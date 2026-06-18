@@ -211,12 +211,31 @@ export class OllamaAdapter extends BaseAdapter {
     }
 
     let index = 0;
-    for await (const parsed of parseNDJSON<{ message?: { content?: string }; done?: boolean }>(response.body)) {
+    for await (const parsed of parseNDJSON<{
+      message?: { content?: string };
+      done?: boolean;
+      model?: string;
+      prompt_eval_count?: number;
+      eval_count?: number;
+    }>(response.body)) {
       if (parsed.message?.content) {
         yield { type: 'token', data: { content: parsed.message.content }, index: index++ };
       }
       if (parsed.done) {
-        yield { type: 'done', data: {}, index: index++ };
+        yield {
+          type: 'done',
+          data: {
+            requestId: `ollama_${Date.now()}`,
+            modelId: parsed.model || request.model || 'llama3',
+            usage: {
+              prompt_tokens: parsed.prompt_eval_count || 0,
+              completion_tokens: parsed.eval_count || 0,
+              total_tokens: (parsed.prompt_eval_count || 0) + (parsed.eval_count || 0),
+            },
+            finishReason: 'stop',
+          },
+          index: index++
+        };
       }
     }
   }

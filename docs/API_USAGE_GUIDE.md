@@ -106,7 +106,7 @@ This is the standard OpenAI chat completions format used by most AI tools and SD
 
 ```json
 {
-  "model": "free-coding",
+  "model": "auto-coding",
   "messages": [
     { "role": "system", "content": "You are a helpful assistant." },
     { "role": "user", "content": "Hello!" }
@@ -117,7 +117,7 @@ This is the standard OpenAI chat completions format used by most AI tools and SD
 }
 ```
 
-Use a meta-model alias (`free`, `free-fast`, `free-smart`, `free-agentic`, `free-coding`) or a specific model name (`gpt-4o`, `claude-sonnet-4-0520`, `gemini-2.5-pro`, etc.).
+Use a meta-model alias (`auto`, `auto-fast`, `auto-smart`, `auto-agentic`, `auto-coding`) or a specific model name (`gpt-4o`, `claude-sonnet-4-0520`, `gemini-2.5-pro`, etc.).
 
 **Auth:** `Authorization: Bearer <dmrx-api-key>`
 
@@ -131,7 +131,7 @@ This is the Anthropic Messages API format used by Claude SDKs.
 
 ```json
 {
-  "model": "free-smart",
+  "model": "auto-smart",
   "max_tokens": 1024,
   "system": "You are a helpful assistant.",
   "messages": [
@@ -181,11 +181,11 @@ Instead of picking a specific model, you can use **meta-model aliases**. DMR-X d
 
 | Alias | What It Picks |
 |-------|---------------|
-| `free` | Any free model (pipeline scoring decides) |
-| `free-fast` | Fastest free model (lowest latency) |
-| `free-smart` | Most capable free model (highest quality) |
-| `free-agentic` | Best free model for tool use (64K+ context, quality+speed scoring) |
-| `free-coding` | Best free model for code (specialization match + quality + context + speed) |
+| `auto` | Best model overall (paid + free, pipeline scoring decides) |
+| `auto-fast` | Fastest model (lowest latency, paid + free) |
+| `auto-smart` | Most capable model (highest quality, paid + free) |
+| `auto-agentic` | Best model for tool use (64K+ context, quality+speed scoring, paid + free) |
+| `auto-coding` | Best model for code (specialization match + quality + context + speed, paid + free) |
 
 Use these exactly like a model name — the router resolves them to an actual provider/model at request time.
 
@@ -193,7 +193,7 @@ Use these exactly like a model name — the router resolves them to an actual pr
 # Instead of picking "gpt-4o" or "claude-sonnet-4-0520":
 export ANTHROPIC_BASE_URL=http://localhost:3000/v1
 export ANTHROPIC_API_KEY=dmrx_your_api_key_here
-claude --model free-coding
+claude --model auto-coding
 ```
 
 ---
@@ -212,11 +212,11 @@ export ANTHROPIC_API_KEY=dmrx_your_api_key_here
 Then use a meta-model alias as the model:
 
 ```bash
-claude --model free-coding          # best free model for code
-claude --model free-smart           # most capable free model
-claude --model free-fast            # fastest free model
-claude --model free-agentic         # best free model for tool use
-claude --model free                 # any free model
+claude --model auto-coding          # best free model for code
+claude --model auto-smart           # most capable free model
+claude --model auto-fast            # fastest free model
+claude --model auto-agentic         # best free model for tool use
+claude --model auto                 # any free model
 ```
 
 Or use a specific model name if you prefer:
@@ -244,7 +244,7 @@ export OPENAI_API_KEY=dmrx_your_api_key_here
 2. Click **+ Add Model** (or configure OpenAI API Key)
 3. Set **API Base URL** to: `http://localhost:3000/v1`
 4. Set **API Key** to: `dmrx_your_api_key_here`
-5. Enter a meta-model alias as the model name: `free-coding`, `free-fast`, `free-smart`, `free-agentic`, or `free`
+5. Enter a meta-model alias as the model name: `auto-coding`, `auto-fast`, `auto-smart`, `auto-agentic`, or `auto`
 
 For Anthropic models in Cursor, use the Anthropic API key settings with the same base URL pattern.
 
@@ -258,21 +258,21 @@ In your `~/.continue/config.json`:
     {
       "title": "DMR-X Free Coding",
       "provider": "openai",
-      "model": "free-coding",
+      "model": "auto-coding",
       "apiBase": "http://localhost:3000/v1",
       "apiKey": "dmrx_your_api_key_here"
     },
     {
       "title": "DMR-X Free Smart",
       "provider": "anthropic",
-      "model": "free-smart",
+      "model": "auto-smart",
       "apiBase": "http://localhost:3000/v1",
       "apiKey": "dmrx_your_api_key_here"
     },
     {
       "title": "DMR-X Free Agentic",
       "provider": "openai",
-      "model": "free-agentic",
+      "model": "auto-agentic",
       "apiBase": "http://localhost:3000/v1",
       "apiKey": "dmrx_your_api_key_here"
     }
@@ -291,7 +291,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="free-coding",  # dynamically picks best free coding model
+    model="auto-coding",  # dynamically picks best free coding model
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Explain quantum computing in one paragraph."},
@@ -314,7 +314,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-  model: "free-coding",  // dynamically picks best free coding model
+  model: "auto-coding",  // dynamically picks best free coding model
   messages: [
     { role: "system", content: "You are a helpful assistant." },
     { role: "user", content: "Explain quantum computing in one paragraph." },
@@ -337,7 +337,7 @@ client = anthropic.Anthropic(
 )
 
 response = client.messages.create(
-    model="free-smart",  # dynamically picks most capable free model
+    model="auto-smart",  # dynamically picks most capable free model
     max_tokens=500,
     system="You are a helpful assistant.",
     messages=[
@@ -359,7 +359,7 @@ const client = new Anthropic({
 });
 
 const response = await client.messages.create({
-  model: "free-smart",  // dynamically picks most capable free model
+  model: "auto-smart",  // dynamically picks most capable free model
   max_tokens: 500,
   system: "You are a helpful assistant.",
   messages: [
@@ -378,7 +378,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const genAI = new GoogleGenerativeAI("dmrx_your_api_key_here");
 
 const model = genAI.getGenerativeModel({
-  model: "free-fast",  // dynamically picks fastest free model
+  model: "auto-fast",  // dynamically picks fastest free model
 }, {
   baseUrl: "http://localhost:3000/v1",
 });
@@ -396,7 +396,7 @@ curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer dmrx_your_api_key_here" \
   -d '{
-    "model": "free-coding",
+    "model": "auto-coding",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": false
   }'
@@ -409,7 +409,7 @@ curl http://localhost:3000/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: dmrx_your_api_key_here" \
   -d '{
-    "model": "free-smart",
+    "model": "auto-smart",
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": false
@@ -424,7 +424,7 @@ curl http://localhost:3000/v1/gemini/generateContent \
   -H "x-api-key: dmrx_your_api_key_here" \
   -d '{
     "contents": [{"role": "user", "parts": [{"text": "Hello!"}]}],
-    "generationConfig": {"model": "free-fast"},
+    "generationConfig": {"model": "auto-fast"},
     "stream": false
   }'
 ```
@@ -449,7 +449,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:3000/v1", api_key="dmrx_your_api_key_here")
 
 stream = client.chat.completions.create(
-    model="free-coding",  # dynamically picks best free coding model
+    model="auto-coding",  # dynamically picks best free coding model
     messages=[{"role": "user", "content": "Write a haiku about code."}],
     stream=True,
 )
@@ -470,7 +470,7 @@ All three formats support tool/function calling. DMR-X converts between formats 
 
 ```json
 {
-  "model": "free-agentic",
+  "model": "auto-agentic",
   "messages": [{"role": "user", "content": "What's the weather in London?"}],
   "tools": [{
     "type": "function",
@@ -493,7 +493,7 @@ All three formats support tool/function calling. DMR-X converts between formats 
 
 ```json
 {
-  "model": "free-agentic",
+  "model": "auto-agentic",
   "max_tokens": 1024,
   "messages": [{"role": "user", "content": "What's the weather in London?"}],
   "tools": [{
@@ -515,7 +515,7 @@ All three formats support tool/function calling. DMR-X converts between formats 
 ```json
 {
   "contents": [{"role": "user", "parts": [{"text": "What's the weather in London?"}]}],
-  "generationConfig": {"model": "free-agentic"},
+  "generationConfig": {"model": "auto-agentic"}
   "tools": [{
     "functionDeclarations": [{
       "name": "get_weather",
@@ -542,7 +542,7 @@ All three formats support image inputs.
 
 ```json
 {
-  "model": "free-smart",
+  "model": "auto-smart",
   "messages": [{
     "role": "user",
     "content": [
@@ -557,7 +557,7 @@ All three formats support image inputs.
 
 ```json
 {
-  "model": "free-smart",
+  "model": "auto-smart",
   "max_tokens": 1024,
   "messages": [{
     "role": "user",
@@ -580,7 +580,7 @@ All three formats support image inputs.
       { "inlineData": { "mimeType": "image/png", "data": "iVBOR..." } }
     ]
   }],
-  "generationConfig": {"model": "free-smart"}
+  "generationConfig": {"model": "auto-smart"}
 }
 ```
 
@@ -591,6 +591,7 @@ All three formats support image inputs.
 - Default rate limit: 100 requests per minute (configurable via `DMRX_RATE_LIMIT_MAX` and `DMRX_RATE_LIMIT_WINDOW`)
 - Per-tenant quotas are managed via the admin API
 - Free-tier strategy can be configured with the `x-free-tier-strategy` header or `DMRX_FREE_TIER_STRATEGY` env var
+- Cost filter for meta-models: use the `x-cost-filter: free` header to restrict `auto*` aliases to zero-cost providers only, or `x-cost-filter: all` (default) to include all providers. Global default via `DMRX_META_MODEL_COST_FILTER` env var.
 
 ---
 

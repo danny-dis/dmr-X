@@ -1,13 +1,13 @@
 # Changelog
 
-## v0.2.1 — Follow-up (Unreleased)
+## v0.4.0 — Follow-up (Unreleased)
 
 ### Security
 - **fastify 4 → 5 upgrade** — bumped `fastify` 4.29.1 → 5.8.5 to close the Content-Type tab-character bypass CVE present in 4.x. The plugin stack is aligned to its fastify-5-compatible majors: `@fastify/compress` 9, `@fastify/cors` 11, `@fastify/multipart` 10, `@fastify/rate-limit` 11, `@fastify/static` 9. Code adjustments: `setErrorHandler` error param is now `unknown` (cast to `any` for the existing access pattern, same as elsewhere in the file); `reply.code()` → `reply.status()` (1 site in `setNotFoundHandler`); `maxParamLength` moved under `routerOptions` to silence the FSTDEP022 deprecation (top-level key will be removed in v6); `request.body` is now `unknown` but the existing Zod-`safeParse` pattern is forward-compatible so no route body access needed changing. `scripts/dev/server-original.ts` (a historical reference snapshot, not on any build path) was kept internally consistent. Verification: `npx tsc --noEmit` clean across the whole tree, `bun run test` → **1216 passed / 38 skipped**, gateway boots and reaches `DMR-X Gateway running` on `0.0.0.0:3099` with 82 adapters registered.
 
 ### In Progress
 - **request_logs writes** — durable per-request audit log table (`request_logs`) is now being populated by the gateway's `onResponse` hook (CRIT-6). The `request_logs` table captures `request_id`, `tenant_id`, `task_profile`, `routing_plan` (JSON with primary + top-3 candidates), `selected_provider`, `selected_model`, `fallback_used`, `latency_ms`, `time_to_first_token_ms`, `tokens_input`, `tokens_output`, `estimated_cost`, `error_code`, and `error_message`. Coverage: `tests/unit/request-logs-writes.test.ts` (11 tests) — the bandit reward-updater at `services/router/src/bandit/reward-updater.ts:198` will now see real rows.
-- **OpenTelemetry spans** — `services/telemetry/src/tracer.ts` defines the gateway's `tracer: Tracer` (name `dmr-x-gateway`, version `0.2.0`), obtained from the OTel global provider. Spans are written via the `OTLPTraceExporter` configured by `TelemetryService.start()`. WIP: route handlers, the router pipeline, and adapter execution are not yet wrapped in `tracer.startActiveSpan(...)` calls — that integration is the next step.
+- **OpenTelemetry spans** — `services/telemetry/src/tracer.ts` defines the gateway's `tracer: Tracer` (name `dmr-x-gateway`, version `0.4.0`), obtained from the OTel global provider. Spans are written via the `OTLPTraceExporter` configured by `TelemetryService.start()`. WIP: route handlers, the router pipeline, and adapter execution are not yet wrapped in `tracer.startActiveSpan(...)` calls — that integration is the next step.
 
 ## v0.2.0 — Production Ready (2026-06-15)
 
@@ -138,11 +138,11 @@ All six are validated by `validateStartupConfig()` in `apps/gateway/src/main.ts`
 
 ### API
 - Added Google Gemini native endpoint (`POST /v1/gemini/generateContent`) with streaming, tools, and thought tokens.
-- Added meta-model aliases: `free`, `free-fast`, `free-smart`, `free-agentic`, `free-coding` for dynamic provider routing.
+- Added meta-model aliases: `auto`, `auto-fast`, `auto-smart`, `auto-agentic`, `auto-coding` for dynamic provider routing.
 - Added OAuth provider authentication endpoints for Google, GitHub, HuggingFace, MiniMax.
 
 ### Routing
-- Fixed `getCandidates()` to map `context_window` for meta-model resolution (free-agentic/free-coding always got 0 candidates).
+- Fixed `getCandidates()` to map `context_window` for meta-model resolution (auto-agentic/auto-coding always got 0 candidates).
 - Router now throws 503 instead of silently falling back to paid models when meta-model resolution fails.
 - Router direct model selection — matches `request.model` to candidate `modelId`.
 

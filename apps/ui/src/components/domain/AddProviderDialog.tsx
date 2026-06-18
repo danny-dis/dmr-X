@@ -24,6 +24,10 @@ export interface AddProviderDialogProps {
   onOpenChange: (open: boolean) => void;
   template?: ApiCatalogEntry | null;
   onCreated?: () => void;
+  /** Force the key tier. When set, all keys added through this dialog
+   * will be tagged with this tier instead of relying on the backend
+   * default. The Free Tier page passes 'free' here. */
+  forceTier?: 'free' | 'paid';
 }
 
 const ADAPTER_PRESETS: { id: string; label: string; baseUrl?: string }[] = [
@@ -84,6 +88,7 @@ export function AddProviderDialog({
   onOpenChange,
   template,
   onCreated,
+  forceTier,
 }: AddProviderDialogProps) {
   const [form, setForm] = React.useState<FormState>(EMPTY);
   const [submitting, setSubmitting] = React.useState(false);
@@ -164,7 +169,7 @@ export function AddProviderDialog({
     if (!template) return;
     setOAuthStep({ step: 'creating_provider', errorMessage: '' });
     try {
-      const { provider } = await Admin.activateProvider({ template_id: template.id });
+      const { provider } = await Admin.activateProvider({ template_id: template.id, tier: forceTier });
       const providerId = provider.id;
       setOAuthStep({ step: 'authorizing', providerId });
 
@@ -221,7 +226,7 @@ export function AddProviderDialog({
     if (!template) return;
     setOAuthStep({ step: 'creating_provider', errorMessage: '' });
     try {
-      const { provider } = await Admin.activateProvider({ template_id: template.id });
+      const { provider } = await Admin.activateProvider({ template_id: template.id, tier: forceTier });
       const providerId = provider.id;
       setOAuthStep({ step: 'authorizing', providerId });
 
@@ -284,7 +289,7 @@ export function AddProviderDialog({
     if (!template) return;
     setOAuthStep({ step: 'creating_provider', errorMessage: '' });
     try {
-      const { provider } = await Admin.activateProvider({ template_id: template.id });
+      const { provider } = await Admin.activateProvider({ template_id: template.id, tier: forceTier });
       const providerId = provider.id;
       setOAuthStep({ step: 'authorizing', providerId });
 
@@ -374,6 +379,7 @@ export function AddProviderDialog({
             api_key: apiKey || undefined,
             oauth_access_token: oauthAccessToken || undefined,
             auth_method: oauthAccessToken ? 'oauth' : 'api_key',
+            tier: forceTier,
           })).provider
         : await Admin.createProvider({
             name: form.name.trim(),
@@ -385,6 +391,7 @@ export function AddProviderDialog({
               priority: Number(form.priority) || 0,
               enabled: true,
             },
+            tier: forceTier,
           });
       toast.success('Provider created', { description: created.name });
       onCreated?.();
@@ -481,6 +488,11 @@ export function AddProviderDialog({
               <FieldDescription>
                 Stored as a key reference; the gateway resolves the actual secret at request time.
               </FieldDescription>
+              {forceTier === 'free' && (
+                <Badge tone="success" size="sm" className="mt-1">
+                  Free-tier key
+                </Badge>
+              )}
             </Field>
 
             {hasOAuthConfig ? (

@@ -92,6 +92,15 @@ export interface McpConfigFile {
 
   /** Per-tool rate limit configurations (e.g., {"dmrx_chat": "100/hour"}) */
   rateLimit?: Record<string, string>;
+
+  /** Global allowed tools filter patterns */
+  allowedTools?: string[];
+
+  /** Key-specific tool and server configuration */
+  apiKeysConfig?: Array<{
+    key: string;
+    allowedTools?: string[];
+  }>;
 }
 
 // ---------------------------------------------------------------------------

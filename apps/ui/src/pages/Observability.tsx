@@ -127,8 +127,14 @@ export function ObservabilityPage() {
                   <AlertCard
                     key={a.id}
                     alert={a}
-                    onAcknowledge={() => Admin.acknowledgeAlert(a.id).then(() => toast.show('Acknowledged', { tone: 'success' }))}
-                    onResolve={() => Admin.resolveAlert(a.id).then(() => toast.show('Resolved', { tone: 'success' }))}
+                    onAcknowledge={() => {
+                      Admin.acknowledgeAlert(a.id);
+                      toast.info('Acknowledged', { description: 'Action is in-memory only and will not persist across refreshes.' });
+                    }}
+                    onResolve={() => {
+                      Admin.resolveAlert(a.id);
+                      toast.info('Resolved', { description: 'Action is in-memory only and will not persist across refreshes.' });
+                    }}
                   />
                 ))}
               </div>

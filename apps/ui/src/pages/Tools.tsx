@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { Hammer, Play, RotateCcw, Code as CodeIcon, Terminal } from 'lucide-react';
+import { Hammer, Play, RotateCcw, Code as CodeIcon, Terminal, Coins } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Button } from '@/components/primitives/Button';
@@ -39,16 +40,19 @@ const DEFAULT_TOOLS = JSON.stringify([
 ], null, 2);
 
 const META_MODELS = [
-  { id: 'free', displayName: 'free' },
-  { id: 'free-fast', displayName: 'free-fast' },
-  { id: 'free-smart', displayName: 'free-smart' },
+  { id: 'auto', displayName: 'auto' },
+  { id: 'auto-fast', displayName: 'auto-fast' },
+  { id: 'auto-smart', displayName: 'auto-smart' },
+  { id: 'auto-agentic', displayName: 'auto-agentic' },
+  { id: 'auto-coding', displayName: 'auto-coding' },
 ];
 
 type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export function ToolsPage() {
   const [mode, setMode] = React.useState<'execute' | 'loop'>('execute');
-  const [model, setModel] = React.useState('free');
+  const [model, setModel] = React.useState('auto');
+  const [costFilter, setCostFilter] = React.useState<'all' | 'free'>('all');
   const [messagesText, setMessagesText] = React.useState(DEFAULT_MESSAGES);
   const [toolsText, setToolsText] = React.useState(DEFAULT_TOOLS);
   const [maxSteps, setMaxSteps] = React.useState(10);
@@ -118,7 +122,11 @@ export function ToolsPage() {
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
+          ...(costFilter === 'free' ? { 'x-cost-filter': 'free' } : {}),
+        },
         body: JSON.stringify(body),
       });
       const data = await res.json();
@@ -187,6 +195,36 @@ export function ToolsPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Cost Filter — only visible for meta-model aliases */}
+            {model.startsWith('auto') && (
+              <div>
+                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Cost Filter</label>
+                <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setCostFilter('all')}
+                    className={cn(
+                      'flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors',
+                      costFilter === 'all' ? 'bg-primary text-primary-foreground' : 'text-fg-muted hover:text-fg'
+                    )}
+                  >
+                    <Coins className="size-2.5" />
+                    All providers
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCostFilter('free')}
+                    className={cn(
+                      'flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors',
+                      costFilter === 'free' ? 'bg-primary text-primary-foreground' : 'text-fg-muted hover:text-fg'
+                    )}
+                  >
+                    Free only
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Mode selector */}
             <div>

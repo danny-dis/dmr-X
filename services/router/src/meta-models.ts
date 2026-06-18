@@ -1,51 +1,61 @@
 import type { CandidateSet } from '@dmr-x/core';
 
 /**
- * Meta-model aliases for free tier routing.
+ * Meta-model aliases for dynamic routing.
  * These map to the best available provider at request time.
+ * Default costFilter is 'all' (all providers, paid + free).
+ * Override with costFilter='free' to restrict to zero-cost providers only.
  */
 export interface MetaModelDefinition {
   alias: string;
   description: string;
+  /** Cost filter mode: 'free' routes through zero-cost providers only, 'all' routes through all providers */
+  costFilter: 'free' | 'all';
   /** Function that ranks candidates for this meta-model */
-  ranker: (candidates: CandidateSet) => CandidateSet;
+  ranker: (candidates: CandidateSet, costFilter?: 'free' | 'all') => CandidateSet;
 }
 
 export const META_MODELS: MetaModelDefinition[] = [
   {
-    alias: 'free',
-    description: 'Any free model. Filters to zero-cost providers without re-ranking — the normal pipeline scoring decides the best choice.',
-    ranker: (candidates) => {
+    alias: 'auto',
+    description: 'Auto-pick the best model. Routes through all providers by default (use costFilter=free for free-only). Preserves original order — the pipeline scoring decides the best choice.',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      if (filter === 'all') return candidates;
       return candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
     },
   },
   {
-    alias: 'free-fast',
-    description: 'Fastest free model. Explicitly prioritizes low latency.',
-    ranker: (candidates) => {
-      return [...candidates]
-        .filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0)
-        .sort((a, b) => a.avgLatencyMs - b.avgLatencyMs);
+    alias: 'auto-fast',
+    description: 'Fastest model. Routes through all providers by default (use costFilter=free for free-only). Explicitly prioritizes low latency.',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      return pool.sort((a, b) => a.avgLatencyMs - b.avgLatencyMs);
     },
   },
   {
-    alias: 'free-smart',
-    description: 'Most capable free model. Explicitly prioritizes intelligence.',
-    ranker: (candidates) => {
-      return [...candidates]
-        .filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0)
-        .sort((a, b) => b.qualityScore - a.qualityScore);
+    alias: 'auto-smart',
+    description: 'Most capable model. Routes through all providers by default (use costFilter=free for free-only). Explicitly prioritizes intelligence.',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      return pool.sort((a, b) => b.qualityScore - a.qualityScore);
     },
   },
   {
-    alias: 'free-agentic',
-    description: 'Best free model for agentic/tool-calling work. Requires tool_use capability and 64K+ context. Scores by quality (50%) + context window (30%) + speed (20%). No hard-coded models — dynamically picks from whatever free providers are available.',
-    ranker: (candidates) => {
+    alias: 'auto-agentic',
+    description: 'Best model for agentic/tool-calling work. Routes through all providers by default (use costFilter=free for free-only). Requires tool_use capability and 64K+ context. Scores by quality (50%) + context window (30%) + speed (20%).',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
       const MIN_CONTEXT = 64000;
-      const scored = candidates
+      let pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      const scored = pool
         .filter(c =>
-          (c.costPerInputToken ?? 0) <= 0 &&
-          (c.costPerOutputToken ?? 0) <= 0 &&
           c.capabilities.includes('tool_use') &&
           (c.contextLength ?? 0) >= MIN_CONTEXT
         )
@@ -62,18 +72,16 @@ export const META_MODELS: MetaModelDefinition[] = [
     },
   },
   {
-    alias: 'free-coding',
-    description: 'Best free model for code generation. Scores by specialization match (40%) + quality (30%) + context window (20%) + speed (10%). Prefers models with code-related capabilities and larger context windows.',
-    ranker: (candidates) => {
+    alias: 'auto-coding',
+    description: 'Best model for code generation. Routes through all providers by default (use costFilter=free for free-only). Scores by specialization match (40%) + quality (30%) + context window (20%) + speed (10%).',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
       const MIN_CONTEXT = 32000;
       const codeCapabilities = ['tool_use', 'streaming', 'reasoning'];
-
-      const scored = candidates
-        .filter(c =>
-          (c.costPerInputToken ?? 0) <= 0 &&
-          (c.costPerOutputToken ?? 0) <= 0 &&
-          (c.contextLength ?? 0) >= MIN_CONTEXT
-        )
+      let pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      const scored = pool
+        .filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT)
         .map(c => {
           // Specialization match: how many code-related capabilities the model has
           const specMatch = codeCapabilities.filter(cap => c.capabilities.includes(cap)).length / codeCapabilities.length;
@@ -102,16 +110,23 @@ export function isMetaModel(model: string): boolean {
 /**
  * Resolve a meta-model alias to the best available candidate.
  * Returns null if the model is not a meta-model or no candidates match.
+ *
+ * @param costFilterOverride - Override the meta-model's default cost filter ('all' or 'free').
+ *   When 'free', the ranker filters to zero-cost providers only.
+ *   When 'all', the ranker considers all providers (paid + free).
+ *   Defaults to the meta-model's `costFilter` field when not provided.
  */
 export function resolveMetaModel(
   model: string,
-  candidates: CandidateSet
-): { resolved: CandidateSet; metaModel: MetaModelDefinition } | null {
+  candidates: CandidateSet,
+  costFilterOverride?: 'free' | 'all'
+): { resolved: CandidateSet; metaModel: MetaModelDefinition; costFilter: 'free' | 'all' } | null {
   const metaModel = META_MODELS.find(m => m.alias === model);
   if (!metaModel) return null;
 
-  const ranked = metaModel.ranker(candidates);
+  const effectiveFilter = costFilterOverride ?? metaModel.costFilter;
+  const ranked = metaModel.ranker(candidates, effectiveFilter);
   if (ranked.length === 0) return null;
 
-  return { resolved: ranked, metaModel };
+  return { resolved: ranked, metaModel, costFilter: effectiveFilter };
 }

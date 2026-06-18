@@ -30,8 +30,17 @@ export function RequestsPage() {
     { refetchInterval: liveMode ? 3000 : false }
   );
   const liveEvents = useLiveStore((s) => s.events);
+  const pushTelemetry = useLiveStore((s) => s.pushTelemetry);
 
-  const all = liveMode ? [...liveEvents, ...(events.data ?? [])] : (events.data ?? []);
+  React.useEffect(() => {
+    if (!liveMode) return;
+    const controller = new AbortController();
+    Admin.streamTelemetry(controller.signal, pushTelemetry);
+    return () => controller.abort();
+  }, [liveMode, pushTelemetry]);
+
+  const merged = liveMode ? [...liveEvents, ...(events.data ?? [])] : (events.data ?? []);
+  const all = Array.from(new Map(merged.map((e) => [e.id, e])).values());
   const filtered = all.filter((e) => {
     if (debounced && !`${e.kind} ${e.tenant} ${e.model} ${e.message}`.toLowerCase().includes(debounced.toLowerCase())) return false;
     if (kindFilter && e.kind !== kindFilter) return false;

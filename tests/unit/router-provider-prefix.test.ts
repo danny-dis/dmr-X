@@ -111,7 +111,7 @@ describe('router provider-prefix routing', () => {
     ];
     const { router, calls } = makeRouter(candidates);
 
-    const { plan } = await router.route(makeRequest('free-smart'), ROUTE_OPTS);
+    const { plan } = await router.route(makeRequest('auto-smart'), ROUTE_OPTS);
 
     // The specific free model is chosen by the scoring pipeline (epsilon-greedy
     // + Thompson sampling), so assert membership, not an exact pick.
@@ -121,7 +121,7 @@ describe('router provider-prefix routing', () => {
     // The literal alias must NEVER reach the executor as a model id — this is
     // the core of Bug 2: meta-model resolution worked, but the executor used to
     // discard the resolved model and send the alias verbatim.
-    expect(calls[0].modelId).not.toBe('free-smart');
+    expect(calls[0].modelId).not.toBe('auto-smart');
     expect(realModels).toContain(calls[0].modelId);
   });
 
@@ -132,7 +132,7 @@ describe('router provider-prefix routing', () => {
     ];
     const { router, calls } = makeRouter(candidates);
 
-    const { plan } = await router.route(makeRequest('pollinations/free-smart'), ROUTE_OPTS);
+    const { plan } = await router.route(makeRequest('pollinations/auto-smart'), ROUTE_OPTS);
 
     // Even though openrouter-free scores higher, the pin constrains to pollinations.
     expect(plan.primary.providerId).toBe('poll-uuid');

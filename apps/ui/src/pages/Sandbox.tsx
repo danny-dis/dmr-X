@@ -29,10 +29,24 @@ export function SandboxPage() {
   );
 
   const [open, setOpen] = React.useState(false);
+  const [cancelling, setCancelling] = React.useState<Record<string, boolean>>({});
   const [language, setLanguage] = React.useState('python');
   const [code, setCode] = React.useState('');
   const [timeoutMs, setTimeoutMs] = React.useState('5000');
   const [submitting, setSubmitting] = React.useState(false);
+
+  async function handleCancel(id: string) {
+    setCancelling((prev) => ({ ...prev, [id]: true }));
+    try {
+      await Admin.cancelSandbox(id);
+      toast.success('Job cancelled');
+      jobs.refetch();
+    } catch {
+      toast.error('Failed to cancel job');
+    } finally {
+      setCancelling((prev) => ({ ...prev, [id]: false }));
+    }
+  }
 
   async function handleSubmit() {
     setSubmitting(true);
@@ -127,6 +141,16 @@ export function SandboxPage() {
                     size="sm"
                     showDot={false}
                   />
+                  {j.status === 'running' && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => handleCancel(j.id)}
+                      disabled={cancelling[j.id]}
+                    >
+                      {cancelling[j.id] ? '...' : <X className="size-3" />}
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>

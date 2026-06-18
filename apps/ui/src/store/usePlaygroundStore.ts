@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Admin } from '@/lib/admin';
-import { apiPost } from '@/lib/api';
+import { api, apiPost, apiPut, apiDelete, fetchAuthenticated } from '@/lib/api';
 
 // Types
 export type PlaygroundMode =
@@ -89,6 +89,8 @@ interface PlaygroundState {
   mode: PlaygroundMode;
   model: string;
   config: PlaygroundConfig;
+  /** Cost filter for meta-model aliases: 'all' (paid + free) or 'free' (zero-cost only). */
+  costFilter: 'all' | 'free';
   isTemporary: boolean;
   isStreaming: boolean;
   showSidebar: boolean;
@@ -119,6 +121,7 @@ interface PlaygroundState {
   toggleTemporary: () => void;
   setMode: (mode: PlaygroundMode) => void;
   setModel: (model: string) => void;
+  setCostFilter: (filter: 'all' | 'free') => void;
   setConfig: (config: Partial<PlaygroundConfig>) => void;
   setTools: (tools: any[]) => void;
   setShowSidebar: (show: boolean) => void;
@@ -138,6 +141,8 @@ interface PlaygroundState {
   updateStreamingMessage: (content: string) => void;
   addStreamingEvent: (event: StreamingEvent) => void;
   clearStreamingEvents: () => void;
+
+  addMessagesBatch: (conversationId: string, messages: Message[]) => Promise<void>;
 
   // Internal helpers shared by sendMessage and regenerateMessage. The
   // underscore is a convention; they're part of the store interface so
@@ -169,12 +174,13 @@ export const usePlaygroundStore = create<PlaygroundState>()(
       conversations: [],
       messages: [],
       mode: 'chat',
-      model: 'free',
+      model: 'auto',
       config: {
         temperature: 0.7,
         stream: true,
         tools: [],
       },
+      costFilter: 'all',
       isTemporary: false,
       isStreaming: false,
       showSidebar: true,
@@ -188,41 +194,29 @@ export const usePlaygroundStore = create<PlaygroundState>()(
       createConversation: async () => {
         const { mode, model, isTemporary } = get();
         
-        const response = await fetch('/v1/conversations', {
+        const conversation = await api('/v1/conversations', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-          },
-          body: JSON.stringify({ mode, model, isTemporary }),
+          body: { mode, model, isTemporary },
         });
         
-        const conversation = await response.json();
-        
         set(state => ({
-          currentConversationId: conversation.id,
-          conversations: [conversation, ...state.conversations],
+          currentConversationId: (conversation as any).id,
+          conversations: [(conversation as any), ...state.conversations],
           messages: [],
         }));
         
-        return conversation.id;
+        return (conversation as any).id;
       },
       
       // Load conversation
       loadConversation: async (id: string) => {
-        const response = await fetch(`/v1/conversations/${id}`, {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-          },
-        });
-        
-        const conversation = await response.json();
+        const conversation = await api(`/v1/conversations/${id}`);
         
         set({
           currentConversationId: id,
-          messages: conversation.messages || [],
-          mode: conversation.mode,
-          model: conversation.model || 'free',
+          messages: (conversation as any).messages || [],
+          mode: (conversation as any).mode,
+          model: (conversation as any).model || 'auto',
         });
       },
       
@@ -274,11 +268,8 @@ export const usePlaygroundStore = create<PlaygroundState>()(
       
       // Delete conversation
       deleteConversation: async (id: string) => {
-        await fetch(`/v1/conversations/${id}`, {
+        await api(`/v1/conversations/${id}`, {
           method: 'DELETE',
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-          },
         });
         
         set(state => ({
@@ -302,7 +293,12 @@ export const usePlaygroundStore = create<PlaygroundState>()(
       setModel: (model: string) => {
         set({ model });
       },
-      
+
+      // Set cost filter
+      setCostFilter: (filter: 'all' | 'free') => {
+        set({ costFilter: filter });
+      },
+
       // Set config
       setConfig: (config: Partial<PlaygroundConfig>) => {
         set(state => ({ config: { ...state.config, ...config } }));
@@ -360,6 +356,13 @@ export const usePlaygroundStore = create<PlaygroundState>()(
       // agentic/tool-loop stream so each new run starts with a clean slate.
       clearStreamingEvents: () => {
         set({ streamingEvents: [] });
+      },
+
+      addMessagesBatch: async (conversationId: string, messages: Message[]) => {
+        await Admin.batchAddMessages(conversationId, messages);
+        set(state => ({
+          messages: [...state.messages, ...messages],
+        }));
       },
 
       // Append a fresh assistant-message placeholder to the active
@@ -422,6 +425,9 @@ export const usePlaygroundStore = create<PlaygroundState>()(
           endpoint = '/v1/rerank';
           body.query = content;
           body.documents = ['Example doc 1', 'Example doc 2'];
+        } else if (mode === 'moderate') {
+          endpoint = '/v1/moderations';
+          body = { input: content };
         } else if (mode === 'agentic') {
           // Multi-turn agentic loop with optional tool calling. The server
           // streams SSE events (turn, tool_calls, tool_results,
@@ -485,6 +491,12 @@ export const usePlaygroundStore = create<PlaygroundState>()(
 
         const start = performance.now();
 
+        // Pass the cost filter as a request header when set to 'free'.
+        const costFilter = get().costFilter;
+        const extraHeaders: Record<string, string> = costFilter === 'free'
+          ? { 'x-cost-filter': 'free' }
+          : {};
+
         try {
           if (mode === 'agentic' || mode === 'tool-loop') {
             // SSE-parse path. The event-stream format is:
@@ -494,14 +506,11 @@ export const usePlaygroundStore = create<PlaygroundState>()(
             // be incomplete so we keep it in the buffer for the next read.
             get().clearStreamingEvents();
 
-            const response = await fetch(endpoint, {
+            const response = await fetchAuthenticated(endpoint, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-              },
               body: JSON.stringify(body),
               signal: abortController.signal,
+              headers: extraHeaders,
             });
 
             if (!response.ok || !response.body) {
@@ -614,13 +623,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
             // strip the field when empty so the server stores NULL rather
             // than an empty JSON array — matching the "no events captured"
             // signal and keeping column size down.
-            await fetch(`/v1/conversations/${conversationId}/messages`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-              },
-              body: JSON.stringify({
+            await apiPost(`/v1/conversations/${conversationId}/messages`, {
                 role: 'assistant',
                 content: finalContent,
                 model: lastModel,
@@ -628,18 +631,14 @@ export const usePlaygroundStore = create<PlaygroundState>()(
                 tokensInput: lastUsage?.prompt_tokens,
                 tokensOutput: lastUsage?.completion_tokens,
                 events: capturedEvents && capturedEvents.length > 0 ? capturedEvents : undefined,
-              }),
-            });
+              });
           } else if (config.stream && mode === 'chat') {
             // Streaming response
-            const response = await fetch(endpoint, {
+            const response = await fetchAuthenticated(endpoint, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-              },
               body: JSON.stringify(body),
               signal: abortController.signal,
+              headers: extraHeaders,
             });
 
             if (!response.ok || !response.body) {
@@ -709,13 +708,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
 
             // Persist to DB (skipped automatically server-side when the
             // conversation is `is_temporary=1`).
-            await fetch(`/v1/conversations/${conversationId}/messages`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-              },
-              body: JSON.stringify({
+            await apiPost(`/v1/conversations/${conversationId}/messages`, {
                 role: 'assistant',
                 content: finalContent,
                 model: lastChunk?.model ?? model,
@@ -725,21 +718,17 @@ export const usePlaygroundStore = create<PlaygroundState>()(
                 cost: lastChunk?.cost,
                 latencyMs: latency,
                 routingDecision: lastChunk?.routing_decision,
-              }),
-            });
+              });
           } else {
             // Non-streaming response
-            const response = await fetch(endpoint, {
+            const responseType = mode === 'tts' ? 'blob' : 'json';
+            const data = await api<any>(endpoint, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-              },
-              body: JSON.stringify({ ...body, stream: false }),
+              body: { ...body, stream: false },
               signal: abortController.signal,
+              responseType,
+              headers: extraHeaders,
             });
-
-            const data = await response.json();
 
             let text = '';
             let audioUrl = '';
@@ -748,11 +737,11 @@ export const usePlaygroundStore = create<PlaygroundState>()(
             if (mode === 'chat') text = data.choices?.[0]?.message?.content ?? data.text;
             else if (mode === 'image') imageUrl = data.data?.[0]?.url || data.data?.[0]?.b64_json;
             else if (mode === 'tts') {
-              const blob = await response.blob();
-              audioUrl = URL.createObjectURL(blob);
+              audioUrl = URL.createObjectURL(data as Blob);
               text = 'Audio generated successfully.';
             }
             else if (mode === 'embed') text = `Vector: [${data.data?.[0]?.embedding?.slice(0, 5).join(', ')}...] (${data.data?.[0]?.embedding?.length} dims)`;
+            else if (mode === 'moderate') text = JSON.stringify(data, null, 2);
             else text = JSON.stringify(data, null, 2);
 
             // Update final message
@@ -779,13 +768,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
             }));
 
             // Save to database
-            await fetch(`/v1/conversations/${conversationId}/messages`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-              },
-              body: JSON.stringify({
+            await apiPost(`/v1/conversations/${conversationId}/messages`, {
                 role: 'assistant',
                 content: text,
                 audioUrl,
@@ -797,8 +780,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
                 cost: data.cost ?? 0,
                 latencyMs: performance.now() - start,
                 routingDecision: data.routing_decision,
-              }),
-            });
+              });
           }
         } catch (error: any) {
           if (error.name === 'AbortError') {
@@ -842,14 +824,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         }));
 
         try {
-          await fetch(`/v1/conversations/${id}`, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-            },
-            body: JSON.stringify({ title: trimmed }),
-          });
+          await apiPut(`/v1/conversations/${id}`, { title: trimmed });
         } catch (error) {
           // The DB write failed; revert the optimistic update so the
           // sidebar doesn't display a title the server never accepted.
@@ -895,12 +870,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         // the worst case is a duplicate, which the server already
         // prevents via unique row ids.
         try {
-          await fetch(`/v1/conversations/${currentConversationId}/messages/${messageId}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-            },
-          });
+          await apiDelete(`/v1/conversations/${currentConversationId}/messages/${messageId}`);
         } catch {
           // Non-fatal — proceed with the regeneration.
         }
@@ -946,6 +916,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         // Only persist these fields
         mode: state.mode,
         model: state.model,
+        costFilter: state.costFilter,
         config: state.config,
         isTemporary: state.isTemporary,
         showSidebar: state.showSidebar,

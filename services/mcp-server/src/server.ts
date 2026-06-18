@@ -91,6 +91,8 @@ export interface DMRXMcpServerConfig {
    * Use MCPClient.connect({ servers }) before passing it in.
    */
   externalMcpClient?: MCPClient;
+  /** Allowed tools filter (supports glob patterns like 'dmrx_*', 'github__*', or exact names) */
+  allowedTools?: string[];
 }
 
 interface ServerState {
@@ -530,7 +532,7 @@ function formatRoutingInfo(response: UnifiedResponse, requestId?: string): strin
  * Example: a tool named `create_issue` on server `github` becomes
  * `github__create_issue` in the aggregated tool list.
  */
-function registerExternalTools(server: McpServer, client: MCPClient, state: ServerState): void {
+function registerExternalTools(server: McpServer, client: MCPClient, state: ServerState, allowedTools?: string[]): void {
   const registry = client.getRegistry();
   const allServers = registry.listAll();
 
@@ -538,6 +540,9 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
     const serverId = connected.config.id;
     for (const tool of connected.tools) {
       const namespacedName = `${serverId}__${tool.name}`;
+      if (!isToolAllowed(namespacedName, allowedTools)) {
+        continue;
+      }
       const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
       // Use a passthrough Zod schema for args; the underlying MCP server
@@ -598,6 +603,22 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
       });
     }
   }
+}
+
+/**
+ * Helper to check if a tool is allowed based on configured pattern filters.
+ * Supports exact match or wildcard suffix (e.g. "dmrx_*" or "*").
+ */
+export function isToolAllowed(toolName: string, allowedTools?: string[]): boolean {
+  if (!allowedTools) return true; // Default: allow all
+  return allowedTools.some((pattern) => {
+    if (pattern === '*') return true;
+    if (pattern.endsWith('*')) {
+      const prefix = pattern.slice(0, -1);
+      return toolName.startsWith(prefix);
+    }
+    return toolName === pattern;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +693,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   ];
 
   for (const def of sdkToolDefs) {
-    state.sdkTools.push(def);
+    if (isToolAllowed(def.name, config.allowedTools)) {
+      state.sdkTools.push(def);
+    }
   }
 
   // Wire up adapter executor for fallback
@@ -700,6 +723,21 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     name: 'dmr-x',
     version: '0.1.0',
   });
+
+  // Intercept tool registration to filter by allowed tools
+  const originalRegisterTool = server.registerTool.bind(server);
+  server.registerTool = (name: string, spec: any, handler: any) => {
+    if (isToolAllowed(name, config.allowedTools)) {
+      return originalRegisterTool(name, spec, handler);
+    }
+  };
+
+  const originalTool = server.tool.bind(server);
+  server.tool = (name: string, description: string, schema: any, handler: any) => {
+    if (isToolAllowed(name, config.allowedTools)) {
+      return originalTool(name, description, schema, handler);
+    }
+  };
 
   // Register MCP resources
   registerResources(server);
@@ -2142,7 +2180,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // Register external MCP aggregator tools (if a client was provided)
   if (config.externalMcpClient) {
     try {
-      registerExternalTools(server, config.externalMcpClient, state);
+      registerExternalTools(server, config.externalMcpClient, state, config.allowedTools);
       logger.info(
         { externalToolCount: state.externalToolCount },
         'External MCP aggregator tools registered'

@@ -55,11 +55,23 @@ function splitFt5(sql: string): string[] {
 
 async function saveDatabase(): Promise<void> {
   if (!db || !dbPath) return;
+  const tmpPath = `${dbPath}.tmp`;
   try {
     const data = db.export();
-    await fs.promises.writeFile(dbPath, Buffer.from(data));
+    // Write to a temporary file first to ensure atomic replacement.
+    // This prevents database corruption if the process crashes mid-write.
+    await fs.promises.writeFile(tmpPath, Buffer.from(data));
+    await fs.promises.rename(tmpPath, dbPath);
   } catch (err) {
     log.error('Failed to save database:', err);
+    // Best-effort cleanup of the temporary file
+    try {
+      if (fs.existsSync(tmpPath)) {
+        await fs.promises.unlink(tmpPath);
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
   }
 }
 

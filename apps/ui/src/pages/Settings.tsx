@@ -88,7 +88,7 @@ const DEFAULTS: SettingsForm = {
   qualityWeight: 0.4,
   costWeight: 0.25,
   latencyWeight: 0.2,
-  defaultModel: 'free',
+  defaultModel: 'auto',
   maxContextWindow: 128000,
   defaultTemperature: 0.7,
   platformName: 'DMR-X',

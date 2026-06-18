@@ -352,6 +352,7 @@ export function FreeTierPage() {
         onOpenChange={setAddDialogOpen}
         template={selectedTemplate}
         onCreated={() => void providers.refetch()}
+        forceTier="free"
       />
     </PageContainer>
   );
