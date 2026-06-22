@@ -726,17 +726,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
   // Intercept tool registration to filter by allowed tools
   const originalRegisterTool = server.registerTool.bind(server);
-  server.registerTool = (name: string, spec: any, handler: any) => {
+  (server as any).registerTool = (name: string, spec: any, handler: any) => {
     if (isToolAllowed(name, config.allowedTools)) {
       return originalRegisterTool(name, spec, handler);
     }
+    return undefined as any;
   };
 
   const originalTool = server.tool.bind(server);
-  server.tool = (name: string, description: string, schema: any, handler: any) => {
+  (server as any).tool = (name: string, description: any, schema?: any, handler?: any) => {
     if (isToolAllowed(name, config.allowedTools)) {
       return originalTool(name, description, schema, handler);
     }
+    return undefined as any;
   };
 
   // Register MCP resources

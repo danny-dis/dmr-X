@@ -1,4 +1,4 @@
-import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, ProviderPreferences } from '@dmr-x/core';
+import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, ProviderPreferences, ProviderModel } from '@dmr-x/core';
 import { ProviderUnavailableError } from '@dmr-x/core';
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
 import type { PolicyService } from '@dmr-x/policy';

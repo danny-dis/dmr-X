@@ -6,9 +6,12 @@ import { Input } from '@/components/primitives/Input';
 import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
 import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
+} from '@/components/primitives/AlertDialog';
+import {
   Dialog, DialogContent, DialogHeader,
-  DialogTitle, DialogDescription, DialogBody, DialogFooter,
-  DialogClose,
+  DialogTitle, DialogDescription, DialogBody, DialogFooter, DialogClose,
 } from '@/components/primitives/Dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Textarea } from '@/components/primitives/Textarea';
@@ -48,6 +51,7 @@ export function MemoryPage() {
   const [source, setSource] = React.useState('');
   const [retentionDays, setRetentionDays] = React.useState('30');
   const [submitting, setSubmitting] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
 
   const topNamespaces = React.useMemo(() => {
     const ns = stats.data?.by_namespace ?? {};
@@ -97,10 +101,10 @@ export function MemoryPage() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Delete this memory item? This cannot be undone.')) return;
     try {
       await Admin.deleteMemory(id);
       toast.success('Memory item deleted');
+      setDeleteTarget(null);
       items.refetch();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete memory item');
@@ -245,7 +249,7 @@ export function MemoryPage() {
                     size="icon-sm"
                     variant="ghost"
                     aria-label="Delete"
-                    onClick={() => handleDelete(m.id)}
+                    onClick={() => setDeleteTarget(m.id)}
                   >
                     <Trash2 className="size-3" />
                   </Button>
@@ -314,6 +318,23 @@ export function MemoryPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete memory item?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. The memory item will be permanently removed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { if (deleteTarget) void handleDelete(deleteTarget); }}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageContainer>
   );
 }

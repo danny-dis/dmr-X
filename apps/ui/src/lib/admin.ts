@@ -114,17 +114,6 @@ export const Admin = {
     const list = Array.isArray(res) ? res : (res as { providers?: ApiProvider[] })?.providers ?? [];
     return list.map(toCamelProvider);
   },
-  // TODO: Unused in frontend.
-  // getProvider: async (id: string): Promise<ApiProvider> => {
-  //   const p = await apiGet<ApiProvider>(`/admin/providers/${id}`);
-  //   return toCamelProvider(p);
-  // },
-  // TODO: Unused in frontend.
-  // TODO: Unused in frontend.
-  // getProvider: async (id: string): Promise<ApiProvider> => {
-  //   const p = await apiGet<ApiProvider>(`/admin/providers/${id}`);
-  //   return toCamelProvider(p);
-  // },
   getProvider: async (id: string): Promise<ApiProvider> => {
     const p = await apiGet<ApiProvider>(`/admin/providers/${id}`);
     return toCamelProvider(p);
@@ -225,14 +214,8 @@ export const Admin = {
   testProvider: (id: string) => apiPost<ApiProviderTestResult>('/admin/providers/test', { provider_id: id }).then(normalizeProviderTestResult),
   startProviderOAuth: (id: string) =>
     apiPost<ApiProviderOAuthStart>(`/admin/providers/${id}/oauth/authorize`),
-  // TODO: Unused in frontend.
-  // completeProviderOAuth: (id: string, code: string, state: string) =>
-  //   apiPost<ApiProvider>(`/admin/providers/${id}/oauth/callback`, { code, state }),
   completeProviderOAuth: (id: string, code: string, state: string) =>
     apiPost<ApiProvider>(`/admin/providers/${id}/oauth/callback`, { code, state }),
-  // TODO: Unused in frontend.
-  // refreshProviderOAuth: (id: string) =>
-  //   apiPost<{ success: boolean; expiresAt?: string | null }>(`/admin/providers/${id}/oauth/refresh`),
   refreshProviderOAuth: (id: string) =>
     apiPost<{ success: boolean; expiresAt?: string | null }>(`/admin/providers/${id}/oauth/refresh`),
   getProviderOAuthStatus: (id: string) =>
@@ -251,11 +234,6 @@ export const Admin = {
     const list = Array.isArray(res) ? res : (res as { models?: ApiModel[] })?.models ?? [];
     return list.map(toCamelModel);
   },
-  // TODO: Unused in frontend.
-  // getModel: async (id: string): Promise<ApiModel> => {
-  //   const m = await apiGet<ApiModel>(`/admin/models/${id}`);
-  //   return toCamelModel(m);
-  // },
   getModel: async (id: string): Promise<ApiModel> => {
     const m = await apiGet<ApiModel>(`/admin/models/${id}`);
     return toCamelModel(m);
@@ -270,11 +248,6 @@ export const Admin = {
     const list = Array.isArray(res) ? res : (res as { tenants?: ApiTenant[] })?.tenants ?? [];
     return list.map(toCamelTenant);
   },
-  // TODO: Unused in frontend.
-  // getTenant: async (id: string): Promise<ApiTenant> => {
-  //   const t = await apiGet<ApiTenant>(`/admin/tenants/${id}`);
-  //   return toCamelTenant(t);
-  // },
   getTenant: async (id: string): Promise<ApiTenant> => {
     const t = await apiGet<ApiTenant>(`/admin/tenants/${id}`);
     return toCamelTenant(t);
@@ -419,7 +392,6 @@ export const Admin = {
   upsertPolicy: (body: Partial<ApiPolicyRule>) => apiPost<ApiPolicyRule>('/admin/policies', body),
   updatePolicy: (id: string, body: Partial<ApiPolicyRule>) =>
     apiPut<ApiPolicyRule>(`/admin/policies/${id}`, body),
-  // TODO: Unused in frontend.
   deletePolicy: (id: string) => apiDelete<{ ok: true }>(`/admin/policies/${id}`),
 
 
