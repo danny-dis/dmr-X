@@ -28,7 +28,7 @@ export function Sidebar() {
         {expanded && <BrandWordmark height={20} className="shrink-0" />}
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 py-3">
+      <nav aria-label="Main navigation" className="flex-1 overflow-y-auto px-2 py-3">
         {NAV_GROUPS.map((group, gi) => (
           <div key={group.label} className={cn(gi > 0 ? 'mt-3' : '', 'mb-2')}>
             {expanded && (

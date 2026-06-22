@@ -1,6 +1,8 @@
 import { lazy, Suspense } from 'react';
 import { HashRouter, Routes, Route } from 'react-router';
+
 import { Shell } from '@/components/layout';
+import { ErrorBoundary } from '@/components/primitives/ErrorBoundary';
 import { Skeleton } from '@/components/primitives/Skeleton';
 
 // Lazy-load all page components for code splitting
@@ -38,34 +40,36 @@ function PageLoader() {
 export default function App() {
   return (
     <HashRouter>
-      <Suspense fallback={<PageLoader />}>
-        <Routes>
-          <Route element={<Shell />}>
-            <Route index element={<DashboardPage />} />
-            <Route path="/playground" element={<PlaygroundPage />} />
-            <Route path="/requests" element={<RequestsPage />} />
-            <Route path="/routing" element={<RoutingPage />} />
-            <Route path="/quota" element={<QuotaPage />} />
-            <Route path="/providers" element={<ProvidersPage />} />
-            <Route path="/models" element={<ModelsPage />} />
-            <Route path="/free-tier" element={<FreeTierPage />} />
-            <Route path="/tenants" element={<TenantsPage />} />
-            <Route path="/policies" element={<PoliciesPage />} />
-            <Route path="/usage" element={<UsagePage />} />
-            <Route path="/benchmarks" element={<BenchmarksPage />} />
-            <Route path="/memory" element={<MemoryPage />} />
-            <Route path="/sandbox" element={<SandboxPage />} />
-            <Route path="/mcp" element={<MCPPage />} />
-            <Route path="/tools" element={<ToolsPage />} />
-            <Route path="/workers" element={<WorkersPage />} />
-            <Route path="/federation" element={<FederationPage />} />
-            <Route path="/observability" element={<ObservabilityPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/connect" element={<ConnectPage />} />
-            <Route path="*" element={<NotFoundPage />} />
-          </Route>
-        </Routes>
-      </Suspense>
+      <ErrorBoundary>
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            <Route element={<Shell />}>
+              <Route index element={<DashboardPage />} />
+              <Route path="/playground" element={<PlaygroundPage />} />
+              <Route path="/requests" element={<RequestsPage />} />
+              <Route path="/routing" element={<RoutingPage />} />
+              <Route path="/quota" element={<QuotaPage />} />
+              <Route path="/providers" element={<ProvidersPage />} />
+              <Route path="/models" element={<ModelsPage />} />
+              <Route path="/free-tier" element={<FreeTierPage />} />
+              <Route path="/tenants" element={<TenantsPage />} />
+              <Route path="/policies" element={<PoliciesPage />} />
+              <Route path="/usage" element={<UsagePage />} />
+              <Route path="/benchmarks" element={<BenchmarksPage />} />
+              <Route path="/memory" element={<MemoryPage />} />
+              <Route path="/sandbox" element={<SandboxPage />} />
+              <Route path="/mcp" element={<MCPPage />} />
+              <Route path="/tools" element={<ToolsPage />} />
+              <Route path="/workers" element={<WorkersPage />} />
+              <Route path="/federation" element={<FederationPage />} />
+              <Route path="/observability" element={<ObservabilityPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/connect" element={<ConnectPage />} />
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Routes>
+        </Suspense>
+      </ErrorBoundary>
     </HashRouter>
   );
 }

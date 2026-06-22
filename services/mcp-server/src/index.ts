@@ -542,10 +542,10 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   });
 
   httpServer.listen(port, host, () => {
-    console.error(`DMR-X MCP server (SSE) listening on http://${host}:${port}`);
-    console.error(`  SSE endpoint:    http://${host}:${port}/sse`);
-    console.error(`  Message endpoint: http://${host}:${port}/messages`);
-    console.error(`  Health endpoint:  http://${host}:${port}/health`);
+    console.log(`DMR-X MCP server (SSE) listening on http://${host}:${port}`);
+    console.log(`  SSE endpoint:    http://${host}:${port}/sse`);
+    console.log(`  Message endpoint: http://${host}:${port}/messages`);
+    console.log(`  Health endpoint:  http://${host}:${port}/health`);
   });
 
   // Cleanup sweep on process exit
@@ -645,9 +645,9 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   });
 
   httpServer.listen(port, host, () => {
-    console.error(`DMR-X MCP server (Streamable HTTP) listening on http://${host}:${port}`);
-    console.error(`  MCP endpoint:    http://${host}:${port}/mcp`);
-    console.error(`  Health endpoint:  http://${host}:${port}/health`);
+    console.log(`DMR-X MCP server (Streamable HTTP) listening on http://${host}:${port}`);
+    console.log(`  MCP endpoint:    http://${host}:${port}/mcp`);
+    console.log(`  Health endpoint:  http://${host}:${port}/health`);
   });
 
   // Cleanup sweep on process exit
@@ -680,7 +680,7 @@ async function main(): Promise<void> {
   const telemetry = getTelemetryService(tc);
   try {
     await telemetry.start();
-    console.error(`Telemetry started — metrics at http://127.0.0.1:${tc.metricsPort}${tc.metricsPath}`);
+    console.log(`Telemetry started — metrics at http://127.0.0.1:${tc.metricsPort}${tc.metricsPath}`);
   } catch (err) {
     console.error('Failed to start telemetry (continuing without):', err);
   }

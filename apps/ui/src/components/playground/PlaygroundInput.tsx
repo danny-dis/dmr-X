@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { Badge } from '@/components/primitives/Badge';
 import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import type { ApiModel } from '@/types/api';
 import { Admin } from '@/lib/admin';
@@ -153,6 +154,7 @@ export function PlaygroundInput() {
       await sendMessage(message);
     } catch (error) {
       console.error('Failed to send message:', error);
+      toast.error('Failed to send message');
     }
   };
   

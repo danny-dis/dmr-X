@@ -383,3 +383,15 @@
 .cascade > *:nth-child(10) { animation-delay: 360ms; }
 .cascade > *:nth-child(11) { animation-delay: 400ms; }
 .cascade > *:nth-child(12) { animation-delay: 440ms; }
+
+/* WCAG 2.3.3 — Disable animations when user prefers reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

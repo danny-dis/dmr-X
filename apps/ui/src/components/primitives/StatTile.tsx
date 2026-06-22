@@ -118,7 +118,7 @@ export function StatTile({
               points={sparkline}
               width={80}
               height={32}
-              stroke={tone === 'primary' ? '#7C5CFF' : tone === 'success' ? '#34D399' : tone === 'warning' ? '#FBBF24' : tone === 'danger' ? '#F87171' : '#22D3EE'}
+              stroke={tone === 'primary' ? 'var(--primary)' : tone === 'success' ? 'var(--success)' : tone === 'warning' ? 'var(--warning)' : tone === 'danger' ? 'var(--danger)' : 'var(--accent)'}
               fill="transparent"
               strokeWidth={1.5}
             />

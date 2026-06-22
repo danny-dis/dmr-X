@@ -7,6 +7,7 @@ import { Button } from '@/components/primitives/Button';
 import { Toggle } from '@/components/primitives/Toggle';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { toast } from '@/components/primitives/Toast';
 import { Pagination } from '@/components/primitives/Pagination';
 import { TelemetryEventRow } from '@/components/domain/TelemetryEventRow';
 import { useApiData, useDebounce } from '@/hooks';
@@ -71,6 +72,7 @@ export function RequestsPage() {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Failed to export telemetry', err);
+      toast.error('Failed to export telemetry');
     }
   };
 
