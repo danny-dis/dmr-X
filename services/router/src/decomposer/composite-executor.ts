@@ -1,10 +1,11 @@
 import type { UnifiedRequest, UnifiedResponse, FreeTierStrategy } from '@dmr-x/core';
-import type { DecomposedTask, SubTask, ExecutionGroup } from './task-decomposer.js';
-import type { SpecialistRouter } from './specialist-router.js';
-import type { AdapterExecutor } from '../fallback/fallback-executor.js';
 import type { CandidateSet, ProviderModel } from '@dmr-x/core';
 import { logger } from '@dmr-x/utils';
+
+import type { SpecialistRouter } from './specialist-router.js';
+import type { DecomposedTask, SubTask, ExecutionGroup } from './task-decomposer.js';
 import type { WorkerPoolFanout } from './worker-pool-fanout.js';
+import type { AdapterExecutor } from '../fallback/fallback-executor.js';
 
 export interface CompositeResult {
   taskId: string;
@@ -69,7 +70,8 @@ export class CompositeExecutor {
         const allDepsMet = group.dependsOn.every((depId) => {
           // Check if all sub-tasks in dependency group completed successfully
           const depGroup = decomposed.executionPlan.groups.find((g) => g.id === depId);
-          return depGroup?.subTaskIds.every((id) => subTaskResults.get(id)?.success) ?? true;
+          if (!depGroup) return false;
+          return depGroup.subTaskIds.every((id) => subTaskResults.get(id)?.success) ?? false;
         });
 
         if (!allDepsMet) {
@@ -301,8 +303,12 @@ export class CompositeExecutor {
 
     // Calculate totals
     const totalLatency = Array.from(results.values()).reduce((sum, r) => sum + r.executionTimeMs, 0);
-    const totalTokens = successfulResults.reduce(
-      (sum, r) => sum + (r.response.usage?.total_tokens || 0),
+    const totalPrompt = successfulResults.reduce(
+      (sum, r) => sum + (r.response.usage?.prompt_tokens ?? r.response.usage?.total_tokens ?? 0),
+      0
+    );
+    const totalCompletion = successfulResults.reduce(
+      (sum, r) => sum + (r.response.usage?.completion_tokens ?? 0),
       0
     );
 
@@ -316,9 +322,9 @@ export class CompositeExecutor {
         content: combinedOutput,
       },
       usage: {
-        prompt_tokens: totalTokens,
-        completion_tokens: 0,
-        total_tokens: totalTokens,
+        prompt_tokens: totalPrompt,
+        completion_tokens: totalCompletion,
+        total_tokens: totalPrompt + totalCompletion,
       },
       finishReason: failedResults.length > 0 ? 'length' : 'stop',
       latencyMs: totalLatency,

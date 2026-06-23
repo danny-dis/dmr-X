@@ -188,7 +188,8 @@ export class ThompsonSampler {
    * Generate a Gaussian random number using Box-Muller transform
    */
   private gaussianRandom(): number {
-    const u1 = Math.random();
+    // Guard: Math.random() can return 0, which makes Math.log(0) = -Infinity
+    const u1 = Math.max(Number.EPSILON, Math.random());
     const u2 = Math.random();
     return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   }
@@ -206,8 +207,8 @@ export class ThompsonSampler {
 
     // Normalize scores
     const qualityScore = candidate.qualityScore;
-    const costScore = 1 - (candidate.costPerInputToken || 0) / 0.01; // Normalize to 0.01
-    const latencyScore = 1 - (candidate.avgLatencyMs || 0) / 5000; // Normalize to 5s
+    const costScore = Math.max(0, 1 - (candidate.costPerInputToken || 0) / 0.01); // Normalize to 0.01, clamped to [0, 1]
+    const latencyScore = Math.max(0, 1 - (candidate.avgLatencyMs || 0) / 5000); // Normalize to 5s, clamped to [0, 1]
 
     // Combine Thompson sample with quality/cost/latency scores
     const combinedScore =

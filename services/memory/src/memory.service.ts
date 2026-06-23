@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
+
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
-import crypto from 'node:crypto';
+
 import { EmbeddingsService } from './embeddings.js';
 import { VectorSearch } from './vector-search.js';
 
@@ -91,7 +93,11 @@ export class MemoryService {
 
     cache.delete(`list:${input.tenantId}`);
 
-    return this.getById(id)!;
+    const item = this.getById(id);
+    if (!item) {
+      throw new Error('Failed to retrieve created memory item');
+    }
+    return item;
   }
 
   getById(id: string): MemoryItem | null {
@@ -172,8 +178,9 @@ export class MemoryService {
 
   private fallbackSearch(input: SearchMemoryInput): (MemoryItem & { score: number })[] {
     const db = getDb();
-    const whereClauses: string[] = [`content LIKE '%${input.query.replace(/'/g, "''")}%'`];
     const params: unknown[] = [];
+    const whereClauses: string[] = ['content LIKE ?'];
+    params.push(`%${input.query}%`);
 
     if (input.tenantId) {
       whereClauses.push('tenant_id = ?');

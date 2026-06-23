@@ -1,8 +1,10 @@
-import { getDb } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
-import type { CandidateSet, TaskProfile } from '@dmr-x/core';
-import { getProviderTemplate } from '@dmr-x/registry';
 import crypto from 'node:crypto';
+
+import type { CandidateSet, TaskProfile } from '@dmr-x/core';
+import { getDb } from '@dmr-x/db';
+import { getProviderTemplate } from '@dmr-x/registry';
+import { logger } from '@dmr-x/utils';
+
 
 export interface PolicyRule {
   type: 'provider_allowlist' | 'provider_blocklist' | 'model_blocklist' | 'cost_limit' | 'data_residency';
@@ -91,7 +93,7 @@ export class PolicyService {
   private applyCostLimit(candidates: CandidateSet, maxCostPerToken: number): CandidateSet {
     if (!maxCostPerToken) return candidates;
     return candidates.filter((c) => {
-      const cost = c.costPerInputToken ?? c.costPerImage ?? 0;
+      const cost = (c.costPerInputToken ?? 0) + (c.costPerOutputToken ?? 0);
       return cost <= maxCostPerToken;
     });
   }

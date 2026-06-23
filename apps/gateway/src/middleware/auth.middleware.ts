@@ -1,8 +1,15 @@
 import { timingSafeEqual } from 'node:crypto';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+
+import { AuthenticationError } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { hashApiKey, logger } from '@dmr-x/utils';
-import { AuthenticationError } from '@dmr-x/core';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+
+// Debounced last_used_at: module-level cache keyed by api_key id.
+// Avoids SQLite write contention on every authenticated request.
+// Capped at 10 000 entries; oldest are evicted when the limit is hit.
+const lastUsedAtCache = new Map<string, number>();
+const LAST_USED_CACHE_MAX = 10_000;
 
 // Routes that don't require auth.
 const PUBLIC_ROUTES = new Set(['/health', '/healthz', '/livez', '/ready', '/v1/models']);
@@ -57,8 +64,11 @@ function isPublicPath(pathname: string, method: string): boolean {
   if (PUBLIC_ROUTES.has(pathname)) return true;
   if (PUBLIC_PREFIXES.some(prefix => pathname.startsWith(prefix))) return true;
   if (pathname === '/') return true;
+  // Non-API GET requests are public (SPA assets, etc.)
   if (method === 'GET' && !pathname.startsWith('/v1/')) return true;
-
+  // File-extension check only for non-API paths — API routes with dotted
+  // segments (e.g. /v1/admin/config.json) must not bypass auth.
+  if (pathname.startsWith('/v1/')) return false;
   const extension = pathname.includes('.') ? pathname.slice(pathname.lastIndexOf('.')).toLowerCase() : '';
   return PUBLIC_FILE_EXTENSIONS.has(extension);
 }
@@ -104,13 +114,11 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       }
       const keyBuf = Buffer.from(apiKey);
       const adminBuf = Buffer.from(adminApiKey);
-      // Pad both buffers to the same length to prevent timing leakage of key length
-      const maxLen = Math.max(keyBuf.length, adminBuf.length);
-      const paddedKey = Buffer.alloc(maxLen, 0);
-      const paddedAdmin = Buffer.alloc(maxLen, 0);
-      keyBuf.copy(paddedKey);
-      adminBuf.copy(paddedAdmin);
-      if (!timingSafeEqual(paddedKey, paddedAdmin)) {
+      // Compare lengths first (leaks length timing, but admin key length is
+      // fixed per deployment and not secret), then use timing-safe comparison
+      // on the actual values. The previous zero-padding scheme allowed
+      // null-byte appended keys to match.
+      if (keyBuf.length !== adminBuf.length || !timingSafeEqual(keyBuf, adminBuf)) {
         (server as any).recordTelemetryEvent?.({
           level: 'warning',
           service: 'gateway',
@@ -174,14 +182,18 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     };
 
     // Debounced last_used_at update: only update if >5 minutes since last update
-    // to avoid SQLite write contention on the hot path
+    // to avoid SQLite write contention on the hot path. Uses a module-level cache
+    // instead of request-scoped state so the debounce persists across requests.
     const now = Date.now();
-    const lastUsed = (request as any).tenant?.lastUsedAt;
+    const lastUsed = lastUsedAtCache.get(row.id);
     if (!lastUsed || now - lastUsed > 5 * 60 * 1000) {
       db.prepare(
         "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
       ).run(row.id);
-      (request as any).tenant.lastUsedAt = now;
+      if (lastUsedAtCache.size >= LAST_USED_CACHE_MAX) {
+        lastUsedAtCache.clear();
+      }
+      lastUsedAtCache.set(row.id, now);
     }
   });
 }

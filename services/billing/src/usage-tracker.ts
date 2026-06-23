@@ -1,6 +1,7 @@
+import crypto from 'node:crypto';
+
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
-import crypto from 'node:crypto';
 
 const cache = createNamespacedCache('usage');
 
@@ -64,7 +65,7 @@ export class UsageTracker {
   /**
    * Record a single request's usage. Writes to cache counters and persists to SQLite.
    */
-  record(record: Omit<UsageRecord, 'id' | 'createdAt'>): UsageRecord {
+  async record(record: Omit<UsageRecord, 'id' | 'createdAt'>): Promise<UsageRecord> {
     const db = getDb();
 
     const now = new Date();

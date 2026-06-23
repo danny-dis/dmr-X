@@ -1,9 +1,10 @@
+import { ValidationError, ProviderUnavailableError, type UnifiedRequest } from '@dmr-x/core';
+import type { RateLimitService, QuotaService } from '@dmr-x/quota';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, ProviderUnavailableError, type UnifiedRequest } from '@dmr-x/core';
-import { generateRequestId, logger } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
-import type { RateLimitService, QuotaService } from '@dmr-x/quota';
+
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 
 const ChatRequestSchema = z.object({
@@ -222,10 +223,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           // Record usage after successful stream completion (fire-and-forget)
           try {
             if (rls) {
-              await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0);
+              await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, streamPromptTokens + streamCompletionTokens);
             }
             if (qs && tenantId) {
-              await qs.recordUsage(tenantId, plan.primary.providerId, 0, 0);
+              await qs.recordUsage(tenantId, plan.primary.providerId, streamPromptTokens + streamCompletionTokens, 0);
             }
           } catch (usageErr) {
             logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record streaming usage');

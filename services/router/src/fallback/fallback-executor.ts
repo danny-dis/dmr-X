@@ -1,7 +1,7 @@
 import type { RoutingPlan, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, QuotaExhaustedError } from '@dmr-x/core';
-import { logger } from '@dmr-x/utils';
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
+import { logger } from '@dmr-x/utils';
 
 export interface AdapterExecutor {
   execute(
@@ -41,7 +41,7 @@ export async function executeWithFallback(
   const rls = options?.rateLimitService;
   const qs = options?.quotaService;
   const tenantId = options?.tenantId;
-  let allRateLimited = true;
+  let anyNonRateLimitError = false;
 
   // Try primary
   try {
@@ -50,7 +50,6 @@ export async function executeWithFallback(
       const limitCheck = rls.checkLimit(plan.primary.providerId, plan.primary.modelId, 0);
       if (!limitCheck.allowed) {
         logger.info({ provider: plan.primary.providerId, retryAfterMs: limitCheck.retryAfterMs }, 'Primary provider rate-limited, skipping');
-        allRateLimited = true;
         tried.push(plan.primary.providerId);
         throw new Error(`Rate limited: ${limitCheck.reason}`);
       }
@@ -83,7 +82,7 @@ export async function executeWithFallback(
     // Record circuit breaker failure (wrapped in try/catch to prevent callback errors from breaking fallback chain)
     try { options?.onFailure?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
     if (!isRateLimitError(error)) {
-      allRateLimited = false;
+      anyNonRateLimitError = true;
     }
     if (isQuotaError(error)) {
       logger.warn({ provider: plan.primary.providerId, requestId: options?.requestId }, 'Primary provider quota exhausted');
@@ -146,7 +145,7 @@ export async function executeWithFallback(
       // Record circuit breaker failure (wrapped in try/catch)
       try { options?.onFailure?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
       if (!isRateLimitError(error)) {
-        allRateLimited = false;
+        anyNonRateLimitError = true;
       }
       if (isQuotaError(error)) {
         logger.warn({ provider: step.provider.providerId, requestId: options?.requestId }, 'Fallback provider quota exhausted');
@@ -168,7 +167,7 @@ export async function executeWithFallback(
     }
   }
 
-  if (allRateLimited && tried.length > 0) {
+  if (!anyNonRateLimitError && tried.length > 0) {
     throw new ProviderUnavailableError(tried, 5000);
   }
   throw new AllProvidersFailedError(tried);

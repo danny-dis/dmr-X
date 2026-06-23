@@ -20,7 +20,7 @@
 - **Alertmanager routing** — page / ticket / info severities with PagerDuty + Slack integration skeletons, inhibition rules to suppress noise.
 
 ### Operations
-- **Operational runbook** (`RUNBOOK.md`) — diagnose / mitigate / recover / postmortem procedures for every page-severity alert. Includes deployment, escalation, and useful commands.
+- **Operational runbook** (`docs/RUNBOOK.md`) — diagnose / mitigate / recover / postmortem procedures for every page-severity alert. Includes deployment, escalation, and useful commands.
 - **SQLite backup tooling** (`scripts/backup/`) — online `sqlite3 .backup` snapshots, integrity-checked, optionally uploaded to S3, with rotation. Restore procedure documented.
 - **k6 load test suite** (`scripts/loadtest/`) — smoke, baseline, stress, and streaming tests. Thresholds for SLO breach detection. Output JSON for trend tracking.
 - **SLO definitions** (`docs/SLO.md`) — 99.9% availability, latency budgets per endpoint, burn-rate alerts. Includes the Google SRE workbook-style multi-window alerts.

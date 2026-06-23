@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { initDb, getDb, closeDb, createNamespacedCache } from '@dmr-x/db';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+
 import { UsageTracker, usageTracker } from '../../services/billing/src/usage-tracker.js';
 
 const cache = createNamespacedCache('usage');
@@ -59,9 +61,9 @@ describe('UsageTracker', () => {
   });
 
   describe('record()', () => {
-    it('populates createdAt on the returned record (no post-INSERT SELECT)', () => {
+    it('populates createdAt on the returned record (no post-INSERT SELECT)', async () => {
       const before = Date.now();
-      const result = tracker.record({
+      const result = await tracker.record({
         tenantId: 'tenant-test-1',
         providerId: 'openai',
         modelId: 'gpt-4',
@@ -83,8 +85,8 @@ describe('UsageTracker', () => {
       expect(Math.abs(before - ts)).toBeLessThan(5_000);
     });
 
-    it('persists the record to SQLite so queryRecords can find it', () => {
-      const result = tracker.record({
+    it('persists the record to SQLite so queryRecords can find it', async () => {
+      const result = await tracker.record({
         tenantId: 'tenant-test-1',
         providerId: 'openai',
         modelId: 'gpt-4',
@@ -100,8 +102,8 @@ describe('UsageTracker', () => {
       expect(rows[0].requestId).toBe('req-persist-1');
     });
 
-    it('increments the real-time cache counters for tenant + provider + model', () => {
-      tracker.record({
+    it('increments the real-time cache counters for tenant + provider + model', async () => {
+      await tracker.record({
         tenantId: 'tenant-test-1',
         providerId: 'openai',
         modelId: 'gpt-4',
@@ -119,8 +121,8 @@ describe('UsageTracker', () => {
       expect(rt.costCents).toBe(5);
     });
 
-    it('increments the global real-time counter for the tenant', () => {
-      tracker.record({
+    it('increments the global real-time counter for the tenant', async () => {
+      await tracker.record({
         tenantId: 'tenant-test-1',
         providerId: 'openai',
         modelId: 'gpt-4',
@@ -130,7 +132,7 @@ describe('UsageTracker', () => {
         costCents: 1,
         requestId: 'req-global-1',
       });
-      tracker.record({
+      await tracker.record({
         tenantId: 'tenant-test-1',
         providerId: 'anthropic',
         modelId: 'claude-3',
@@ -148,11 +150,11 @@ describe('UsageTracker', () => {
   });
 
   describe('TTL behavior', () => {
-    it('sets the real-time key TTL to ≤ 7 days + 1 minute', () => {
+    it('sets the real-time key TTL to ≤ 7 days + 1 minute', async () => {
       vi.useFakeTimers();
       try {
         const before = Date.now();
-        tracker.record({
+        await tracker.record({
           tenantId: 'tenant-test-1',
           providerId: 'openai',
           modelId: 'gpt-4',
@@ -179,11 +181,11 @@ describe('UsageTracker', () => {
       }
     });
 
-    it('sets the daily key TTL to approximately 90 days', () => {
+    it('sets the daily key TTL to approximately 90 days', async () => {
       vi.useFakeTimers();
       try {
         const before = Date.now();
-        tracker.record({
+        await tracker.record({
           tenantId: 'tenant-test-1',
           providerId: 'openai',
           modelId: 'gpt-4',
@@ -207,11 +209,11 @@ describe('UsageTracker', () => {
       }
     });
 
-    it('sets the monthly key TTL to approximately 365 days', () => {
+    it('sets the monthly key TTL to approximately 365 days', async () => {
       vi.useFakeTimers();
       try {
         const before = Date.now();
-        tracker.record({
+        await tracker.record({
           tenantId: 'tenant-test-1',
           providerId: 'openai',
           modelId: 'gpt-4',
@@ -234,11 +236,11 @@ describe('UsageTracker', () => {
       }
     });
 
-    it('expires the RT key after 7 days + 1 minute has elapsed (behavioral)', () => {
+    it('expires the RT key after 7 days + 1 minute has elapsed (behavioral)', async () => {
       // Behavioral test: after the TTL elapses, hGet returns null.
       vi.useFakeTimers();
       try {
-        tracker.record({
+        await tracker.record({
           tenantId: 'tenant-test-1',
           providerId: 'openai',
           modelId: 'gpt-4',

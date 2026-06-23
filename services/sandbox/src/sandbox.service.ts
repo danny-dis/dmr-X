@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
+
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
-import crypto from 'node:crypto';
+
 import { Executor } from './executor.js';
 import { ResourceLimiter } from './resource-limiter.js';
 
@@ -87,7 +89,10 @@ export class SandboxService {
       VALUES (?, ?, ?, ?, 'queued', 'process', ?, ?)
     `).run(id, input.tenantId || null, language, input.code, timeoutMs, maxRetries);
 
-    const job = this.getById(id)!;
+    const job = this.getById(id);
+    if (!job) {
+      throw new Error('Failed to create sandbox job');
+    }
 
     if (this.runningCount < this.maxConcurrent) {
       this.runJob(id).catch(err => {
@@ -170,10 +175,7 @@ export class SandboxService {
             WHERE id = ?
           `).run(id);
           cache.delete('list');
-          // Decrement before recursive call to keep count accurate
-          this.runningCount--;
-          this.runJob(id);
-          return;
+          return; // Finally block handles runningCount--; job is re-enqueued as 'queued'
         }
         db.prepare(`
           UPDATE sandbox_jobs SET status = 'failed', error = ?, output = ?, completed_at = datetime('now')
@@ -193,6 +195,20 @@ export class SandboxService {
     } finally {
       this.runningCount--;
       cache.delete('list');
+      this.processNextQueuedJob();
+    }
+  }
+
+  private processNextQueuedJob(): void {
+    if (this.runningCount >= this.maxConcurrent) return;
+    const db = getDb();
+    const row = db.prepare(
+      "SELECT id FROM sandbox_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
+    ).get() as { id: string } | undefined;
+    if (row) {
+      this.runJob(row.id).catch(err => {
+        logger.error({ error: String(err) }, `Sandbox job ${row.id} failed`);
+      });
     }
   }
 

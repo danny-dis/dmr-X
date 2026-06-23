@@ -157,7 +157,7 @@ Instead of hard-coding a model name, use a **meta-model alias** — DMR-X picks 
 
 Use them exactly like a model name: `"model": "auto-coding"`.
 
-See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and SDK integration guides for Claude Code, Cursor, Continue, and more.
+See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and SDK integration guides, and [docs/QUICK-START.md](docs/QUICK-START.md) for the single-API-key setup guide.
 
 ## API Endpoints
 
@@ -294,6 +294,9 @@ CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that build
 | [docs/TESTING.md](docs/TESTING.md) | Testing guide |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
 | [SECURITY.md](SECURITY.md) | Security policy, supported versions, and vulnerability disclosure |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operational runbook and incident response |
+| [docs/WIRING-VERIFICATION.md](docs/WIRING-VERIFICATION.md) | Technical wiring verification reference |
+| [docs/TRANSPARENCY-VERIFICATION.md](docs/TRANSPARENCY-VERIFICATION.md) | Provider transparency verification |
 | [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Provider API reference (35+ providers) |
 | [docs/AI_API_PROVIDERS_EXHAUSTIVE.md](docs/AI_API_PROVIDERS_EXHAUSTIVE.md) | Exhaustive provider catalog (100+) |
 | [docs/FREE_API_PROVIDERS_REPORT.md](docs/FREE_API_PROVIDERS_REPORT.md) | Free-tier provider report |

@@ -125,7 +125,7 @@ When the SLO is breached:
 3. **Post in #incidents** with the alert name and dashboard link
 4. **Track budget consumption** in the incident timeline
 5. **Within 48h of resolution**: write a postmortem (template in
-   `RUNBOOK.md`) and add preventive action items
+   `docs/RUNBOOK.md`) and add preventive action items
 
 The SLO budget is consumed by both real outages AND near-misses
 (high error rate that didn't trigger an outage). Treat near-misses

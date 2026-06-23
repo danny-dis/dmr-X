@@ -1,6 +1,6 @@
+import type { RateLimitConfig, RateLimitCheckResult, RateLimitState } from '@dmr-x/core';
 import { createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
-import type { RateLimitConfig, RateLimitCheckResult, RateLimitState } from '@dmr-x/core';
 
 const cache = createNamespacedCache('rl');
 
@@ -158,12 +158,17 @@ export class RateLimitService {
 
   /**
    * Start the penalty decay interval (every 2 minutes, -1 point).
+   * Also evicts entries older than 30 minutes to prevent unbounded growth.
    */
   startDecay(intervalMs: number = 120_000): void {
     if (this.decayInterval) return;
+    const MAX_PENALTY_AGE_MS = 30 * 60 * 1000; // 30 minutes
     this.decayInterval = setInterval(() => {
+      const now = Date.now();
       for (const [key, penalty] of this.penalties.entries()) {
-        if (penalty.points > 0) {
+        if (now - penalty.lastPenalty > MAX_PENALTY_AGE_MS) {
+          this.penalties.delete(key);
+        } else if (penalty.points > 0) {
           penalty.points -= 1;
           if (penalty.points <= 0) {
             this.penalties.delete(key);

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+
 import { logger } from '@dmr-x/utils';
 
 export interface ExecuteInput {
@@ -60,7 +61,6 @@ export class Executor {
     return new Promise((resolve) => {
       const proc = spawn(runner.command, runner.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: input.timeoutMs,
         // SECURITY: Use a stripped environment — never inherit process.env
         // which contains DMRX_ADMIN_API_KEY, DMRX_ENCRYPTION_KEY, etc.
         env: { ...SANDBOX_ENV, ...runner.env },
