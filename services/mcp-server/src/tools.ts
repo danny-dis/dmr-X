@@ -241,8 +241,9 @@ export const dmrxBatchParams = {
 export const dmrxContextSaveParams = {
   id: z.string().optional().describe('Context ID (auto-generated if omitted)'),
   messages: z.array(ChatMessageSchema).min(1, 'At least one message required').max(1000, 'Too many messages — max 1000').describe('Conversation messages to save'),
-  ttl_seconds: z.number().int().positive().optional().describe('Time-to-live in seconds (default 86400)'),
+  ttl_seconds: z.number().int().optional().describe('Time-to-live in seconds (default 86400). Set to 0 for permanent storage.'),
   user: z.string().optional().describe('Owner user ID'),
+  permanent: z.boolean().optional().describe('If true, context is stored permanently and never expires'),
 } as const;
 
 export const dmrxContextLoadParams = {
@@ -377,6 +378,13 @@ export const TOOL_NAMES = {
   GENERATE_VIDEO_STREAM: 'dmrx_generate_video_stream',
   GENERATE_3D: 'dmrx_generate_3d',
   WORKFLOW: 'dmrx_workflow',
+  // Coding agent tools
+  READ_FILE: 'dmrx_read_file',
+  WRITE_FILE: 'dmrx_write_file',
+  EDIT_FILE: 'dmrx_edit_file',
+  LIST_FILES: 'dmrx_list_files',
+  BASH: 'dmrx_bash',
+  SEARCH_FILES: 'dmrx_search_files',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -609,6 +617,45 @@ export const dmrxWorkflowOutput = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// Coding agent tool schemas
+// ---------------------------------------------------------------------------
+
+export const dmrxReadFileInput = {
+  path: z.string().describe('File path relative to workspace'),
+  offset: z.number().int().positive().optional().describe('Start line (1-indexed)'),
+  limit: z.number().int().positive().optional().describe('Max lines to read'),
+} as const;
+
+export const dmrxWriteFileInput = {
+  path: z.string().describe('File path relative to workspace'),
+  content: z.string().describe('File content to write'),
+} as const;
+
+export const dmrxEditFileInput = {
+  path: z.string().describe('File path relative to workspace'),
+  old_string: z.string().describe('Exact string to replace'),
+  new_string: z.string().describe('Replacement string'),
+} as const;
+
+export const dmrxListFilesInput = {
+  path: z.string().optional().describe('Directory path (default: workspace root)'),
+  pattern: z.string().optional().describe('Filter by filename substring'),
+  recursive: z.boolean().optional().describe('List recursively (default: false)'),
+} as const;
+
+export const dmrxBashInput = {
+  command: z.string().describe('Shell command to execute'),
+  timeout_ms: z.number().int().positive().optional().describe('Timeout in ms (default: 30000)'),
+  cwd: z.string().optional().describe('Working directory relative to workspace'),
+} as const;
+
+export const dmrxSearchFilesInput = {
+  pattern: z.string().describe('Text to search for in files'),
+  path: z.string().optional().describe('Directory to search in (default: workspace root)'),
+  include: z.string().optional().describe('Filter by filename (e.g., ".ts")'),
+} as const;
+
+// ---------------------------------------------------------------------------
 // Tool descriptions
 // ---------------------------------------------------------------------------
 
@@ -669,4 +716,16 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   dmrx_workflow:
     'Define and execute multi-step workflows. Supports conditional branching, looping, parallel execution, ' +
     'error handling, and retry policies. Enables complex agent behaviors in a single MCP call.',
+  dmrx_read_file:
+    'Read a file from the workspace. Returns content with line numbers. Supports offset/limit for large files.',
+  dmrx_write_file:
+    'Write content to a file in the workspace. Creates parent directories if needed. Overwrites existing files.',
+  dmrx_edit_file:
+    'Edit a file by replacing an exact string match. Fails if old_string is not found or matches multiple times.',
+  dmrx_list_files:
+    'List files and directories in the workspace. Supports recursive listing and filename pattern filtering.',
+  dmrx_bash:
+    'Execute a shell command in the workspace. Returns stdout, stderr, and exit code. Has a 30s default timeout.',
+  dmrx_search_files:
+    'Search for text patterns across files in the workspace. Returns matching files with line numbers and content.',
 };

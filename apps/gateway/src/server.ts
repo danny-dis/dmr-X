@@ -27,7 +27,6 @@ import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
 import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
 import { agenticRoutes } from './routes/agentic.routes.js';
-import { piAgenticRoutes } from './routes/pi-agentic.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
 import { audioSeparationRoutes } from './routes/audio-separation.routes.js';
 import { audioRoutes } from './routes/audio.routes.js';
@@ -37,7 +36,7 @@ import { imagesRoutes } from './routes/images.routes.js';
 import { modelsRoutes } from './routes/models.routes.js';
 import { ocrRoutes } from './routes/ocr.routes.js';
 import { rerankRoutes } from './routes/rerank.routes.js';
-import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers } from './routes/tools.routes.js';
+import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers } from './routes/tools.routes.js';
 import { videoRoutes } from './routes/video.routes.js';
 import { geminiRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
@@ -609,6 +608,8 @@ void (async () => {
               candidates?: Array<{ providerId: string; modelId: string; score?: number }>;
             };
             firstTokenLatencyMs?: number;
+            qualityTarget?: string;
+            freeTierStrategy?: string;
           }
         | undefined;
       if (metrics?.providerId && metrics.modelId) {
@@ -680,8 +681,9 @@ void (async () => {
               task_profile, routing_plan, selected_provider, selected_model,
               fallback_used, fallback_reason,
               latency_ms, time_to_first_token_ms, tokens_input, tokens_output,
-              estimated_cost, error_code, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              estimated_cost, error_code, error_message,
+              quality_target, free_tier_strategy
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(
             id,
             request.id,
@@ -700,6 +702,8 @@ void (async () => {
             metrics.tokens?.costUsd ?? null,
             metrics.errorCode ?? null,
             null,
+            metrics.qualityTarget ?? null,
+            metrics.freeTierStrategy ?? null,
           );
         } catch (writeErr) {
           // Persistence failures must never break the request. The debounced
@@ -955,8 +959,8 @@ void (async () => {
    await server.register(adminRoutes, { prefix: '/v1' });
    await server.register(toolsRoutes, { prefix: '/v1' });
    registerBuiltinToolHandlers();
+   registerCodingToolHandlers();
    await server.register(agenticRoutes, { prefix: '/v1' });
-   await server.register(piAgenticRoutes, { prefix: '/v1' });
    await server.register(conversationRoutes, { prefix: '/v1' });
 
   // SPA fallback: serve index.html for non-API GET requests.
@@ -1247,6 +1251,56 @@ void (async () => {
         'Background initialisation complete',
       );
     })();
+
+    // ─── Periodic Health Check ──────────────────────────────────────
+    // Every 5 minutes, verify provider health and key validity.
+    // Deactivates models for providers whose keys have expired or
+    // whose upstream is unreachable.
+    const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+    setInterval(() => {
+      void (async () => {
+        try {
+          const providers = db.prepare(
+            `SELECT id, name, base_url, is_healthy, tier FROM providers WHERE tier != 'inactive'`
+          ).all() as Array<{ id: string; name: string; base_url: string | null; is_healthy: number; tier: string }>;
+
+          for (const p of providers) {
+            const template = PROVIDER_CATALOG.find(t => t.id === p.name);
+            const needsNoKey = template?.envKey === '';
+
+            // Skip keyless providers (Pollinations) — they're always healthy
+            if (needsNoKey) continue;
+
+            // Check if provider still has active keys
+            const activeKey = db.prepare(
+              `SELECT 1 FROM provider_keys
+               WHERE provider_id = ? AND is_active = 1
+                 AND (api_key_encrypted IS NOT NULL OR oauth_access_token_encrypted IS NOT NULL)
+               LIMIT 1`
+            ).get(p.id);
+
+            if (!activeKey && !needsNoKey) {
+              // No active keys — deactivate models
+              const deactivated = db.prepare(
+                `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now')
+                 WHERE provider_id = ? AND is_active = 1`
+              ).run(p.id);
+              if (deactivated.changes > 0) {
+                logger.info({ provider: p.name, models: deactivated.changes }, 'Health check: deactivated models — no active keys');
+              }
+              // Mark provider as unhealthy
+              if (p.is_healthy) {
+                db.prepare(
+                  `UPDATE providers SET is_healthy = 0, updated_at = datetime('now') WHERE id = ?`
+                ).run(p.id);
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn({ err }, 'Periodic health check failed');
+        }
+      })();
+    }, HEALTH_CHECK_INTERVAL_MS);
   };
 
   return { server, runBackgroundInit };

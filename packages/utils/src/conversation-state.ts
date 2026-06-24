@@ -11,7 +11,6 @@ import type {
   FunctionCallOutputItem,
   OpenResponsesResult,
 } from './stream-type-guards.js';
-
 import type { TurnContext } from './tool-context.js';
 export type { TurnContext } from './tool-context.js';
 
@@ -48,6 +47,16 @@ export interface UnsentToolResult<TTools extends readonly Tool[] = readonly Tool
   error?: string;
 }
 
+/** Queue delivery mode. */
+export type QueueMode = 'all' | 'one-at-a-time';
+
+/** A message queued for steering or follow-up. */
+export interface QueuedMessage {
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  timestamp: number;
+}
+
 /** Conversation state tracking. */
 export interface ConversationState<TTools extends readonly Tool[] = readonly Tool[]> {
   id: string;
@@ -63,6 +72,14 @@ export interface ConversationState<TTools extends readonly Tool[] = readonly Too
   unsentToolResults?: UnsentToolResult<TTools>[];
   /** Partial response captured at interruption. */
   partialResponse?: { text: string; toolCalls: ParsedToolCall[] };
+  /** Steering messages injected during execution (after current tool batch). */
+  steeringQueue?: QueuedMessage[];
+  /** Follow-up messages processed after agent enters idle state. */
+  followUpQueue?: QueuedMessage[];
+  /** How to drain steering messages: 'all' drains at once, 'one-at-a-time' drains one per turn. */
+  steeringMode?: QueueMode;
+  /** How to drain follow-up messages. */
+  followUpMode?: QueueMode;
 }
 
 /** Input that can be a single item or an array. */
@@ -381,4 +398,85 @@ export function extractToolCallsFromResponse<TTools extends readonly Tool[]>(
   }
 
   return toolCalls;
+}
+
+// ---------------------------------------------------------------------------
+// Steering and follow-up queue helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Enqueue a steering message (injected after current tool batch).
+ */
+export function steerConversation(
+  state: ConversationState,
+  message: QueuedMessage,
+): ConversationState {
+  return updateState(state, {
+    steeringQueue: [...(state.steeringQueue ?? []), message],
+  });
+}
+
+/**
+ * Enqueue a follow-up message (processed after agent enters idle).
+ */
+export function followUpConversation(
+  state: ConversationState,
+  message: QueuedMessage,
+): ConversationState {
+  return updateState(state, {
+    followUpQueue: [...(state.followUpQueue ?? []), message],
+  });
+}
+
+/**
+ * Drain steering messages from the queue.
+ * In 'all' mode, returns all messages. In 'one-at-a-time', returns the first.
+ */
+export function drainSteeringQueue(state: ConversationState): {
+  messages: QueuedMessage[];
+  updatedState: ConversationState;
+} {
+  const queue = state.steeringQueue ?? [];
+  if (queue.length === 0) {
+    return { messages: [], updatedState: state };
+  }
+
+  const mode = state.steeringMode ?? 'all';
+  const drained = mode === 'all' ? queue : [queue[0]];
+  const remaining = mode === 'all' ? [] : queue.slice(1);
+
+  return {
+    messages: drained,
+    updatedState: updateState(state, { steeringQueue: remaining }),
+  };
+}
+
+/**
+ * Drain follow-up messages from the queue.
+ * In 'all' mode, returns all messages. In 'one-at-a-time', returns the first.
+ */
+export function drainFollowUpQueue(state: ConversationState): {
+  messages: QueuedMessage[];
+  updatedState: ConversationState;
+} {
+  const queue = state.followUpQueue ?? [];
+  if (queue.length === 0) {
+    return { messages: [], updatedState: state };
+  }
+
+  const mode = state.followUpMode ?? 'all';
+  const drained = mode === 'all' ? queue : [queue[0]];
+  const remaining = mode === 'all' ? [] : queue.slice(1);
+
+  return {
+    messages: drained,
+    updatedState: updateState(state, { followUpQueue: remaining }),
+  };
+}
+
+/**
+ * Check if there are queued messages.
+ */
+export function hasQueuedMessages(state: ConversationState): boolean {
+  return (state.steeringQueue?.length ?? 0) > 0 || (state.followUpQueue?.length ?? 0) > 0;
 }

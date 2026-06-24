@@ -14,6 +14,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { ChatMessageSchema, ToolSchema, ToolCallSchema } from './shared-schemas.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
 // Tool handler registry (server-side tool execution)
@@ -223,6 +224,261 @@ export function registerBuiltinToolHandlers(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Coding agent tool handlers (file system + shell)
+// ---------------------------------------------------------------------------
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
+
+const CODING_WORKSPACE = process.env.DMRX_CODING_WORKSPACE || process.cwd();
+const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB limit for reads
+const SHELL_TIMEOUT_MS = 30_000; // 30s default for shell commands
+
+function safePath(filePath: string): string {
+  const resolved = path.resolve(CODING_WORKSPACE, filePath);
+  if (!resolved.startsWith(CODING_WORKSPACE)) {
+    throw new Error('Path outside workspace');
+  }
+  return resolved;
+}
+
+export function registerCodingToolHandlers(): void {
+  // ---- read_file -----------------------------------------------------------
+  registerToolHandler('read_file', async (args) => {
+    const { path: filePath, offset, limit } = args as {
+      path: string;
+      offset?: number;
+      limit?: number;
+    };
+
+    if (!filePath || typeof filePath !== 'string') {
+      return { error: 'path is required' };
+    }
+
+    try {
+      const fullPath = safePath(filePath);
+      const stat = fs.statSync(fullPath);
+      if (stat.size > MAX_FILE_SIZE) {
+        return { error: `File too large (${stat.size} bytes, max ${MAX_FILE_SIZE})` };
+      }
+
+      let content = fs.readFileSync(fullPath, 'utf-8');
+      const lines = content.split('\n');
+      const totalLines = lines.length;
+
+      const start = (offset ?? 1) - 1;
+      const end = limit ? start + limit : lines.length;
+      const selected = lines.slice(start, end);
+
+      return {
+        content: selected.join('\n'),
+        totalLines,
+        startLine: start + 1,
+        endLine: Math.min(end, totalLines),
+        truncated: end < lines.length,
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ---- write_file ----------------------------------------------------------
+  registerToolHandler('write_file', async (args) => {
+    const { path: filePath, content } = args as {
+      path: string;
+      content: string;
+    };
+
+    if (!filePath || typeof filePath !== 'string') {
+      return { error: 'path is required' };
+    }
+    if (content === undefined || typeof content !== 'string') {
+      return { error: 'content is required' };
+    }
+
+    try {
+      const fullPath = safePath(filePath);
+      const dir = path.dirname(fullPath);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(fullPath, content, 'utf-8');
+      const stat = fs.statSync(fullPath);
+      return { path: filePath, bytes: stat.size, lines: content.split('\n').length };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ---- edit_file -----------------------------------------------------------
+  registerToolHandler('edit_file', async (args) => {
+    const { path: filePath, oldString, newString } = args as {
+      path: string;
+      oldString: string;
+      newString: string;
+    };
+
+    if (!filePath || typeof filePath !== 'string') {
+      return { error: 'path is required' };
+    }
+    if (!oldString || typeof oldString !== 'string') {
+      return { error: 'oldString is required' };
+    }
+    if (newString === undefined || typeof newString !== 'string') {
+      return { error: 'newString is required' };
+    }
+
+    try {
+      const fullPath = safePath(filePath);
+      let content = fs.readFileSync(fullPath, 'utf-8');
+
+      const count = content.split(oldString).length - 1;
+      if (count === 0) {
+        return { error: `oldString not found in ${filePath}` };
+      }
+      if (count > 1) {
+        return { error: `Found ${count} matches for oldString. Provide more context to make it unique.` };
+      }
+
+      content = content.replace(oldString, newString);
+      fs.writeFileSync(fullPath, content, 'utf-8');
+
+      return { path: filePath, replaced: 1, lines: content.split('\n').length };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ---- list_files ----------------------------------------------------------
+  registerToolHandler('list_files', async (args) => {
+    const { path: dirPath, pattern, recursive } = args as {
+      path?: string;
+      pattern?: string;
+      recursive?: boolean;
+    };
+
+    try {
+      const fullPath = safePath(dirPath || '.');
+      const results: string[] = [];
+
+      function walk(dir: string, prefix: string) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue;
+          if (entry.isDirectory()) {
+            results.push(`${rel}/`);
+            if (recursive) walk(path.join(dir, entry.name), rel);
+          } else {
+            if (!pattern || entry.name.includes(pattern)) {
+              results.push(rel);
+            }
+          }
+        }
+      }
+
+      walk(fullPath, '');
+      return { files: results.slice(0, 200), total: results.length, truncated: results.length > 200 };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ---- bash ----------------------------------------------------------------
+  registerToolHandler('bash', async (args) => {
+    const { command, timeoutMs, cwd } = args as {
+      command: string;
+      timeoutMs?: number;
+      cwd?: string;
+    };
+
+    if (!command || typeof command !== 'string') {
+      return { error: 'command is required' };
+    }
+
+    // Block dangerous commands
+    const blocked = ['rm -rf /', 'mkfs', ':(){', 'dd if=/dev', '> /dev/sd'];
+    if (blocked.some(b => command.includes(b))) {
+      return { error: 'Command blocked for safety' };
+    }
+
+    try {
+      const workDir = cwd ? safePath(cwd) : CODING_WORKSPACE;
+      const timeout = timeoutMs ?? SHELL_TIMEOUT_MS;
+
+      const { stdout, stderr } = await execAsync(command, {
+        cwd: workDir,
+        timeout,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024, // 10MB
+      });
+
+      return { stdout, stderr: stderr || '', exitCode: 0 };
+    } catch (err: any) {
+      return {
+        stdout: err.stdout || '',
+        stderr: err.stderr || '',
+        exitCode: err.code ?? 1,
+        error: err.message,
+      };
+    }
+  });
+
+  // ---- search_files --------------------------------------------------------
+  registerToolHandler('search_files', async (args) => {
+    const { pattern: searchPattern, path: dirPath, include } = args as {
+      pattern: string;
+      path?: string;
+      include?: string;
+    };
+
+    if (!searchPattern || typeof searchPattern !== 'string') {
+      return { error: 'pattern is required' };
+    }
+
+    try {
+      const fullPath = safePath(dirPath || '.');
+      const results: Array<{ file: string; line: number; text: string }> = [];
+
+      function walk(dir: string) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue;
+          const fullPath2 = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            walk(fullPath2);
+          } else {
+            if (include && !entry.name.includes(include)) continue;
+            try {
+              const content = fs.readFileSync(fullPath2, 'utf-8');
+              const lines = content.split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(searchPattern)) {
+                  const rel = path.relative(CODING_WORKSPACE, fullPath2);
+                  results.push({ file: rel, line: i + 1, text: lines[i].trim() });
+                  if (results.length >= 100) return;
+                }
+              }
+            } catch {
+              // Skip binary/unreadable files
+            }
+          }
+        }
+      }
+
+      walk(fullPath);
+      return { matches: results, total: results.length, truncated: results.length >= 100 };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  logger.info('Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files');
+}
+
+// ---------------------------------------------------------------------------
 // Zod schemas
 // ---------------------------------------------------------------------------
 
@@ -314,6 +570,7 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const tenant = (request as any).tenant;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     // Mode 1: Direct tool call execution
     if (body.tool_call) {
@@ -378,7 +635,7 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
 
     const { response } = await router.route(unifiedRequest, {
       path: '/v1/tools/execute',
-      qualityTarget: 'balanced',
+      qualityTarget,
     });
 
     // Check if the model returned tool_calls
@@ -491,6 +748,7 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const tenant = (request as any).tenant;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
     const maxSteps = body.max_steps;
 
     // Build message history that we'll accumulate across turns
@@ -519,7 +777,7 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
 
           const { response } = await router.route(unifiedRequest, {
             path: '/v1/tools/loop',
-            qualityTarget: 'balanced',
+            qualityTarget,
           });
 
           const toolCalls = response.message?.tool_calls ?? [];
@@ -614,7 +872,7 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
 
         const { response } = await router.route(unifiedRequest, {
           path: '/v1/tools/loop',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
 
         const toolCalls = response.message?.tool_calls ?? [];

@@ -7,6 +7,14 @@
  * intermediate validation wrappers.
  */
 
+import type { ContextSchema } from './tool-context.js';
+import {
+  hasExecuteFunction,
+  isGeneratorTool,
+  isRegularExecuteTool,
+  ToolContextStore,
+  buildToolExecuteContext,
+} from './tool-types.js';
 import type {
   Tool,
   ParsedToolCall,
@@ -15,15 +23,43 @@ import type {
   ToolExecuteContext,
 } from './tool-types.js';
 
-import {
-  hasExecuteFunction,
-  isGeneratorTool,
-  isRegularExecuteTool,
-  ToolContextStore,
-  buildToolExecuteContext,
-} from './tool-types.js';
+// ---------------------------------------------------------------------------
+// Tool lifecycle hooks (inspired by Pi agent's beforeToolCall/afterToolCall)
+// ---------------------------------------------------------------------------
 
-import type { ContextSchema } from './tool-context.js';
+export interface BeforeToolCallContext {
+  tool: Tool;
+  toolCall: ParsedToolCall;
+  args: unknown;
+  turnContext: TurnContext;
+}
+
+export interface BeforeToolCallResult {
+  block?: boolean;
+  reason?: string;
+}
+
+export interface AfterToolCallContext {
+  tool: Tool;
+  toolCall: ParsedToolCall;
+  args: unknown;
+  result: ToolExecutionResult;
+  isError: boolean;
+  turnContext: TurnContext;
+}
+
+export interface AfterToolCallResult {
+  result?: unknown;
+  isError?: boolean;
+  terminate?: boolean;
+}
+
+export interface ToolLifecycleHooks {
+  beforeToolCall?: (context: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined> | BeforeToolCallResult | undefined;
+  afterToolCall?: (context: AfterToolCallContext) => Promise<AfterToolCallResult | undefined> | AfterToolCallResult | undefined;
+}
+
+
 
 // ---------------------------------------------------------------------------
 // Schema utilities (Zod-agnostic)
@@ -295,6 +331,7 @@ export async function executeGeneratorTool(
 /**
  * Execute a tool call.
  * Automatically detects if it's a regular or generator tool.
+ * Supports optional lifecycle hooks for before/after execution.
  */
 export async function executeTool(
   tool: Tool,
@@ -302,16 +339,59 @@ export async function executeTool(
   context: TurnContext,
   onPreliminaryResult?: (toolCallId: string, result: unknown) => void,
   contextStore?: ToolContextStore,
+  hooks?: ToolLifecycleHooks,
 ): Promise<ToolExecutionResult> {
   if (!hasExecuteFunction(tool)) {
     throw new Error(`Tool "${toolCall.name}" has no execute function. Use manual tool execution.`);
   }
 
-  if (isGeneratorTool(tool)) {
-    return executeGeneratorTool(tool, toolCall, context, onPreliminaryResult, contextStore);
+  // beforeToolCall hook
+  if (hooks?.beforeToolCall) {
+    const hookResult = await hooks.beforeToolCall({
+      tool,
+      toolCall,
+      args: toolCall.arguments,
+      turnContext: context,
+    });
+    if (hookResult?.block) {
+      return {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        result: null,
+        error: new Error(hookResult.reason || `Tool "${toolCall.name}" blocked by beforeToolCall hook`),
+      };
+    }
   }
 
-  return executeRegularTool(tool, toolCall, context, contextStore);
+  let result: ToolExecutionResult;
+  if (isGeneratorTool(tool)) {
+    result = await executeGeneratorTool(tool, toolCall, context, onPreliminaryResult, contextStore);
+  } else {
+    result = await executeRegularTool(tool, toolCall, context, contextStore);
+  }
+
+  // afterToolCall hook
+  if (hooks?.afterToolCall) {
+    const isError = !!result.error;
+    const hookResult = await hooks.afterToolCall({
+      tool,
+      toolCall,
+      args: toolCall.arguments,
+      result,
+      isError,
+      turnContext: context,
+    });
+    if (hookResult) {
+      if (hookResult.result !== undefined) {
+        result = { ...result, result: hookResult.result };
+      }
+      if (hookResult.isError !== undefined) {
+        result = { ...result, error: hookResult.isError ? (result.error || new Error('Tool error')) : undefined };
+      }
+    }
+  }
+
+  return result;
 }
 
 /**

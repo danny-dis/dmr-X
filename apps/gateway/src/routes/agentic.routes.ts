@@ -17,6 +17,7 @@ import { z } from 'zod';
 
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { executeToolCall } from './tools.routes.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -62,6 +63,14 @@ const AgenticChatRequestSchema = z.object({
   frequency_penalty: z.number().min(-2).max(2).optional(),
   presence_penalty: z.number().min(-2).max(2).optional(),
   stream: z.boolean().optional().default(false),
+  // Thinking/reasoning support (inspired by Pi agent)
+  thinking_level: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
+  thinking_budgets: z.object({
+    minimal: z.number().optional(),
+    low: z.number().optional(),
+    medium: z.number().optional(),
+    high: z.number().optional(),
+  }).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -71,6 +80,7 @@ const AgenticChatRequestSchema = z.object({
 
 const conversations = new Map<string, ConversationState>();
 const conversationLocks = new Map<string, Promise<void>>();
+const conversationAbortControllers = new Map<string, AbortController>();
 const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const conversationTimestamps = new Map<string, number>();
 
@@ -212,6 +222,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const tenant = (request as any).tenant;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
     const maxSteps = body.max_steps;
     const stopConditions = body.stopWhen ?? [];
 
@@ -327,6 +338,10 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     }> = [];
 
     if (body.stream) {
+      // Register abort controller for this conversation
+      const abortController = new AbortController();
+      conversationAbortControllers.set(convId, abortController);
+
       // Streaming response
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -336,6 +351,12 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
       try {
         for (let turn = 0; turn < maxSteps; turn++) {
+          // Check if conversation was aborted
+          if (abortController.signal.aborted) {
+            writeSSE(reply, 'error', { error: { message: 'Conversation aborted' } });
+            break;
+          }
+
           const unifiedRequest = toUnifiedRequest(
             {
               model: body.model,
@@ -355,7 +376,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
           const { response } = await router.route(unifiedRequest, {
             path: '/v1/agentic/chat',
-            qualityTarget: 'balanced',
+            qualityTarget,
           });
 
           const toolCalls = response.message?.tool_calls ?? [];
@@ -547,7 +568,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
         const { response } = await router.route(unifiedRequest, {
           path: '/v1/agentic/chat',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
 
         const toolCalls = response.message?.tool_calls ?? [];
@@ -705,6 +726,26 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
     } finally {
       releaseLock();
+      conversationAbortControllers.delete(convId);
     }
+  });
+
+  /**
+   * POST /agentic/chat/:conversationId/cancel
+   *
+   * Cancel a running conversation by aborting its execution.
+   */
+  server.post('/agentic/chat/:conversationId/cancel', async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const abortController = conversationAbortControllers.get(conversationId);
+
+    if (!abortController) {
+      return reply.status(404).send({ error: 'Conversation not found or already completed' });
+    }
+
+    abortController.abort();
+    conversationAbortControllers.delete(conversationId);
+
+    return { status: 'cancelled', conversationId };
   });
 }

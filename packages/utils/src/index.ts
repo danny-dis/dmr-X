@@ -263,12 +263,20 @@ export {
   // Response extraction
   extractTextFromResponse as extractConversationText,
   extractToolCallsFromResponse as extractConversationToolCalls,
+  // Steering and follow-up queue helpers
+  steerConversation,
+  followUpConversation,
+  drainSteeringQueue,
+  drainFollowUpQueue,
+  hasQueuedMessages,
   // Types
   type ParsedToolCall as ConversationParsedToolCall,
   type Tool as ConversationTool,
   type TurnContext,
   type UnsentToolResult,
   type ConversationState,
+  type QueueMode,
+  type QueuedMessage,
 } from './conversation-state.js';
 
 // ---------------------------------------------------------------------------
@@ -362,6 +370,11 @@ export {
   convertToolsToAPIFormat,
   convertZodToJsonSchema,
   sanitizeJsonSchema,
+  type ToolLifecycleHooks,
+  type BeforeToolCallContext,
+  type BeforeToolCallResult,
+  type AfterToolCallContext,
+  type AfterToolCallResult,
 } from './tool-executor.js';
 
 // ---------------------------------------------------------------------------

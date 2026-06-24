@@ -4,16 +4,11 @@
  * Exposes DMR-X routing capabilities as MCP tools.
  * Transport-agnostic: works with stdio, SSE, and Streamable HTTP transports.
  */
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter } from '@dmr-x/adapters';
 import { ReplicateAdapter, StabilityAdapter } from '@dmr-x/adapters';
-import { logger } from '@dmr-x/utils';
 import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter, ComfyUIAdapter } from '@dmr-x/adapters';
 import { FalAdapter, VeoAdapter, RunwayAdapter } from '@dmr-x/adapters';
-import { MCPClient } from '@dmr-x/mcp-client';
-import { z } from 'zod';
 import type {
   UnifiedRequest,
   UnifiedResponse,
@@ -23,6 +18,17 @@ import type {
   ProviderModel,
 } from '@dmr-x/core';
 import { resolveProviderSlug } from '@dmr-x/core';
+import { MCPClient } from '@dmr-x/mcp-client';
+import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
+import { logger } from '@dmr-x/utils';
+import { persistentContextStore } from '@dmr-x/db';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+
+import { TOOL_ANNOTATIONS, type ToolAnnotations } from './annotations.js';
+import { registerPrompts } from './prompts.js';
+import { RateLimiter } from './rate-limiter.js';
+import { registerResources } from './resources.js';
 import {
   TOOL_NAMES,
   TOOL_DESCRIPTIONS,
@@ -65,11 +71,13 @@ import {
   dmrxContextSummarizeOutput,
   dmrxContextCompressOutput,
   dmrxWorkflowOutput,
+  dmrxReadFileInput as readFileParams,
+  dmrxWriteFileInput as writeFileParams,
+  dmrxEditFileInput as editFileParams,
+  dmrxListFilesInput as listFilesParams,
+  dmrxBashInput as bashParams,
+  dmrxSearchFilesInput as searchFilesParams,
 } from './tools.js';
-import { RateLimiter } from './rate-limiter.js';
-import { TOOL_ANNOTATIONS, type ToolAnnotations } from './annotations.js';
-import { registerResources } from './resources.js';
-import { registerPrompts } from './prompts.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -578,7 +586,7 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
             state.lastError = message;
 
             // Preserve upstream error structure when possible
-            let errorDetail: Record<string, unknown> = { message };
+            const errorDetail: Record<string, unknown> = { message };
             if (error && typeof error === 'object') {
               const errObj = error as Record<string, unknown>;
               if (errObj.code) errorDetail.code = errObj.code;
@@ -1691,26 +1699,35 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
       try {
         const id = params.id || `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const isPermanent = params.permanent === true || params.ttl_seconds === 0;
+        const ttl = isPermanent ? 0 : (params.ttl_seconds || 86400);
+        
         const context = {
           id,
           messages: params.messages || [],
           user: params.user || 'anonymous',
-          ttl_seconds: params.ttl_seconds || 86400,
+          ttl_seconds: ttl,
+          permanent: isPermanent,
           created_at: new Date().toISOString(),
         };
 
         const cacheKey = `context:${id}`;
         const cacheStore = getContextStore();
-        cacheStore.set(cacheKey, JSON.stringify(context), params.ttl_seconds || 86400);
+        cacheStore.set(cacheKey, JSON.stringify(context), ttl);
 
-        mcpLog(server, 'debug', { tool: TOOL_NAMES.CONTEXT_SAVE, contextId: id }, 'routing');
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.CONTEXT_SAVE, contextId: id, permanent: isPermanent }, 'routing');
 
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ success: true, context_id: id, message: 'Context saved' }, null, 2),
+            text: JSON.stringify({ 
+              success: true, 
+              context_id: id, 
+              message: isPermanent ? 'Context saved permanently' : 'Context saved',
+              permanent: isPermanent
+            }, null, 2),
           }],
-          structuredContent: { success: true as const, context_id: id, message: 'Context saved' },
+          structuredContent: { success: true as const, context_id: id, message: isPermanent ? 'Context saved permanently' : 'Context saved', permanent: isPermanent },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -2123,7 +2140,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
         for (const step of steps) {
           try {
-            let stepParams = { ...(step.parameters || {}) };
+            const stepParams = { ...(step.parameters || {}) };
 
             if (step.input_mapping) {
               const mapping = step.input_mapping as Record<string, string>;
@@ -2179,6 +2196,214 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     }
   );
 
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_read_file
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.READ_FILE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.READ_FILE],
+      inputSchema: readFileParams as any,
+      annotations: { title: 'Read File', readOnlyHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.READ_FILE);
+      if (rateLimitResponse) return rateLimitResponse;
+      try {
+        const fs = await import('node:fs');
+        const filePath = params.path;
+        if (!filePath) return { content: [{ type: 'text' as const, text: 'Error: path is required' }], isError: true };
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const lines = content.split('\n');
+        const start = (params.offset ?? 1) - 1;
+        const end = params.limit ? start + params.limit : lines.length;
+        const selected = lines.slice(start, end);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ content: selected.join('\n'), totalLines: lines.length, startLine: start + 1, endLine: Math.min(end, lines.length) }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_write_file
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.WRITE_FILE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.WRITE_FILE],
+      inputSchema: writeFileParams as any,
+      annotations: { title: 'Write File', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.WRITE_FILE);
+      if (rateLimitResponse) return rateLimitResponse;
+      try {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const filePath = params.path;
+        const content = params.content;
+        if (!filePath || content === undefined) return { content: [{ type: 'text' as const, text: 'Error: path and content are required' }], isError: true };
+        const dir = path.dirname(filePath);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(filePath, content, 'utf-8');
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ path: filePath, bytes: Buffer.byteLength(content), lines: content.split('\n').length }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_edit_file
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.EDIT_FILE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.EDIT_FILE],
+      inputSchema: editFileParams as any,
+      annotations: { title: 'Edit File', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.EDIT_FILE);
+      if (rateLimitResponse) return rateLimitResponse;
+      try {
+        const fs = await import('node:fs');
+        const filePath = params.path;
+        const oldStr = params.old_string;
+        const newStr = params.new_string;
+        if (!filePath || !oldStr || newStr === undefined) return { content: [{ type: 'text' as const, text: 'Error: path, old_string, and new_string are required' }], isError: true };
+        let content = fs.readFileSync(filePath, 'utf-8');
+        const count = content.split(oldStr).length - 1;
+        if (count === 0) return { content: [{ type: 'text' as const, text: `Error: old_string not found in ${filePath}` }], isError: true };
+        if (count > 1) return { content: [{ type: 'text' as const, text: `Error: Found ${count} matches for old_string. Provide more context.` }], isError: true };
+        content = content.replace(oldStr, newStr);
+        fs.writeFileSync(filePath, content, 'utf-8');
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ path: filePath, replaced: 1, lines: content.split('\n').length }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_list_files
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.LIST_FILES,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.LIST_FILES],
+      inputSchema: listFilesParams as any,
+      annotations: { title: 'List Files', readOnlyHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.LIST_FILES);
+      if (rateLimitResponse) return rateLimitResponse;
+      try {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const dirPath = params.path || '.';
+        const results: string[] = [];
+        const skip = ['node_modules', '.git', 'dist'];
+        function walk(dir: string, prefix: string) {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (skip.includes(entry.name)) continue;
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+              results.push(`${rel}/`);
+              if (params.recursive) walk(path.join(dir, entry.name), rel);
+            } else if (!params.pattern || entry.name.includes(params.pattern)) {
+              results.push(rel);
+            }
+          }
+        }
+        walk(dirPath, '');
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ files: results.slice(0, 200), total: results.length }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_bash
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.BASH,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.BASH],
+      inputSchema: bashParams as any,
+      annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.BASH);
+      if (rateLimitResponse) return rateLimitResponse;
+      try {
+        const { execSync } = await import('node:child_process');
+        const cmd = params.command;
+        if (!cmd) return { content: [{ type: 'text' as const, text: 'Error: command is required' }], isError: true };
+        const blocked = ['rm -rf /', 'mkfs', ':(){', 'dd if=/dev'];
+        if (blocked.some(b => cmd.includes(b))) return { content: [{ type: 'text' as const, text: 'Error: Command blocked for safety' }], isError: true };
+        const stdout = execSync(cmd, { cwd: params.cwd || undefined, timeout: params.timeout_ms || 30000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }) as string;
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ stdout, exitCode: 0 }, null, 2) }] };
+      } catch (err: any) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ stdout: err.stdout || '', stderr: err.stderr || '', exitCode: err.status ?? 1, error: err.message }, null, 2) }], isError: true };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_search_files
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.SEARCH_FILES,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.SEARCH_FILES],
+      inputSchema: searchFilesParams as any,
+      annotations: { title: 'Search Files', readOnlyHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.SEARCH_FILES);
+      if (rateLimitResponse) return rateLimitResponse;
+      try {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const searchPattern = params.pattern;
+        const dirPath = params.path || '.';
+        if (!searchPattern) return { content: [{ type: 'text' as const, text: 'Error: pattern is required' }], isError: true };
+        const results: Array<{ file: string; line: number; text: string }> = [];
+        const skip = ['node_modules', '.git', 'dist'];
+        function walk(dir: string) {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (skip.includes(entry.name)) continue;
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              walk(fullPath);
+            } else {
+              if (params.include && !entry.name.includes(params.include)) continue;
+              try {
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                const lines = content.split('\n');
+                for (let i = 0; i < lines.length; i++) {
+                  if (lines[i].includes(searchPattern)) {
+                    results.push({ file: path.relative('.', fullPath), line: i + 1, text: lines[i].trim() });
+                    if (results.length >= 100) return;
+                  }
+                }
+              } catch { /* skip binary files */ }
+            }
+          }
+        }
+        walk(dirPath);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ matches: results, total: results.length }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Register external MCP aggregator tools (if a client was provided)
   if (config.externalMcpClient) {
     try {
@@ -2192,6 +2417,18 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     }
   }
 
+  // Start periodic cleanup of expired contexts (every hour)
+  setInterval(() => {
+    try {
+      const cleaned = persistentContextStore.cleanupExpired();
+      if (cleaned > 0) {
+        logger.info(`Cleaned up ${cleaned} expired conversation contexts`);
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to cleanup expired contexts');
+    }
+  }, 60 * 60 * 1000);
+
   return { server, state };
 }
 
@@ -2200,29 +2437,18 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 // -----------------------------------------------------------------------
 
 function getContextStore(): { get(key: string): string | null; set(key: string, value: string, ttl: number): void; keys(prefix: string): string[]; delete(key: string): void } {
-  const store = new Map<string, { value: string; expiresAt: number }>();
   return {
     get(key: string) {
-      const entry = store.get(key);
-      if (!entry) return null;
-      if (Date.now() > entry.expiresAt) {
-        store.delete(key);
-        return null;
-      }
-      return entry.value;
+      return persistentContextStore.get(key);
     },
     set(key: string, value: string, ttl: number) {
-      store.set(key, { value, expiresAt: Date.now() + ttl * 1000 });
+      persistentContextStore.set(key, value, ttl);
     },
     keys(prefix: string) {
-      const result: string[] = [];
-      for (const [key] of store) {
-        if (key.startsWith(prefix)) result.push(key);
-      }
-      return result;
+      return persistentContextStore.keys(prefix);
     },
     delete(key: string) {
-      store.delete(key);
+      persistentContextStore.delete(key);
     },
   };
 }
