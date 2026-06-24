@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts';
+
 import { formatDuration } from '@/lib/formatters';
 
 export interface LatencyPoint {

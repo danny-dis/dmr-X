@@ -1,8 +1,10 @@
+import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
-import { generateRequestId } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 const ModerationRequestSchema = z.object({
   input: z.string().min(1),
@@ -19,6 +21,7 @@ export async function moderationRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     // Convert to UnifiedRequest
     const unifiedRequest: any = {
@@ -33,7 +36,7 @@ export async function moderationRoutes(server: FastifyInstance): Promise<void> {
     // Route and execute
     const { plan, response } = await router.route(unifiedRequest, {
       path: '/v1/moderations',
-      qualityTarget: 'balanced',
+      qualityTarget,
     });
 
     if (!plan.primary) {

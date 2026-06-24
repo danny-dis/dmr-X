@@ -1,8 +1,9 @@
 import * as React from 'react';
-import { cn } from '@/lib/utils';
+
 import { Gauge } from '@/components/charts/Gauge';
 import { Progress } from '@/components/primitives/Progress';
 import { formatNumber, formatTokens } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiQuotaState } from '@/types/api';
 
 export interface QuotaGaugeProps {

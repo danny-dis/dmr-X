@@ -1,8 +1,9 @@
-import * as React from 'react';
 import { AlertCircle, AlertTriangle, Info, CheckCircle2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { Badge } from '@/components/primitives/Badge';
 import { timeAgo } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiAlert } from '@/types/api';
 
 const ICON_FOR = {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { costLatencyScorer } from '../../services/router/src/pipeline/cost-latency-scorer.js';
+
 import type { CandidateSet } from '../../packages/core/src/types/index.js';
+import { costLatencyScorer } from '../../services/router/src/pipeline/cost-latency-scorer.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {

@@ -1,5 +1,7 @@
-import * as React from 'react';
 import { Database, Plus, Hash, DollarSign, Cpu } from 'lucide-react';
+import * as React from 'react';
+
+import { Button } from '@/components/primitives/Button';
 import {
   Dialog,
   DialogContent,
@@ -9,12 +11,11 @@ import {
   DialogBody,
   DialogFooter,
 } from '@/components/primitives/Dialog';
-import { Button } from '@/components/primitives/Button';
-import { Input } from '@/components/primitives/Input';
 import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
+import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
-import { Admin } from '@/lib/admin';
 import { useApiData } from '@/hooks/useApiData';
+import { Admin } from '@/lib/admin';
 import type { ApiProvider } from '@/types/api';
 
 export interface CreateModelDialogProps {

@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { runPipeline } from '../../services/router/src/pipeline/pipeline.js';
 import type { CandidateSet, TaskProfile } from '@dmr-x/core';
+import { describe, it, expect } from 'vitest';
+
 import { ProviderUnavailableError } from '../../packages/core/src/types/errors.js';
+import { runPipeline } from '../../services/router/src/pipeline/pipeline.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {

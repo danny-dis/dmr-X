@@ -1,6 +1,7 @@
 import type { UnifiedRequest, TaskProfile, CapabilityTier } from '@dmr-x/core';
-import { detectModality } from './modality-detector.js';
+
 import { extractCapabilities } from './capability-extractor.js';
+import { detectModality } from './modality-detector.js';
 
 export interface ClassifyOptions {
   path: string;

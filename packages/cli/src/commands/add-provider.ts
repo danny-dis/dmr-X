@@ -4,10 +4,11 @@
  * Shows provider info, prompts for API key, saves to .env, registers in config.
  */
 
-import { Command } from 'commander';
 import chalk from 'chalk';
-import ora from 'ora';
+import { Command } from 'commander';
 import inquirer from 'inquirer';
+import ora from 'ora';
+
 import { getProvider, getAllProviderIds, type ProviderEntry } from '../catalog.js';
 import {
   isInitialized,

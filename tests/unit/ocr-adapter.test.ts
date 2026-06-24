@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { OcrAdapter, createOcrAdapter } from '../../services/adapters/src/ocr/index.js';
 import type { UnifiedRequest } from '@dmr-x/core';
+import { describe, it, expect } from 'vitest';
+
+import { OcrAdapter, createOcrAdapter } from '../../services/adapters/src/ocr/index.js';
 
 describe('OcrAdapter', () => {
   describe('createOcrAdapter', () => {

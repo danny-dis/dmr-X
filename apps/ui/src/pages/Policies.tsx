@@ -1,17 +1,18 @@
-import * as React from 'react';
 import { Shield, Plus, Search, Filter, Zap, AlertCircle, ChevronRight } from 'lucide-react';
-import { PageHeader, PageContainer } from '@/components/layout';
-import { Card } from '@/components/primitives/Card';
-import { Input } from '@/components/primitives/Input';
-import { Button } from '@/components/primitives/Button';
-import { Badge } from '@/components/primitives/Badge';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { EmptyState } from '@/components/primitives/EmptyState';
-import { Switch } from '@/components/primitives/Switch';
+import * as React from 'react';
+
 import { PolicyDialog } from '@/components/domain/PolicyDialog';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
+import { Card } from '@/components/primitives/Card';
+import { EmptyState } from '@/components/primitives/EmptyState';
+import { Input } from '@/components/primitives/Input';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { Switch } from '@/components/primitives/Switch';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { toast } from '@/components/primitives/Toast';
 import { timeAgo } from '@/lib/formatters';
 import type { ApiPolicyRule } from '@/types/api';
 

@@ -1,5 +1,6 @@
-import { PeerClient } from './peer-client.js';
 import { logger } from '@dmr-x/utils';
+
+import { PeerClient } from './peer-client.js';
 
 export interface HealthCheckResult {
   status: string;

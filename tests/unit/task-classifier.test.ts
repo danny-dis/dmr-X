@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTask } from '../../services/router/src/classifier/task-classifier.js';
+
 import type { UnifiedRequest } from '../../packages/core/src/types/index.js';
+import { classifyTask } from '../../services/router/src/classifier/task-classifier.js';
 
 function makeRequest(overrides: Partial<UnifiedRequest> = {}): UnifiedRequest {
   return {

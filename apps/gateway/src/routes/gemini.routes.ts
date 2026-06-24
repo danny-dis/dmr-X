@@ -1,13 +1,15 @@
+import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
-import { generateRequestId, logger } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+
 import {
   convertGeminiRequestToUnified,
   convertUnifiedResponseToGemini,
 } from '../converters/gemini-converter.js';
 import { createGeminiSSEStream } from '../converters/gemini-stream-serializer.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 // --- Zod schemas for Gemini wire format ---
 
@@ -71,6 +73,7 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     const unifiedRequest = convertGeminiRequestToUnified(body, {
       requestId,
@@ -83,7 +86,7 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
       // Streaming: get routing plan only, then stream from adapter
       const { plan } = await router.route(unifiedRequest, {
         path: '/v1/gemini/generateContent',
-        qualityTarget: 'balanced',
+        qualityTarget,
         planOnly: true,
       });
 
@@ -143,7 +146,7 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
     // Non-streaming: route and execute
     const { plan, response } = await router.route(unifiedRequest, {
       path: '/v1/gemini/generateContent',
-      qualityTarget: 'balanced',
+      qualityTarget,
     });
     if (!plan.primary) {
       throw new ProviderUnavailableError([]);

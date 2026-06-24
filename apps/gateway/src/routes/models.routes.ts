@@ -1,5 +1,5 @@
-import type { FastifyInstance } from 'fastify';
 import { getDb } from '@dmr-x/db';
+import type { FastifyInstance } from 'fastify';
 
 export async function modelsRoutes(server: FastifyInstance): Promise<void> {
   server.get('/models', async () => {

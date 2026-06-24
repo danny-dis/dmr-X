@@ -1,4 +1,3 @@
-import * as React from 'react';
 import {
   Zap,
   Globe,
@@ -6,7 +5,10 @@ import {
   KeyRound,
   Activity,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
 import {
   Drawer,
   DrawerContent,
@@ -16,15 +18,14 @@ import {
   DrawerBody,
   DrawerFooter,
 } from '@/components/primitives/Drawer';
-import { Button } from '@/components/primitives/Button';
-import { Badge } from '@/components/primitives/Badge';
-import { Switch } from '@/components/primitives/Switch';
-import { StatusPill } from '@/components/primitives/StatusPill';
 import { Progress } from '@/components/primitives/Progress';
+import { StatusPill } from '@/components/primitives/StatusPill';
+import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import { formatDateTime, formatDuration, formatNumber } from '@/lib/formatters';
 import { maskKey } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiProvider, ApiCatalogEntry } from '@/types/api';
 
 export interface FreeTierDrawerProps {

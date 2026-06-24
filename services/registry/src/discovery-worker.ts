@@ -1,5 +1,6 @@
 import { getDb } from '@dmr-x/db';
 import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
+
 import { discoverOpenAIModels } from './model-discovery.js';
 import { PROVIDER_CATALOG } from './provider-catalog.js';
 

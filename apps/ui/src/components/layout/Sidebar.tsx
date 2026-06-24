@@ -1,13 +1,14 @@
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as React from 'react';
 import { NavLink, useLocation } from 'react-router';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { cn } from '@/lib/utils';
+
 import { Button } from '@/components/primitives/Button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/primitives/Tooltip';
-import { useUIStore } from '@/store/useUIStore';
-import { useMediaQuery } from '@/hooks/useMisc';
 import { NAV_GROUPS } from '@/constants/nav';
+import { useMediaQuery } from '@/hooks/useMisc';
 import { BrandMark, BrandWordmark } from '@/icons/SidebarIcons';
+import { cn } from '@/lib/utils';
+import { useUIStore } from '@/store/useUIStore';
 
 export function Sidebar() {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);

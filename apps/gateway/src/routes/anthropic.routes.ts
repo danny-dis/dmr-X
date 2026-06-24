@@ -1,13 +1,15 @@
+import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
-import { generateRequestId, logger } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+
 import {
   convertAnthropicRequestToUnified,
   convertUnifiedResponseToAnthropic,
 } from '../converters/anthropic-converter.js';
 import { createAnthropicSSEStream } from '../converters/anthropic-stream-serializer.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 const AnthropicContentBlockSchema = z.union([
   z.object({ type: z.literal('text'), text: z.string() }),
@@ -76,6 +78,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     const unifiedRequest = convertAnthropicRequestToUnified(body, {
       requestId,
@@ -88,7 +91,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
         // Streaming: get routing plan only, then stream from adapter
         const { plan } = await router.route(unifiedRequest, {
           path: '/v1/messages',
-          qualityTarget: 'balanced',
+          qualityTarget,
           planOnly: true,
         });
 
@@ -155,7 +158,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
       // Non-streaming: route and execute
       const { plan, response } = await router.route(unifiedRequest, {
         path: '/v1/messages',
-        qualityTarget: 'balanced',
+        qualityTarget,
       });
       if (!plan.primary) {
         throw new ProviderUnavailableError([]);

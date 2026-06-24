@@ -1,14 +1,15 @@
+import type { UnifiedRequest, UnifiedResponse, ProviderModel } from '@dmr-x/core';
 import { describe, it, expect, vi } from 'vitest';
+
 import { CompositeExecutor } from '../../services/router/src/decomposer/composite-executor.js';
 import { SpecialistRouter } from '../../services/router/src/decomposer/specialist-router.js';
 import { TaskDecomposer } from '../../services/router/src/decomposer/task-decomposer.js';
-import type { WorkerPoolFanout } from '../../services/router/src/decomposer/worker-pool-fanout.js';
 import type {
   SubTask,
   DecomposedTask,
 } from '../../services/router/src/decomposer/task-decomposer.js';
+import type { WorkerPoolFanout } from '../../services/router/src/decomposer/worker-pool-fanout.js';
 import type { AdapterExecutor } from '../../services/router/src/fallback/fallback-executor.js';
-import type { UnifiedRequest, UnifiedResponse, ProviderModel } from '@dmr-x/core';
 
 function makeMockAdapterExecutor(
   responses: Record<string, string>,

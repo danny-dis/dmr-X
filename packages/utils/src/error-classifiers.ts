@@ -61,10 +61,9 @@ export function isAbortError(err: unknown): boolean {
   const isNative = 'name' in err && (err as any).name === 'AbortError';
   const isLegacyNative = 'code' in err && (err as any).code === 20;
 
-  const isGenericErr =
-    'code' in err &&
-    typeof (err as any).code === 'string' &&
-    (err as any).code.toLowerCase() === 'econnaborted';
+  // ECONNABORTED is classified as a timeout error, not an abort error,
+  // to avoid dual classification. Consumers that need to distinguish
+  // should check isTimeoutError first.
 
-  return isNative || isLegacyNative || isGenericErr;
+  return isNative || isLegacyNative;
 }

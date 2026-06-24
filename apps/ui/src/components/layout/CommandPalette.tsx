@@ -1,5 +1,3 @@
-import * as React from 'react';
-import { useNavigate } from 'react-router';
 import {
   Compass,
   Clock,
@@ -8,7 +6,9 @@ import {
   ArrowRight,
   CornerDownLeft,
 } from 'lucide-react';
-import { Dialog, DialogContent, DialogTitle } from '@/components/primitives/Dialog';
+import * as React from 'react';
+import { useNavigate } from 'react-router';
+
 import {
   Command,
   CommandEmpty,
@@ -18,12 +18,13 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/primitives/Command';
+import { Dialog, DialogContent, DialogTitle } from '@/components/primitives/Dialog';
 import { Kbd } from '@/components/primitives/Kbd';
-import { useUIStore } from '@/store/useUIStore';
+import { NAV_GROUPS } from '@/constants/nav';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { NAV_GROUPS } from '@/constants/nav';
 import { cn } from '@/lib/utils';
+import { useUIStore } from '@/store/useUIStore';
 import type { ApiProvider, ApiModel } from '@/types/api';
 
 export function CommandPalette() {

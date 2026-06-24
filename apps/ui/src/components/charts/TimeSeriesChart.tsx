@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
+
 import { formatNumber } from '@/lib/formatters';
 
 export interface SeriesConfig {

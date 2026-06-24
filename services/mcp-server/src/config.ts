@@ -101,6 +101,129 @@ export interface McpConfigFile {
     key: string;
     allowedTools?: string[];
   }>;
+
+  /** Tool search configuration */
+  toolSearch?: {
+    /** BM25 weight in hybrid search fusion (0-1) */
+    bm25Weight?: number;
+    /** Semantic weight in hybrid search fusion (0-1) */
+    semanticWeight?: number;
+    /** RRF constant for result fusion */
+    rrfConstant?: number;
+    /** Maximum results to return */
+    maxResults?: number;
+    /** Minimum score threshold */
+    minScore?: number;
+    /** Enable/disable BM25 search */
+    enableBM25?: boolean;
+    /** Enable/disable semantic search */
+    enableSemantic?: boolean;
+    /** Embedding configuration for semantic search */
+    embeddingConfig?: {
+      /** Embedding provider: 'ollama', 'openai', or 'remote' */
+      provider: 'ollama' | 'openai' | 'remote';
+      /** Ollama server URL (for local embeddings) */
+      ollamaUrl?: string;
+      /** Ollama model name */
+      ollamaModel?: string;
+      /** OpenAI API key (for OpenAI embeddings) */
+      openaiApiKey?: string;
+      /** OpenAI model name */
+      openaiModel?: string;
+      /** Remote embedding service URL */
+      remoteUrl?: string;
+      /** Remote embedding service API key */
+      remoteApiKey?: string;
+    };
+  };
+
+  /** RBAC policy configuration */
+  rbac?: {
+    /** Enable RBAC */
+    enabled?: boolean;
+    /** Default effect when no policy matches */
+    defaultEffect?: 'allow' | 'deny';
+    /** Policy files directory */
+    policiesPath?: string;
+    /** Enable audit logging */
+    auditLogging?: boolean;
+  };
+
+  /** Guardrails configuration */
+  guardrails?: {
+    /** Enable guardrails */
+    enabled?: boolean;
+    /** Enable PII detection and redaction */
+    piiRedaction?: boolean;
+    /** Enable content filtering */
+    contentFiltering?: boolean;
+    /** Content filter keywords */
+    blockedKeywords?: string[];
+    /** Log detected PII (for audit) */
+    logDetections?: boolean;
+  };
+
+  /** Audit logging configuration */
+  audit?: {
+    /** Enable audit logging */
+    enabled?: boolean;
+    /** Audit log retention in days */
+    retentionDays?: number;
+    /** Include request/response bodies */
+    includeBodies?: boolean;
+  };
+
+  /** A2A (Agent-to-Agent) protocol configuration */
+  a2a?: {
+    /** Enable A2A protocol */
+    enabled?: boolean;
+    /** Agent Card configuration */
+    agentCard?: {
+      /** Agent name */
+      name?: string;
+      /** Agent description */
+      description?: string;
+      /** Agent version */
+      version?: string;
+      /** Agent URL */
+      url?: string;
+    };
+  };
+
+  /** Federation configuration for multi-instance tool sharing */
+  federation?: {
+    /** Enable federation */
+    enabled?: boolean;
+    /** Instance ID (unique identifier for this instance) */
+    instanceId?: string;
+    /** Instance name (human-readable name) */
+    instanceName?: string;
+    /** Discovery method: 'mdns', 'static', or 'consul' */
+    discoveryMethod?: 'mdns' | 'static' | 'consul';
+    /** Static peers (for static discovery) */
+    peers?: Array<{
+      /** Peer instance ID */
+      id: string;
+      /** Peer name */
+      name: string;
+      /** Peer URL */
+      url: string;
+    }>;
+    /** mDNS service name (for mDNS discovery) */
+    mdnsServiceName?: string;
+    /** mDNS service type (for mDNS discovery) */
+    mdnsServiceType?: string;
+    /** Sync interval in seconds */
+    syncInterval?: number;
+    /** Heartbeat interval in seconds */
+    heartbeatInterval?: number;
+    /** Peer timeout in seconds */
+    peerTimeout?: number;
+    /** Enable tool proxying from remote instances */
+    enableToolProxy?: boolean;
+    /** Maximum remote tools to proxy */
+    maxRemoteTools?: number;
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { StrictMode, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+
 import App from './App';
 import { useUIStore } from './store/useUIStore';
 import './index.css';

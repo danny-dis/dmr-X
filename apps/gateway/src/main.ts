@@ -1,9 +1,10 @@
-import { createServer } from './server.js';
-import { logger } from '@dmr-x/utils';
 import { initDb, closeDb } from '@dmr-x/db';
-import { memoryService } from '@dmr-x/memory';
-import { workersService } from '@dmr-x/workers';
 import { federationService } from '@dmr-x/federation';
+import { memoryService } from '@dmr-x/memory';
+import { logger } from '@dmr-x/utils';
+import { workersService } from '@dmr-x/workers';
+
+import { createServer } from './server.js';
 
 const MIN_ADMIN_API_KEY_LENGTH = 32;
 const DEFAULT_BODY_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB

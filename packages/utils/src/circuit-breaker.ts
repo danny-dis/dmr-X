@@ -11,6 +11,7 @@ export class CircuitBreaker {
   private failures = 0;
   private successes = 0;
   private lastFailureTime = 0;
+  private halfOpenProbeUsed = false;
 
   constructor(private readonly options: CircuitBreakerOptions) {}
 
@@ -20,6 +21,7 @@ export class CircuitBreaker {
       if (elapsed >= this.options.resetTimeoutMs) {
         this.state = 'half-open';
         this.successes = 0;
+        this.halfOpenProbeUsed = false;
       }
     }
     return this.state;
@@ -27,7 +29,12 @@ export class CircuitBreaker {
 
   canExecute(): boolean {
     const state = this.getState();
-    return state === 'closed' || state === 'half-open';
+    if (state === 'closed') return true;
+    if (state === 'half-open' && !this.halfOpenProbeUsed) {
+      this.halfOpenProbeUsed = true;
+      return true;
+    }
+    return false;
   }
 
   recordSuccess(): void {

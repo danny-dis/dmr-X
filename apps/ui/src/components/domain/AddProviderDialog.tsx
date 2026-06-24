@@ -1,7 +1,10 @@
-import * as React from 'react';
 import {
   Plus, KeyRound, Globe, Cpu, Server, ExternalLink, Loader2, CheckCircle2, AlertCircle, Clock,
 } from 'lucide-react';
+import * as React from 'react';
+
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
 import {
   Dialog,
   DialogContent,
@@ -11,10 +14,8 @@ import {
   DialogBody,
   DialogFooter,
 } from '@/components/primitives/Dialog';
-import { Button } from '@/components/primitives/Button';
-import { Input } from '@/components/primitives/Input';
-import { Badge } from '@/components/primitives/Badge';
 import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
+import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import type { ApiCatalogEntry, ApiProviderOAuthStart } from '@/types/api';

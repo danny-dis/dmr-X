@@ -1,6 +1,7 @@
+import { logger } from '@dmr-x/utils';
+
 import { federationService, type FederationNode } from './federation.service.js';
 import { PeerClient } from './peer-client.js';
-import { logger } from '@dmr-x/utils';
 
 export class FederationRouter {
   private client: PeerClient;

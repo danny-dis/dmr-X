@@ -1,10 +1,12 @@
-import * as React from 'react';
-import { usePlaygroundStore } from '@/store/usePlaygroundStore';
-import { Button } from '@/components/primitives/Button';
-import { Badge } from '@/components/primitives/Badge';
-import { MoreHorizontal, Trash2, Edit, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
+import { MoreHorizontal, Trash2, Edit, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert } from 'lucide-react';
+import * as React from 'react';
+
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
+import { cn } from '@/lib/utils';
+import { usePlaygroundStore } from '@/store/usePlaygroundStore';
+
 
 interface ConversationItemProps {
   conversation: any;
@@ -101,7 +103,7 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
               {conversation.title || 'New Conversation'}
             </div>
             <div className="text-xs text-fg-muted truncate">
-              {conversation.model || 'auto'} • {formatDistanceToNow(new Date(conversation.updatedAt), { addSuffix: true })}
+              {conversation.model || 'auto'}{conversation.updatedAt ? ` • ${formatDistanceToNow(new Date(conversation.updatedAt), { addSuffix: true })}` : ''}
             </div>
           </>
         )}

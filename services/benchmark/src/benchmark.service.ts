@@ -1,9 +1,10 @@
-import { getDb } from '@dmr-x/db';
-import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
 import type { AdapterRegistry } from '@dmr-x/adapters';
 import type { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
-import { JudgeService } from './judge.service.js';
+import { getDb } from '@dmr-x/db';
+import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
+
 import { calculateEloUpdate } from './elo.js';
+import { JudgeService } from './judge.service.js';
 
 export interface BenchmarkPrompt {
   id: string;

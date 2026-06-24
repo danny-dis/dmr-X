@@ -1,5 +1,8 @@
-import * as React from 'react';
 import { KeyRound, Plus, Check, Copy, Shield, AlertCircle, X } from 'lucide-react';
+import * as React from 'react';
+
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
 import {
   Dialog,
   DialogContent,
@@ -9,10 +12,8 @@ import {
   DialogBody,
   DialogFooter,
 } from '@/components/primitives/Dialog';
-import { Button } from '@/components/primitives/Button';
-import { Input } from '@/components/primitives/Input';
 import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
-import { Badge } from '@/components/primitives/Badge';
+import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import { setTenantToken } from '@/lib/api';
@@ -105,7 +106,7 @@ export function CreateApiKeyDialog({
       // proxy stripped the body), surface a clear error instead of crashing
       // on `undefined.key` and showing a misleading "Failed to create API key".
       if (!created || typeof created.key !== 'string' || created.key.length === 0) {
-        // eslint-disable-next-line no-console
+         
         console.error('createApiKey: unexpected response payload', created);
         throw new Error('Server did not return the new API key. Please retry.');
       }

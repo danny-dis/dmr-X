@@ -1,9 +1,11 @@
+import crypto from 'node:crypto';
+
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
-import crypto from 'node:crypto';
-import { PeerClient } from './peer-client.js';
-import { HealthProber } from './health-prober.js';
+
 import { BenchmarkSync } from './benchmark-sync.js';
+import { HealthProber } from './health-prober.js';
+import { PeerClient } from './peer-client.js';
 
 const cache = createNamespacedCache('federation');
 

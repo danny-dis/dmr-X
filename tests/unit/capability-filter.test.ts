@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { capabilityFilter } from '../../services/router/src/pipeline/capability-filter.js';
+
 import type { CandidateSet, Modality } from '../../packages/core/src/types/index.js';
+import { capabilityFilter } from '../../services/router/src/pipeline/capability-filter.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {

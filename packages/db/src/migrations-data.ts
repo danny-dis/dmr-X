@@ -649,9 +649,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(tenant_id);
 ALTER TABLE schema_version ADD COLUMN checksum TEXT;
 `,
   },
-  18: {
-    filename: '018_subscription_only_models.sql',
-    sql: `-- Add subscription_only column to model_profiles
+18: {
+filename: '018_subscription_only_models.sql',
+sql: `-- Add subscription_only column to model_profiles
 -- This flag indicates a model is only available via OAuth subscription auth (not API key)
 -- Used for Codex (ChatGPT subscription), Claude (Anthropic subscription), and GitHub Copilot models
 
@@ -662,6 +662,28 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_subscription_only
 ON model_profiles(subscription_only)
 WHERE is_active = 1 AND subscription_only = 1;
 `,
-  },
+},
+19: {
+filename: '019_api_key_allowed_tools.sql',
+sql: `-- Per-API-key tool restrictions. Stored as a JSON-encoded array
+-- of tool patterns (e.g. ["dmrx_chat", "dmrx_embed", "dmrx_*"]). NULL means
+-- "no restrictions" (all tools allowed). This enables fine-grained control
+-- over which MCP tools a key can invoke.
+ALTER TABLE api_keys ADD COLUMN allowed_tools TEXT;
+`,
+},
+20: {
+filename: '020_request_logs_mode_tracking.sql',
+sql: `-- Add quality_target and free_tier_strategy columns to request_logs
+-- Enables per-mode performance analysis (frontier/balanced/economy + free tier strategies)
+
+ALTER TABLE request_logs ADD COLUMN quality_target TEXT;
+ALTER TABLE request_logs ADD COLUMN free_tier_strategy TEXT;
+
+-- Indexes for filtering by mode
+CREATE INDEX IF NOT EXISTS idx_request_logs_quality_target ON request_logs(quality_target, timestamp);
+CREATE INDEX IF NOT EXISTS idx_request_logs_free_tier_strategy ON request_logs(free_tier_strategy, timestamp);
+`,
+},
 };
 

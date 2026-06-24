@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
 import { CircuitBreaker, CircuitBreakerManager } from '../../services/mcp-client/src/circuit-breaker.js';
 
 describe('CircuitBreaker', () => {

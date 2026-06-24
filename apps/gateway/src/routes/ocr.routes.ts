@@ -1,8 +1,10 @@
+import { ValidationError } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError } from '@dmr-x/core';
-import { generateRequestId, logger } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 const OcrRequestSchema = z.object({
   model: z.string().optional(),
@@ -24,6 +26,7 @@ export async function ocrRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     const unifiedRequest = {
       modality: 'ocr' as const,
@@ -44,7 +47,7 @@ export async function ocrRoutes(server: FastifyInstance): Promise<void> {
     try {
       const { response } = await router.route(unifiedRequest, {
         path: '/v1/ocr',
-        qualityTarget: 'balanced',
+        qualityTarget,
       });
 
       return {

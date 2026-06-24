@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+
 import { initSqlJs, runMigrations, type SqlJsDatabase } from '../../packages/db/src/client.js';
 
 type MigrationEntry = { version: number; filename: string; sql: string };

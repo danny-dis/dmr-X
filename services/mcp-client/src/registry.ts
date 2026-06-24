@@ -1,7 +1,8 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { createLogger } from '@dmr-x/utils';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
 import { CircuitBreakerManager, type CircuitBreakerStatus } from './circuit-breaker.js';
 
 const logger = createLogger('mcp-client:registry');

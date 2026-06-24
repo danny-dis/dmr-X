@@ -6,6 +6,17 @@
  * Ported from OpenRouter SDK's tool-orchestrator.ts with adaptations for DMR-X.
  */
 
+import {
+  executeNextTurnParamsFunctions,
+  applyNextTurnParamsToRequest,
+} from './next-turn-params.js';
+import type { ToolDefinition } from './next-turn-params.js';
+import {
+  extractToolCallsFromResponse,
+  responseHasToolCalls,
+} from './stream-transformers.js';
+import { isFunctionCallItem } from './stream-type-guards.js';
+import { executeTool, findToolByName } from './tool-executor.js';
 import type {
   Tool,
   APITool,
@@ -15,27 +26,11 @@ import type {
   InputsUnion,
   ParsedToolCall,
 } from './tool-types.js';
-
 import type {
   NextTurnRequest,
 } from './tool-types.js';
-
-import {
-  extractToolCallsFromResponse,
-  responseHasToolCalls,
-} from './stream-transformers.js';
-
-import { isFunctionCallItem } from './stream-type-guards.js';
-
-import { executeTool, findToolByName } from './tool-executor.js';
 import { hasExecuteFunction } from './tool-types.js';
 import { buildTurnContext } from './turn-context.js';
-import {
-  executeNextTurnParamsFunctions,
-  applyNextTurnParamsToRequest,
-} from './next-turn-params.js';
-
-import type { ToolDefinition } from './next-turn-params.js';
 
 // ---------------------------------------------------------------------------
 // Types

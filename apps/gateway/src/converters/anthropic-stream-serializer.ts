@@ -1,5 +1,6 @@
 import type { StreamChunk, TokenStreamChunk, DoneStreamChunk, ErrorStreamChunk } from '@dmr-x/core';
 import type { ClaudeStopReason } from '@dmr-x/utils';
+
 import { ANTHROPIC_STOP_REASON_MAP } from './anthropic-converter.js';
 
 interface AnthropicStreamOptions {

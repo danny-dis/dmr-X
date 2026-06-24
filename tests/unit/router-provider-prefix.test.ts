@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { Router } from '../../services/router/src/router.service.js';
 import type { CandidateSet, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
+import { describe, it, expect } from 'vitest';
+
+import { Router } from '../../services/router/src/router.service.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {

@@ -1,8 +1,9 @@
-import { BaseAdapter } from '../base.adapter.js';
-import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
 import { createHttpError, type HttpMeta } from '@dmr-x/utils';
+
+import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
+import { BaseAdapter } from '../base.adapter.js';
 
 export class CohereAdapter extends BaseAdapter {
   readonly providerId = 'cohere';

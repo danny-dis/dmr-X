@@ -1,7 +1,8 @@
-import * as React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { HealthDot } from '@/icons/Status';
+import { cn } from '@/lib/utils';
 
 export type StatusKind =
   | 'online'

@@ -1,4 +1,3 @@
-import * as React from 'react';
 import {
   Star,
   StarOff,
@@ -8,13 +7,15 @@ import {
   Server,
   KeyRound,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { Card } from '@/components/primitives/Card';
+import * as React from 'react';
+
+import { TierBadge } from '@/components/domain/TierBadge';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
+import { Card } from '@/components/primitives/Card';
 import { StatusPill } from '@/components/primitives/StatusPill';
-import { TierBadge } from '@/components/domain/TierBadge';
 import { formatTokens } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiProvider } from '@/types/api';
 
 export interface FreeProviderCardProps {

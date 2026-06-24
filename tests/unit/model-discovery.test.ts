@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
 import { discoverOpenAIModels } from '../../services/registry/src/model-discovery.js';
 
 function makeFetch(responses: Array<{ url: RegExp; status: number; body: unknown }>) {

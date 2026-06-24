@@ -1,6 +1,8 @@
-import { workersService } from './workers.service.js';
-import { logger } from '@dmr-x/utils';
 import crypto from 'node:crypto';
+
+import { logger } from '@dmr-x/utils';
+
+import { workersService } from './workers.service.js';
 
 export interface TempWorkerConfig {
   name: string;

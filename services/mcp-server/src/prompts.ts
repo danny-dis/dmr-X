@@ -5,8 +5,8 @@
  * UI elements in MCP clients. They guide LLM behavior for common tasks.
  */
 
-import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 
 // The MCP SDK types each prompt arg as
 // `ZodType<string, ZodTypeDef, string> | ZodOptional<...>`. Zod 3.23's

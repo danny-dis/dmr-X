@@ -1,4 +1,3 @@
-import * as React from 'react';
 import {
   Boxes,
   Globe,
@@ -20,7 +19,12 @@ import {
   PowerOff,
   AlertCircle,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
+import { AddKeyDialog } from '@/components/domain/AddKeyDialog';
+import { TierBadge, KeyTierBadge } from '@/components/domain/TierBadge';
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
 import {
   Drawer,
   DrawerContent,
@@ -30,16 +34,13 @@ import {
   DrawerBody,
   DrawerFooter,
 } from '@/components/primitives/Drawer';
-import { Button } from '@/components/primitives/Button';
-import { Badge } from '@/components/primitives/Badge';
-import { Switch } from '@/components/primitives/Switch';
-import { StatusPill } from '@/components/primitives/StatusPill';
 import { Input } from '@/components/primitives/Input';
-import { TierBadge, KeyTierBadge } from '@/components/domain/TierBadge';
-import { AddKeyDialog } from '@/components/domain/AddKeyDialog';
+import { StatusPill } from '@/components/primitives/StatusPill';
+import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import { formatDateTime, formatDuration } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiProvider, ApiProviderKey } from '@/types/api';
 
 export interface ProviderDetailDrawerProps {

@@ -1,7 +1,8 @@
-import * as React from 'react';
 import { CheckCircle2, XCircle, AlertTriangle, Info, Filter, Cpu, Network, Zap, Wrench, User } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { formatDuration, timeAgo } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiTelemetryEvent } from '@/types/api';
 
 const ICON_FOR = {

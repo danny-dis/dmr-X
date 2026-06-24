@@ -1,10 +1,12 @@
-import { workersService, type WorkerJob } from '@dmr-x/workers';
-import { logger } from '@dmr-x/utils';
 import type { ProviderModel } from '@dmr-x/core';
+import type { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
+import { logger } from '@dmr-x/utils';
+import { workersService, type WorkerJob } from '@dmr-x/workers';
+
+import type { SubTaskResult } from './composite-executor.js';
 import type { SubTask } from './task-decomposer.js';
 import type { AdapterExecutor } from '../fallback/fallback-executor.js';
-import type { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
-import type { SubTaskResult } from './composite-executor.js';
+
 
 /**
  * WorkerPoolFanout — the "Workers" layer of the Intelligence Hierarchy.

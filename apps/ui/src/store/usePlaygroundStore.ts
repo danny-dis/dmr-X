@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+
 import { Admin } from '@/lib/admin';
 import { api, apiPost, apiPut, apiDelete, fetchAuthenticated } from '@/lib/api';
 
@@ -268,9 +269,16 @@ export const usePlaygroundStore = create<PlaygroundState>()(
       
       // Delete conversation
       deleteConversation: async (id: string) => {
-        await api(`/v1/conversations/${id}`, {
-          method: 'DELETE',
-        });
+        try {
+          await api(`/v1/conversations/${id}`, {
+            method: 'DELETE',
+          });
+        } catch (error: any) {
+          // If conversation doesn't exist (404), treat as already deleted
+          if (error.status !== 404) {
+            throw error;
+          }
+        }
         
         set(state => ({
           conversations: state.conversations.filter(c => c.id !== id),
@@ -410,7 +418,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
           // Pass through user-defined tools for the regular chat path.
           // Only include the field when non-empty so we don't surprise
           // downstream providers that reject an empty `tools` array.
-          if (config.tools.length > 0) body.tools = config.tools;
+          if (Array.isArray(config.tools) && config.tools.length > 0) body.tools = config.tools;
         } else if (mode === 'image') {
           endpoint = '/v1/images/generations';
           body.prompt = content;

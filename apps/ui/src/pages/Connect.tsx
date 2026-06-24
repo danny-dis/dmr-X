@@ -1,13 +1,14 @@
+import { Plug, Play, Code, Server, Webhook, KeyRound } from 'lucide-react';
 import * as React from 'react';
 import { useNavigate } from 'react-router';
-import { Plug, Play, Code, Server, Webhook, KeyRound } from 'lucide-react';
+
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Code as CodeBlock } from '@/components/primitives/Code';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { CopyButton } from '@/components/primitives/CopyButton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { maskKey } from '@/lib/formatters';
 
 const EXAMPLES = {

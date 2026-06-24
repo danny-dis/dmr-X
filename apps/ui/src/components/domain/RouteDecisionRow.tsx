@@ -1,12 +1,13 @@
-import * as React from 'react';
 import { ChevronRight, Zap, Brain, Bot, Wrench, Cog, Clock } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { Badge } from '@/components/primitives/Badge';
 import { StatusPill } from '@/components/primitives/StatusPill';
-import type { ApiRouteDecision } from '@/types/api';
-import { formatDuration, timeAgo } from '@/lib/formatters';
 import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
 import { ModalityBadge } from '@/icons/Modality';
+import { formatDuration, timeAgo } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
+import type { ApiRouteDecision } from '@/types/api';
 
 const INTEL_ICON = {
   brain: Brain,

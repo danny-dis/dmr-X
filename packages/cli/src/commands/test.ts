@@ -4,12 +4,14 @@
  * Sends a lightweight test request to verify the provider works.
  */
 
-import { Command } from 'commander';
-import chalk from 'chalk';
-import ora from 'ora';
-import { isInitialized, loadConfig, getEnvPath, type RegisteredProvider } from '../config.js';
-import { getProvider, PROVIDER_CATALOG, type ProviderEntry } from '../catalog.js';
 import { existsSync, readFileSync } from 'node:fs';
+
+import chalk from 'chalk';
+import { Command } from 'commander';
+import ora from 'ora';
+
+import { getProvider, PROVIDER_CATALOG, type ProviderEntry } from '../catalog.js';
+import { isInitialized, loadConfig, getEnvPath, type RegisteredProvider } from '../config.js';
 
 interface TestResult {
   provider: string;

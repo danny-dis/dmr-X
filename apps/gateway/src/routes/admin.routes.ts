@@ -1,18 +1,26 @@
-import type { FastifyInstance } from 'fastify';
-import { z } from 'zod';
-import { getDb } from '@dmr-x/db';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { Agent } from 'undici';
+
 import { ValidationError } from '@dmr-x/core';
-import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
-import { PROVIDER_CATALOG } from '@dmr-x/registry';
-import { memoryService, retentionManager } from '@dmr-x/memory';
-import { sandboxService } from '@dmr-x/sandbox';
-import { workersService } from '@dmr-x/workers';
+import { getDb } from '@dmr-x/db';
 import { federationService } from '@dmr-x/federation';
+import { memoryService, retentionManager } from '@dmr-x/memory';
+import { PROVIDER_CATALOG, discoverOpenAIModels } from '@dmr-x/registry';
+import { sandboxService } from '@dmr-x/sandbox';
+import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
+import { workersService } from '@dmr-x/workers';
 import { trace, type Span } from '@opentelemetry/api';
+import type { FastifyInstance } from 'fastify';
+import { Agent } from 'undici';
+import { z } from 'zod';
+
+import { parseQualityTarget } from '../utils/quality-target.js';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
+
+const HTML_ESCAPE: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(str: string): string {
+  return str.replace(/[&<>"']/g, c => HTML_ESCAPE[c]!);
+}
 
 /**
  * Pull the current OTel trace_id / span_id off the active span, if any.
@@ -210,9 +218,16 @@ const UpdateModelSchema = z.object({
 const CreatePolicySchema = z.object({
   tenant_id: z.string().optional().default('default'),
   name: z.string().min(1),
-  type: z.enum(['provider_allow', 'provider_deny', 'model_allow', 'model_deny', 'cost_cap', 'modality_restriction', 'residency', 'tool_permission']),
-  target: z.array(z.string()).default([]),
-  action: z.enum(['allow', 'deny', 'redirect']).default('deny'),
+  description: z.string().optional(),
+  type: z.enum(['provider_allow', 'provider_deny', 'model_allow', 'model_deny', 'cost_cap', 'modality_restriction', 'residency', 'tool_permission']).optional().default('model_allow'),
+  target: z.array(z.string()).optional().default([]),
+  action: z.enum(['allow', 'deny', 'redirect', 'rate_limit', 'tag']).default('deny'),
+  match: z.object({
+    model: z.string().optional(),
+    tenantId: z.string().optional(),
+    tag: z.string().optional(),
+    modality: z.string().optional(),
+  }).optional(),
   conditions: z.record(z.unknown()).optional().default({}),
   priority: z.number().int().min(0).default(0),
   enabled: z.boolean().default(true),
@@ -220,9 +235,16 @@ const CreatePolicySchema = z.object({
 
 const UpdatePolicySchema = z.object({
   name: z.string().optional(),
+  description: z.string().optional(),
   type: z.enum(['provider_allow', 'provider_deny', 'model_allow', 'model_deny', 'cost_cap', 'modality_restriction', 'residency', 'tool_permission']).optional(),
   target: z.array(z.string()).optional(),
-  action: z.enum(['allow', 'deny', 'redirect']).optional(),
+  action: z.enum(['allow', 'deny', 'redirect', 'rate_limit', 'tag']).optional(),
+  match: z.object({
+    model: z.string().optional(),
+    tenantId: z.string().optional(),
+    tag: z.string().optional(),
+    modality: z.string().optional(),
+  }).optional(),
   conditions: z.record(z.unknown()).optional(),
   priority: z.number().int().min(0).optional(),
   enabled: z.boolean().optional(),
@@ -659,6 +681,107 @@ export function loadActiveProviderCredential(providerId: string): {
 }
 
 /**
+ * Check whether a provider has at least one active key (API key or OAuth token).
+ * Used by the /admin/models endpoint to filter out models from providers
+ * that can't actually be routed to.
+ */
+function providerHasActiveKeys(db: ReturnType<typeof getDb>, providerId: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM provider_keys
+       WHERE provider_id = ? AND is_active = 1
+         AND (api_key_encrypted IS NOT NULL OR oauth_access_token_encrypted IS NOT NULL)
+       LIMIT 1`,
+    )
+    .get(providerId);
+  if (row) return true;
+
+  // Legacy fallback: check config.apiKey or oauth_access_token on providers table
+  const legacy = db
+    .prepare(
+      `SELECT config, oauth_access_token FROM providers WHERE id = ?`,
+    )
+    .get(providerId) as { config: string; oauth_access_token: string | null } | undefined;
+  if (!legacy) return false;
+  try {
+    const cfg = JSON.parse(legacy.config || '{}');
+    if (cfg.apiKey) return true;
+  } catch { /* ignore */ }
+  return !!legacy.oauth_access_token;
+}
+
+/**
+ * Auto-discover models for a provider after a key is added.
+ * Fetches the provider's /v1/models endpoint and upserts discovered
+ * models into model_profiles. Only runs for OpenAI-compatible providers.
+ */
+async function autoDiscoverModelsOnKeyAdd(
+  db: ReturnType<typeof getDb>,
+  providerId: string,
+  providerName: string,
+  baseUrl: string | undefined,
+): Promise<void> {
+  if (!baseUrl) return;
+
+  const template = PROVIDER_CATALOG.find(t => t.id === providerName);
+  const isOpenaiCompat = template?.apiFormat === 'openai' || providerName === 'google';
+  if (!isOpenaiCompat) return;
+
+  try {
+    const discovered = await discoverOpenAIModels({ baseUrl, apiKey: '' });
+    if (discovered.length === 0) {
+      logger.debug({ provider: providerName }, 'Auto-discovery: /v1/models returned empty');
+      return;
+    }
+
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO model_profiles (
+        id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
+        supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
+        context_window, max_output_tokens,
+        input_cost_per_1k, output_cost_per_1k, cost_per_image,
+        quality_score, is_active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    let inserted = 0;
+    for (const m of discovered) {
+      if (!m.modelId) continue;
+      const caps = new Set(m.capabilities);
+      const result = insert.run(
+        crypto.randomUUID(),
+        providerId,
+        m.modelId,
+        m.displayName || m.modelId,
+        m.modality || 'llm',
+        'executor',
+        'executor',
+        caps.has('streaming') ? 1 : 0,
+        caps.has('vision') ? 1 : 0,
+        caps.has('tool_use') ? 1 : 0,
+        caps.has('json_mode') ? 1 : 0,
+        caps.has('function_call') ? 1 : 0,
+        caps.has('reasoning') ? 1 : 0,
+        m.contextWindow,
+        m.maxOutputTokens,
+        m.inputCostPer1M / 1000,
+        m.outputCostPer1M / 1000,
+        m.costPerImage,
+        0.5,
+        1, // is_active = 1 since we just got a valid key
+      );
+      if (result.changes > 0) inserted++;
+    }
+
+    if (inserted > 0) {
+      logger.info({ provider: providerName, count: inserted }, 'Auto-discovered models after key add');
+    }
+  } catch (err) {
+    logger.warn({ err, provider: providerName }, 'Auto-discovery failed after key add');
+  }
+}
+
+/**
  * Mirror the legacy single-key columns (providers.config.apiKey and
  * providers.oauth_access_token / refresh / expires_at) into the
  * Default provider_keys row. Used by the OAuth flow endpoints that
@@ -961,6 +1084,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const refreshCandidates = (server as any).refreshCandidates;
     if (refreshCandidates) await refreshCandidates();
 
+    // Auto-discover models if an API key was provided
+    if (api_key) {
+      void autoDiscoverModelsOnKeyAdd(db, provider.id, providerName, template.baseUrl);
+    }
+
     reply.status(200);
     const providerConfig = JSON.parse(provider.config || '{}');
     const refreshed = db.prepare('SELECT * FROM providers WHERE id = ?').get(provider.id) as any;
@@ -988,6 +1116,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       if (!url) return false;
       return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(url);
     };
+
+    // Pre-fetch model counts per provider so the UI can display "N models"
+    // without a separate query per card.
+    const countRows = db.prepare(
+      'SELECT provider_id, COUNT(*) as cnt FROM model_profiles WHERE is_active = 1 GROUP BY provider_id'
+    ).all() as Array<{ provider_id: string; cnt: number }>;
+    const modelCounts = new Map<string, number>();
+    for (const r of countRows) modelCounts.set(r.provider_id, r.cnt);
+
     const providers = rows.map((row) => {
       const config = JSON.parse(row.config || '{}');
       const { apiKey: _stripped, ...safeConfig } = config;
@@ -1023,6 +1160,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         local,
         tier: row.tier || 'inactive',
         keys,
+        modelCount: modelCounts.get(row.id) ?? 0,
       };
     });
     return { providers };
@@ -1143,6 +1281,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const refreshCandidates = (server as any).refreshCandidates;
     if (refreshCandidates) await refreshCandidates();
 
+    // Auto-discover models if a new key was provided
+    if (api_key) {
+      void autoDiscoverModelsOnKeyAdd(db, id, provider.name, provider.base_url ?? undefined);
+    }
+
     const updatedRow = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
     const updatedConfig = JSON.parse(updatedRow.config || '{}');
     return {
@@ -1256,6 +1399,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const refreshCandidates = (server as any).refreshCandidates;
     if (refreshCandidates) await refreshCandidates();
 
+    // Auto-discover models for this provider now that it has a valid key.
+    // This populates model_profiles with models from the provider's /v1/models
+    // endpoint so they appear in the Playground and Models page immediately.
+    if (body.api_key) {
+      void autoDiscoverModelsOnKeyAdd(db, id, provider.name, provider.base_url ?? undefined);
+    }
+
     reply.status(201);
     return { success: true, key: toProviderKeyView(db.prepare('SELECT * FROM provider_keys WHERE id = ?').get(keyId) as ProviderKeyRow) };
   });
@@ -1318,6 +1468,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     db.prepare(`UPDATE provider_keys SET ${sets.join(', ')} WHERE id = ?`).run(...params);
 
     recomputeProviderTier(db, id);
+
+    // If the key was deactivated, check if the provider still has active keys.
+    // If not, deactivate its models so they don't appear in routing.
+    if (body.is_active === false) {
+      const hasKeysNow = providerHasActiveKeys(db, id);
+      if (!hasKeysNow) {
+        db.prepare(
+          `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now') WHERE provider_id = ?`
+        ).run(id);
+        logger.info({ provider: id }, 'Deactivated models — no active keys remaining after key deactivation');
+      }
+    }
 
     // Re-initialize adapter if the active key changed. A change to
     // priority, is_active, or credentials of the currently-active key
@@ -1383,6 +1545,16 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     db.prepare(`DELETE FROM provider_keys WHERE id = ?`).run(keyId);
     recomputeProviderTier(db, id);
+
+    // Check if provider still has any active keys. If not, deactivate its
+    // models so they don't appear in the Playground or routing.
+    const hasKeysNow = providerHasActiveKeys(db, id);
+    if (!hasKeysNow) {
+      db.prepare(
+        `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now') WHERE provider_id = ?`
+      ).run(id);
+      logger.info({ provider: id }, 'Deactivated models — no active keys remaining');
+    }
 
     const refreshCandidates = (server as any).refreshCandidates;
     if (refreshCandidates) await refreshCandidates();
@@ -1690,7 +1862,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         <html><body style="font-family:system-ui;background:#0F0F12;color:#F8F9FC;display:flex;align-items:center;justify-content:center;height:100vh">
           <div style="text-align:center">
             <h2 style="color:#00FFB2">Connected!</h2>
-            <p>${provider.name} has been connected via OAuth.</p>
+            <p>${escapeHtml(provider.name)} has been connected via OAuth.</p>
             <p style="color:#595962;font-size:14px">This window will close automatically...</p>
             <script>setTimeout(() => window.close(), 1500)</script>
           </div>
@@ -1702,7 +1874,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         <html><body style="font-family:system-ui;background:#0F0F12;color:#F8F9FC;display:flex;align-items:center;justify-content:center;height:100vh">
           <div style="text-align:center">
             <h2 style="color:#FF4D6A">Connection Failed</h2>
-            <p>${err instanceof Error ? err.message : 'OAuth exchange failed'}</p>
+            <p>${escapeHtml(err instanceof Error ? err.message : 'OAuth exchange failed')}</p>
             <script>setTimeout(() => window.close(), 3000)</script>
           </div>
         </body></html>
@@ -2219,11 +2391,43 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     };
   });
 
-  // List models
-  server.get('/admin/models', async () => {
+  // List models — optionally filtered to only models from providers with
+  // active keys (or keyless providers like Pollinations). The `available_only`
+  // query param defaults to `true` so the UI only sees models it can actually
+  // route to. Pass `available_only=false` to see the full catalogue.
+  server.get('/admin/models', async (request) => {
+    const { available_only } = request.query as { available_only?: string };
+    const onlyAvailable = available_only !== 'false'; // default true
+
     const db = getDb();
+
+    if (onlyAvailable) {
+      // Only return models whose provider has at least one active key
+      // OR is keyless (envKey === '' in the catalog, e.g. Pollinations).
+      const rows = db.prepare(
+        `SELECT mp.*, p.name as provider_name,
+                CASE
+                  WHEN p.tier = 'inactive' THEN 0
+                  ELSE 1
+                END as provider_available
+         FROM model_profiles mp
+         JOIN providers p ON p.id = mp.provider_id
+         WHERE mp.is_active = 1
+           AND (
+             p.is_healthy = 1
+             OR EXISTS (SELECT 1 FROM provider_keys pk WHERE pk.provider_id = p.id AND pk.is_active = 1)
+           )
+         ORDER BY mp.modality, mp.model_id`
+      ).all();
+      return { models: rows };
+    }
+
     const rows = db.prepare(
-      `SELECT mp.*, p.name as provider_name
+      `SELECT mp.*, p.name as provider_name,
+              CASE
+                WHEN p.tier = 'inactive' THEN 0
+                ELSE 1
+              END as provider_available
        FROM model_profiles mp
        JOIN providers p ON p.id = mp.provider_id
        ORDER BY mp.modality, mp.model_id`
@@ -2415,15 +2619,24 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return {
       policies: rows.map((row) => {
         const rules = typeof row.rules === 'string' ? JSON.parse(row.rules as string) : (row.rules || {});
+        const conditions = rules.conditions || {};
         return {
           id: row.id,
           tenant_id: row.tenant_id,
           tenant_name: row.tenant_name,
           name: row.name,
+          description: rules.description || undefined,
           type: rules.type || 'provider_allow',
           target: rules.target || [],
           action: rules.action || 'deny',
-          conditions: rules.conditions || {},
+          conditions,
+          // Expose `match` for the UI — derived from conditions fields
+          match: {
+            model: conditions.model || undefined,
+            tenantId: conditions.tenantId || undefined,
+            tag: conditions.tag || undefined,
+            modality: conditions.modality || undefined,
+          },
           priority: rules.priority ?? 0,
           enabled: !!row.is_active,
           created_at: row.created_at,
@@ -2441,11 +2654,23 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const db = getDb();
     const id = crypto.randomUUID();
+
+    // Convert UI's `match` shape to the DB's `conditions` shape.
+    // The UI sends `{ model, tenantId, tag, modality }` while the
+    // backend stores a generic `conditions` record.
+    const conditions = { ...body.conditions };
+    if (body.match) {
+      if (body.match.model) conditions.model = body.match.model;
+      if (body.match.tenantId) conditions.tenantId = body.match.tenantId;
+      if (body.match.tag) conditions.tag = body.match.tag;
+      if (body.match.modality) conditions.modality = body.match.modality;
+    }
+
     const rulesBlob = JSON.stringify({
       type: body.type,
       target: body.target,
       action: body.action,
-      conditions: body.conditions,
+      conditions,
       priority: body.priority,
     });
     db.prepare(
@@ -2457,10 +2682,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       id,
       tenant_id: body.tenant_id,
       name: body.name,
+      description: body.description,
       type: body.type,
       target: body.target,
       action: body.action,
-      conditions: body.conditions,
+      conditions,
       priority: body.priority,
       enabled: body.enabled,
       created_at: new Date().toISOString(),
@@ -2703,6 +2929,75 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         ...row,
         fallback_chain: typeof row.fallback_chain === 'string' ? JSON.parse(row.fallback_chain) : row.fallback_chain ?? [],
       })),
+    };
+  });
+
+  // Performance by mode — shows how each provider/model performs across
+  // different routing modes (frontier/balanced/economy) and free-tier strategies.
+  server.get('/admin/routing/performance-by-mode', async (request) => {
+    const db = getDb();
+    const query = request.query as Record<string, string | undefined>;
+    const days = Math.min(Math.max(parseInt(query.days ?? '7', 10) || 7, 1), 90);
+
+    // Performance grouped by quality_target
+    const byQualityTarget = db.prepare(`
+      SELECT
+        selected_provider as provider,
+        selected_model as model,
+        quality_target,
+        COUNT(*) as requests,
+        ROUND(AVG(latency_ms)) as avg_latency_ms,
+        ROUND(AVG(quality_score), 3) as avg_quality,
+        ROUND(AVG(estimated_cost), 6) as avg_cost,
+        ROUND(SUM(CASE WHEN error_code IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as success_rate,
+        SUM(tokens_input) as total_input_tokens,
+        SUM(tokens_output) as total_output_tokens
+      FROM request_logs
+      WHERE timestamp > datetime('now', '-' || ? || ' days')
+        AND quality_target IS NOT NULL
+      GROUP BY selected_provider, selected_model, quality_target
+      ORDER BY quality_target, requests DESC
+    `).all(days);
+
+    // Performance grouped by free_tier_strategy
+    const byFreeTierStrategy = db.prepare(`
+      SELECT
+        selected_provider as provider,
+        selected_model as model,
+        free_tier_strategy,
+        COUNT(*) as requests,
+        ROUND(AVG(latency_ms)) as avg_latency_ms,
+        ROUND(AVG(quality_score), 3) as avg_quality,
+        ROUND(AVG(estimated_cost), 6) as avg_cost,
+        ROUND(SUM(CASE WHEN error_code IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as success_rate,
+        SUM(tokens_input) as total_input_tokens,
+        SUM(tokens_output) as total_output_tokens
+      FROM request_logs
+      WHERE timestamp > datetime('now', '-' || ? || ' days')
+        AND free_tier_strategy IS NOT NULL
+      GROUP BY selected_provider, selected_model, free_tier_strategy
+      ORDER BY free_tier_strategy, requests DESC
+    `).all(days);
+
+    // Summary: which mode was used most
+    const modeUsage = db.prepare(`
+      SELECT
+        quality_target,
+        free_tier_strategy,
+        COUNT(*) as requests,
+        ROUND(AVG(latency_ms)) as avg_latency_ms,
+        ROUND(AVG(quality_score), 3) as avg_quality
+      FROM request_logs
+      WHERE timestamp > datetime('now', '-' || ? || ' days')
+      GROUP BY quality_target, free_tier_strategy
+      ORDER BY requests DESC
+    `).all(days);
+
+    return {
+      period_days: days,
+      by_quality_target: byQualityTarget,
+      by_free_tier_strategy: byFreeTierStrategy,
+      mode_usage: modeUsage,
     };
   });
 
@@ -3458,18 +3753,28 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { name, type, target, action, conditions, priority, enabled } = parsed.data;
+    const { name, type, target, action, match, conditions, priority, enabled } = parsed.data;
     const db = getDb();
     const existing = db.prepare('SELECT rules FROM policies WHERE id = ?').get(id) as { rules: string } | undefined;
     if (!existing) {
       throw new ValidationError('Policy not found');
     }
     const currentRules = JSON.parse(existing.rules || '{}');
+
+    // Convert UI's `match` shape to `conditions` if provided
+    const mergedConditions = { ...(conditions ?? currentRules.conditions) };
+    if (match) {
+      if (match.model) mergedConditions.model = match.model;
+      if (match.tenantId) mergedConditions.tenantId = match.tenantId;
+      if (match.tag) mergedConditions.tag = match.tag;
+      if (match.modality) mergedConditions.modality = match.modality;
+    }
+
     const updatedRules = {
       type: type ?? currentRules.type,
       target: target ?? currentRules.target,
       action: action ?? currentRules.action,
-      conditions: conditions ?? currentRules.conditions,
+      conditions: mergedConditions,
       priority: priority ?? currentRules.priority,
     };
     db.prepare(
@@ -3619,7 +3924,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const db = getDb();
 
     let modelId = body.modelId ?? null;
-    let competitorModelId = body.competitorModelId ?? null;
+    const competitorModelId = body.competitorModelId ?? null;
 
     // If modelId is missing, look it up from request logs
     if (!modelId && body.requestId) {
@@ -3820,6 +4125,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     try {
       const requestId = crypto.randomUUID();
+      const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
       // Map MCP tool names to their respective routing
       if (tool === 'dmrx_chat') {
@@ -3831,7 +4137,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/chat/completions',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3845,7 +4151,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/embeddings',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3859,7 +4165,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/rerank',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3873,7 +4179,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/images/generations',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3887,7 +4193,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/audio/transcriptions',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3901,7 +4207,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/audio/speech',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3915,7 +4221,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/video/generations',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3929,7 +4235,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/music/generations',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }
@@ -3943,7 +4249,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         };
         const { response } = await router.route(request, {
           path: '/v1/3d/generate',
-          qualityTarget: 'balanced',
+          qualityTarget,
         });
         return { success: true, result: response };
       }

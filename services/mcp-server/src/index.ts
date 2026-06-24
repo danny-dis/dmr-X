@@ -26,10 +26,11 @@
  *   COHERE_API_KEY, JINA_API_KEY
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
+
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+
 import {
   loadConfigFile,
   resolveConfig,
@@ -37,11 +38,47 @@ import {
   resolveConfigBool,
   type McpConfigFile,
 } from './config.js';
+import { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
 
 // Re-export for programmatic use
 export { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
 export { TOOL_NAMES, TOOL_DESCRIPTIONS } from './tools.js';
 export { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
+export {
+  buildAgentCard,
+  validateAgentCard,
+  serializeAgentCard,
+  deserializeAgentCard,
+  type AgentCardConfig,
+  type AgentCapabilities,
+  type AgentAuthentication,
+  type AgentSkill,
+  type AgentCard,
+} from './a2a/agent-card.js';
+export {
+  A2ATaskManager,
+  getTaskManager,
+  resetTaskManager,
+  type TaskState,
+  type TaskMessage,
+  type TaskPart,
+  type Task,
+  type TaskStatus,
+  type TaskArtifact,
+  type TaskCreateRequest,
+  type TaskGetRequest,
+  type TaskUpdateRequest,
+  type TaskCancelRequest,
+} from './a2a/task-manager.js';
+export {
+  FederationManager,
+  getFederationManager,
+  resetFederationManager,
+  type FederationConfig,
+  type FederationPeer,
+  type FederatedTool,
+  type FederationState,
+} from './federation/manager.js';
 
 // ---------------------------------------------------------------------------
 // Environment helpers
@@ -424,6 +461,64 @@ async function buildConfig(): Promise<BuiltConfig> {
       adapterConfigs,
       allowedTools: configFile?.allowedTools || (process.env.DMRX_MCP_ALLOWED_TOOLS ? process.env.DMRX_MCP_ALLOWED_TOOLS.split(',').map((t) => t.trim()) : undefined),
       externalMcpClient: externalMcpClient ?? undefined,
+      toolSearch: configFile?.toolSearch || {
+        bm25Weight: resolveConfigInt(configFile, 'toolSearch.bm25Weight', 'DMRX_TOOL_SEARCH_BM25_WEIGHT', 0.4),
+        semanticWeight: resolveConfigInt(configFile, 'toolSearch.semanticWeight', 'DMRX_TOOL_SEARCH_SEMANTIC_WEIGHT', 0.6),
+        rrfConstant: resolveConfigInt(configFile, 'toolSearch.rrfConstant', 'DMRX_TOOL_SEARCH_RRF_CONSTANT', 60),
+        maxResults: resolveConfigInt(configFile, 'toolSearch.maxResults', 'DMRX_TOOL_SEARCH_MAX_RESULTS', 10),
+        minScore: resolveConfigInt(configFile, 'toolSearch.minScore', 'DMRX_TOOL_SEARCH_MIN_SCORE', 0.01),
+        enableBM25: resolveConfigBool(configFile, 'toolSearch.enableBM25', 'DMRX_TOOL_SEARCH_ENABLE_BM25', true),
+        enableSemantic: resolveConfigBool(configFile, 'toolSearch.enableSemantic', 'DMRX_TOOL_SEARCH_ENABLE_SEMANTIC', true),
+        embeddingConfig: {
+          provider: resolveConfig(configFile, 'toolSearch.embeddingConfig.provider', 'DMRX_TOOL_SEARCH_EMBEDDING_PROVIDER', 'ollama') as 'ollama' | 'openai' | 'remote',
+          ollamaUrl: resolveConfig(configFile, 'toolSearch.embeddingConfig.ollamaUrl', 'DMRX_TOOL_SEARCH_OLLAMA_URL', 'http://localhost:11434'),
+          ollamaModel: resolveConfig(configFile, 'toolSearch.embeddingConfig.ollamaModel', 'DMRX_TOOL_SEARCH_OLLAMA_MODEL', 'nomic-embed-text'),
+          openaiApiKey: resolveConfig(configFile, 'toolSearch.embeddingConfig.openaiApiKey', 'OPENAI_API_KEY', ''),
+          openaiModel: resolveConfig(configFile, 'toolSearch.embeddingConfig.openaiModel', 'DMRX_TOOL_SEARCH_OPENAI_MODEL', 'text-embedding-3-small'),
+          remoteUrl: resolveConfig(configFile, 'toolSearch.embeddingConfig.remoteUrl', 'DMRX_TOOL_SEARCH_REMOTE_URL', ''),
+          remoteApiKey: resolveConfig(configFile, 'toolSearch.embeddingConfig.remoteApiKey', 'DMRX_TOOL_SEARCH_REMOTE_API_KEY', ''),
+        },
+      },
+      rbac: {
+        enabled: resolveConfigBool(configFile, 'rbac.enabled', 'DMRX_RBAC_ENABLED', false),
+        defaultEffect: resolveConfig(configFile, 'rbac.defaultEffect', 'DMRX_RBAC_DEFAULT_EFFECT', 'allow') as 'allow' | 'deny',
+        policiesPath: resolveConfig(configFile, 'rbac.policiesPath', 'DMRX_RBAC_POLICIES_PATH', ''),
+        auditLogging: resolveConfigBool(configFile, 'rbac.auditLogging', 'DMRX_RBAC_AUDIT_LOGGING', true),
+      },
+      guardrails: {
+        enabled: resolveConfigBool(configFile, 'guardrails.enabled', 'DMRX_GUARDRAILS_ENABLED', false),
+        piiRedaction: resolveConfigBool(configFile, 'guardrails.piiRedaction', 'DMRX_GUARDRAILS_PII_REDACTION', true),
+        contentFiltering: resolveConfigBool(configFile, 'guardrails.contentFiltering', 'DMRX_GUARDRAILS_CONTENT_FILTERING', true),
+        blockedKeywords: resolveConfig(configFile, 'guardrails.blockedKeywords', 'DMRX_GUARDRAILS_BLOCKED_KEYWORDS', '').split(',').filter(Boolean),
+        logDetections: resolveConfigBool(configFile, 'guardrails.logDetections', 'DMRX_GUARDRAILS_LOG_DETECTIONS', true),
+      },
+      audit: {
+        enabled: resolveConfigBool(configFile, 'audit.enabled', 'DMRX_AUDIT_ENABLED', false),
+        retentionDays: resolveConfigInt(configFile, 'audit.retentionDays', 'DMRX_AUDIT_RETENTION_DAYS', 90),
+        includeBodies: resolveConfigBool(configFile, 'audit.includeBodies', 'DMRX_AUDIT_INCLUDE_BODIES', false),
+      },
+      a2a: {
+        enabled: resolveConfigBool(configFile, 'a2a.enabled', 'DMRX_A2A_ENABLED', false),
+        agentCard: {
+          name: resolveConfig(configFile, 'a2a.agentCard.name', 'DMRX_A2A_AGENT_NAME', 'DMR-X Agent'),
+          description: resolveConfig(configFile, 'a2a.agentCard.description', 'DMRX_A2A_AGENT_DESCRIPTION', 'DMR-X MCP Server with intelligent routing'),
+          version: resolveConfig(configFile, 'a2a.agentCard.version', 'DMRX_A2A_AGENT_VERSION', '0.5.0'),
+          url: resolveConfig(configFile, 'a2a.agentCard.url', 'DMRX_A2A_AGENT_URL', 'http://localhost:3100'),
+        },
+      },
+      federation: {
+        enabled: resolveConfigBool(configFile, 'federation.enabled', 'DMRX_FEDERATION_ENABLED', false),
+        instanceId: resolveConfig(configFile, 'federation.instanceId', 'DMRX_FEDERATION_INSTANCE_ID', ''),
+        instanceName: resolveConfig(configFile, 'federation.instanceName', 'DMRX_FEDERATION_INSTANCE_NAME', `DMR-X-${Date.now()}`),
+        discoveryMethod: resolveConfig(configFile, 'federation.discoveryMethod', 'DMRX_FEDERATION_DISCOVERY_METHOD', 'static') as 'mdns' | 'static' | 'consul',
+        mdnsServiceName: resolveConfig(configFile, 'federation.mdnsServiceName', 'DMRX_FEDERATION_MDNS_SERVICE_NAME', 'dmrx-mcp'),
+        mdnsServiceType: resolveConfig(configFile, 'federation.mdnsServiceType', 'DMRX_FEDERATION_MDNS_SERVICE_TYPE', '_mcp._tcp'),
+        syncInterval: resolveConfigInt(configFile, 'federation.syncInterval', 'DMRX_FEDERATION_SYNC_INTERVAL', 30),
+        heartbeatInterval: resolveConfigInt(configFile, 'federation.heartbeatInterval', 'DMRX_FEDERATION_HEARTBEAT_INTERVAL', 10),
+        peerTimeout: resolveConfigInt(configFile, 'federation.peerTimeout', 'DMRX_FEDERATION_PEER_TIMEOUT', 60),
+        enableToolProxy: resolveConfigBool(configFile, 'federation.enableToolProxy', 'DMRX_FEDERATION_ENABLE_TOOL_PROXY', true),
+        maxRemoteTools: resolveConfigInt(configFile, 'federation.maxRemoteTools', 'DMRX_FEDERATION_MAX_REMOTE_TOOLS', 100),
+      },
     },
     externalMcpClient,
     telemetryConfig: {
@@ -451,6 +546,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   // Dynamically import to avoid pulling in HTTP deps for stdio-only usage
   const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
   const http = await import('node:http');
+  const { handleA2ARoutes } = await import('./a2a/handler.js');
 
   const configFile = loadConfigFile();
   const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
@@ -461,10 +557,23 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
 
+  // Get tools for Agent Card
+  const { server: tempServer, state: tempState } = createDMRXMcpServer(config);
+  const toolsForAgentCard = tempState.sdkTools.map((t) => ({
+    name: t.name,
+    description: t.description,
+  }));
+
   const httpServer = http.createServer(async (req, res) => {
     // CORS preflight
     setCorsHeaders(res);
     if (handlePreflight(req, res)) return;
+
+    // Handle A2A routes
+    if (config.a2a?.enabled) {
+      const a2aHandled = await handleA2ARoutes(req, res, config.a2a, toolsForAgentCard);
+      if (a2aHandled) return;
+    }
 
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
@@ -546,6 +655,10 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     console.log(`  SSE endpoint:    http://${host}:${port}/sse`);
     console.log(`  Message endpoint: http://${host}:${port}/messages`);
     console.log(`  Health endpoint:  http://${host}:${port}/health`);
+    if (config.a2a?.enabled) {
+      console.log(`  Agent Card:      http://${host}:${port}/.well-known/agent.json`);
+      console.log(`  A2A Tasks:       http://${host}:${port}/a2a/tasks/send`);
+    }
   });
 
   // Cleanup sweep on process exit
@@ -556,6 +669,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
   const http = await import('node:http');
+  const { handleA2ARoutes } = await import('./a2a/handler.js');
 
   const configFile = loadConfigFile();
   const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
@@ -566,10 +680,23 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
 
+  // Get tools for Agent Card
+  const { server: tempServer, state: tempState } = createDMRXMcpServer(config);
+  const toolsForAgentCard = tempState.sdkTools.map((t) => ({
+    name: t.name,
+    description: t.description,
+  }));
+
   const httpServer = http.createServer(async (req, res) => {
     // CORS preflight
     setCorsHeaders(res);
     if (handlePreflight(req, res)) return;
+
+    // Handle A2A routes
+    if (config.a2a?.enabled) {
+      const a2aHandled = await handleA2ARoutes(req, res, config.a2a, toolsForAgentCard);
+      if (a2aHandled) return;
+    }
 
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
@@ -648,6 +775,10 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
     console.log(`DMR-X MCP server (Streamable HTTP) listening on http://${host}:${port}`);
     console.log(`  MCP endpoint:    http://${host}:${port}/mcp`);
     console.log(`  Health endpoint:  http://${host}:${port}/health`);
+    if (config.a2a?.enabled) {
+      console.log(`  Agent Card:      http://${host}:${port}/.well-known/agent.json`);
+      console.log(`  A2A Tasks:       http://${host}:${port}/a2a/tasks/send`);
+    }
   });
 
   // Cleanup sweep on process exit

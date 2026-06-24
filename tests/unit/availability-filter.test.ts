@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { availabilityFilter } from '../../services/router/src/pipeline/availability-filter.js';
+
 import type { CandidateSet } from '../../packages/core/src/types/index.js';
+import { availabilityFilter } from '../../services/router/src/pipeline/availability-filter.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {

@@ -1,9 +1,55 @@
+import crypto from 'node:crypto';
+
+import type { CapabilityTier } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
-import { PROVIDER_CATALOG, type ProviderTemplate } from './provider-catalog.js';
+
 import { discoverOpenAIModels, type DiscoveredModel } from './model-discovery.js';
-import crypto from 'node:crypto';
-import type { CapabilityTier } from '@dmr-x/core';
+import { PROVIDER_CATALOG, type ProviderTemplate, type ModelTemplate } from './provider-catalog.js';
+
+/**
+ * Build a lookup map of catalog models keyed by `${providerId}/${modelId}`.
+ * Used to enrich models discovered from `/v1/models` with known costs,
+ * context windows, and capabilities from the static catalog.
+ */
+function buildCatalogLookup(): Map<string, ModelTemplate> {
+  const lookup = new Map<string, ModelTemplate>();
+  for (const template of PROVIDER_CATALOG) {
+    for (const m of template.models) {
+      lookup.set(`${template.id}/${m.id}`, m);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * Enrich a discovered model with catalog data when available.
+ * Fills in cost, context window, capabilities, and specializations
+ * that the upstream /v1/models endpoint doesn't provide.
+ */
+function enrichFromCatalog(
+  providerId: string,
+  model: DiscoveredModel,
+  catalog: Map<string, ModelTemplate>,
+): DiscoveredModel {
+  const key = `${providerId}/${model.modelId}`;
+  const tmpl = catalog.get(key);
+  if (!tmpl) return model;
+
+  return {
+    ...model,
+    displayName: model.displayName || tmpl.id,
+    modality: model.modality || tmpl.modalities[0] || 'llm',
+    contextWindow: model.contextWindow ?? tmpl.contextWindow ?? null,
+    maxOutputTokens: model.maxOutputTokens ?? tmpl.maxOutputTokens ?? null,
+    inputCostPer1M: model.inputCostPer1M || tmpl.inputCostPer1M || 0,
+    outputCostPer1M: model.outputCostPer1M || tmpl.outputCostPer1M || 0,
+    costPerImage: model.costPerImage || tmpl.costPerImage || 0,
+    capabilities: model.capabilities.length > 0 ? model.capabilities : tmpl.capabilities,
+    specializations: model.specializations.length > 0 ? model.specializations : tmpl.specializations,
+    subscriptionOnly: tmpl.subscriptionOnly,
+  };
+}
 
 /**
  * True when a catalog entry points at a default-localhost URL AND the user
@@ -148,10 +194,13 @@ function insertModelProfiles(
  * Scans env for known API keys and auto-creates provider + model entries.
  * For catalog entries with empty `models` arrays (e.g. Pollinations), the
  * model list is fetched live from the provider's `/v1/models` endpoint.
+ * Discovered models are enriched with catalog data (costs, context windows,
+ * capabilities) when available.
  */
 export async function autoRegisterProviders(): Promise<string[]> {
   const registered: string[] = [];
   const db = getDb();
+  const catalogLookup = buildCatalogLookup();
 
   for (const template of PROVIDER_CATALOG) {
     const apiKey = template.envKey ? process.env[template.envKey] : undefined;
@@ -265,7 +314,8 @@ export async function autoRegisterProviders(): Promise<string[]> {
               apiKey: apiKey || '',
             });
             if (discovered.length > 0) {
-              modelsForInsert = discovered;
+              // Enrich discovered models with catalog data (costs, context, capabilities)
+              modelsForInsert = discovered.map(m => enrichFromCatalog(template.id, m, catalogLookup));
               logger.info(
                 { provider: template.id, count: discovered.length },
                 'Discovered models from provider /v1/models',
@@ -358,10 +408,13 @@ export async function autoRegisterProviders(): Promise<string[]> {
  * yet — e.g. databases created before the live-discovery logic existed.
  *
  * Idempotent: if a provider already has any model_profiles, it is skipped.
+ * Discovered models are enriched with catalog data (costs, context windows,
+ * capabilities) when available.
  * Returns the total number of new model rows inserted.
  */
 export async function discoverMissingModels(): Promise<number> {
   const db = getDb();
+  const catalogLookup = buildCatalogLookup();
 
   // Phase 1: collect eligible providers via sync DB lookups (cheap, no I/O)
   const eligible: Array<{ providerId: string; templateId: string; baseUrl: string }> = [];
@@ -416,15 +469,96 @@ export async function discoverMissingModels(): Promise<number> {
   for (let i = 0; i < discoveries.length; i++) {
     const result = discoveries[i];
     if (!result) continue;
-    const { providerId } = eligible[i];
-    const inserted = insertModelProfiles(providerId, result.discovered, true);
+    const { providerId, templateId } = eligible[i];
+    // Enrich discovered models with catalog data (costs, context, capabilities)
+    const enriched = result.discovered.map(m => enrichFromCatalog(templateId, m, catalogLookup));
+    const inserted = insertModelProfiles(providerId, enriched, true);
     totalInserted += inserted;
     logger.info(
-      { provider: result.templateId, inserted },
+      { provider: templateId, inserted },
       'Backfilled model profiles via discovery',
     );
   }
 
   return totalInserted;
+}
+
+/**
+ * Enrich existing model_profiles rows with catalog data (costs, context
+ * windows, capabilities) where the current values are zero/null.
+ * Runs once at startup so models discovered before catalog enrichment
+ * was added get backfilled.
+ *
+ * Returns the number of rows updated.
+ */
+export async function enrichExistingModels(): Promise<number> {
+  const db = getDb();
+  const catalogLookup = buildCatalogLookup();
+
+  // Find models that have zero costs and no context window — likely
+  // discovered from /v1/models without catalog enrichment.
+  const stale = db.prepare(
+    `SELECT mp.id, mp.provider_id, mp.model_id, p.name as provider_name
+     FROM model_profiles mp
+     JOIN providers p ON p.id = mp.provider_id
+     WHERE mp.is_active = 1
+       AND (mp.context_window IS NULL OR mp.context_window = 0)
+       AND mp.input_cost_per_1k = 0
+       AND mp.output_cost_per_1k = 0`
+  ).all() as Array<{ id: string; provider_id: string; model_id: string; provider_name: string }>;
+
+  if (stale.length === 0) return 0;
+
+  let updated = 0;
+  const update = db.prepare(
+    `UPDATE model_profiles SET
+       display_name = COALESCE(NULLIF(?, ''), display_name),
+       modality = COALESCE(NULLIF(?, ''), modality),
+       context_window = COALESCE(?, context_window),
+       max_output_tokens = COALESCE(?, max_output_tokens),
+       input_cost_per_1k = CASE WHEN ? > 0 THEN ? ELSE input_cost_per_1k END,
+       output_cost_per_1k = CASE WHEN ? > 0 THEN ? ELSE output_cost_per_1k END,
+       cost_per_image = CASE WHEN ? > 0 THEN ? ELSE cost_per_image END,
+       supports_streaming = CASE WHEN ? THEN 1 ELSE supports_streaming END,
+       supports_vision = CASE WHEN ? THEN 1 ELSE supports_vision END,
+       supports_tool_use = CASE WHEN ? THEN 1 ELSE supports_tool_use END,
+       supports_json_mode = CASE WHEN ? THEN 1 ELSE supports_json_mode END,
+       supports_function_call = CASE WHEN ? THEN 1 ELSE supports_function_call END,
+       supports_reasoning = CASE WHEN ? THEN 1 ELSE supports_reasoning END,
+       subscription_only = CASE WHEN ? THEN 1 ELSE subscription_only END,
+       updated_at = datetime('now')
+     WHERE id = ?`
+  );
+
+  for (const row of stale) {
+    const key = `${row.provider_name}/${row.model_id}`;
+    const tmpl = catalogLookup.get(key);
+    if (!tmpl) continue;
+
+    const caps = new Set(tmpl.capabilities);
+    const result = update.run(
+      tmpl.id,                                          // display_name
+      tmpl.modalities[0] || '',                         // modality
+      tmpl.contextWindow ?? null,                       // context_window
+      tmpl.maxOutputTokens ?? null,                     // max_output_tokens
+      tmpl.inputCostPer1M ?? 0, tmpl.inputCostPer1M ?? 0,   // input_cost_per_1k
+      tmpl.outputCostPer1M ?? 0, tmpl.outputCostPer1M ?? 0, // output_cost_per_1k
+      tmpl.costPerImage ?? 0, tmpl.costPerImage ?? 0,       // cost_per_image
+      caps.has('streaming') ? 1 : 0,
+      caps.has('vision') ? 1 : 0,
+      caps.has('tool_use') ? 1 : 0,
+      caps.has('json_mode') ? 1 : 0,
+      caps.has('function_call') ? 1 : 0,
+      caps.has('reasoning') ? 1 : 0,
+      tmpl.subscriptionOnly ? 1 : 0,
+      row.id,
+    );
+    if (result.changes > 0) updated++;
+  }
+
+  if (updated > 0) {
+    logger.info({ count: updated, total: stale.length }, 'Enriched existing models with catalog data');
+  }
+  return updated;
 }
 

@@ -1,19 +1,20 @@
-import * as React from 'react';
 import { Workflow, Search, Activity, Download } from 'lucide-react';
+import * as React from 'react';
+
+import { TelemetryEventRow } from '@/components/domain/TelemetryEventRow';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card } from '@/components/primitives/Card';
-import { Input } from '@/components/primitives/Input';
 import { Button } from '@/components/primitives/Button';
-import { Toggle } from '@/components/primitives/Toggle';
+import { Card } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import { Input } from '@/components/primitives/Input';
+import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { toast } from '@/components/primitives/Toast';
-import { Pagination } from '@/components/primitives/Pagination';
-import { TelemetryEventRow } from '@/components/domain/TelemetryEventRow';
+import { Toggle } from '@/components/primitives/Toggle';
 import { useApiData, useDebounce } from '@/hooks';
+import { Admin } from '@/lib/admin';
 import { useLiveStore } from '@/store/useLiveStore';
 import { useUIStore } from '@/store/useUIStore';
-import { Admin } from '@/lib/admin';
 import type { ApiTelemetryEvent } from '@/types/api';
 
 export function RequestsPage() {

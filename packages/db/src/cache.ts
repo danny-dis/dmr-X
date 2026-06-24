@@ -200,6 +200,12 @@ export class MemoryCache {
     this.accessOrder.clear();
   }
 
+  keys(): string[] {
+    const storeKeys = [...this.store.keys()];
+    const hashKeys = [...this.hashes.keys()];
+    return [...new Set([...storeKeys, ...hashKeys])];
+  }
+
   /**
    * Tear down the sweep timer. Call this in tests or on graceful shutdown.
    */
@@ -325,7 +331,11 @@ export function createNamespacedCache(
     hIncrBy:    (key, field, amount)      => backingCache.hIncrBy(p(key), field, amount),
     hGetAll:    (key)                     => backingCache.hGetAll(p(key)),
     expire:     (key, seconds)            => backingCache.expire(p(key), seconds),
-    flush:      ()                        => backingCache.flush(),
+    flush:      () => {
+      for (const key of backingCache.keys()) {
+        if (key.startsWith(prefix)) backingCache.del(key);
+      }
+    },
   };
 }
 

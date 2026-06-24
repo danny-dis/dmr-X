@@ -1,5 +1,3 @@
-import * as React from 'react';
-import { Link } from 'react-router';
 import {
   Activity,
   Zap,
@@ -12,22 +10,24 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  KeyRound,
+  Server,
 } from 'lucide-react';
-import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { StatTile } from '@/components/primitives/StatTile';
-import { Badge } from '@/components/primitives/Badge';
-import { Button } from '@/components/primitives/Button';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
+import * as React from 'react';
+import { Link } from 'react-router';
+
 import { DonutChart } from '@/components/charts/DonutChart';
 import { LatencyChart } from '@/components/charts/LatencyChart';
+import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
 import { RouteDecisionRow } from '@/components/domain/RouteDecisionRow';
-import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
-import { ModalityBadge } from '@/icons/Modality';
-import { ProviderHub } from '@/icons/Provider';
-import { HealthDot } from '@/icons/Status';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatTile } from '@/components/primitives/StatTile';
 import { useApiData } from '@/hooks/useApiData';
+import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
 import { Admin } from '@/lib/admin';
 import {
   formatNumber,
@@ -41,6 +41,7 @@ import type {
   ApiUsagePoint,
   ApiProvider,
   ApiAlert,
+  ApiModel,
 } from '@/types/api';
 
 const TONE_COLORS = {
@@ -67,6 +68,25 @@ export function DashboardPage() {
   );
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
   const alerts = useApiData<ApiAlert[]>(() => Admin.listAlerts(), [], { refetchInterval: 15000 });
+  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: 'true' }), [], { refetchInterval: 30000 });
+
+  // Compute provider key status stats
+  const providerStats = React.useMemo(() => {
+    const all = providers.data ?? [];
+    const withKeys = all.filter(p => p.tier !== 'inactive');
+    const freeProviders = all.filter(p => p.tier === 'free');
+    const paidProviders = all.filter(p => p.tier === 'paid');
+    const mixedProviders = all.filter(p => p.tier === 'mixed');
+    return {
+      total: all.length,
+      withKeys: withKeys.length,
+      free: freeProviders.length,
+      paid: paidProviders.length,
+      mixed: mixedProviders.length,
+    };
+  }, [providers.data]);
+
+  const availableModelCount = (models.data ?? []).length;
 
   // Derive the top-of-page system status from real alert severities so the
   // badge reflects what's actually broken, not a hardcoded "all good" line.
@@ -88,21 +108,18 @@ export function DashboardPage() {
         : { tone: 'success', label: 'All systems operational', icon: <CheckCircle2 className="size-3" /> };
 
   const usageSeries = (usage.data?.points ?? []).slice(-24).map((p) => ({
-    t: p.t,
+    t: p.t ?? p.time ?? 0,
     requests: p.requests ?? 0,
     tokens: (p.tokens ?? 0) / 1000,
     cost: (p.cost ?? 0) * 1000,
   }));
 
   const latencyData = (usage.data?.points ?? []).slice(-24).map((p) => ({
-    t: p.t,
+    t: Number(p.t ?? p.time ?? 0),
     p50: p.latencyP50 ?? 0,
     p95: p.latencyP95 ?? 0,
     p99: p.latencyP99 ?? 0,
   }));
-
-  const online = (providers.data ?? []).filter((p) => p.health?.status !== 'down').length;
-  const total = (providers.data ?? []).length;
 
   const modalityData = (providers.data ?? []).reduce<Record<string, number>>((acc, p) => {
     p.capabilities?.forEach((c) => {
@@ -143,9 +160,6 @@ export function DashboardPage() {
           label="Requests (24h)"
           value={stats.data ? formatNumber(stats.data.requests24h ?? 0) : '—'}
           icon={<Zap className="size-3.5" />}
-          delta={stats.data?.requestsDelta ?? 0}
-          deltaLabel="vs yesterday"
-          deltaTrend="up-good"
           sparkline={usageSeries.map((p) => p.requests)}
           loading={stats.isLoading}
         />
@@ -154,9 +168,6 @@ export function DashboardPage() {
           value={stats.data ? formatCompactCurrency(stats.data.cost24h ?? 0) : '—'}
           icon={<DollarSign className="size-3.5" />}
           tone="warning"
-          delta={stats.data?.costDelta ?? 0}
-          deltaLabel="vs yesterday"
-          deltaTrend="down-good"
           sparkline={usageSeries.map((p) => p.cost)}
           loading={stats.isLoading}
         />
@@ -173,11 +184,46 @@ export function DashboardPage() {
         />
         <StatTile
           label="Providers"
-          value={`${online}/${total}`}
+          value={`${providerStats.withKeys}/${providerStats.total}`}
           icon={<Globe className="size-3.5" />}
           tone="accent"
-          hint={total > 0 ? `${Math.round((online / total) * 100)}% online` : '—'}
-          loading={stats.isLoading}
+          hint={providerStats.free > 0 ? `${providerStats.free} free, ${providerStats.paid} paid` : '—'}
+          loading={providers.isLoading}
+        />
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatTile
+          label="Available Models"
+          value={availableModelCount}
+          icon={<Server className="size-3.5" />}
+          tone="success"
+          hint="from providers with active keys"
+          loading={models.isLoading}
+        />
+        <StatTile
+          label="Free Providers"
+          value={providerStats.free}
+          icon={<KeyRound className="size-3.5" />}
+          tone="success"
+          hint="zero-cost routing available"
+          loading={providers.isLoading}
+        />
+        <StatTile
+          label="Paid Providers"
+          value={providerStats.paid}
+          icon={<DollarSign className="size-3.5" />}
+          tone="warning"
+          hint="usage-based billing"
+          loading={providers.isLoading}
+        />
+        <StatTile
+          label="Mixed Providers"
+          value={providerStats.mixed}
+          icon={<Activity className="size-3.5" />}
+          tone="primary"
+          hint="free + paid keys"
+          loading={providers.isLoading}
         />
       </div>
 

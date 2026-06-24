@@ -1,11 +1,12 @@
 import type { CandidateSet, ProviderModel, FreeTierStrategy } from '@dmr-x/core';
 import type { Specialization, SpecializationProfile } from '@dmr-x/core';
-import type { SubTask } from './task-decomposer.js';
 import {
   KNOWN_MODEL_SPECIALIZATIONS,
   getCostMultiplier,
   getLatencyWeight,
 } from '@dmr-x/core';
+
+import type { SubTask } from './task-decomposer.js';
 
 /**
  * Routes a sub-task to the best specialist model

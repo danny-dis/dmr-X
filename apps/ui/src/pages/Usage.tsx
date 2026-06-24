@@ -1,16 +1,17 @@
-import * as React from 'react';
 import { Wallet, TrendingUp, DollarSign, Users, ChevronRight, ArrowUp, ArrowDown, Sparkles } from 'lucide-react';
-import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { StatTile } from '@/components/primitives/StatTile';
-import { Badge } from '@/components/primitives/Badge';
-import { Skeleton } from '@/components/primitives/Skeleton';
+import * as React from 'react';
+
+import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
 import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
 import { WaterfallChart } from '@/components/charts/WaterfallChart';
-import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from '@/components/primitives/Dialog';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from '@/components/primitives/Dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatTile } from '@/components/primitives/StatTile';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatCurrency, formatNumber, formatTokens } from '@/lib/formatters';

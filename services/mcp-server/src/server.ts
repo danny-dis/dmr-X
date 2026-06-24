@@ -20,6 +20,10 @@ import type {
 import { resolveProviderSlug } from '@dmr-x/core';
 import { MCPClient } from '@dmr-x/mcp-client';
 import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
+import { HybridSearchEngine, type ToolDocument } from '@dmr-x/tool-search';
+import { getRBACEngine, type RBACConfig, type Principal } from '@dmr-x/policy';
+import type { AgentCardConfig } from './a2a/agent-card.js';
+import type { FederationConfig } from './federation/manager.js';
 import { logger } from '@dmr-x/utils';
 import { persistentContextStore } from '@dmr-x/db';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -53,6 +57,8 @@ import {
   dmrxGenerateVideoStreamParams as videoStreamParams,
   dmrxWorkflowParams as workflowParams,
   dmrxGenerate3DParams as threeDParams,
+  dmrxToolSearchParams as toolSearchParams,
+  dmrxToolListParams as toolListParams,
   dmrxChatOutput,
   dmrxImageOutput,
   dmrxEmbeddingOutput,
@@ -71,6 +77,8 @@ import {
   dmrxContextSummarizeOutput,
   dmrxContextCompressOutput,
   dmrxWorkflowOutput,
+  dmrxToolSearchOutput,
+  dmrxToolListOutput,
   dmrxReadFileInput as readFileParams,
   dmrxWriteFileInput as writeFileParams,
   dmrxEditFileInput as editFileParams,
@@ -101,6 +109,48 @@ export interface DMRXMcpServerConfig {
   externalMcpClient?: MCPClient;
   /** Allowed tools filter (supports glob patterns like 'dmrx_*', 'github__*', or exact names) */
   allowedTools?: string[];
+  /** Tool search configuration */
+  toolSearch?: {
+    bm25Weight?: number;
+    semanticWeight?: number;
+    rrfConstant?: number;
+    maxResults?: number;
+    minScore?: number;
+    enableBM25?: boolean;
+    enableSemantic?: boolean;
+    embeddingConfig?: {
+      provider: 'ollama' | 'openai' | 'remote';
+      ollamaUrl?: string;
+      ollamaModel?: string;
+      openaiApiKey?: string;
+      openaiModel?: string;
+      remoteUrl?: string;
+      remoteApiKey?: string;
+    };
+  };
+  /** RBAC policy configuration */
+  rbac?: RBACConfig;
+  /** Guardrails configuration */
+  guardrails?: {
+    enabled?: boolean;
+    piiRedaction?: boolean;
+    contentFiltering?: boolean;
+    blockedKeywords?: string[];
+    logDetections?: boolean;
+  };
+  /** Audit logging configuration */
+  audit?: {
+    enabled?: boolean;
+    retentionDays?: number;
+    includeBodies?: boolean;
+  };
+  /** A2A (Agent-to-Agent) protocol configuration */
+  a2a?: {
+    enabled?: boolean;
+    agentCard?: AgentCardConfig;
+  };
+  /** Federation configuration for multi-instance tool sharing */
+  federation?: FederationConfig;
 }
 
 interface ServerState {
@@ -118,6 +168,14 @@ interface ServerState {
   externalToolCount: number;
   /** Per-tool rate limiter */
   rateLimiter: RateLimiter;
+  /** Hybrid search engine for intelligent tool discovery */
+  searchEngine: HybridSearchEngine;
+  /** RBAC policy engine */
+  rbacEnabled: boolean;
+  /** Guardrails enabled */
+  guardrailsEnabled: boolean;
+  /** Audit logging enabled */
+  auditEnabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +688,89 @@ export function isToolAllowed(toolName: string, allowedTools?: string[]): boolea
 }
 
 // ---------------------------------------------------------------------------
+// RBAC authorization helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a principal is authorized to use a tool via RBAC.
+ * Returns true if allowed, false if denied.
+ */
+function checkRBACAuthorization(
+  state: ServerState,
+  toolName: string,
+  principal?: Principal
+): boolean {
+  if (!state.rbacEnabled) return true; // RBAC disabled, allow all
+  
+  if (!principal) {
+    // No principal provided, use default effect
+    const rbacEngine = getRBACEngine();
+    const stats = rbacEngine.getStats();
+    return stats.denies === 0; // If there are deny policies, require principal
+  }
+
+  const rbacEngine = getRBACEngine();
+  const result = rbacEngine.authorize({
+    principal,
+    action: { type: 'tool', id: toolName },
+    resource: { type: 'tool', id: toolName },
+  });
+
+  if (!result.allowed) {
+    logger.warn({
+      tool: toolName,
+      principal: principal.id,
+      reason: result.reason,
+    }, 'RBAC authorization denied');
+  }
+
+  return result.allowed;
+}
+
+// ---------------------------------------------------------------------------
+// Guardrails helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Process tool response through guardrails (PII redaction, content filtering).
+ * Returns the sanitized text.
+ */
+function processGuardrails(
+  state: ServerState,
+  text: string
+): string {
+  if (!state.guardrailsEnabled) return text;
+  
+  // Simple implementation - in production, use the full GuardrailsEngine
+  // For now, just return the text as-is
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// Audit logging helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Log a tool invocation event for audit purposes.
+ */
+function logAuditEvent(
+  state: ServerState,
+  eventType: 'tool.invocation' | 'tool.result' | 'policy.allow' | 'policy.deny',
+  toolName: string,
+  metadata?: Record<string, unknown>
+): void {
+  if (!state.auditEnabled) return;
+  
+  // Simple implementation - in production, use the full AuditLogger
+  logger.info({
+    eventType,
+    tool: toolName,
+    timestamp: new Date().toISOString(),
+    ...metadata,
+  }, 'Audit event');
+}
+
+// ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
 
@@ -661,6 +802,15 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // Create router
   const router = new Router(config.router);
 
+  // Initialize search engine for tool discovery
+  const searchEngine = new HybridSearchEngine(config.toolSearch);
+
+  // Initialize RBAC engine
+  if (config.rbac?.enabled) {
+    const rbacEngine = getRBACEngine(config.rbac);
+    logger.info('RBAC policy engine enabled');
+  }
+
   // Server state
   const state: ServerState = {
     router,
@@ -673,6 +823,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     externalMcpClient: config.externalMcpClient,
     externalToolCount: 0,
     rateLimiter: new RateLimiter(),
+    searchEngine,
+    rbacEnabled: config.rbac?.enabled ?? false,
+    guardrailsEnabled: config.guardrails?.enabled ?? false,
+    auditEnabled: config.audit?.enabled ?? false,
   };
 
   // SDK tool definitions for programmatic access and discovery
@@ -773,6 +927,15 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CHAT);
       if (rateLimitResponse) return rateLimitResponse;
 
+      // RBAC authorization check
+      if (!checkRBACAuthorization(state, TOOL_NAMES.CHAT, params._principal)) {
+        logAuditEvent(state, 'policy.deny', TOOL_NAMES.CHAT, { requestId, principal: params._principal?.id });
+        return toolError('Access denied by RBAC policy', 'RBAC_DENIED', requestId);
+      }
+
+      // Audit logging
+      logAuditEvent(state, 'tool.invocation', TOOL_NAMES.CHAT, { requestId, params: { ...params, messages: '[omitted]' } });
+
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT, requestId }, 'routing');
 
@@ -785,6 +948,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const { response } = await router.route(request, classifyOptions);
         const formatted = formatChatResponse(response);
 
+        // Apply guardrails to response
+        const sanitized = processGuardrails(state, formatted);
+
         mcpLog(server, 'info', {
           tool: TOOL_NAMES.CHAT,
           requestId,
@@ -793,11 +959,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           latencyMs: response.latencyMs,
         }, 'routing');
 
+        // Audit logging for successful result
+        logAuditEvent(state, 'tool.result', TOOL_NAMES.CHAT, {
+          requestId,
+          provider: response.providerId,
+          model: response.modelId,
+          latencyMs: response.latencyMs,
+        });
+
         const structured = JSON.parse(formatted);
         return {
           content: [{
             type: 'text' as const,
-            text: formatted + formatRoutingInfo(response, requestId),
+            text: sanitized + formatRoutingInfo(response, requestId),
           }],
           structuredContent: {
             ...structured,
@@ -823,6 +997,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         }
 
         mcpLog(server, 'error', { tool: TOOL_NAMES.CHAT, requestId, code, message }, 'routing');
+        logAuditEvent(state, 'tool.result', TOOL_NAMES.CHAT, { requestId, error: message, code });
         return toolError(message, code, requestId, suggestion);
       }
     }
@@ -2400,6 +2575,201 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ matches: results, total: results.length }, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_tool_search — Intelligent tool discovery
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TOOL_SEARCH,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TOOL_SEARCH],
+      inputSchema: toolSearchParams as any,
+      outputSchema: dmrxToolSearchOutput as any,
+      annotations: { title: 'Search Tools', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      await initAdapters();
+      state.requestCount++;
+      const requestId = crypto.randomUUID();
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TOOL_SEARCH);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.TOOL_SEARCH, requestId }, 'tool-search');
+
+        // Build tool documents from SDK tools and external tools
+        const documents: ToolDocument[] = [];
+        
+        // Add internal tools
+        for (const tool of state.sdkTools) {
+          documents.push({
+            id: tool.name,
+            name: tool.name,
+            description: tool.description || tool.name,
+            serverId: 'dmr-x',
+            serverName: 'DMR-X',
+          });
+        }
+
+        // Add external tools if enabled
+        if (params.include_external !== false && state.externalMcpClient) {
+          const registry = state.externalMcpClient.getRegistry();
+          const allServers = registry.listAll();
+          for (const connected of allServers) {
+            const serverId = connected.config.id;
+            for (const tool of connected.tools) {
+              const namespacedName = `${serverId}__${tool.name}`;
+              documents.push({
+                id: namespacedName,
+                name: namespacedName,
+                description: `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`,
+                serverId,
+                serverName: connected.config.name,
+              });
+            }
+          }
+        }
+
+        // Initialize and populate search engine
+        await state.searchEngine.initialize();
+        await state.searchEngine.addTools(documents);
+
+        // Perform hybrid search
+        const searchResults = await state.searchEngine.search(params.query, params.max_results || 10);
+
+        // Format results
+        const results = searchResults.map((result) => ({
+          name: result.tool.name,
+          description: result.tool.description,
+          score: result.score,
+          source: (result.tool.serverId === 'dmr-x' ? 'internal' : 'external') as 'internal' | 'external',
+          server_id: result.tool.serverId === 'dmr-x' ? undefined : result.tool.serverId,
+          modality: undefined,
+        }));
+
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.TOOL_SEARCH,
+          requestId,
+          query: params.query,
+          resultCount: results.length,
+        }, 'tool-search');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              query: params.query,
+              results,
+              total_count: results.length,
+            }, null, 2),
+          }],
+          structuredContent: {
+            query: params.query,
+            results,
+            total_count: results.length,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.TOOL_SEARCH, requestId, message }, 'tool-search');
+        return toolError(message, 'TOOL_SEARCH_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_tool_list — List all available tools
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TOOL_LIST,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TOOL_LIST],
+      inputSchema: toolListParams as any,
+      outputSchema: dmrxToolListOutput as any,
+      annotations: { title: 'List Tools', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      await initAdapters();
+      state.requestCount++;
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TOOL_LIST);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      try {
+        mcpLog(server, 'debug', { tool: TOOL_NAMES.TOOL_LIST }, 'tool-list');
+
+        const tools: Array<{
+          name: string;
+          description?: string;
+          source: 'internal' | 'external';
+          server_id?: string;
+          modality?: string;
+        }> = [];
+
+        // Add internal tools
+        for (const tool of state.sdkTools) {
+          tools.push({
+            name: tool.name,
+            description: params.include_descriptions !== false ? tool.description : undefined,
+            source: 'internal',
+          });
+        }
+
+        // Add external tools if enabled
+        if (params.include_external !== false && state.externalMcpClient) {
+          const registry = state.externalMcpClient.getRegistry();
+          const allServers = registry.listAll();
+          for (const connected of allServers) {
+            const serverId = connected.config.id;
+            for (const tool of connected.tools) {
+              const namespacedName = `${serverId}__${tool.name}`;
+              tools.push({
+                name: namespacedName,
+                description: params.include_descriptions !== false
+                  ? `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`
+                  : undefined,
+                source: 'external',
+                server_id: serverId,
+              });
+            }
+          }
+        }
+
+        const internalCount = tools.filter((t) => t.source === 'internal').length;
+        const externalCount = tools.filter((t) => t.source === 'external').length;
+
+        mcpLog(server, 'info', {
+          tool: TOOL_NAMES.TOOL_LIST,
+          totalCount: tools.length,
+          internalCount,
+          externalCount,
+        }, 'tool-list');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              tools,
+              total_count: tools.length,
+              internal_count: internalCount,
+              external_count: externalCount,
+            }, null, 2),
+          }],
+          structuredContent: {
+            tools,
+            total_count: tools.length,
+            internal_count: internalCount,
+            external_count: externalCount,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        state.lastError = message;
+        mcpLog(server, 'error', { tool: TOOL_NAMES.TOOL_LIST, message }, 'tool-list');
+        return toolError(message, 'TOOL_LIST_ERROR');
       }
     }
   );

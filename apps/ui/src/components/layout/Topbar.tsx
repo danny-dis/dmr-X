@@ -1,14 +1,15 @@
+import { Search, Bell, Sun, Moon, Activity } from 'lucide-react';
 import * as React from 'react';
 import { useLocation } from 'react-router';
-import { Search, Bell, Sun, Moon, Activity } from 'lucide-react';
-import { cn } from '@/lib/utils';
+
 import { Button } from '@/components/primitives/Button';
 import { Kbd } from '@/components/primitives/Kbd';
-import { HealthDot } from '@/icons/Status';
-import { useUIStore } from '@/store/useUIStore';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { findNavItem } from '@/constants/nav';
+import { useApiData } from '@/hooks/useApiData';
+import { HealthDot } from '@/icons/Status';
+import { Admin } from '@/lib/admin';
+import { cn } from '@/lib/utils';
+import { useUIStore } from '@/store/useUIStore';
 import type { ApiHealthResponse } from '@/types/api';
 
 export function Topbar() {

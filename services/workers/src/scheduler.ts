@@ -1,5 +1,6 @@
-import { workersService, type WorkerJob } from './workers.service.js';
 import { logger } from '@dmr-x/utils';
+
+import { workersService, type WorkerJob } from './workers.service.js';
 
 export interface ScheduledJob {
   id: string;

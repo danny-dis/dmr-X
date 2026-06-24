@@ -4,13 +4,16 @@
  * Displays providers, health checks, infrastructure, and usage stats.
  */
 
-import { Command } from 'commander';
-import chalk from 'chalk';
-import ora from 'ora';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { isInitialized, loadConfig, getEnvPath, getDockerComposePath, type RegisteredProvider } from '../config.js';
+
+import chalk from 'chalk';
+import { Command } from 'commander';
+import ora from 'ora';
+
+
 import { getProvider } from '../catalog.js';
+import { isInitialized, loadConfig, getEnvPath, getDockerComposePath, type RegisteredProvider } from '../config.js';
 
 interface HealthCheckResult {
   provider: RegisteredProvider;

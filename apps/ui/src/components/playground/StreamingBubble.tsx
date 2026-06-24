@@ -1,8 +1,9 @@
-import * as React from 'react';
-import { usePlaygroundStore, Message } from '@/store/usePlaygroundStore';
-import { Button } from '@/components/primitives/Button';
 import { Square } from 'lucide-react';
+import * as React from 'react';
+
+import { Button } from '@/components/primitives/Button';
 import { Markdown } from '@/lib/markdown';
+import { usePlaygroundStore, Message } from '@/store/usePlaygroundStore';
 
 interface StreamingBubbleProps {
   message: Message;

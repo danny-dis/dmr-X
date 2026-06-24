@@ -28,6 +28,7 @@ export class ReusableReadableStream<T> {
   private sourceComplete = false;
   private sourceError: Error | null = null;
   private pumpStarted = false;
+  private lockReleased = false;
 
   /**
    * Create a ReusableReadableStream from an AsyncIterable.
@@ -138,6 +139,17 @@ export class ReusableReadableStream<T> {
     };
   }
 
+  private releaseReaderLock(): void {
+    if (this.sourceReader && !this.lockReleased) {
+      this.lockReleased = true;
+      try {
+        this.sourceReader.releaseLock();
+      } catch {
+        // Already released — ignore
+      }
+    }
+  }
+
   private startPump(): void {
     if (this.pumpStarted) return;
     this.pumpStarted = true;
@@ -159,9 +171,7 @@ export class ReusableReadableStream<T> {
         this.sourceError = error instanceof Error ? error : new Error(String(error));
         this.notifyAllConsumers();
       } finally {
-        if (this.sourceReader) {
-          this.sourceReader.releaseLock();
-        }
+        this.releaseReaderLock();
       }
     })();
   }
@@ -193,7 +203,7 @@ export class ReusableReadableStream<T> {
 
     if (this.sourceReader) {
       await this.sourceReader.cancel();
-      this.sourceReader.releaseLock();
+      this.releaseReaderLock();
     }
   }
 }

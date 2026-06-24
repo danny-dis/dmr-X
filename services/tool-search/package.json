@@ -1,0 +1,25 @@
+{
+  "name": "@dmr-x/tool-search",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bunx tsc -b",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dmr-x/utils": "*"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

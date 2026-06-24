@@ -1,8 +1,11 @@
-import * as React from 'react';
 import { ArrowDown, ArrowUp, Minus } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
+
 import { Card } from './Card';
+
 import { Sparkline } from '@/icons/Status';
+import { cn } from '@/lib/utils';
 
 export interface StatTileProps {
   label: string;

@@ -1,7 +1,8 @@
-import * as React from 'react';
 import { ChevronRight, FileText, Brain, Wrench, User, Globe } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { formatDuration, timeAgo } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiAuditEvent } from '@/types/api';
 
 const ICON_FOR: Record<string, React.ReactNode> = {

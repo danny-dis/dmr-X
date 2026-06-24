@@ -1,18 +1,19 @@
+import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins } from 'lucide-react';
 import * as React from 'react';
-import { usePlaygroundStore, PlaygroundMode } from '@/store/usePlaygroundStore';
+
+import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
-import { Textarea } from '@/components/primitives/Textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
-import { Badge } from '@/components/primitives/Badge';
-import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
-import type { ApiModel } from '@/types/api';
 import { Admin } from '@/lib/admin';
+import { cn } from '@/lib/utils';
+import { usePlaygroundStore, PlaygroundMode } from '@/store/usePlaygroundStore';
+import type { ApiModel } from '@/types/api';
 
 const modeOptions = [
   { value: 'chat', label: 'Chat', icon: MessageSquare },
@@ -89,7 +90,7 @@ export function PlaygroundInput() {
   // and whenever the store value diverges from what the user has typed
   // (e.g. after `clear` or a hydration).
   const [toolsText, setToolsText] = React.useState(() =>
-    config.tools.length > 0 ? JSON.stringify(config.tools, null, 2) : ''
+    (config.tools ?? []).length > 0 ? JSON.stringify(config.tools, null, 2) : ''
   );
   const [toolsError, setToolsError] = React.useState<string | null>(null);
 
@@ -101,7 +102,7 @@ export function PlaygroundInput() {
     const trimmed = toolsText.trim();
     if (!trimmed) {
       // Empty string clears the tools list.
-      if (config.tools.length > 0) setTools([]);
+      if ((config.tools ?? []).length > 0) setTools([]);
       setToolsError(null);
       return;
     }
@@ -130,8 +131,9 @@ export function PlaygroundInput() {
     setToolsError(null);
   };
 
-  // Fetch models
-  const models = useApiData<ApiModel[]>(() => Admin.listModels(), [], { refetchInterval: 60000 });
+  // Fetch only available models (from providers with active keys or keyless providers).
+  // The backend filters by provider key status when available_only=true (default).
+  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: 'true' }), [], { refetchInterval: 30000 });
   
   const filteredModels = React.useMemo(() => {
     const all = models.data ?? [];
@@ -143,6 +145,17 @@ export function PlaygroundInput() {
       default: return all.filter(m => m.modality === 'llm');
     }
   }, [models.data, mode]);
+
+  // Group models by provider for better UX
+  const groupedModels = React.useMemo(() => {
+    const groups = new Map<string, ApiModel[]>();
+    for (const m of filteredModels) {
+      const provider = m.provider || m.provider_name || 'unknown';
+      if (!groups.has(provider)) groups.set(provider, []);
+      groups.get(provider)!.push(m);
+    }
+    return groups;
+  }, [filteredModels]);
   
   const handleSend = async () => {
     if (!prompt.trim() || isStreaming) return;
@@ -187,20 +200,36 @@ export function PlaygroundInput() {
           <div className="flex items-center gap-2">
             {/* Model Selector */}
             <Select value={model} onValueChange={setModel}>
-              <SelectTrigger className="w-[200px]">
+              <SelectTrigger className="w-[240px]">
                 <SelectValue placeholder="Select model" />
               </SelectTrigger>
               <SelectContent>
+                {/* Meta models always available */}
                 <SelectItem value="auto">Auto (best model)</SelectItem>
                 <SelectItem value="auto-fast">Auto-Fast</SelectItem>
                 <SelectItem value="auto-smart">Auto-Smart</SelectItem>
                 <SelectItem value="auto-agentic">Auto-Agentic</SelectItem>
                 <SelectItem value="auto-coding">Auto-Coding</SelectItem>
-                {filteredModels.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.name} <span className="text-fg-subtle ml-1">· {m.provider}</span>
-                  </SelectItem>
+                
+                {/* Available models grouped by provider */}
+                {Array.from(groupedModels.entries()).map(([provider, providerModels]) => (
+                  <React.Fragment key={provider}>
+                    <div className="px-2 py-1 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider bg-surface-2">
+                      {provider}
+                    </div>
+                    {providerModels.map((m) => (
+                      <SelectItem key={m.id} value={m.model_id || m.id}>
+                        {m.display_name || m.name || m.model_id}
+                      </SelectItem>
+                    ))}
+                  </React.Fragment>
                 ))}
+                
+                {filteredModels.length === 0 && (
+                  <div className="px-2 py-3 text-center text-xs text-fg-subtle">
+                    No models available. Add a provider key to get started.
+                  </div>
+                )}
               </SelectContent>
             </Select>
             

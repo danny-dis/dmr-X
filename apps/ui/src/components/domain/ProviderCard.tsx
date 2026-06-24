@@ -1,11 +1,12 @@
-import * as React from 'react';
 import { Star, StarOff, MoreHorizontal, Zap, Cpu, Server, KeyRound, Crown } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { Card } from '@/components/primitives/Card';
+import * as React from 'react';
+
+import { TierBadge } from '@/components/domain/TierBadge';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
+import { Card } from '@/components/primitives/Card';
 import { StatusPill } from '@/components/primitives/StatusPill';
-import { TierBadge } from '@/components/domain/TierBadge';
+import { cn } from '@/lib/utils';
 import type { ApiProvider } from '@/types/api';
 
 export interface ProviderCardProps {
@@ -25,13 +26,12 @@ export function ProviderCard({
   onTest,
   className,
 }: ProviderCardProps) {
-  const health = provider.health;
   const healthStatus = 
-    health?.status === 'ok' ? 'online' : 
-    health?.status === 'degraded' ? 'degraded' : 
-    health?.status === 'down' ? 'offline' : 
-    provider.enabled ? 'online' : 'offline';
-  const latency = health?.latencyMs;
+    provider.status === 'healthy' || provider.status === 'operational' ? 'online' : 
+    provider.status === 'degraded' ? 'degraded' : 
+    provider.status === 'unavailable' || provider.status === 'outage' ? 'offline' : 
+    'unknown';
+  const latency = provider.health?.latencyMs;
   return (
     <Card
       padding="none"

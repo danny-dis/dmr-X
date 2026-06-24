@@ -4,11 +4,14 @@
  * Creates .dmrx/ config directory, config.json, .env, and docker-compose.yml
  */
 
-import { Command } from 'commander';
-import chalk from 'chalk';
-import ora from 'ora';
-import inquirer from 'inquirer';
 import { existsSync } from 'node:fs';
+
+import chalk from 'chalk';
+import { Command } from 'commander';
+import inquirer from 'inquirer';
+import ora from 'ora';
+
+
 import { initProject, createDockerCompose, isInitialized, getDMRXDir } from '../config.js';
 
 export function createInitCommand(): Command {

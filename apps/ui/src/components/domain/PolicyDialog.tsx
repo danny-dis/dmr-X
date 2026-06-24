@@ -1,5 +1,7 @@
-import * as React from 'react';
 import { Shield, Plus, Hash, Zap, Tag, Box, Bot } from 'lucide-react';
+import * as React from 'react';
+
+import { Button } from '@/components/primitives/Button';
 import {
   Dialog,
   DialogContent,
@@ -9,10 +11,9 @@ import {
   DialogBody,
   DialogFooter,
 } from '@/components/primitives/Dialog';
-import { Button } from '@/components/primitives/Button';
+import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
 import { Input } from '@/components/primitives/Input';
 import { Switch } from '@/components/primitives/Switch';
-import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import type { ApiPolicyRule, Modality, PolicyAction } from '@/types/api';

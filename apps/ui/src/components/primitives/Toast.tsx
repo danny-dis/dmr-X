@@ -1,7 +1,9 @@
-import { Toaster as SonnerToaster, toast as sonnerToast } from 'sonner';
 import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import type { ReactNode } from 'react';
+import { Toaster as SonnerToaster, toast as sonnerToast } from 'sonner';
+
+import { cn } from '@/lib/utils';
+
 
 export const Toaster = () => (
   <SonnerToaster

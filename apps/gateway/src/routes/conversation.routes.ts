@@ -1,8 +1,10 @@
+import crypto from 'node:crypto';
+
+import { getDb } from '@dmr-x/db';
+import { logger } from '@dmr-x/utils';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { getDb } from '@dmr-x/db';
-import crypto from 'node:crypto';
-import { logger } from '@dmr-x/utils';
+
 
 const CreateConversationSchema = z.object({
   mode: z.enum(['chat', 'image', 'embed', 'tts', 'rerank', 'moderate']).default('chat'),
@@ -133,8 +135,12 @@ export default async function conversationRoutes(server: FastifyInstance) {
     }
 
     if (search) {
+      // Wrap in double-quotes and escape internal quotes so FTS5 treats
+      // the input as a literal phrase instead of interpreting operators
+      // like OR, NEAR, *, etc.
+      const escapedSearch = `"${search.replace(/"/g, '""')}"`;
       sql += ` AND c.id IN (SELECT rowid FROM conversations_fts WHERE conversations_fts MATCH ?)`;
-      params.push(search);
+      params.push(escapedSearch);
     }
 
     sql += ` ORDER BY c.updated_at DESC LIMIT ? OFFSET ?`;
@@ -157,8 +163,9 @@ export default async function conversationRoutes(server: FastifyInstance) {
     }
 
     if (search) {
+      const escapedSearch = `"${search.replace(/"/g, '""')}"`;
       countSql += ` AND id IN (SELECT rowid FROM conversations_fts WHERE conversations_fts MATCH ?)`;
-      countParams.push(search);
+      countParams.push(escapedSearch);
     }
 
     const { total } = db.prepare(countSql).get(...countParams) as any;

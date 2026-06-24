@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
+
 import { createNamespacedCache } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
 import type { RateLimitService } from '@dmr-x/quota';
+import { logger } from '@dmr-x/utils';
 
 const cache = createNamespacedCache('sticky');
 

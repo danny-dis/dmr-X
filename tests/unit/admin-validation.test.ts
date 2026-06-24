@@ -19,8 +19,8 @@
  *   - 400 on an oversized payload (where applicable)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 
 // --- Schemas (mirror production; see comments in route files) ---

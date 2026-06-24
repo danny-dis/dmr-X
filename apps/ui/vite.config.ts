@@ -1,5 +1,6 @@
-import react from '@vitejs/plugin-react';
 import path from 'node:path';
+
+import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -11,6 +12,8 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
+    outDir: '../gateway/public',
+    emptyOutDir: true,
   },
   optimizeDeps: {
     esbuildOptions: {
@@ -21,10 +24,6 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
-  },
-  build: {
-    outDir: '../gateway/public',
-    emptyOutDir: true,
   },
   server: {
     port: 4200,

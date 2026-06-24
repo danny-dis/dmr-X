@@ -1,5 +1,6 @@
-import * as React from 'react';
 import { Copy, Check } from 'lucide-react';
+import * as React from 'react';
+
 import { cn } from '@/lib/utils';
 
 /* -------------------------------------------------------------------------- */
@@ -250,7 +251,7 @@ function BlockView({ block, idx }: { block: Block; idx: number }) {
         6: 'text-sm font-medium mt-2 mb-1 text-fg-muted',
       };
       const cls = sizes[block.level] ?? sizes[3]!;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const Tag = (`h${block.level}`) as any;
       return (
         <Tag key={idx} className={cls}>

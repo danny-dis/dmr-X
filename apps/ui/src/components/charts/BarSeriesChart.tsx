@@ -10,6 +10,7 @@ import {
   Cell,
   LabelList,
 } from 'recharts';
+
 import { formatNumber } from '@/lib/formatters';
 
 export interface BarConfig {

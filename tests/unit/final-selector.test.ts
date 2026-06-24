@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { finalSelector } from '../../services/router/src/pipeline/final-selector.js';
+
 import type { CandidateSet } from '../../packages/core/src/types/index.js';
+import { finalSelector } from '../../services/router/src/pipeline/final-selector.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {

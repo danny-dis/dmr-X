@@ -1,19 +1,20 @@
+import { Database, Search, ChevronRight, RefreshCw, Plus, KeyRound, Key } from 'lucide-react';
 import * as React from 'react';
-import { Database, Search, Cpu, ChevronRight, RefreshCw, Plus } from 'lucide-react';
+
+import { CreateModelDialog } from '@/components/domain/CreateModelDialog';
+import { ModelDetailDrawer } from '@/components/domain/ModelDetailDrawer';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card } from '@/components/primitives/Card';
-import { Input } from '@/components/primitives/Input';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
-import { Skeleton } from '@/components/primitives/Skeleton';
+import { Card } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import { Input } from '@/components/primitives/Input';
 import { Pagination } from '@/components/primitives/Pagination';
-import { ModalityBadge } from '@/icons/Modality';
+import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData } from '@/hooks/useApiData';
+import { ModalityBadge } from '@/icons/Modality';
 import { Admin } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
-import { ModelDetailDrawer } from '@/components/domain/ModelDetailDrawer';
-import { CreateModelDialog } from '@/components/domain/CreateModelDialog';
 import type { ApiModel, ApiProvider } from '@/types/api';
 
 const CAPABILITY_TIER_LABELS: Record<string, string> = {
@@ -32,13 +33,24 @@ export function ModelsPage() {
   const [providerFilter, setProviderFilter] = React.useState<string | null>(null);
   const [layerFilter, setLayerFilter] = React.useState<string | null>(null);
   const [capabilityFilter, setCapabilityFilter] = React.useState<string | null>(null);
+  const [showUnavailable, setShowUnavailable] = React.useState(false);
   const [page, setPage] = React.useState(1);
   const [selectedModel, setSelectedModel] = React.useState<ApiModel | null>(null);
   const [createModelOpen, setCreateModelOpen] = React.useState(false);
   const pageSize = 24;
 
-  const models = useApiData<ApiModel[]>(() => Admin.listModels(), [], { refetchInterval: 60000 });
-  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 60000 });
+  // Fetch all models (with provider_available flag from backend)
+  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: showUnavailable ? 'false' : 'true' }), [], { refetchInterval: 30000 });
+  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
+
+  // Build a lookup of provider key status
+  const providerKeyStatus = React.useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const p of providers.data ?? []) {
+      map.set(p.id, p.tier !== 'inactive');
+    }
+    return map;
+  }, [providers.data]);
 
   const filtered = (models.data ?? []).filter((m) => {
     if (query && !m.name.toLowerCase().includes(query.toLowerCase())) return false;
@@ -54,11 +66,14 @@ export function ModelsPage() {
   const capabilityTiers = ['orchestrator', 'brain', 'thinker', 'executor', 'specialist', 'worker', 'temp_worker'];
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
+  const availableCount = (models.data ?? []).filter(m => providerKeyStatus.get(m.provider_id) !== false).length;
+  const unavailableCount = (models.data ?? []).length - availableCount;
+
   return (
     <PageContainer size="wide">
       <PageHeader
         title="Models"
-        description="Model registry — all models available across all providers"
+        description="Model registry — models from providers with active API keys"
         icon={<Database className="size-5" />}
         actions={
           <>
@@ -77,9 +92,14 @@ export function ModelsPage() {
             >
               New model
             </Button>
-            <Badge tone="muted" size="md" icon={<Cpu className="size-3" />}>
-              {filtered.length} models
+            <Badge tone="success" size="md" icon={<KeyRound className="size-3" />}>
+              {availableCount} available
             </Badge>
+            {unavailableCount > 0 && (
+              <Badge tone="muted" size="md" icon={<Key className="size-3" />}>
+                {unavailableCount} need key
+              </Badge>
+            )}
           </>
         }
       />
@@ -103,10 +123,24 @@ export function ModelsPage() {
             <option value="">All providers</option>
             {(providers.data ?? []).map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name}
+                {p.name} {p.tier === 'inactive' ? '(no key)' : ''}
               </option>
             ))}
           </select>
+          {unavailableCount > 0 && (
+            <button
+              onClick={() => setShowUnavailable(!showUnavailable)}
+              className={`h-7 px-2.5 rounded-md text-[11px] font-medium transition-colors ${
+                showUnavailable
+                  ? 'bg-warning/10 text-warning border border-warning/20'
+                  : 'text-fg-muted hover:bg-surface-2 border border-transparent'
+              }`}
+              title={showUnavailable ? 'Hide models without keys' : 'Show models without keys'}
+            >
+              <Key className="size-3 inline mr-1" />
+              {showUnavailable ? 'Hide' : 'Show'} unavailable
+            </button>
+          )}
           <div className="flex items-center gap-1">
             <button
               onClick={() => setModality(null)}
@@ -167,20 +201,33 @@ export function ModelsPage() {
           </div>
         ) : paged.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border">
-            {paged.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => setSelectedModel(m)}
-                className="group flex flex-col gap-2 p-4 text-left hover:bg-surface-2 transition-colors"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <h4 className="text-sm font-semibold text-fg font-mono truncate">{m.name}</h4>
-                  <ChevronRight className="size-3.5 text-fg-subtle opacity-0 group-hover:opacity-100 transition-opacity" />
-                </div>
-                <div className="flex items-center gap-1.5 text-[10px]">
-                  <Badge tone="muted" size="sm">{m.provider ?? 'unknown'}</Badge>
-                  {m.modality && <ModalityBadge modality={m.modality} size={14} />}
-                </div>
+            {paged.map((m) => {
+              const hasKey = providerKeyStatus.get(m.provider_id) !== false;
+              return (
+                <button
+                  key={m.id}
+                  onClick={() => setSelectedModel(m)}
+                  className={`group flex flex-col gap-2 p-4 text-left hover:bg-surface-2 transition-colors ${
+                    !hasKey ? 'opacity-60' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="text-sm font-semibold text-fg font-mono truncate">{m.name}</h4>
+                    <div className="flex items-center gap-1">
+                      {hasKey ? (
+                        <KeyRound className="size-3 text-success" />
+                      ) : (
+                        <Key className="size-3 text-fg-subtle" />
+                      )}
+                      <ChevronRight className="size-3.5 text-fg-subtle opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px]">
+                    <Badge tone={hasKey ? 'success' : 'muted'} size="sm">
+                      {m.provider ?? 'unknown'}
+                    </Badge>
+                    {m.modality && <ModalityBadge modality={m.modality} size={14} />}
+                  </div>
                 <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
                   <div>
                     <div className="text-fg-subtle">Context</div>
@@ -198,7 +245,8 @@ export function ModelsPage() {
                   </div>
                 </div>
               </button>
-            ))}
+            );
+            })}
           </div>
         ) : (
           <EmptyState

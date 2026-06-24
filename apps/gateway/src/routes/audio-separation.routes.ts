@@ -1,8 +1,10 @@
+import { ValidationError } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError } from '@dmr-x/core';
-import { generateRequestId, logger } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 const SeparateRequestSchema = z.object({
   model: z.string().optional(),
@@ -24,6 +26,7 @@ export async function audioSeparationRoutes(server: FastifyInstance): Promise<vo
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     const unifiedRequest = {
       modality: 'audio_separation' as const,
@@ -44,7 +47,7 @@ export async function audioSeparationRoutes(server: FastifyInstance): Promise<vo
     try {
       const { response } = await router.route(unifiedRequest, {
         path: '/v1/audio/separate',
-        qualityTarget: 'balanced',
+        qualityTarget,
       });
 
       return {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+
 import { EventStream, parseOpenAISSE } from '../../packages/utils/src/event-stream.js';
 
 function createChunkStream(chunks: string[]): ReadableStream<Uint8Array> {

@@ -1,7 +1,10 @@
-import * as React from 'react';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { Button } from './Button';
+
+import { cn } from '@/lib/utils';
+
 
 export interface PaginationProps {
   page: number;

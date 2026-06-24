@@ -1,3 +1,5 @@
+import { api, apiGet, apiPost, apiPut, apiDelete, getTokenForPath } from './api';
+
 import type {
   ApiProvider,
   ApiModel,
@@ -34,7 +36,6 @@ import type {
   ApiRerankResult,
 } from '@/types/api';
 
-import { api, apiGet, apiPost, apiPut, apiDelete } from './api';
 
 // ----------------------------------------------------------------------------
 // Wire-format transforms
@@ -59,10 +60,12 @@ function toCamelProvider(p: ApiProvider): ApiProvider {
 }
 
 function toCamelModel(m: ApiModel): ApiModel {
+  const providerName = m.providerName ?? m.provider_name;
   return {
     ...m,
     providerId: m.providerId ?? m.provider_id,
-    providerName: m.providerName ?? m.provider_name,
+    provider: m.provider ?? providerName,
+    providerName,
     // Surface the upstream model identifier as a camelCase field too. Without
     // this, callers that read `m.modelId` after listing models get `undefined`
     // and the playground silently sends the row UUID — which the router
@@ -143,7 +146,7 @@ export const Admin = {
       adapter_type: body.adapterType ?? body.adapter_type,
       base_url: body.baseUrl ?? body.base_url ?? null,
       api_key_ref: body.apiKeyRef ?? body.api_key_ref ?? null,
-      auth_method: body.authMethod ?? body.auth_method,
+      auth_method: body.authMethod,
       region: (body as any).region ?? null,
       priority: (body as any).priority,
       enabled: (body as any).enabled,
@@ -229,7 +232,7 @@ export const Admin = {
     ),
 
   // Models
-  listModels: async (query?: { providerId?: string; modality?: string }): Promise<ApiModel[]> => {
+  listModels: async (query?: { providerId?: string; modality?: string; available_only?: string }): Promise<ApiModel[]> => {
     const res = await apiGet<ApiModel[] | { models: ApiModel[] }>('/admin/models', query);
     const list = Array.isArray(res) ? res : (res as { models?: ApiModel[] })?.models ?? [];
     return list.map(toCamelModel);

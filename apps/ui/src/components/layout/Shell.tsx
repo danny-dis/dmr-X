@@ -1,11 +1,13 @@
 import * as React from 'react';
+import { useEffect } from 'react';
 import { Outlet, useLocation } from 'react-router';
+
+import { CommandPalette } from './CommandPalette';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
-import { CommandPalette } from './CommandPalette';
+
 import { Toaster } from '@/components/primitives/Toast';
 import { useUIStore } from '@/store/useUIStore';
-import { useEffect } from 'react';
 
 export function Shell() {
   const location = useLocation();

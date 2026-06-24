@@ -1,7 +1,8 @@
-import { logger } from '@dmr-x/utils';
-import { registryService } from './registry.service.js';
 import type { AdapterRegistry } from '@dmr-x/adapters';
 import { getDb } from '@dmr-x/db';
+import { logger } from '@dmr-x/utils';
+
+import { registryService } from './registry.service.js';
 
 export class HealthChecker {
   private interval: ReturnType<typeof setInterval> | null = null;

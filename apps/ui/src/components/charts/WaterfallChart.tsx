@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts';
+
 import { formatCurrency, formatNumber } from '@/lib/formatters';
 
 export interface WaterfallStep {

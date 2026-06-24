@@ -1,21 +1,22 @@
-import * as React from 'react';
 import { Trophy, Play, Plus, Clock, Cpu, Zap, TrendingUp, Swords, ShieldCheck, Info, ChevronRight, Activity } from 'lucide-react';
+import * as React from 'react';
+
+import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
+import { LatencyChart } from '@/components/charts/LatencyChart';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { EmptyState } from '@/components/primitives/EmptyState';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
+import { Button } from '@/components/primitives/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import {
   Dialog, DialogContent, DialogHeader,
   DialogTitle, DialogDescription, DialogBody, DialogFooter,
   DialogClose,
 } from '@/components/primitives/Dialog';
+import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
-import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
-import { LatencyChart } from '@/components/charts/LatencyChart';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatDuration, formatNumber, timeAgo } from '@/lib/formatters';

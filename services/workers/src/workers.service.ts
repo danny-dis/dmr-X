@@ -1,7 +1,8 @@
-import { getDb, createNamespacedCache } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
 import crypto from 'node:crypto';
 import os from 'node:os';
+
+import { getDb, createNamespacedCache } from '@dmr-x/db';
+import { logger } from '@dmr-x/utils';
 
 const cache = createNamespacedCache('workers');
 

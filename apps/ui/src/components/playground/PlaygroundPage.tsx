@@ -1,11 +1,13 @@
-import * as React from 'react';
-import { usePlaygroundStore } from '@/store/usePlaygroundStore';
-import { PlaygroundSidebar } from './PlaygroundSidebar';
-import { PlaygroundMain } from './PlaygroundMain';
-import { PlaygroundInput } from './PlaygroundInput';
-import { Button } from '@/components/primitives/Button';
 import { PanelLeftClose, PanelLeft } from 'lucide-react';
+import * as React from 'react';
+
+import { PlaygroundInput } from './PlaygroundInput';
+import { PlaygroundMain } from './PlaygroundMain';
+import { PlaygroundSidebar } from './PlaygroundSidebar';
+
+import { Button } from '@/components/primitives/Button';
 import { cn } from '@/lib/utils';
+import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export function PlaygroundPage() {
   const { showSidebar, setShowSidebar } = usePlaygroundStore();

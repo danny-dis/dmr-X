@@ -64,7 +64,7 @@ function isAdminPath(path: string): boolean {
   return path.startsWith('/v1/admin') || path.startsWith('/admin');
 }
 
-function getTokenForPath(path: string): string | null {
+export function getTokenForPath(path: string): string | null {
   if (isAdminPath(path)) return getAuthToken();
   // Tenant routes prefer the tenant token, fall back to admin only for
   // dev convenience (LOCAL_MODE-bypass). In production the admin key is
@@ -104,7 +104,7 @@ export async function api<T = unknown>(path: string, opts: RequestOptions = {}):
       method,
       signal: sig,
       headers: {
-        'Content-Type': 'application/json',
+        ...(body != null ? { 'Content-Type': 'application/json' } : {}),
         Accept: responseType === 'blob' ? '*/*' : 'application/json',
         ...(getTokenForPath(path) ? { Authorization: `Bearer ${getTokenForPath(path)}` } : {}),
         ...headers,
@@ -118,7 +118,7 @@ export async function api<T = unknown>(path: string, opts: RequestOptions = {}):
         let parsed: unknown = text;
         try {
           parsed = JSON.parse(text);
-        } catch {}
+        } catch { /* ignore parse errors */ }
         const message = typeof parsed === 'object' && parsed !== null && 'message' in parsed ? (parsed as any).message : `Request failed: ${res.status}`;
         throw new ApiError(message, res.status, parsed);
       }

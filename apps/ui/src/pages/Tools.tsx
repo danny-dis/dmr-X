@@ -1,20 +1,21 @@
-import * as React from 'react';
 import { Hammer, Play, RotateCcw, Code as CodeIcon, Terminal, Coins } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { Button } from '@/components/primitives/Button';
-import { Input } from '@/components/primitives/Input';
-import { Textarea } from '@/components/primitives/Textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Code } from '@/components/primitives/Code';
-import { StatusPill } from '@/components/primitives/StatusPill';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import { Input } from '@/components/primitives/Input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatusPill } from '@/components/primitives/StatusPill';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
+import { Textarea } from '@/components/primitives/Textarea';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { cn } from '@/lib/utils';
 import type { ApiModel } from '@/types/api';
 
 const DEFAULT_MESSAGES = JSON.stringify([{ role: 'user', content: "What's the weather in Tokyo?" }], null, 2);

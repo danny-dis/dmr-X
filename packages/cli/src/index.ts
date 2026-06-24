@@ -15,10 +15,11 @@
  *   dmrx test --all              # Test all registered providers
  */
 
-import { Command } from 'commander';
 import chalk from 'chalk';
-import { createInitCommand } from './commands/init.js';
+import { Command } from 'commander';
+
 import { createAddProviderCommand } from './commands/add-provider.js';
+import { createInitCommand } from './commands/init.js';
 import { createListProvidersCommand } from './commands/list-providers.js';
 import { createStatusCommand } from './commands/status.js';
 import { createTestCommand } from './commands/test.js';

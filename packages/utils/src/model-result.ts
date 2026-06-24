@@ -9,17 +9,12 @@
  * Ported from OpenRouter SDK's model-result.ts with adaptations for DMR-X.
  */
 
-import type { ParsedToolCall } from './stream-transformers.js';
-import type { Tool } from './stop-conditions.js';
-import type { TurnContext } from './tool-context.js';
+import type {
+  CallModelInput as AsyncCallModelInput,
+  ToolContextMapWithShared,
+} from './async-params.js';
+import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
 import type { ConversationState, UnsentToolResult } from './conversation-state.js';
-
-import { hasExecuteFunction } from './tool-types.js';
-
-import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
-import { ToolContextStore, resolveContext } from './tool-context.js';
-import type { ContextInput } from './tool-context.js';
-
 import {
   appendToMessages,
   createInitialState,
@@ -30,9 +25,18 @@ import {
   unsentResultsToAPIFormat,
   updateState,
 } from './conversation-state.js';
-
+import { EventStream } from './event-stream.js';
+import { executeNextTurnParamsFunctions, applyNextTurnParamsToRequest } from './next-turn-params.js';
+import type { NextTurnRequest } from './next-turn-params.js';
 import { ReusableReadableStream } from './reusable-stream.js';
-
+import { isStopConditionMet, stepCountIs } from './stop-conditions.js';
+import type { Tool } from './stop-conditions.js';
+import type { ParsedToolCall } from './stream-transformers.js';
+import type { TurnContext } from './tool-context.js';
+import { hasExecuteFunction } from './tool-types.js';
+import { ToolEventBroadcaster } from './tool-event-broadcaster.js';
+import { ToolContextStore, resolveContext } from './tool-context.js';
+import type { ContextInput } from './tool-context.js';
 import {
   buildItemsStream,
   buildResponsesMessageStream,
@@ -51,14 +55,8 @@ import type {
   ItemInProgress,
   StreamableOutputItem,
 } from './stream-transformers.js';
-
 import { executeTool } from './tool-executor.js';
-import { executeNextTurnParamsFunctions, applyNextTurnParamsToRequest } from './next-turn-params.js';
-import type { NextTurnRequest } from './next-turn-params.js';
-
-import { isStopConditionMet, stepCountIs } from './stop-conditions.js';
 import type { StopCondition } from './stop-conditions.js';
-
 import {
   isFunctionCallItem,
   isResponseCompletedEvent,
@@ -77,14 +75,7 @@ import type {
   FunctionCallOutputItem,
 } from './stream-type-guards.js';
 
-import { EventStream } from './event-stream.js';
-
 // Re-use types from the existing async-params module where they match
-import type {
-  CallModelInput as AsyncCallModelInput,
-  ToolContextMapWithShared,
-} from './async-params.js';
-import { hasAsyncFunctions, resolveAsyncFunctions } from './async-params.js';
 
 /** Resolved (non-function) request fields. Matches the SDK's ResolvedCallModelInput. */
 type ResolvedCallModelInput = Record<string, unknown>;

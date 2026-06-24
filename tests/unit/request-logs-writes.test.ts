@@ -17,11 +17,12 @@
  * per the CLAUDE.md note about vitest/tinypool spawn issues).
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 
 let tempDir: string;
 let initDb: () => Promise<unknown>;

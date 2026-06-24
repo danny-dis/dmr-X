@@ -1,22 +1,23 @@
-import * as React from 'react';
 import { Gift, Plus, Search, ExternalLink, Server, Zap, Globe, RefreshCw, KeyRound } from 'lucide-react';
-import { PageHeader, PageContainer } from '@/components/layout';
-import { Card } from '@/components/primitives/Card';
-import { Input } from '@/components/primitives/Input';
-import { Button } from '@/components/primitives/Button';
-import { Badge } from '@/components/primitives/Badge';
-import { EmptyState } from '@/components/primitives/EmptyState';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { StatTile } from '@/components/primitives/StatTile';
+import * as React from 'react';
+
+import { AddProviderDialog } from '@/components/domain/AddProviderDialog';
 import { FreeProviderCard } from '@/components/domain/FreeProviderCard';
 import { FreeTierDrawer } from '@/components/domain/FreeTierDrawer';
-import { AddProviderDialog } from '@/components/domain/AddProviderDialog';
-import { useApiData } from '@/hooks/useApiData';
-import { useUIStore } from '@/store/useUIStore';
-import { Admin } from '@/lib/admin';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
+import { Card } from '@/components/primitives/Card';
+import { EmptyState } from '@/components/primitives/EmptyState';
+import { Input } from '@/components/primitives/Input';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
+import { useApiData } from '@/hooks/useApiData';
+import { Admin } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
+import { useUIStore } from '@/store/useUIStore';
 import type { ApiCatalogEntry, ApiProvider } from '@/types/api';
 
 function isFreeProvider(entry: ApiCatalogEntry): boolean {
@@ -51,6 +52,7 @@ export function FreeTierPage() {
   const connectedFree = (providers.data ?? []).filter(
     (p) => p.tier === 'free' || p.tier === 'mixed',
   );
+  const connectedNames = new Set(connectedFree.map((p) => p.name));
   const totalFreeModels = freeCatalog.reduce((sum, e) => sum + (e.models?.length ?? 0), 0);
 
   const cloudCategories = new Set(['cloud_llm', 'cloud_embedding', 'cloud_audio', 'cloud_video', 'cloud_diffusion']);

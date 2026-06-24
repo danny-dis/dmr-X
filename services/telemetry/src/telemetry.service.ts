@@ -1,12 +1,13 @@
-import { NodeSDK } from '@opentelemetry/sdk-node';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { Resource } from '@opentelemetry/resources';
 import type { MetricReader } from '@opentelemetry/sdk-metrics';
+import { NodeSDK } from '@opentelemetry/sdk-node';
 // ATTR_SERVICE_NAME was added in semantic-conventions 1.27+;
 // fall back to the literal string for older versions.
 const ATTR_SERVICE_NAME = 'service.name' as const;
 import { createLogger } from '@dmr-x/utils';
+
 import {
   requestCount,
   requestLatency,

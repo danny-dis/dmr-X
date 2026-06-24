@@ -1,19 +1,20 @@
-import * as React from 'react';
 import { Bell, Activity, FileText, AlertCircle, CheckCircle2, Filter, Download } from 'lucide-react';
-import { PageHeader, PageContainer } from '@/components/layout';
-import { Card } from '@/components/primitives/Card';
-import { Badge } from '@/components/primitives/Badge';
-import { Button } from '@/components/primitives/Button';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { EmptyState } from '@/components/primitives/EmptyState';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
+import * as React from 'react';
+
 import { AlertCard } from '@/components/domain/AlertCard';
 import { AuditEventRow } from '@/components/domain/AuditEventRow';
 import { TelemetryEventRow } from '@/components/domain/TelemetryEventRow';
-import { useApiData } from '@/hooks/useApiData';
-import { useUIStore } from '@/store/useUIStore';
-import { Admin } from '@/lib/admin';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
+import { Card } from '@/components/primitives/Card';
+import { EmptyState } from '@/components/primitives/EmptyState';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
+import { useApiData } from '@/hooks/useApiData';
+import { Admin } from '@/lib/admin';
+import { useUIStore } from '@/store/useUIStore';
 import type { ApiAlert, ApiAuditEvent, ApiTelemetryEvent } from '@/types/api';
 
 export function ObservabilityPage() {

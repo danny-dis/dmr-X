@@ -1,18 +1,13 @@
-import * as React from 'react';
 import {
   Settings as SettingsIcon, Save, RotateCcw, Server, Shield, Brain, Cpu,
   Bell, Webhook, Trophy, Clock, AlertTriangle, KeyRound, Copy, Check,
 } from 'lucide-react';
+import * as React from 'react';
+
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { Button } from '@/components/primitives/Button';
 import { Badge } from '@/components/primitives/Badge';
-import { Input } from '@/components/primitives/Input';
-import { Switch } from '@/components/primitives/Switch';
-import { Slider } from '@/components/primitives/Slider';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Button } from '@/components/primitives/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import {
   Dialog,
   DialogContent,
@@ -23,9 +18,15 @@ import {
   DialogFooter,
   DialogClose,
 } from '@/components/primitives/Dialog';
+import { Input } from '@/components/primitives/Input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { Slider } from '@/components/primitives/Slider';
+import { Switch } from '@/components/primitives/Switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { toast } from '@/components/primitives/Toast';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */

@@ -1,7 +1,8 @@
+import crypto from 'node:crypto';
+
+import type { ProviderModel, CandidateSet } from '@dmr-x/core';
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
-import type { ProviderModel, CandidateSet } from '@dmr-x/core';
-import crypto from 'node:crypto';
 
 const cache = createNamespacedCache('registry');
 

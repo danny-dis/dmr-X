@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 const ChatRequestSchema = z.object({
   model: z.string(),
@@ -35,6 +36,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     // Convert to UnifiedRequest
     const unifiedRequest: UnifiedRequest = {
@@ -64,12 +66,44 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
     // Streaming: route through pipeline for plan, enforce rate-limit/quota, then stream
     if (body.stream) {
+      if (unifiedRequest.metadata?.freeTierStrategy) {
+        reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
+      }
+
+      const streamHeaders: Record<string, string> = {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      };
+      reply.raw.writeHead(200, streamHeaders);
+
       // Get routing plan (runs full pipeline: capability, availability, rate-limit, policy, quota filters)
-      const { plan } = await router.route(unifiedRequest, {
-        path: '/v1/chat/completions',
-        qualityTarget: 'balanced',
-        planOnly: true,
-      });
+      // Wrapped in try-catch: errors are sent as SSE events so the client always gets a 200 stream
+      // rather than a raw HTTP 500 that the UI can't parse.
+      let plan;
+      try {
+        const routed = await router.route(unifiedRequest, {
+          path: '/v1/chat/completions',
+          qualityTarget,
+          planOnly: true,
+        });
+        plan = routed.plan;
+      } catch (routeError: any) {
+        const errMsg = routeError?.message || 'Routing failed';
+        logger.error({ err: routeError, requestId }, 'Streaming chat routing error');
+        (server as any).recordTelemetryEvent?.({
+          level: 'error',
+          service: 'gateway',
+          message: errMsg,
+          metadata: { path: request.url, model: body.model, requestId },
+        });
+        reply.raw.write(`data: ${JSON.stringify({
+          error: { message: errMsg, type: 'routing_error' },
+        })}\n\n`);
+        reply.raw.write('data: [DONE]\n\n');
+        reply.raw.end();
+        return reply;
+      }
 
       if (!plan.primary) {
         (server as any).recordTelemetryEvent?.({
@@ -78,7 +112,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           message: 'No provider available for streaming chat request',
           metadata: { path: request.url, model: body.model, requestId },
         });
-        throw new ProviderUnavailableError([]);
+        reply.raw.write(`data: ${JSON.stringify({
+          error: { message: 'No provider available for this request', type: 'routing_error' },
+        })}\n\n`);
+        reply.raw.write('data: [DONE]\n\n');
+        reply.raw.end();
+        return reply;
       }
 
       // Enforce rate limits and quotas before streaming (same checks as executeWithFallback)
@@ -101,23 +140,26 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               retryAfterMs: limitCheck.retryAfterMs,
             },
           });
-          throw new ProviderUnavailableError([plan.primary.providerId], limitCheck.retryAfterMs ? Math.ceil(limitCheck.retryAfterMs / 1000) : 30);
+          reply.raw.write(`data: ${JSON.stringify({
+            error: { message: `Rate limited. Retry after ${limitCheck.retryAfterMs ? Math.ceil(limitCheck.retryAfterMs / 1000) : 30}s`, type: 'rate_limit_error' },
+          })}\n\n`);
+          reply.raw.write('data: [DONE]\n\n');
+          reply.raw.end();
+          return reply;
         }
       }
       if (qs && tenantId) {
-        await qs.checkQuota(tenantId, plan.primary.providerId, 0, 0);
+        try {
+          await qs.checkQuota(tenantId, plan.primary.providerId, 0, 0);
+        } catch (quotaError: any) {
+          reply.raw.write(`data: ${JSON.stringify({
+            error: { message: quotaError?.message || 'Quota exceeded', type: 'quota_error' },
+          })}\n\n`);
+          reply.raw.write('data: [DONE]\n\n');
+          reply.raw.end();
+          return reply;
+        }
       }
-
-      if (unifiedRequest.metadata?.freeTierStrategy) {
-        reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
-      }
-
-      const streamHeaders: Record<string, string> = {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      };
-      reply.raw.writeHead(200, streamHeaders);
 
       const adapter = (server as any).getAdapter(plan.primary.providerId);
       if (adapter) {
@@ -157,6 +199,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             firstTokenLatencyMs: undefined,
             tokens: undefined,
             errorCode: undefined,
+            qualityTarget,
+            freeTierStrategy: unifiedRequest.metadata?.freeTierStrategy ?? undefined,
           };
           const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
           // CRIT-6: track when the first token arrives so the request_logs
@@ -271,7 +315,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     // Non-streaming: route and execute through full pipeline with fallback
     const { plan, response } = await router.route(unifiedRequest, {
       path: '/v1/chat/completions',
-      qualityTarget: 'balanced',
+      qualityTarget,
     });
     if (!plan.primary) {
       (server as any).recordTelemetryEvent?.({
@@ -312,6 +356,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             total: response.usage.total_tokens ?? 0,
           }
         : undefined,
+      qualityTarget,
+      freeTierStrategy: unifiedRequest.metadata?.freeTierStrategy ?? undefined,
     };
 
     return {

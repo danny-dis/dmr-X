@@ -1,13 +1,5 @@
-import type {
-  ProviderAdapter,
-  ProviderConfig,
-  HealthStatus,
-  ModelInfo,
-  ExecuteOptions,
-} from './adapter.interface.js';
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { trace, SpanStatusCode, SpanKind, propagation, context } from '@opentelemetry/api';
 import {
   logger,
   DefaultHttpHooks,
@@ -29,6 +21,15 @@ import {
   match,
   type Result,
 } from '@dmr-x/utils';
+import { trace, SpanStatusCode, SpanKind, propagation, context } from '@opentelemetry/api';
+
+import type {
+  ProviderAdapter,
+  ProviderConfig,
+  HealthStatus,
+  ModelInfo,
+  ExecuteOptions,
+} from './adapter.interface.js';
 
 // All adapters share a single tracer instance (see services/telemetry/src/tracer.ts).
 // `adapter.fetch` spans get the active gateway request as their parent

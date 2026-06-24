@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
 import { RateLimiter } from '../../services/mcp-server/src/rate-limiter.js';
 
 describe('RateLimiter', () => {

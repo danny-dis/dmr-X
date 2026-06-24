@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { AudioSeparationAdapter, createAudioSeparationAdapter } from '../../services/adapters/src/audio-separation/index.js';
 import type { UnifiedRequest } from '@dmr-x/core';
+import { describe, it, expect } from 'vitest';
+
+import { AudioSeparationAdapter, createAudioSeparationAdapter } from '../../services/adapters/src/audio-separation/index.js';
 
 describe('AudioSeparationAdapter', () => {
   describe('createAudioSeparationAdapter', () => {

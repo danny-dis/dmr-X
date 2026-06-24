@@ -7,8 +7,9 @@
  * standard `{ object: "list", data: [{ id, ... }] }` payload.
  */
 
-import { logger } from '@dmr-x/utils';
 import net from 'node:net';
+
+import { logger } from '@dmr-x/utils';
 
 export interface DiscoveredModel {
   modelId: string;

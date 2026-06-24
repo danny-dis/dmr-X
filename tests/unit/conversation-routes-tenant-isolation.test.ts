@@ -20,11 +20,12 @@
  * cheap to keep green and quick to spot divergence.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 
 let tempDir: string;
 let initDb: () => Promise<unknown>;

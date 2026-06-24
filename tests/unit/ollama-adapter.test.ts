@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { OllamaAdapter } from '@dmr-x/adapters';
 import type { ProviderConfig } from '@dmr-x/adapters';
 import type { UnifiedRequest } from '@dmr-x/core';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 describe('OllamaAdapter', () => {
   let adapter: OllamaAdapter;

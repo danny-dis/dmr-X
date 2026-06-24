@@ -8,6 +8,7 @@ import type {
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { generateRequestId } from '@dmr-x/utils';
 import { createLogger } from '@dmr-x/utils';
+
 import type { MCPServerRegistry, ConnectedServer } from './registry.js';
 
 const logger = createLogger('mcp-client:adapter');

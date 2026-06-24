@@ -1,12 +1,14 @@
+import { Cpu, Server, Hammer as Tool, Network, Globe, Info, RefreshCw, AlertTriangle, Play, ChevronDown, Search, List, Shield, FileText, Activity } from 'lucide-react';
 import * as React from 'react';
-import { Cpu, Server, Hammer as Tool, Network, Globe, Info, RefreshCw, AlertTriangle, Play, ChevronDown } from 'lucide-react';
+
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Badge } from '@/components/primitives/Badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Code } from '@/components/primitives/Code';
+import { Input } from '@/components/primitives/Input';
+import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { apiPost } from '@/lib/api';
@@ -27,6 +29,12 @@ export function MCPPage() {
   const [toolError, setToolError] = React.useState<string | null>(null);
   const [isExecuting, setIsExecuting] = React.useState(false);
 
+  // Tool Search state
+  const [searchQuery, setSearchQuery] = React.useState('');
+  const [searchResults, setSearchResults] = React.useState<any[] | null>(null);
+  const [isSearching, setIsSearching] = React.useState(false);
+  const [searchError, setSearchError] = React.useState<string | null>(null);
+
   const data = mcp.data;
   const tools = mcpTools.data;
   const transport = data?.transport ?? 'stdio';
@@ -45,6 +53,22 @@ export function MCPPage() {
     pillStatus === 'online' ? 'Reachable'
     : pillStatus === 'offline' ? 'Unreachable'
     : isStdio ? 'Separate process' : 'Status unknown';
+
+  // Tool Search handler
+  const handleToolSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setIsSearching(true);
+    setSearchError(null);
+    setSearchResults(null);
+    try {
+      const result = await apiPost('/api/mcp/tool-search', { query: searchQuery, max_results: 10 });
+      setSearchResults(result.results || []);
+    } catch (err: any) {
+      setSearchError(err.message || 'Search failed');
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   return (
     <PageContainer>
@@ -153,13 +177,17 @@ export function MCPPage() {
         <Card className="lg:col-span-2">
           <Tabs defaultValue="tools">
             <div className="px-5 pt-4 border-b border-border">
-<TabsList className="mb-[-1px]">
+                <TabsList className="mb-[-1px]">
                  <TabsTrigger value="tools" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                    <Tool className="size-3.5 mr-2" />
                    Available Tools
                    {data && (
                      <Badge tone="muted" size="sm" className="ml-2">{data.tools.length}</Badge>
                    )}
+                 </TabsTrigger>
+                 <TabsTrigger value="search" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Search className="size-3.5 mr-2" />
+                   Smart Search
                  </TabsTrigger>
                  <TabsTrigger value="test" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                    <Play className="size-3.5 mr-2" />
@@ -168,6 +196,10 @@ export function MCPPage() {
                  <TabsTrigger value="aggregation" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                    <Network className="size-3.5 mr-2" />
                    Aggregation
+                 </TabsTrigger>
+                 <TabsTrigger value="a2a" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Activity className="size-3.5 mr-2" />
+                   A2A Protocol
                  </TabsTrigger>
                  <TabsTrigger value="setup" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                    <Globe className="size-3.5 mr-2" />
@@ -206,6 +238,90 @@ export function MCPPage() {
               )}
             </TabsContent>
 
+            {/* Smart Search Tab */}
+            <TabsContent value="search" className="p-4 space-y-4">
+              <div className="space-y-2">
+                <p className="text-xs text-fg-muted">
+                  Use natural language to find the right tool for your task. The search combines keyword matching with semantic understanding.
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Describe what you want to do (e.g., 'generate an image of a sunset')"
+                  className="flex-1"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && searchQuery.trim()) {
+                      handleToolSearch();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleToolSearch}
+                  disabled={!searchQuery.trim() || isSearching}
+                  className="px-4 py-2 text-xs bg-primary text-white rounded hover:bg-primary/90 disabled:opacity-50 flex items-center gap-2"
+                >
+                  <Search className="size-3" />
+                  {isSearching ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+
+              {searchError && (
+                <div className="p-3 text-xs text-warning bg-warning/10 rounded border border-warning/20">
+                  {searchError}
+                </div>
+              )}
+
+              {searchResults && (
+                <div className="space-y-2">
+                  <p className="text-xs text-fg-muted font-medium">{searchResults.length} tool(s) found</p>
+                  <div className="divide-y divide-border border border-border rounded">
+                    {searchResults.map((result: any) => (
+                      <div key={result.name} className="p-4 hover:bg-surface-1 transition-colors">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-mono font-semibold text-primary">{result.name}</span>
+                          <div className="flex items-center gap-2">
+                            <Badge tone={result.source === 'internal' ? 'primary' : 'secondary'} size="sm">
+                              {result.source}
+                            </Badge>
+                            <Badge tone="muted" size="sm">
+                              Score: {(result.score * 100).toFixed(0)}%
+                            </Badge>
+                          </div>
+                        </div>
+                        <p className="text-xs text-fg-muted">{result.description}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedTool(result.name);
+                            setToolParams('{}');
+                          }}
+                          className="mt-2 text-xs text-primary hover:underline"
+                        >
+                          Use this tool →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!searchResults && !searchError && (
+                <div className="text-center py-8">
+                  <Search className="size-8 text-fg-subtle mx-auto mb-3" />
+                  <p className="text-xs text-fg-muted">
+                    Describe what you want to do and the system will find the best tool for you.
+                  </p>
+                  <p className="text-[10px] text-fg-subtle mt-2">
+                    Examples: "generate an image", "convert text to speech", "translate audio"
+                  </p>
+                </div>
+              )}
+            </TabsContent>
+
             <TabsContent value="test" className="p-4 space-y-4">
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-fg-subtle uppercase">Tool</label>
@@ -220,6 +336,96 @@ export function MCPPage() {
                   ))}
                 </select>
               </div>
+
+              {/* Tool Search Tab */}
+              <Tabs defaultValue="search" className="mt-4">
+                <TabsList className="mb-2">
+                  <TabsTrigger value="search" className="text-xs">
+                    <Search className="size-3 mr-1" />
+                    Smart Search
+                  </TabsTrigger>
+                  <TabsTrigger value="browse" className="text-xs">
+                    <List className="size-3 mr-1" />
+                    Browse All
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="search" className="space-y-3">
+                  <div className="flex gap-2">
+                    <Input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Describe what you want to do (e.g., 'generate an image')"
+                      className="flex-1"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && searchQuery.trim()) {
+                          handleToolSearch();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleToolSearch}
+                      disabled={!searchQuery.trim() || isSearching}
+                      className="px-3 py-2 text-xs bg-primary text-white rounded hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {isSearching ? 'Searching...' : 'Search'}
+                    </button>
+                  </div>
+
+                  {searchError && (
+                    <div className="p-2 text-xs text-warning bg-warning/10 rounded">
+                      {searchError}
+                    </div>
+                  )}
+
+                  {searchResults && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-fg-muted">{searchResults.length} tool(s) found</p>
+                      <div className="divide-y divide-border border border-border rounded">
+                        {searchResults.map((result: any) => (
+                          <div key={result.name} className="p-3 hover:bg-surface-1 transition-colors">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-mono font-semibold text-primary">{result.name}</span>
+                              <div className="flex items-center gap-2">
+                                <Badge tone={result.source === 'internal' ? 'primary' : 'secondary'} size="sm">
+                                  {result.source}
+                                </Badge>
+                                <Badge tone="muted" size="sm">
+                                  Score: {(result.score * 100).toFixed(0)}%
+                                </Badge>
+                              </div>
+                            </div>
+                            <p className="text-xs text-fg-muted">{result.description}</p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedTool(result.name);
+                                setToolParams('{}');
+                              }}
+                              className="mt-2 text-xs text-primary hover:underline"
+                            >
+                              Use this tool
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {!searchResults && !searchError && (
+                    <div className="text-center text-xs text-fg-muted py-4">
+                      Describe what you want to do and the system will find the best tool for you.
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="browse">
+                  <p className="text-xs text-fg-muted mb-2">
+                    All available tools in the system
+                  </p>
+                </TabsContent>
+              </Tabs>
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-fg-subtle uppercase">Parameters (JSON)</label>
                 <textarea
@@ -272,6 +478,56 @@ export function MCPPage() {
               <div className="p-4 rounded-lg border border-dashed border-border bg-surface-1 inline-block">
                 <p className="text-[10px] text-fg-subtle">
                   Aggregation is configured via <code className="bg-surface-2 px-1 rounded text-primary">DMRX_MCP_CLIENT_SERVERS</code> in your .env file.
+                </p>
+              </div>
+            </TabsContent>
+
+            {/* A2A Protocol Tab */}
+            <TabsContent value="a2a" className="p-4 space-y-4">
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold">Agent-to-Agent (A2A) Protocol</h3>
+                <p className="text-xs text-fg-muted">
+                  Enable agent discovery and inter-agent communication using Google&apos;s A2A protocol.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-xs">Agent Card</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <p className="text-[10px] text-fg-muted">
+                      The Agent Card advertises your agent&apos;s capabilities to other agents.
+                    </p>
+                    <div className="p-2 bg-surface-2 rounded text-[10px] font-mono">
+                      <div>GET /.well-known/agent.json</div>
+                    </div>
+                    <Badge tone="muted" size="sm">Endpoint</Badge>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-xs">Task Management</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <p className="text-[10px] text-fg-muted">
+                      Send, track, and cancel agent-to-agent tasks.
+                    </p>
+                    <div className="p-2 bg-surface-2 rounded text-[10px] font-mono space-y-1">
+                      <div>POST /a2a/tasks/send</div>
+                      <div>POST /a2a/tasks/get</div>
+                      <div>POST /a2a/tasks/cancel</div>
+                    </div>
+                    <Badge tone="muted" size="sm">Endpoints</Badge>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="p-3 rounded-lg border border-dashed border-border bg-surface-1">
+                <p className="text-[10px] text-fg-subtle">
+                  Enable A2A with <code className="bg-surface-2 px-1 rounded text-primary">DMRX_A2A_ENABLED=true</code> environment variable.
                 </p>
               </div>
             </TabsContent>

@@ -1,8 +1,9 @@
-import * as React from 'react';
-import { usePlaygroundStore, PlaygroundMode } from '@/store/usePlaygroundStore';
-import { Button } from '@/components/primitives/Button';
 import { MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert } from 'lucide-react';
+import * as React from 'react';
+
+import { Button } from '@/components/primitives/Button';
 import { cn } from '@/lib/utils';
+import { usePlaygroundStore, PlaygroundMode } from '@/store/usePlaygroundStore';
 
 interface SamplePrompt {
   mode: PlaygroundMode;

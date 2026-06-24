@@ -8,16 +8,18 @@ import type {
   ProviderPreferences,
 } from '@dmr-x/core';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import type { RateLimitService, QuotaService } from '@dmr-x/quota';
+import { resolveProviderSlug } from '@dmr-x/core';
 import type { PolicyService } from '@dmr-x/policy';
-import { capabilityFilter } from './capability-filter.js';
+import type { RateLimitService, QuotaService } from '@dmr-x/quota';
+import { logger } from '@dmr-x/utils';
+
 import { availabilityFilter } from './availability-filter.js';
-import { rateLimitFilter } from './rate-limit-filter.js';
-import type { RateLimitFilterResult } from './rate-limit-filter.js';
+import { capabilityFilter } from './capability-filter.js';
 import { costLatencyScorer } from './cost-latency-scorer.js';
 import { finalSelector, type ThompsonSamplerLike } from './final-selector.js';
-import { resolveProviderSlug } from '@dmr-x/core';
-import { logger } from '@dmr-x/utils';
+import { rateLimitFilter } from './rate-limit-filter.js';
+import type { RateLimitFilterResult } from './rate-limit-filter.js';
+
 
 export interface PipelineInput {
   taskProfile: TaskProfile;
@@ -150,13 +152,14 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
 
 function buildFallbackChain(
   remaining: ProviderModel[],
-  _primary: SelectedProvider
+  primary: SelectedProvider
 ): FallbackStep[] {
-  return remaining.slice(0, 3).map((model, index) => ({
+  const crossProvider = remaining.filter(m => m.providerId !== primary.providerId);
+  return crossProvider.slice(0, 3).map((model, index) => ({
     provider: {
       providerId: model.providerId,
       modelId: model.modelId,
-      adapterType: model.providerName, // Will be resolved to adapter type
+      adapterType: model.providerName,
       score: model.qualityScore,
     },
     trigger: index === 0 ? 'timeout' as const : 'error' as const,

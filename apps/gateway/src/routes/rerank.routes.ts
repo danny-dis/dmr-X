@@ -1,9 +1,10 @@
+import crypto from 'node:crypto';
+
+import { ValidationError } from '@dmr-x/core';
+import { getDb } from '@dmr-x/db';
+import { decrypt, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import crypto from 'node:crypto';
-import { getDb } from '@dmr-x/db';
-import { ValidationError } from '@dmr-x/core';
-import { decrypt, logger } from '@dmr-x/utils';
 
 // Rerank request schema. Mirrors the shape the OpenAI / Cohere / Jina
 // rerank endpoints accept so existing client SDKs can call us without

@@ -14,13 +14,6 @@
  * path.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
-import {
-  BasicTracerProvider,
-  InMemorySpanExporter,
-  SimpleSpanProcessor,
-} from '@opentelemetry/sdk-trace-base';
 import {
   trace,
   context,
@@ -36,6 +29,13 @@ import {
   INVALID_TRACEID,
   TraceFlags,
 } from '@opentelemetry/api';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 
 const TRACER_NAME = 'dmr-x-gateway-test';
 

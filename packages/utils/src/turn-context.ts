@@ -5,6 +5,7 @@
  * Ported from OpenRouter SDK's turn-context.ts with adaptations for DMR-X.
  */
 
+import type { NextTurnRequest } from './next-turn-params.js';
 import type {
   TurnContext,
   FunctionCallItem,
@@ -12,7 +13,6 @@ import type {
   EasyInputMessage,
 } from './tool-types.js';
 
-import type { NextTurnRequest } from './next-turn-params.js';
 
 // ---------------------------------------------------------------------------
 // Options

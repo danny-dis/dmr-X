@@ -53,7 +53,7 @@ export const META_MODELS: MetaModelDefinition[] = [
     ranker: (candidates, costFilterOverride) => {
       const filter = costFilterOverride ?? 'all';
       const MIN_CONTEXT = 64000;
-      let pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
       const scored = pool
         .filter(c =>
           c.capabilities.includes('tool_use') &&
@@ -79,7 +79,7 @@ export const META_MODELS: MetaModelDefinition[] = [
       const filter = costFilterOverride ?? 'all';
       const MIN_CONTEXT = 32000;
       const codeCapabilities = ['tool_use', 'streaming', 'reasoning'];
-      let pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
       const scored = pool
         .filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT)
         .map(c => {

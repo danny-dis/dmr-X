@@ -1,4 +1,3 @@
-import * as React from 'react';
 import {
   Database,
   Brain,
@@ -14,7 +13,10 @@ import {
   Circle,
   Cpu,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
+import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
 import {
   Drawer,
   DrawerContent,
@@ -24,17 +26,16 @@ import {
   DrawerBody,
   DrawerFooter,
 } from '@/components/primitives/Drawer';
-import { Badge } from '@/components/primitives/Badge';
-import { Button } from '@/components/primitives/Button';
 import { Switch } from '@/components/primitives/Switch';
-import { ModalityBadge } from '@/icons/Modality';
 import { toast } from '@/components/primitives/Toast';
+import { ModalityBadge } from '@/icons/Modality';
 import { Admin } from '@/lib/admin';
 import {
   formatCurrency,
   formatDateTime,
   formatNumber,
 } from '@/lib/formatters';
+import { cn } from '@/lib/utils';
 import type { ApiModel } from '@/types/api';
 
 export interface ModelDetailDrawerProps {

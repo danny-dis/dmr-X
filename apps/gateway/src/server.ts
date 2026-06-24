@@ -528,8 +528,8 @@ void (async () => {
     path.join(exeDir, 'public'),
     path.join(__dirname, '..', 'public'),
   ].filter(Boolean) as string[];
-  const uiDir = candidateDirs.find(d => { try { return fs.existsSync(d); } catch { return false; } })
-    || candidateDirs[candidateDirs.length - 1];
+  const uiDir = path.resolve(candidateDirs.find(d => { try { return fs.existsSync(d); } catch { return false; } })
+    || candidateDirs[candidateDirs.length - 1]);
   try {
     await server.register(fastifyStatic, {
       root: uiDir,

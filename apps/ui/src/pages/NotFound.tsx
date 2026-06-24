@@ -1,9 +1,10 @@
-import { Link } from 'react-router';
 import { Compass, ArrowLeft, Sparkles } from 'lucide-react';
+import { Link } from 'react-router';
+
 import { PageContainer } from '@/components/layout';
 import { Button } from '@/components/primitives/Button';
-import { EmptyState } from '@/components/primitives/EmptyState';
 import { Card } from '@/components/primitives/Card';
+import { EmptyState } from '@/components/primitives/EmptyState';
 
 export function NotFoundPage() {
   return (

@@ -1,5 +1,6 @@
-import * as React from 'react';
 import { Zap, CreditCard, Layers, CircleOff, KeyRound, Crown } from 'lucide-react';
+import * as React from 'react';
+
 import { Badge } from '@/components/primitives/Badge';
 import type { ProviderTier } from '@/types/api';
 

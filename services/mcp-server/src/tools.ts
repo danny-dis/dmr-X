@@ -385,6 +385,9 @@ export const TOOL_NAMES = {
   LIST_FILES: 'dmrx_list_files',
   BASH: 'dmrx_bash',
   SEARCH_FILES: 'dmrx_search_files',
+  // Tool search and discovery
+  TOOL_SEARCH: 'dmrx_tool_search',
+  TOOL_LIST: 'dmrx_tool_list',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -616,6 +619,32 @@ export const dmrxWorkflowOutput = {
   step_outputs: z.record(z.unknown()),
 } as const;
 
+export const dmrxToolSearchOutput = {
+  query: z.string(),
+  results: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+    score: z.number().describe('Relevance score (0-1)'),
+    source: z.enum(['internal', 'external']).describe('Whether tool is internal or from external MCP server'),
+    server_id: z.string().optional().describe('External MCP server ID (for external tools)'),
+    modality: z.string().optional(),
+  })),
+  total_count: z.number(),
+} as const;
+
+export const dmrxToolListOutput = {
+  tools: z.array(z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    source: z.enum(['internal', 'external']),
+    server_id: z.string().optional(),
+    modality: z.string().optional(),
+  })),
+  total_count: z.number(),
+  internal_count: z.number(),
+  external_count: z.number(),
+} as const;
+
 // ---------------------------------------------------------------------------
 // Coding agent tool schemas
 // ---------------------------------------------------------------------------
@@ -653,6 +682,27 @@ export const dmrxSearchFilesInput = {
   pattern: z.string().describe('Text to search for in files'),
   path: z.string().optional().describe('Directory to search in (default: workspace root)'),
   include: z.string().optional().describe('Filter by filename (e.g., ".ts")'),
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_tool_search — Intelligent tool discovery
+// ---------------------------------------------------------------------------
+
+export const dmrxToolSearchParams = {
+  query: z.string().describe('Natural language search query for tools (e.g., "generate an image", "convert text to speech")'),
+  max_results: z.number().int().positive().optional().describe('Maximum number of results to return (default: 10)'),
+  modalities: z.array(z.enum(['llm', 'diffusion', 'embedding', 'audio_tts', 'audio_stt', 'video', 'music', '3d', 'reranking'])).optional().describe('Filter by tool modalities'),
+  include_external: z.boolean().optional().describe('Include proxied external MCP tools in search (default: true)'),
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_tool_list — List all available tools
+// ---------------------------------------------------------------------------
+
+export const dmrxToolListParams = {
+  modalities: z.array(z.enum(['llm', 'diffusion', 'embedding', 'audio_tts', 'audio_stt', 'video', 'music', '3d', 'reranking'])).optional().describe('Filter by tool modalities'),
+  include_external: z.boolean().optional().describe('Include proxied external MCP tools (default: true)'),
+  include_descriptions: z.boolean().optional().describe('Include tool descriptions (default: true)'),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -728,4 +778,10 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     'Execute a shell command in the workspace. Returns stdout, stderr, and exit code. Has a 30s default timeout.',
   dmrx_search_files:
     'Search for text patterns across files in the workspace. Returns matching files with line numbers and content.',
+  dmrx_tool_search:
+    'Intelligent tool discovery using hybrid BM25 + semantic search. Find the best tools for your task ' +
+    'by describing what you want to do in natural language. Returns ranked results with relevance scores.',
+  dmrx_tool_list:
+    'List all available tools in the DMR-X system, including proxied external MCP tools. ' +
+    'Optionally filter by modality or other criteria.',
 };

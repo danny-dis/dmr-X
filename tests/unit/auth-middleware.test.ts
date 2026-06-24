@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { timingSafeEqual } from 'node:crypto';
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
 import { LOCAL_MODE as FROZEN_LOCAL_MODE } from '../../apps/gateway/src/middleware/auth.middleware.js';
 
 /**

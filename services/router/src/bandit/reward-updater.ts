@@ -1,8 +1,9 @@
+import type { CapabilityTier } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
+
 import type { ThompsonSampler } from './thompson-sampler.js';
 import { calculateReward } from './thompson-sampler.js';
-import type { CapabilityTier } from '@dmr-x/core';
 
 export interface RequestRecord {
   requestId: string;

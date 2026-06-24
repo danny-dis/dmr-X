@@ -1,5 +1,6 @@
-import type { ProviderAdapter, ProviderConfig } from './adapter.interface.js';
 import { logger, CircuitBreaker, type CircuitBreakerOptions } from '@dmr-x/utils';
+
+import type { ProviderAdapter, ProviderConfig } from './adapter.interface.js';
 
 const DEFAULT_CIRCUIT_BREAKER_OPTIONS: CircuitBreakerOptions = {
   failureThreshold: 5,

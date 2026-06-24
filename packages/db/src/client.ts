@@ -1,9 +1,11 @@
-import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
+
 import { MIGRATIONS } from './migrations-data.js';
 
 // Re-export sql.js for tests and consumers that need to create a fresh
@@ -22,6 +24,7 @@ const log = {
 
 let db: SqlJsDatabase | null = null;
 let dbPath = '';
+let initPromise: Promise<DatabaseWrapper> | null = null;
 
 // ---------------------------------------------------------------------------
 // FTS5 splitter
@@ -78,6 +81,7 @@ async function saveDatabase(): Promise<void> {
 const SAVE_DEBOUNCE_MS = 50;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSaveResolvers: (() => void)[] = [];
+let saving = false;
 
 /**
  * Schedule a debounced save. Multiple calls within the debounce window are
@@ -92,10 +96,19 @@ function scheduleSave(): Promise<void> {
     }
     saveTimer = setTimeout(async () => {
       saveTimer = null;
+      if (saving) return;
+      saving = true;
       const resolvers = pendingSaveResolvers;
       pendingSaveResolvers = [];
-      await saveDatabase();
-      for (const r of resolvers) r();
+      try {
+        await saveDatabase();
+      } finally {
+        for (const r of resolvers) r();
+        saving = false;
+        if (pendingSaveResolvers.length > 0 && saveTimer === null) {
+          scheduleSave();
+        }
+      }
     }, SAVE_DEBOUNCE_MS);
   });
 }
@@ -110,10 +123,19 @@ export async function flush(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const resolvers = pendingSaveResolvers;
-  pendingSaveResolvers = [];
-  await saveDatabase();
-  for (const r of resolvers) r();
+  if (saving) return; // Already saving; resolvers from the in-progress save will cover this
+  saving = true;
+  try {
+    const resolvers = pendingSaveResolvers;
+    pendingSaveResolvers = [];
+    await saveDatabase();
+    for (const r of resolvers) r();
+  } finally {
+    saving = false;
+    if (pendingSaveResolvers.length > 0) {
+      scheduleSave();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -139,25 +161,29 @@ async function migratePlaintextApiKeys(dbWrapper: SqlJsDatabase): Promise<void> 
     if (rows.length === 0 || !rows[0].values) return;
 
     const stmt = dbWrapper.prepare('UPDATE providers SET config = ? WHERE id = ?');
-    for (const row of rows[0].values) {
-      const id = row[0] as string;
-      const configStr = row[1] as string || '{}';
-      const config = JSON.parse(configStr);
+    try {
+      for (const row of rows[0].values) {
+        const id = row[0] as string;
+        const configStr = row[1] as string || '{}';
+        const config = JSON.parse(configStr);
 
-      if (typeof config.apiKey !== 'string' || config.apiKey.length === 0) continue;
+        if (typeof config.apiKey !== 'string' || config.apiKey.length === 0) continue;
 
-      // Try decrypting — if it fails, the key is plaintext
-      try {
-        decrypt!(config.apiKey);
-        // Decryption succeeded — already encrypted, skip
-      } catch {
-        // Plaintext — encrypt it
-        config.apiKey = encrypt!(config.apiKey);
-        stmt.bind([JSON.stringify(config), id]);
-        stmt.step();
-        stmt.free();
-        log.info(`Migrated plaintext API key for provider "${id}" to encrypted`);
+        // Try decrypting — if it fails, the key is plaintext
+        try {
+          decrypt!(config.apiKey);
+          // Decryption succeeded — already encrypted, skip
+        } catch {
+          // Plaintext — encrypt it
+          config.apiKey = encrypt!(config.apiKey);
+          stmt.bind([JSON.stringify(config), id]);
+          stmt.step();
+          stmt.free();
+          log.info(`Migrated plaintext API key for provider "${id}" to encrypted`);
+        }
       }
+    } finally {
+      stmt.free();
     }
   } catch (err) {
     log.error('API key migration failed (non-fatal):', err);
@@ -222,7 +248,11 @@ class DatabaseWrapper {
       this.raw.exec('COMMIT');
       scheduleSave();
     } catch (err) {
-      this.raw.exec('ROLLBACK');
+      try {
+        this.raw.exec('ROLLBACK');
+      } catch (rollbackErr) {
+        log.error('Rollback failed:', rollbackErr);
+      }
       throw err;
     }
   }
@@ -290,6 +320,8 @@ function tableHasColumn(
   table: string,
   column: string,
 ): boolean {
+  // Validate table name to prevent SQL injection via PRAGMA interpolation
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table)) return false;
   try {
     const rows = db.exec(`PRAGMA table_info(${table})`);
     if (rows.length === 0 || !rows[0]?.values) return false;
@@ -515,9 +547,15 @@ export function runMigrations(
   return result;
 }
 
-export async function initDb(): Promise<DatabaseWrapper> {
-  if (db) return new DatabaseWrapper(db);
+export function initDb(): Promise<DatabaseWrapper> {
+  if (db) return Promise.resolve(new DatabaseWrapper(db));
+  if (initPromise) return initPromise;
 
+  initPromise = doInitDb();
+  return initPromise;
+}
+
+async function doInitDb(): Promise<DatabaseWrapper> {
   const SQL = await initSqlJs();
 
   const dataDir = process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
@@ -616,6 +654,7 @@ export async function closeDb() {
     await flush();
     db.close();
     db = null;
+    initPromise = null;
   }
 }
 

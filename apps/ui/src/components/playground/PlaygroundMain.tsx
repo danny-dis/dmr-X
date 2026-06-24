@@ -1,9 +1,11 @@
 import * as React from 'react';
-import { usePlaygroundStore } from '@/store/usePlaygroundStore';
+
+import { EmptyState } from './EmptyState';
 import { MessageBubble } from './MessageBubble';
 import { StreamingBubble } from './StreamingBubble';
-import { EmptyState } from './EmptyState';
+
 import { cn } from '@/lib/utils';
+import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export function PlaygroundMain() {
   const { messages, isStreaming } = usePlaygroundStore();

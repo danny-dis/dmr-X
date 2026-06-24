@@ -1,7 +1,10 @@
-import * as React from 'react';
 import { Check, Copy } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+
 import { Button } from './Button';
+
+import { cn } from '@/lib/utils';
+
 
 export interface CopyButtonProps {
   value: string;

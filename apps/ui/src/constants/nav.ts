@@ -1,4 +1,3 @@
-import * as SidebarIcons from '@/icons/SidebarIcons';
 import {
   LayoutDashboard,
   FlaskConical,
@@ -22,6 +21,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
+
+import * as SidebarIcons from '@/icons/SidebarIcons';
 
 export interface NavItem {
   label: string;

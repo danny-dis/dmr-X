@@ -1,8 +1,10 @@
+import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
-import { generateRequestId, logger } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 const SpeechRequestSchema = z.object({
   model: z.string(),
@@ -23,6 +25,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     const unifiedRequest: UnifiedRequest = {
       modality: 'audio_tts',
@@ -41,7 +44,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     try {
       const { response } = await router.route(unifiedRequest, {
         path: '/audio/speech',
-        qualityTarget: 'balanced',
+        qualityTarget,
       });
 
       if (response.audio?.b64_json) {
@@ -69,6 +72,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
   server.post('/audio/transcriptions', async (request, reply) => {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     let audioBase64: string;
     let model = '';
@@ -124,7 +128,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     try {
       const { response } = await router.route(unifiedRequest, {
         path: '/audio/transcriptions',
-        qualityTarget: 'balanced',
+        qualityTarget,
       });
 
       const text = response.message?.content || '';

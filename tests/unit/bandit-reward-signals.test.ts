@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+
 import { calculateReward } from '../../services/router/src/bandit/thompson-sampler.js';
 
 describe('calculateReward — 8C.1 / 8C.2 reward signals', () => {

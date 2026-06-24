@@ -1,16 +1,17 @@
-import * as React from 'react';
 import { Activity, Brain, Zap, Bot, Wrench, Cog, GitBranch, TrendingUp, BarChart3 } from 'lucide-react';
-import { PageHeader, PageContainer } from '@/components/layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { Badge } from '@/components/primitives/Badge';
-import { StatTile } from '@/components/primitives/StatTile';
-import { Skeleton } from '@/components/primitives/Skeleton';
-import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
+import * as React from 'react';
+
 import { DonutChart, Sunburst } from '@/components/charts/DonutChart';
+import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
 import { TopologyGraph } from '@/components/charts/TopologyGraph';
 import { RouteDecisionRow } from '@/components/domain/RouteDecisionRow';
-import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
+import { PageHeader, PageContainer } from '@/components/layout';
+import { Badge } from '@/components/primitives/Badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatTile } from '@/components/primitives/StatTile';
 import { useApiData } from '@/hooks/useApiData';
+import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
 import { Admin } from '@/lib/admin';
 import { formatNumber, formatDuration, timeAgo } from '@/lib/formatters';
 import type { ApiRouteDecision, ApiProvider, ApiUsagePoint } from '@/types/api';

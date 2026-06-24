@@ -1,8 +1,10 @@
+import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { generateRequestId } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ValidationError, type UnifiedRequest } from '@dmr-x/core';
-import { generateRequestId } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 const EmbeddingRequestSchema = z.object({
   model: z.string(),
@@ -22,6 +24,7 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
+    const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
     const unifiedRequest: UnifiedRequest = {
       modality: 'embedding',
@@ -39,7 +42,7 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
 
     const { response } = await router.route(unifiedRequest, {
       path: '/v1/embeddings',
-      qualityTarget: 'balanced',
+      qualityTarget,
     });
 
     return {

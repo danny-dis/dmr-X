@@ -1,20 +1,21 @@
-import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, ProviderPreferences, ProviderModel } from '@dmr-x/core';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import type { RateLimitService, QuotaService } from '@dmr-x/quota';
-import type { PolicyService } from '@dmr-x/policy';
-import { trace, SpanStatusCode } from '@opentelemetry/api';
-import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
-import { runPipeline } from './pipeline/pipeline.js';
-import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
-import { hashConversation, getStickyProvider, setStickyProvider, breakStickySession } from './sticky/sticky-session.js';
-import { TaskDecomposer } from './decomposer/task-decomposer.js';
-import { SpecialistRouter } from './decomposer/specialist-router.js';
-import { CompositeExecutor } from './decomposer/composite-executor.js';
-import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
-import { isMetaModel, resolveMetaModel } from './meta-models.js';
-import { ThompsonSampler } from './bandit/thompson-sampler.js';
+import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, ProviderPreferences, ProviderModel } from '@dmr-x/core';
 import type { CandidateSet } from '@dmr-x/core';
+import type { PolicyService } from '@dmr-x/policy';
+import type { RateLimitService, QuotaService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
+import { trace, SpanStatusCode } from '@opentelemetry/api';
+
+import { ThompsonSampler } from './bandit/thompson-sampler.js';
+import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
+import { CompositeExecutor } from './decomposer/composite-executor.js';
+import { SpecialistRouter } from './decomposer/specialist-router.js';
+import { TaskDecomposer } from './decomposer/task-decomposer.js';
+import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
+import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
+import { isMetaModel, resolveMetaModel } from './meta-models.js';
+import { runPipeline } from './pipeline/pipeline.js';
+import { hashConversation, getStickyProvider, setStickyProvider, breakStickySession } from './sticky/sticky-session.js';
 
 // The router shares the gateway's tracer instance (see services/telemetry/src/tracer.ts).
 // The OTel API resolves this lazily through the global provider, so it is always
@@ -674,7 +675,7 @@ export class Router {
     if (slash <= 0) return { modelId: model };
     const providerName = model.slice(0, slash);
     const rest = model.slice(slash + 1);
-    if (rest && this.candidates.some(c => c.providerName === providerName)) {
+    if (rest && this.candidates.some(c => c.providerName === providerName && c.modelId === rest)) {
       return { providerName, modelId: rest };
     }
     return { modelId: model };

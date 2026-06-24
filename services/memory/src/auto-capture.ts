@@ -1,6 +1,7 @@
-import { logger } from '@dmr-x/utils';
-import { memoryService } from './memory.service.js';
 import type { Message } from '@dmr-x/core';
+import { logger } from '@dmr-x/utils';
+
+import { memoryService } from './memory.service.js';
 
 export interface CaptureContext {
   tenantId?: string;

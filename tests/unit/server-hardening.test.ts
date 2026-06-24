@@ -9,9 +9,10 @@
  *  - /healthz reports db_read, db_write, candidates, memory, and uptime
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
+
+import Fastify, { type FastifyInstance } from 'fastify';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // We re-import the parser helpers. They're not exported from server.ts (they
 // live at module scope), so we replicate them here and unit-test the logic.

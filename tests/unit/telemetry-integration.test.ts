@@ -11,8 +11,8 @@
  * what we're validating.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 interface RecordedCall {
   method: 'recordRequest' | 'recordLatency' | 'recordTokens' | 'recordError' | 'recordHealth';

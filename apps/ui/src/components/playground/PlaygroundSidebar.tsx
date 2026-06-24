@@ -1,10 +1,12 @@
+import { Plus, Search, MessageSquare } from 'lucide-react';
 import * as React from 'react';
-import { usePlaygroundStore } from '@/store/usePlaygroundStore';
+
+import { ConversationItem } from './ConversationItem';
+
 import { Button } from '@/components/primitives/Button';
 import { Input } from '@/components/primitives/Input';
-import { ConversationItem } from './ConversationItem';
-import { Plus, Search, MessageSquare } from 'lucide-react';
 import { useApiData } from '@/hooks/useApiData';
+import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export function PlaygroundSidebar() {
   const {

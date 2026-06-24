@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+
 import { createAnthropicSSEStream } from '../../apps/gateway/src/converters/anthropic-stream-serializer.js';
 import type { StreamChunk } from '../../packages/core/src/types/index.js';
 

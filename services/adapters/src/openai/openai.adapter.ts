@@ -1,9 +1,3 @@
-import { BaseAdapter } from '../base.adapter.js';
-import type {
-  ProviderConfig,
-  ModelInfo,
-  ExecuteOptions,
-} from '../adapter.interface.js';
 import type {
   Modality,
   UnifiedRequest,
@@ -13,6 +7,13 @@ import type {
 import { ProviderError } from '@dmr-x/core';
 import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 import { logger } from '@dmr-x/utils';
+
+import type {
+  ProviderConfig,
+  ModelInfo,
+  ExecuteOptions,
+} from '../adapter.interface.js';
+import { BaseAdapter } from '../base.adapter.js';
 import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 export class OpenAIAdapter extends BaseAdapter {

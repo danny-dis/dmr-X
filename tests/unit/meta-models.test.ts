@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { isMetaModel, resolveMetaModel, META_MODELS } from '../../services/router/src/meta-models.js';
+
 import type { CandidateSet } from '../../packages/core/src/types/index.js';
+import { isMetaModel, resolveMetaModel, META_MODELS } from '../../services/router/src/meta-models.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {

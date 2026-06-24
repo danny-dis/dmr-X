@@ -10,10 +10,10 @@
 // Imports from sibling modules
 // ---------------------------------------------------------------------------
 
-import type { ParsedToolCall } from './tool-types.js';
-import type { TurnContext, ContextInput } from './tool-context.js';
-import type { OpenResponsesResult } from './stream-type-guards.js';
 import type { StopCondition, Tool } from './stop-conditions.js';
+import type { OpenResponsesResult } from './stream-type-guards.js';
+import type { TurnContext, ContextInput } from './tool-context.js';
+import type { ParsedToolCall } from './tool-types.js';
 
 // ---------------------------------------------------------------------------
 // Local type stubs (replaces ../models/index.js imports)
