@@ -18,6 +18,7 @@ export { GenericOpenAIAdapter } from './generic-openai/generic-openai.adapter.js
 // Diffusion Adapters
 export { ReplicateAdapter } from './replicate/replicate.adapter.js';
 export { StabilityAdapter } from './stability/stability.adapter.js';
+export { PollinationsImageAdapter } from './pollinations-images/index.js';
 
 // Video Adapters
 export { ComfyUIAdapter } from './comfyui/comfyui.adapter.js';

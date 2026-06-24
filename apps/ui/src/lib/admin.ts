@@ -34,6 +34,10 @@ import type {
   ApiSandboxSubmit,
   ApiFederationRegister,
   ApiRerankResult,
+  ApiMcpConfig,
+  ApiRbacPolicy,
+  ApiMcpFederationPeer,
+  ApiMcpAggregatedServer,
 } from '@/types/api';
 
 
@@ -451,6 +455,43 @@ export const Admin = {
   // Rotate the admin API key at runtime. Returns the new key (one-time display).
   rotateAdminKey: () =>
     apiPost<{ new_key: string; message: string }>('/admin/security/rotate-admin-key'),
+
+  // MCP Configuration
+  getMcpConfig: () => apiGet<ApiMcpConfig>('/admin/mcp/config'),
+  updateMcpConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/config', body),
+
+  // MCP Tool Search
+  getToolSearchConfig: () => apiGet('/admin/mcp/tool-search/config'),
+  updateToolSearchConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/tool-search/config', body),
+
+  // MCP Guardrails
+  getGuardrailsConfig: () => apiGet('/admin/mcp/guardrails/config'),
+  updateGuardrailsConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/guardrails/config', body),
+
+  // MCP Audit
+  getAuditConfig: () => apiGet('/admin/mcp/audit/config'),
+  updateAuditConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/audit/config', body),
+
+  // MCP RBAC
+  listRbacPolicies: () => apiGet<{ policies: ApiRbacPolicy[] }>('/admin/mcp/rbac/policies'),
+  createRbacPolicy: (body: Omit<ApiRbacPolicy, 'id'> & { id?: string }) => apiPost<ApiRbacPolicy>('/admin/mcp/rbac/policies', body),
+  deleteRbacPolicy: (id: string) => apiDelete<{ ok: true }>(`/admin/mcp/rbac/policies/${id}`),
+
+  // MCP Federation
+  getFederationConfig: () => apiGet('/admin/mcp/federation/config'),
+  updateFederationConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/federation/config', body),
+  listFederationPeers: () => apiGet<{ peers: ApiMcpFederationPeer[] }>('/admin/mcp/federation/peers'),
+  addFederationPeer: (body: { name: string; endpoint: string; secretRef?: string }) => apiPost<ApiMcpFederationPeer>('/admin/mcp/federation/peers', body),
+  removeFederationPeer: (id: string) => apiDelete<{ ok: true }>(`/admin/mcp/federation/peers/${id}`),
+
+  // MCP A2A
+  getA2AConfig: () => apiGet('/admin/mcp/a2a/config'),
+  updateA2AConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/a2a/config', body),
+
+  // MCP Aggregation
+  listAggregatedServers: () => apiGet<{ servers: ApiMcpAggregatedServer[] }>('/admin/mcp/aggregation/servers'),
+  addAggregatedServer: (body: { id: string; name: string; transport: string; url?: string; command?: string; args?: string[] }) => apiPost<ApiMcpAggregatedServer>('/admin/mcp/aggregation/servers', body),
+  removeAggregatedServer: (id: string) => apiDelete<{ ok: true }>(`/admin/mcp/aggregation/servers/${id}`),
 };
 
 function buildSseUrl(path: string): string {

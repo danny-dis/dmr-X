@@ -1,6 +1,12 @@
-import { Cpu, Server, Hammer as Tool, Network, Globe, Info, RefreshCw, AlertTriangle, Play, ChevronDown, Search, List, Shield, FileText, Activity } from 'lucide-react';
+import { Cpu, Server, Hammer as Tool, Network, Globe, Info, RefreshCw, AlertTriangle, Play, Search, Shield, FileText, Activity, Lock } from 'lucide-react';
 import * as React from 'react';
 
+import { McpToolSearchConfig } from '@/components/domain/mcp/McpToolSearchConfig';
+import { McpGuardrailsConfig } from '@/components/domain/mcp/McpGuardrailsConfig';
+import { McpAuditConfig } from '@/components/domain/mcp/McpAuditConfig';
+import { McpRbacPolicies } from '@/components/domain/mcp/McpRbacPolicies';
+import { McpFederationConfig } from '@/components/domain/mcp/McpFederationConfig';
+import { McpAggregationConfig } from '@/components/domain/mcp/McpAggregationConfig';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
@@ -15,11 +21,6 @@ import { apiPost } from '@/lib/api';
 import type { ApiMcpStatus, ApiMcpTool } from '@/types/api';
 
 export function MCPPage() {
-  // The MCP server is a separate process. The gateway's admin endpoint
-  // reports the env-derived config (matching the MCP server's defaults)
-  // and probes the MCP server's /health endpoint for HTTP/SSE transports.
-  // For stdio the process is per-client, so `available` is `null` and we
-  // render an "unknown" pill.
   const mcp = useApiData<ApiMcpStatus>(Admin.getMcpStatus, [], { refetchInterval: 30_000 });
   const mcpTools = useApiData<ApiMcpTool[]>(Admin.listMcpTools, [], { refetchInterval: 60_000 });
 
@@ -43,8 +44,6 @@ export function MCPPage() {
   const isStdio = transport === 'stdio';
   const isHttp = !isStdio;
 
-  // Status pill: reachable (online), probed-but-down (offline), or stdio
-  // / error / loading (unknown).
   const pillStatus: 'online' | 'offline' | 'unknown' =
     data?.available === true ? 'online'
     : data?.available === false ? 'offline'
@@ -54,7 +53,6 @@ export function MCPPage() {
     : pillStatus === 'offline' ? 'Unreachable'
     : isStdio ? 'Separate process' : 'Status unknown';
 
-  // Tool Search handler
   const handleToolSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
@@ -162,6 +160,15 @@ export function MCPPage() {
                   </Badge>
                 )}
               </div>
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-fg-muted">Tools</span>
+                {mcp.isLoading && !data ? (
+                  <Skeleton className="h-4 w-10" />
+                ) : (
+                  <Badge tone="muted" size="sm">{data?.tools.length ?? 0}</Badge>
+                )}
+              </div>
             </div>
 
             <div className="pt-2">
@@ -176,8 +183,8 @@ export function MCPPage() {
         {/* Configuration & Tools */}
         <Card className="lg:col-span-2">
           <Tabs defaultValue="tools">
-            <div className="px-5 pt-4 border-b border-border">
-                <TabsList className="mb-[-1px]">
+            <div className="px-5 pt-4 border-b border-border overflow-x-auto">
+                <TabsList className="mb-[-1px] min-w-max">
                  <TabsTrigger value="tools" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                    <Tool className="size-3.5 mr-2" />
                    Available Tools
@@ -193,21 +200,42 @@ export function MCPPage() {
                    <Play className="size-3.5 mr-2" />
                    Test Tool
                  </TabsTrigger>
-                 <TabsTrigger value="aggregation" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                 <TabsTrigger value="tool-search-config" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Search className="size-3.5 mr-2" />
+                   Search Config
+                 </TabsTrigger>
+                 <TabsTrigger value="guardrails" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Shield className="size-3.5 mr-2" />
+                   Guardrails
+                 </TabsTrigger>
+                 <TabsTrigger value="audit" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <FileText className="size-3.5 mr-2" />
+                   Audit
+                 </TabsTrigger>
+                 <TabsTrigger value="rbac" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Lock className="size-3.5 mr-2" />
+                   RBAC
+                 </TabsTrigger>
+                 <TabsTrigger value="federation" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                    <Network className="size-3.5 mr-2" />
+                   Federation
+                 </TabsTrigger>
+                 <TabsTrigger value="aggregation" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
+                   <Globe className="size-3.5 mr-2" />
                    Aggregation
                  </TabsTrigger>
                  <TabsTrigger value="a2a" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
                    <Activity className="size-3.5 mr-2" />
-                   A2A Protocol
+                   A2A
                  </TabsTrigger>
                  <TabsTrigger value="setup" className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent pb-2">
-                   <Globe className="size-3.5 mr-2" />
-                   Setup Guide
+                   <Info className="size-3.5 mr-2" />
+                   Setup
                  </TabsTrigger>
                </TabsList>
             </div>
 
+            {/* Available Tools Tab */}
             <TabsContent value="tools" className="p-0">
               {mcp.isLoading && !data ? (
                 <div className="divide-y divide-border">
@@ -219,7 +247,7 @@ export function MCPPage() {
                   ))}
                 </div>
               ) : (
-                <div className="divide-y divide-border">
+                <div className="divide-y divide-border max-h-[500px] overflow-y-auto">
                   {(tools ?? data?.tools ?? []).map((tool) => (
                     <div key={tool.name} className="p-4 hover:bg-surface-1 transition-colors">
                       <div className="flex items-center justify-between mb-1">
@@ -278,7 +306,7 @@ export function MCPPage() {
               {searchResults && (
                 <div className="space-y-2">
                   <p className="text-xs text-fg-muted font-medium">{searchResults.length} tool(s) found</p>
-                  <div className="divide-y divide-border border border-border rounded">
+                  <div className="divide-y divide-border border border-border rounded max-h-[400px] overflow-y-auto">
                     {searchResults.map((result: any) => (
                       <div key={result.name} className="p-4 hover:bg-surface-1 transition-colors">
                         <div className="flex items-center justify-between mb-1">
@@ -301,7 +329,7 @@ export function MCPPage() {
                           }}
                           className="mt-2 text-xs text-primary hover:underline"
                         >
-                          Use this tool →
+                          Use this tool
                         </button>
                       </div>
                     ))}
@@ -322,6 +350,7 @@ export function MCPPage() {
               )}
             </TabsContent>
 
+            {/* Test Tool Tab */}
             <TabsContent value="test" className="p-4 space-y-4">
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-fg-subtle uppercase">Tool</label>
@@ -337,95 +366,6 @@ export function MCPPage() {
                 </select>
               </div>
 
-              {/* Tool Search Tab */}
-              <Tabs defaultValue="search" className="mt-4">
-                <TabsList className="mb-2">
-                  <TabsTrigger value="search" className="text-xs">
-                    <Search className="size-3 mr-1" />
-                    Smart Search
-                  </TabsTrigger>
-                  <TabsTrigger value="browse" className="text-xs">
-                    <List className="size-3 mr-1" />
-                    Browse All
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="search" className="space-y-3">
-                  <div className="flex gap-2">
-                    <Input
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Describe what you want to do (e.g., 'generate an image')"
-                      className="flex-1"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && searchQuery.trim()) {
-                          handleToolSearch();
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={handleToolSearch}
-                      disabled={!searchQuery.trim() || isSearching}
-                      className="px-3 py-2 text-xs bg-primary text-white rounded hover:bg-primary/90 disabled:opacity-50"
-                    >
-                      {isSearching ? 'Searching...' : 'Search'}
-                    </button>
-                  </div>
-
-                  {searchError && (
-                    <div className="p-2 text-xs text-warning bg-warning/10 rounded">
-                      {searchError}
-                    </div>
-                  )}
-
-                  {searchResults && (
-                    <div className="space-y-2">
-                      <p className="text-xs text-fg-muted">{searchResults.length} tool(s) found</p>
-                      <div className="divide-y divide-border border border-border rounded">
-                        {searchResults.map((result: any) => (
-                          <div key={result.name} className="p-3 hover:bg-surface-1 transition-colors">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-sm font-mono font-semibold text-primary">{result.name}</span>
-                              <div className="flex items-center gap-2">
-                                <Badge tone={result.source === 'internal' ? 'primary' : 'secondary'} size="sm">
-                                  {result.source}
-                                </Badge>
-                                <Badge tone="muted" size="sm">
-                                  Score: {(result.score * 100).toFixed(0)}%
-                                </Badge>
-                              </div>
-                            </div>
-                            <p className="text-xs text-fg-muted">{result.description}</p>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedTool(result.name);
-                                setToolParams('{}');
-                              }}
-                              className="mt-2 text-xs text-primary hover:underline"
-                            >
-                              Use this tool
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {!searchResults && !searchError && (
-                    <div className="text-center text-xs text-fg-muted py-4">
-                      Describe what you want to do and the system will find the best tool for you.
-                    </div>
-                  )}
-                </TabsContent>
-
-                <TabsContent value="browse">
-                  <p className="text-xs text-fg-muted mb-2">
-                    All available tools in the system
-                  </p>
-                </TabsContent>
-              </Tabs>
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-fg-subtle uppercase">Parameters (JSON)</label>
                 <textarea
@@ -462,24 +402,41 @@ export function MCPPage() {
               {toolResult && (
                 <div className="space-y-2">
                   <label className="text-xs font-semibold text-fg-subtle uppercase">Result</label>
-                  <pre className="p-3 text-xs font-mono bg-surface-2 rounded overflow-x-auto">
+                  <pre className="p-3 text-xs font-mono bg-surface-2 rounded overflow-x-auto max-h-[400px] overflow-y-auto">
                     {JSON.stringify(toolResult, null, 2)}
                   </pre>
                 </div>
               )}
             </TabsContent>
 
-            <TabsContent value="aggregation" className="p-8 text-center">
-              <Network className="size-12 text-fg-subtle mx-auto mb-4" />
-              <h3 className="text-sm font-semibold mb-2">MCP Aggregator</h3>
-              <p className="text-xs text-fg-muted max-w-md mx-auto mb-6">
-                Connect external MCP servers to DMR-X. All tools from aggregated servers will be exposed through the same connection.
-              </p>
-              <div className="p-4 rounded-lg border border-dashed border-border bg-surface-1 inline-block">
-                <p className="text-[10px] text-fg-subtle">
-                  Aggregation is configured via <code className="bg-surface-2 px-1 rounded text-primary">DMRX_MCP_CLIENT_SERVERS</code> in your .env file.
-                </p>
-              </div>
+            {/* Tool Search Config Tab */}
+            <TabsContent value="tool-search-config" className="p-4">
+              <McpToolSearchConfig />
+            </TabsContent>
+
+            {/* Guardrails Tab */}
+            <TabsContent value="guardrails" className="p-4">
+              <McpGuardrailsConfig />
+            </TabsContent>
+
+            {/* Audit Tab */}
+            <TabsContent value="audit" className="p-4">
+              <McpAuditConfig />
+            </TabsContent>
+
+            {/* RBAC Tab */}
+            <TabsContent value="rbac" className="p-4">
+              <McpRbacPolicies />
+            </TabsContent>
+
+            {/* Federation Tab */}
+            <TabsContent value="federation" className="p-4">
+              <McpFederationConfig />
+            </TabsContent>
+
+            {/* Aggregation Tab */}
+            <TabsContent value="aggregation" className="p-4">
+              <McpAggregationConfig />
             </TabsContent>
 
             {/* A2A Protocol Tab */}
@@ -532,6 +489,7 @@ export function MCPPage() {
               </div>
             </TabsContent>
 
+            {/* Setup Guide Tab */}
             <TabsContent value="setup" className="p-6 space-y-6">
               <div className="space-y-4">
                 <div className="space-y-2">
@@ -560,6 +518,23 @@ ${data?.hasApiKey ? '        "DMRX_MCP_API_KEY": "<your-key>"\n' : ''}      }
   "mcpServers": {
     "dmr-x": {
       "url": "http://${host}:${port}/sse",
+      "headers": {
+        "Authorization": "Bearer <your-mcp-key>"
+      }
+    }
+  }
+}`}
+                  </Code>
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold">Using Streamable HTTP</h3>
+                  <p className="text-xs text-fg-muted">For the latest MCP transport:</p>
+                  <Code copyable language="json" className="text-[11px]">
+{`{
+  "mcpServers": {
+    "dmr-x": {
+      "url": "http://${host}:${port}/mcp",
       "headers": {
         "Authorization": "Bearer <your-mcp-key>"
       }

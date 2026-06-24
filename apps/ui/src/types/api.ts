@@ -665,3 +665,92 @@ export interface ApiToolLoopStepEvent {
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
+
+// ---------------------------------------------------------------------------
+// MCP Configuration Types
+// ---------------------------------------------------------------------------
+
+export interface ApiMcpToolSearchConfig {
+  enabled: boolean;
+  bm25: { enabled: boolean; k1: number; b: number };
+  semantic: { enabled: boolean; remoteUrl: string };
+  hybrid: { enabled: boolean; rrfConstant: number };
+}
+
+export interface ApiMcpGuardrailsConfig {
+  enabled: boolean;
+  pii: { enabled: boolean; maskChar: string };
+  contentFilter: { enabled: boolean; blockedPatterns: string[] };
+}
+
+export interface ApiMcpAuditConfig {
+  enabled: boolean;
+  backend: string;
+  retentionDays: number;
+  logBodies: boolean;
+}
+
+export interface ApiRbacPolicy {
+  id: string;
+  name: string;
+  effect: 'allow' | 'deny';
+  principals: string[];
+  actions: string[];
+  resources: string[];
+}
+
+export interface ApiMcpRbacConfig {
+  enabled: boolean;
+  policies: ApiRbacPolicy[];
+}
+
+export interface ApiMcpFederationPeer {
+  id: string;
+  name: string;
+  endpoint: string;
+  secretRef?: string;
+  status?: string;
+  lastSync?: string | null;
+}
+
+export interface ApiMcpFederationConfig {
+  enabled: boolean;
+  peers: ApiMcpFederationPeer[];
+  discovery: { mdns: boolean; dns: { domain: string } };
+  syncInterval: string;
+}
+
+export interface ApiMcpA2AConfig {
+  enabled: boolean;
+  agentCard: { name: string; description: string; url: string };
+  taskTimeout: number;
+}
+
+export interface ApiMcpAggregatedServer {
+  id: string;
+  name: string;
+  transport: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  status?: string;
+  toolCount?: number;
+}
+
+export interface ApiMcpAggregationConfig {
+  servers: ApiMcpAggregatedServer[];
+}
+
+export interface ApiMcpConfig {
+  transport: string;
+  host: string;
+  port: number;
+  hasApiKey: boolean;
+  toolSearch: ApiMcpToolSearchConfig;
+  guardrails: ApiMcpGuardrailsConfig;
+  audit: ApiMcpAuditConfig;
+  rbac: ApiMcpRbacConfig;
+  federation: ApiMcpFederationConfig;
+  a2a: ApiMcpA2AConfig;
+  aggregation: ApiMcpAggregationConfig;
+}

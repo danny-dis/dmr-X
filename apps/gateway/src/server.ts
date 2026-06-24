@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { Router } from '@dmr-x/router';
@@ -138,6 +138,7 @@ export async function createServer() {
   adapterRegistry.register(new VeoAdapter());
   adapterRegistry.register(new RunwayAdapter());
   adapterRegistry.register(new ComfyUIAdapter());
+  adapterRegistry.register(new PollinationsImageAdapter());
   // Audio Separation adapters
   adapterRegistry.register(createAudioSeparationAdapter('demucs'));
   adapterRegistry.register(createAudioSeparationAdapter('audioshake'));

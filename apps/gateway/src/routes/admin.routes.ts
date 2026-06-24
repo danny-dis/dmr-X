@@ -4357,4 +4357,273 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     return { ...row, allowed_tools };
   });
+
+  // --- MCP Configuration Endpoints ------------------------------------------
+
+  // Helper: Read MCP config file
+  function readMcpConfig(): Record<string, unknown> {
+    try {
+      const configPath = process.env.DMRX_MCP_CONFIG_PATH || 'dmrx-mcp.config.json';
+      const fs = require('fs');
+      if (fs.existsSync(configPath)) {
+        return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      }
+    } catch {}
+    return {};
+  }
+
+  // Helper: Write MCP config file
+  function writeMcpConfig(config: Record<string, unknown>): void {
+    const fs = require('fs');
+    const configPath = process.env.DMRX_MCP_CONFIG_PATH || 'dmrx-mcp.config.json';
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  }
+
+  // GET /admin/mcp/config — Get full MCP configuration
+  server.get('/admin/mcp/config', async () => {
+    const fileConfig = readMcpConfig();
+    return {
+      transport: process.env.DMRX_MCP_TRANSPORT || fileConfig.transport || 'stdio',
+      host: process.env.DMRX_MCP_HOST || fileConfig.host || '127.0.0.1',
+      port: parseInt(process.env.DMRX_MCP_PORT || String(fileConfig.port || 3100), 10),
+      hasApiKey: !!process.env.DMRX_MCP_API_KEY,
+      toolSearch: {
+        enabled: fileConfig.toolSearch?.enabled ?? true,
+        bm25: {
+          enabled: fileConfig.toolSearch?.bm25?.enabled ?? true,
+          k1: fileConfig.toolSearch?.bm25?.k1 ?? 1.2,
+          b: fileConfig.toolSearch?.bm25?.b ?? 0.75,
+        },
+        semantic: {
+          enabled: fileConfig.toolSearch?.semantic?.enabled ?? true,
+          remoteUrl: fileConfig.toolSearch?.semantic?.remoteUrl ?? '',
+        },
+        hybrid: {
+          enabled: fileConfig.toolSearch?.hybrid?.enabled ?? true,
+          rrfConstant: fileConfig.toolSearch?.hybrid?.rrfConstant ?? 60,
+        },
+      },
+      guardrails: {
+        enabled: fileConfig.guardrails?.enabled ?? false,
+        pii: {
+          enabled: fileConfig.guardrails?.pii?.enabled ?? true,
+          maskChar: fileConfig.guardrails?.pii?.maskChar ?? '*',
+        },
+        contentFilter: {
+          enabled: fileConfig.guardrails?.contentFilter?.enabled ?? true,
+          blockedPatterns: fileConfig.guardrails?.contentFilter?.blockedPatterns ?? [],
+        },
+      },
+      audit: {
+        enabled: fileConfig.audit?.enabled ?? false,
+        backend: fileConfig.audit?.backend ?? 'sqlite',
+        retentionDays: fileConfig.audit?.retentionDays ?? 30,
+        logBodies: fileConfig.audit?.logBodies ?? false,
+      },
+      rbac: {
+        enabled: fileConfig.rbac?.enabled ?? false,
+        policies: fileConfig.rbac?.policies ?? [],
+      },
+      federation: {
+        enabled: fileConfig.federation?.enabled ?? false,
+        peers: fileConfig.federation?.peers ?? [],
+        discovery: {
+          mdns: fileConfig.federation?.discovery?.mdns ?? false,
+          dns: {
+            domain: fileConfig.federation?.discovery?.dns?.domain ?? '',
+          },
+        },
+        syncInterval: fileConfig.federation?.syncInterval ?? '5m',
+      },
+      a2a: {
+        enabled: fileConfig.a2a?.enabled ?? false,
+        agentCard: {
+          name: fileConfig.a2a?.agentCard?.name ?? 'DMR-X Agent',
+          description: fileConfig.a2a?.agentCard?.description ?? 'DMR-X MCP Server Agent',
+          url: fileConfig.a2a?.agentCard?.url ?? '',
+        },
+        taskTimeout: fileConfig.a2a?.taskTimeout ?? 60000,
+      },
+      aggregation: {
+        servers: fileConfig.aggregation?.servers ?? [],
+      },
+    };
+  });
+
+  // PUT /admin/mcp/config — Update MCP configuration
+  server.put('/admin/mcp/config', async (request) => {
+    const body = request.body as Record<string, unknown>;
+    const current = readMcpConfig();
+    const updated = { ...current, ...body };
+    writeMcpConfig(updated);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/tool-search/config
+  server.get('/admin/mcp/tool-search/config', async () => {
+    const config = readMcpConfig();
+    return config.toolSearch ?? { enabled: true, bm25: { enabled: true, k1: 1.2, b: 0.75 }, semantic: { enabled: true, remoteUrl: '' }, hybrid: { enabled: true, rrfConstant: 60 } };
+  });
+
+  // PUT /admin/mcp/tool-search/config
+  server.put('/admin/mcp/tool-search/config', async (request) => {
+    const body = request.body as Record<string, unknown>;
+    const config = readMcpConfig();
+    config.toolSearch = { ...(config.toolSearch as Record<string, unknown>), ...body };
+    writeMcpConfig(config);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/guardrails/config
+  server.get('/admin/mcp/guardrails/config', async () => {
+    const config = readMcpConfig();
+    return config.guardrails ?? { enabled: false, pii: { enabled: true, maskChar: '*' }, contentFilter: { enabled: true, blockedPatterns: [] } };
+  });
+
+  // PUT /admin/mcp/guardrails/config
+  server.put('/admin/mcp/guardrails/config', async (request) => {
+    const body = request.body as Record<string, unknown>;
+    const config = readMcpConfig();
+    config.guardrails = { ...(config.guardrails as Record<string, unknown>), ...body };
+    writeMcpConfig(config);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/audit/config
+  server.get('/admin/mcp/audit/config', async () => {
+    const config = readMcpConfig();
+    return config.audit ?? { enabled: false, backend: 'sqlite', retentionDays: 30, logBodies: false };
+  });
+
+  // PUT /admin/mcp/audit/config
+  server.put('/admin/mcp/audit/config', async (request) => {
+    const body = request.body as Record<string, unknown>;
+    const config = readMcpConfig();
+    config.audit = { ...(config.audit as Record<string, unknown>), ...body };
+    writeMcpConfig(config);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/rbac/policies
+  server.get('/admin/mcp/rbac/policies', async () => {
+    const config = readMcpConfig();
+    return { policies: config.rbac?.policies ?? [] };
+  });
+
+  // POST /admin/mcp/rbac/policies
+  server.post('/admin/mcp/rbac/policies', async (request) => {
+    const body = request.body as { id?: string; name: string; effect: string; principals: string[]; actions: string[]; resources: string[] };
+    const config = readMcpConfig();
+    const policies = (config.rbac as Record<string, unknown>)?.policies as Array<Record<string, unknown>> ?? [];
+    const newPolicy = { id: body.id || crypto.randomUUID(), ...body };
+    policies.push(newPolicy);
+    if (!config.rbac) config.rbac = {} as Record<string, unknown>;
+    (config.rbac as Record<string, unknown>).policies = policies;
+    writeMcpConfig(config);
+    return newPolicy;
+  });
+
+  // DELETE /admin/mcp/rbac/policies/:id
+  server.delete('/admin/mcp/rbac/policies/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const config = readMcpConfig();
+    const policies = (config.rbac as Record<string, unknown>)?.policies as Array<Record<string, unknown>> ?? [];
+    const filtered = policies.filter((p) => p.id !== id);
+    if (!config.rbac) config.rbac = {} as Record<string, unknown>;
+    (config.rbac as Record<string, unknown>).policies = filtered;
+    writeMcpConfig(config);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/federation/config
+  server.get('/admin/mcp/federation/config', async () => {
+    const config = readMcpConfig();
+    return config.federation ?? { enabled: false, peers: [], discovery: { mdns: false, dns: { domain: '' } }, syncInterval: '5m' };
+  });
+
+  // PUT /admin/mcp/federation/config
+  server.put('/admin/mcp/federation/config', async (request) => {
+    const body = request.body as Record<string, unknown>;
+    const config = readMcpConfig();
+    config.federation = { ...(config.federation as Record<string, unknown>), ...body };
+    writeMcpConfig(config);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/federation/peers
+  server.get('/admin/mcp/federation/peers', async () => {
+    const config = readMcpConfig();
+    return { peers: config.federation?.peers ?? [] };
+  });
+
+  // POST /admin/mcp/federation/peers
+  server.post('/admin/mcp/federation/peers', async (request) => {
+    const body = request.body as { id?: string; name: string; endpoint: string; secretRef?: string };
+    const config = readMcpConfig();
+    const peers = (config.federation as Record<string, unknown>)?.peers as Array<Record<string, unknown>> ?? [];
+    const newPeer = { id: body.id || crypto.randomUUID(), ...body, status: 'pending', lastSync: null };
+    peers.push(newPeer);
+    if (!config.federation) config.federation = {} as Record<string, unknown>;
+    (config.federation as Record<string, unknown>).peers = peers;
+    writeMcpConfig(config);
+    return newPeer;
+  });
+
+  // DELETE /admin/mcp/federation/peers/:id
+  server.delete('/admin/mcp/federation/peers/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const config = readMcpConfig();
+    const peers = (config.federation as Record<string, unknown>)?.peers as Array<Record<string, unknown>> ?? [];
+    const filtered = peers.filter((p) => p.id !== id);
+    if (!config.federation) config.federation = {} as Record<string, unknown>;
+    (config.federation as Record<string, unknown>).peers = filtered;
+    writeMcpConfig(config);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/a2a/config
+  server.get('/admin/mcp/a2a/config', async () => {
+    const config = readMcpConfig();
+    return config.a2a ?? { enabled: false, agentCard: { name: 'DMR-X Agent', description: 'DMR-X MCP Server Agent', url: '' }, taskTimeout: 60000 };
+  });
+
+  // PUT /admin/mcp/a2a/config
+  server.put('/admin/mcp/a2a/config', async (request) => {
+    const body = request.body as Record<string, unknown>;
+    const config = readMcpConfig();
+    config.a2a = { ...(config.a2a as Record<string, unknown>), ...body };
+    writeMcpConfig(config);
+    return { success: true };
+  });
+
+  // GET /admin/mcp/aggregation/servers
+  server.get('/admin/mcp/aggregation/servers', async () => {
+    const config = readMcpConfig();
+    return { servers: config.aggregation?.servers ?? [] };
+  });
+
+  // POST /admin/mcp/aggregation/servers
+  server.post('/admin/mcp/aggregation/servers', async (request) => {
+    const body = request.body as { id: string; name: string; transport: string; url?: string; command?: string; args?: string[] };
+    const config = readMcpConfig();
+    const servers = (config.aggregation as Record<string, unknown>)?.servers as Array<Record<string, unknown>> ?? [];
+    const newServer = { ...body, status: 'disconnected', toolCount: 0 };
+    servers.push(newServer);
+    if (!config.aggregation) config.aggregation = {} as Record<string, unknown>;
+    (config.aggregation as Record<string, unknown>).servers = servers;
+    writeMcpConfig(config);
+    return newServer;
+  });
+
+  // DELETE /admin/mcp/aggregation/servers/:id
+  server.delete('/admin/mcp/aggregation/servers/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const config = readMcpConfig();
+    const servers = (config.aggregation as Record<string, unknown>)?.servers as Array<Record<string, unknown>> ?? [];
+    const filtered = servers.filter((s) => s.id !== id);
+    if (!config.aggregation) config.aggregation = {} as Record<string, unknown>;
+    (config.aggregation as Record<string, unknown>).servers = filtered;
+    writeMcpConfig(config);
+    return { success: true };
+  });
 }
