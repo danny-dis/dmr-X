@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dmr-x.fullname" . }}
+  namespace: {{ include "dmr-x.namespace" . }}
+  labels:
+    {{- include "dmr-x.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    {{- if .Values.mcpServer.enabled }}
+    - port: {{ .Values.mcpServer.port }}
+      targetPort: mcp
+      protocol: TCP
+      name: mcp
+    {{- end }}
+  selector:
+    {{- include "dmr-x.selectorLabels" . | nindent 4 }}

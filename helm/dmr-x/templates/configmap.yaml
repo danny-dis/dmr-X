@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dmr-x.fullname" . }}-config
+  namespace: {{ include "dmr-x.namespace" . }}
+  labels:
+    {{- include "dmr-x.labels" . | nindent 4 }}
+data:
+  NODE_ENV: {{ .Values.dmrx.environment | quote }}
+  LOG_LEVEL: {{ .Values.dmrx.logLevel | quote }}
+  DMRX_LOCAL_MODE: {{ .Values.dmrx.localMode | quote }}
+  DMRX_DATA_DIR: {{ .Values.dmrx.dataDir | quote }}
+  DMRX_RATE_LIMIT_MAX: {{ .Values.dmrx.rateLimit.max | quote }}
+  DMRX_RATE_LIMIT_WINDOW: {{ .Values.dmrx.rateLimit.window | quote }}
+  DMRX_BODY_LIMIT: {{ .Values.dmrx.bodyLimit | quote }}
+  DMRX_REQUEST_TIMEOUT: {{ .Values.dmrx.requestTimeout | quote }}
+  {{- if .Values.mcpServer.enabled }}
+  MCP_SERVER_ENABLED: "true"
+  MCP_SERVER_PORT: {{ .Values.mcpServer.port | quote }}
+  MCP_TOOL_SEARCH_ENABLED: {{ .Values.mcpServer.toolSearch.enabled | quote }}
+  MCP_OAUTH_ENABLED: {{ .Values.mcpServer.oauth.enabled | quote }}
+  MCP_GUARDRAILS_ENABLED: {{ .Values.mcpServer.guardrails.enabled | quote }}
+  MCP_AUDIT_ENABLED: {{ .Values.mcpServer.audit.enabled | quote }}
+  MCP_RBAC_ENABLED: {{ .Values.mcpServer.rbac.enabled | quote }}
+  MCP_A2A_ENABLED: {{ .Values.mcpServer.a2a.enabled | quote }}
+  MCP_FEDERATION_ENABLED: {{ .Values.mcpServer.federation.enabled | quote }}
+  {{- end }}
+  {{- if .Values.workflow.enabled }}
+  WORKFLOW_ENABLED: "true"
+  WORKFLOW_MAX_CONCURRENT: {{ .Values.workflow.maxConcurrentWorkflows | quote }}
+  WORKFLOW_DEFAULT_TIMEOUT: {{ .Values.workflow.defaultTimeout | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dmr-x.fullname" . }}-mcp-config
+  namespace: {{ include "dmr-x.namespace" . }}
+  labels:
+    {{- include "dmr-x.labels" . | nindent 4 }}
+data:
+  dmrx-mcp.config.json: |
+    {
+      "toolSearch": {
+        "enabled": {{ .Values.mcpServer.toolSearch.enabled }},
+        "bm25": {
+          "enabled": {{ .Values.mcpServer.toolSearch.bm25.enabled }}
+        },
+        "semantic": {
+          "enabled": {{ .Values.mcpServer.toolSearch.semantic.enabled }},
+          "remoteUrl": "{{ .Values.mcpServer.toolSearch.semantic.remoteUrl }}"
+        },
+        "hybrid": {
+          "enabled": {{ .Values.mcpServer.toolSearch.hybrid.enabled }}
+        }
+      },
+      "oauth": {
+        "enabled": {{ .Values.mcpServer.oauth.enabled }},
+        "issuerUrl": "{{ .Values.mcpServer.oauth.issuerUrl }}",
+        "jwksUri": "{{ .Values.mcpServer.oauth.jwksUri }}"
+      },
+      "guardrails": {
+        "enabled": {{ .Values.mcpServer.guardrails.enabled }},
+        "pii": {
+          "enabled": {{ .Values.mcpServer.guardrails.pii.enabled }},
+          "maskChar": "{{ .Values.mcpServer.guardrails.pii.maskChar }}"
+        },
+        "contentFilter": {
+          "enabled": {{ .Values.mcpServer.guardrails.contentFilter.enabled }},
+          "blockedPatterns": {{ .Values.mcpServer.guardrails.contentFilter.blockedPatterns | toJson }}
+        }
+      },
+      "audit": {
+        "enabled": {{ .Values.mcpServer.audit.enabled }},
+        "backend": "{{ .Values.mcpServer.audit.backend }}"
+      },
+      "rbac": {
+        "enabled": {{ .Values.mcpServer.rbac.enabled }}
+      },
+      "a2a": {
+        "enabled": {{ .Values.mcpServer.a2a.enabled }}
+      },
+      "federation": {
+        "enabled": {{ .Values.mcpServer.federation.enabled }},
+        "peers": {{ .Values.mcpServer.federation.peers | toJson }},
+        "discovery": {
+          "mdns": {
+            "enabled": {{ .Values.mcpServer.federation.discovery.mdns.enabled }}
+          }
+        }
+      }
+    }

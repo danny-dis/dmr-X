@@ -1,0 +1,232 @@
+# DMR-X Helm Chart Values
+# This file contains default values for DMR-X deployment
+
+# -- Number of replicas
+replicaCount: 1
+
+# -- Image configuration
+image:
+  repository: ghcr.io/danny-dis/dmr-x
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# -- Image pull secrets
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
+# -- Override the name of the chart
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Service account configuration
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Pod security context
+podSecurityContext: {}
+
+# -- Container security context
+securityContext: {}
+
+# -- Service configuration
+service:
+  type: ClusterIP
+  port: 3000
+  annotations: {}
+
+# -- Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: dmr-x.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+# -- Resource limits and requests
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}
+
+# -- Pod disruption budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# -- Horizontal pod autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# -- DMR-X specific configuration
+dmrx:
+  # -- Environment (development, production)
+  environment: production
+  
+  # -- Log level (debug, info, warn, error)
+  logLevel: info
+  
+  # -- Local mode (single instance without federation)
+  localMode: false
+  
+  # -- Admin API key
+  adminApiKey: ""
+  
+  # -- Encryption key (64 hex chars)
+  encryptionKey: ""
+  
+  # -- CORS origin
+  corsOrigin: "*"
+  
+  # -- Data directory
+  dataDir: /app/data
+  
+  # -- Rate limiting
+  rateLimit:
+    max: 600
+    window: "1 minute"
+  
+  # -- Request timeout (ms)
+  requestTimeout: 60000
+  
+  # -- Body limit
+  bodyLimit: "10mb"
+
+# -- Provider API keys (set the ones you actually use)
+providers:
+  openai:
+    apiKey: ""
+  anthropic:
+    apiKey: ""
+  google:
+    apiKey: ""
+  cohere:
+    apiKey: ""
+  mistral:
+    apiKey: ""
+  deepseek:
+    apiKey: ""
+  groq:
+    apiKey: ""
+
+# -- MCP Server configuration
+mcpServer:
+  enabled: true
+  port: 3001
+  
+  # -- Tool search configuration
+  toolSearch:
+    enabled: true
+    bm25:
+      enabled: true
+    semantic:
+      enabled: true
+      remoteUrl: ""
+    hybrid:
+      enabled: true
+  
+  # -- OAuth configuration
+  oauth:
+    enabled: false
+    issuerUrl: ""
+    jwksUri: ""
+  
+  # -- Guardrails configuration
+  guardrails:
+    enabled: true
+    pii:
+      enabled: true
+      maskChar: "*"
+    contentFilter:
+      enabled: true
+      blockedPatterns: []
+  
+  # -- Audit logging
+  audit:
+    enabled: true
+    backend: "sqlite"
+  
+  # -- RBAC configuration
+  rbac:
+    enabled: true
+  
+  # -- A2A protocol
+  a2a:
+    enabled: true
+  
+  # -- Federation configuration
+  federation:
+    enabled: false
+    peers: []
+    discovery:
+      mdns:
+        enabled: false
+
+# -- Workflow orchestration
+workflow:
+  enabled: true
+  maxConcurrentWorkflows: 10
+  defaultTimeout: 300000
+  persistence:
+    enabled: true
+
+# -- PostgreSQL (optional, for production)
+postgresql:
+  enabled: false
+  auth:
+    postgresPassword: ""
+    username: dmr-x
+    password: ""
+    database: dmr-x
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# -- Redis (optional, for caching)
+redis:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false
+
+# -- Prometheus (optional)
+prometheus:
+  enabled: false
+
+# -- Grafana (optional)
+grafana:
+  enabled: false
+
+# -- Monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false

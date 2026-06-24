@@ -1,0 +1,35 @@
+apiVersion: v2
+name: dmr-x
+description: DMR-X - Universal AI routing and orchestration platform
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+keywords:
+  - ai
+  - mcp
+  - routing
+  - orchestration
+  - gateway
+maintainers:
+  - name: DMR-X Team
+home: https://github.com/danny-dis/dmr-x
+sources:
+  - https://github.com/danny-dis/dmr-x
+icon: https://raw.githubusercontent.com/danny-dis/dmr-x/main/docs/logo.png
+dependencies:
+  - name: postgresql
+    version: "15.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: redis
+    version: "19.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: prometheus
+    version: "25.x.x"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: prometheus.enabled
+  - name: grafana
+    version: "8.x.x"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: grafana.enabled

@@ -1,0 +1,23 @@
+{
+  "name": "@dmr-x/operator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.0.0",
+    "@dmr-x/core": "*",
+    "@dmr-x/db": "*",
+    "@dmr-x/mcp-client": "*",
+    "@dmr-x/utils": "*"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
