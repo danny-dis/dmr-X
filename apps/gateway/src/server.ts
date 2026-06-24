@@ -1,42 +1,46 @@
-import Fastify from 'fastify';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter } from '@dmr-x/adapters';
+import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
+import type { UnifiedRequest } from '@dmr-x/core';
+import { Router } from '@dmr-x/router';
+import { logger, decryptConfigApiKey, encrypt, decrypt } from '@dmr-x/utils';
+import fastifyCompress from '@fastify/compress';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
-import fastifyCompress from '@fastify/compress';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { logger, decryptConfigApiKey, encrypt, decrypt } from '@dmr-x/utils';
-import { Router } from '@dmr-x/router';
+
 import { getTelemetryService, tracer } from '@dmr-x/telemetry';
 import { trace, SpanStatusCode, SpanKind, propagation, context, type Span } from '@opentelemetry/api';
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter } from '@dmr-x/adapters';
-import type { UnifiedRequest } from '@dmr-x/core';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { quotaService, rateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
-import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
-import { chatRoutes } from './routes/chat.routes.js';
-import { modelsRoutes } from './routes/models.routes.js';
-import { imagesRoutes } from './routes/images.routes.js';
-import { embeddingsRoutes } from './routes/embeddings.routes.js';
-import { audioRoutes } from './routes/audio.routes.js';
-import { audioSeparationRoutes } from './routes/audio-separation.routes.js';
-import { ocrRoutes } from './routes/ocr.routes.js';
-import { videoRoutes } from './routes/video.routes.js';
-import { threeDRoutes } from './routes/3d.routes.js';
-import { anthropicRoutes } from './routes/anthropic.routes.js';
-import { geminiRoutes } from './routes/gemini.routes.js';
-import { rerankRoutes } from './routes/rerank.routes.js';
-import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
-import { toolsRoutes, registerToolHandler } from './routes/tools.routes.js';
-import { agenticRoutes } from './routes/agentic.routes.js';
-import conversationRoutes from './routes/conversation.routes.js';
+import Fastify from 'fastify';
+
 import { authMiddleware } from './middleware/auth.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
+import { threeDRoutes } from './routes/3d.routes.js';
+import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
+import { agenticRoutes } from './routes/agentic.routes.js';
+import { piAgenticRoutes } from './routes/pi-agentic.routes.js';
+import { anthropicRoutes } from './routes/anthropic.routes.js';
+import { audioSeparationRoutes } from './routes/audio-separation.routes.js';
+import { audioRoutes } from './routes/audio.routes.js';
+import { chatRoutes } from './routes/chat.routes.js';
+import { embeddingsRoutes } from './routes/embeddings.routes.js';
+import { imagesRoutes } from './routes/images.routes.js';
+import { modelsRoutes } from './routes/models.routes.js';
+import { ocrRoutes } from './routes/ocr.routes.js';
+import { rerankRoutes } from './routes/rerank.routes.js';
+import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers } from './routes/tools.routes.js';
+import { videoRoutes } from './routes/video.routes.js';
+import { geminiRoutes } from './routes/gemini.routes.js';
+import conversationRoutes from './routes/conversation.routes.js';
 
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 declare const Bun: unknown | undefined;
@@ -378,9 +382,14 @@ export async function createServer() {
     healthCheckStartTimer.unref();
   });
 
-  // Background OAuth token refresh — check every 5 minutes
+  // Background OAuth token refresh — check every 5 minutes.
+  // Uses recursive setTimeout instead of setInterval to avoid overlapping
+  // executions if a cycle takes longer than the interval. Providers are
+  // refreshed in parallel so one slow/hanging provider doesn't block others.
   const OAUTH_REFRESH_INTERVAL = 5 * 60 * 1000;
-  const oauthRefreshTimer = setInterval(async () => {
+  let oauthRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const refreshOAuthTokens = async () => {
     try {
       const rows = db.prepare(
         `SELECT id, name, oauth_refresh_token, oauth_token_expires_at
@@ -390,54 +399,65 @@ export async function createServer() {
          AND oauth_refresh_token IS NOT NULL`
       ).all() as any[];
 
-      for (const row of rows) {
+      const refreshPromises = rows.map(async (row) => {
         const expiresAt = new Date(row.oauth_token_expires_at);
         const bufferMs = 5 * 60 * 1000; // refresh 5 minutes before expiry
-        if (expiresAt.getTime() < Date.now() + bufferMs) {
-          const template = PROVIDER_CATALOG.find(t => t.id === row.name);
-          if (!template?.oauthConfig) continue;
+        if (expiresAt.getTime() >= Date.now() + bufferMs) return;
 
+        const template = PROVIDER_CATALOG.find(t => t.id === row.name);
+        if (!template?.oauthConfig) return;
+
+        try {
+          const { OAuthService } = await import('@dmr-x/oauth');
+          const oauthService = new OAuthService();
+          let refreshToken: string;
           try {
-            const { OAuthService } = await import('@dmr-x/oauth');
-            const oauthService = new OAuthService();
-            let refreshToken: string;
-            try {
-              refreshToken = decrypt(row.oauth_refresh_token);
-            } catch {
-              refreshToken = row.oauth_refresh_token;
-            }
-            const newTokens = await oauthService.refreshAccessToken(template.oauthConfig, refreshToken);
-
-            const encAccess = encrypt(newTokens.accessToken);
-            const encRefresh = newTokens.refreshToken ? encrypt(newTokens.refreshToken) : row.oauth_refresh_token;
-            db.prepare(
-              `UPDATE providers SET oauth_access_token = ?, oauth_refresh_token = ?, oauth_token_expires_at = ?, updated_at = datetime('now') WHERE id = ?`
-            ).run(encAccess, encRefresh, newTokens.expiresAt?.toISOString() || null, row.id);
-
-            // Re-initialize adapter
-            const adapter = adapterRegistry.get(row.name);
-            if (adapter) {
-              const providerRow = db.prepare('SELECT base_url FROM providers WHERE id = ?').get(row.id) as any;
-              if (providerRow?.base_url) {
-                await adapterRegistry.initialize(row.name, {
-                  baseUrl: providerRow.base_url,
-                  accessToken: newTokens.accessToken,
-                  authMethod: 'oauth',
-                });
-              }
-            }
-
-            logger.info({ provider: row.name }, 'Refreshed OAuth token (background)');
+            refreshToken = decrypt(row.oauth_refresh_token);
           } catch (err) {
-            logger.warn({ provider: row.name, err }, 'Failed to refresh OAuth token (background)');
+            logger.warn({ provider: row.name, err }, 'Failed to decrypt OAuth refresh token, using as plaintext');
+            refreshToken = row.oauth_refresh_token;
           }
+          const newTokens = await oauthService.refreshAccessToken(template.oauthConfig, refreshToken);
+
+          const encAccess = encrypt(newTokens.accessToken);
+          const encRefresh = newTokens.refreshToken ? encrypt(newTokens.refreshToken) : row.oauth_refresh_token;
+          db.prepare(
+            `UPDATE providers SET oauth_access_token = ?, oauth_refresh_token = ?, oauth_token_expires_at = ?, updated_at = datetime('now') WHERE id = ?`
+          ).run(encAccess, encRefresh, newTokens.expiresAt?.toISOString() || null, row.id);
+
+          // Re-initialize adapter
+          const adapter = adapterRegistry.get(row.name);
+          if (adapter) {
+            const providerRow = db.prepare('SELECT base_url FROM providers WHERE id = ?').get(row.id) as any;
+            if (providerRow?.base_url) {
+              await adapterRegistry.initialize(row.name, {
+                baseUrl: providerRow.base_url,
+                accessToken: newTokens.accessToken,
+                authMethod: 'oauth',
+              });
+            }
+          }
+
+          logger.info({ provider: row.name }, 'Refreshed OAuth token (background)');
+        } catch (err) {
+          logger.warn({ provider: row.name, err }, 'Failed to refresh OAuth token (background)');
         }
-      }
+      });
+
+      await Promise.allSettled(refreshPromises);
     } catch (err) {
       logger.warn({ err }, 'OAuth token refresh check failed');
     }
-  }, OAUTH_REFRESH_INTERVAL);
-  oauthRefreshTimer.unref();
+  };
+
+  const scheduleOAuthRefresh = () => {
+    oauthRefreshTimer = setTimeout(async () => {
+      await refreshOAuthTokens();
+      scheduleOAuthRefresh();
+    }, OAUTH_REFRESH_INTERVAL);
+    oauthRefreshTimer.unref();
+  };
+  scheduleOAuthRefresh();
 
 // Start telemetry service in the background — must not block the listener.
 // Telemetry has a broken OpenTelemetry import on this OTel version
@@ -490,11 +510,12 @@ void (async () => {
   // Response compression — gzip / brotli / deflate. We only compress
   // responses >= DMRX_COMPRESS_THRESHOLD bytes (default 1 KB) to avoid
   // the CPU cost on tiny JSON envelopes (the typical `{ "error": ... }`
-  // body is < 200 bytes). Set the env var to 0 to disable. SSE streams
-  // are skipped by the plugin because of their streaming Content-Type.
+  // body is < 200 bytes). Set the env var to 0 to disable compression.
+  // SSE streams are skipped by the plugin because of their streaming Content-Type.
   const compressThreshold = parseInt(process.env.DMRX_COMPRESS_THRESHOLD || '1024', 10);
+  const compressEnabled = compressThreshold > 0;
   await server.register(fastifyCompress, {
-    threshold: Math.max(1024, compressThreshold),
+    threshold: compressEnabled ? Math.max(1024, compressThreshold) : Infinity,
     encodings: ['gzip', 'deflate', 'br'],
   });
 
@@ -747,10 +768,11 @@ void (async () => {
         checks.candidates = { status: 'ok', detail: `${count} candidates` };
       } else {
         checks.candidates = { status: 'fail', detail: 'no routing candidates loaded' };
-        // Degraded but not necessarily fatal — still report so an operator can see it
+        healthy = false;
       }
     } catch (err) {
       checks.candidates = { status: 'fail', detail: err instanceof Error ? err.message : String(err) };
+      healthy = false;
     }
 
     // 4) Memory pressure — RSS compared against DMRX_MEMORY_LIMIT
@@ -932,16 +954,29 @@ void (async () => {
    await server.register(threeDRoutes, { prefix: '/v1' });
    await server.register(adminRoutes, { prefix: '/v1' });
    await server.register(toolsRoutes, { prefix: '/v1' });
+   registerBuiltinToolHandlers();
    await server.register(agenticRoutes, { prefix: '/v1' });
+   await server.register(piAgenticRoutes, { prefix: '/v1' });
    await server.register(conversationRoutes, { prefix: '/v1' });
 
   // SPA fallback: serve index.html for non-API GET requests.
+  // Pre-read index.html at startup so we catch missing UI builds early
+  // and don't throw on every unknown GET path.
+  let indexHtml: string | null = null;
+  try {
+    indexHtml = await fs.promises.readFile(path.join(uiDir, 'index.html'), 'utf8');
+  } catch {
+    logger.warn({ uiDir }, 'UI index.html not found — SPA fallback disabled');
+  }
+
   server.setNotFoundHandler(async (request, reply) => {
     const pathname = request.url.split('?')[0];
     if (request.method !== 'GET' || pathname.startsWith('/v1/') || pathname.startsWith('/health')) {
       return reply.status(404).send({ error: 'Not Found' });
     }
-    const indexHtml = await fs.promises.readFile(path.join(uiDir, 'index.html'), 'utf8');
+    if (!indexHtml) {
+      return reply.status(404).send({ error: 'Not Found' });
+    }
     return reply.type('text/html').send(indexHtml);
   });
 
@@ -951,7 +986,10 @@ void (async () => {
       clearTimeout(healthCheckStartTimer);
       healthCheckStartTimer = null;
     }
-    clearInterval(oauthRefreshTimer);
+    if (oauthRefreshTimer) {
+      clearTimeout(oauthRefreshTimer);
+      oauthRefreshTimer = null;
+    }
     healthChecker.stop();
     await adapterRegistry.disposeAll();
   });
@@ -1007,6 +1045,21 @@ void (async () => {
         }
       } catch (err) {
         logger.warn({ err }, 'Failed to backfill missing models');
+      }
+
+      // 2.5) Enrich existing models with catalog data (costs, context windows).
+      //      Models discovered from /v1/models before catalog enrichment was
+      //      added have $0 costs and 0 context — update them from the catalog.
+      try {
+        const enriched = await enrichExistingModels();
+        if (enriched > 0) {
+          logger.info(
+            { count: enriched },
+            'Enriched existing models with catalog data',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to enrich existing models');
       }
 
       // 3) Load all registered providers from DB and initialise adapters

@@ -1,6 +1,7 @@
-import type { FastifyInstance } from 'fastify';
-import { z } from 'zod';
 import { ValidationError, type UnifiedRequest, type ToolCall } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
+import { memoryService } from '@dmr-x/memory';
+import { sandboxService } from '@dmr-x/sandbox';
 import {
   generateRequestId,
   executeTool,
@@ -9,7 +10,9 @@ import {
   type ParsedToolCall,
   logger,
 } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+
 import { ChatMessageSchema, ToolSchema, ToolCallSchema } from './shared-schemas.js';
 
 // ---------------------------------------------------------------------------
@@ -85,6 +88,139 @@ async function executeToolCall(
 }
 
 export { executeToolCall };
+
+// ---------------------------------------------------------------------------
+// Built-in tool handlers: sandbox code execution + memory RAG
+// ---------------------------------------------------------------------------
+
+/** Poll interval in ms when waiting for a sandbox job to complete. */
+const SANDBOX_POLL_INTERVAL_MS = 200;
+/** Maximum time in ms to wait for a sandbox job. */
+const SANDBOX_MAX_WAIT_MS = 30_000;
+
+/**
+ * Register built-in tool handlers for sandbox code execution and memory.
+ * Called once during server initialisation.
+ */
+export function registerBuiltinToolHandlers(): void {
+  // ---- execute_code --------------------------------------------------------
+  registerToolHandler('execute_code', async (args, context) => {
+    const { language, code, timeoutMs } = args as {
+      language?: string;
+      code: string;
+      timeoutMs?: number;
+    };
+
+    if (!code || typeof code !== 'string') {
+      return { error: 'code is required and must be a string' };
+    }
+
+    try {
+      const job = await sandboxService.submit({
+        language: language || 'python',
+        code,
+        timeoutMs,
+        tenantId: context.tenant?.id,
+      });
+
+      // Poll until the job finishes or we time out
+      const deadline = Date.now() + SANDBOX_MAX_WAIT_MS;
+      let current = job;
+      while (current.status === 'queued' || current.status === 'running') {
+        if (Date.now() >= deadline) {
+          return { error: 'Sandbox execution timed out', jobId: current.id };
+        }
+        await new Promise((r) => setTimeout(r, SANDBOX_POLL_INTERVAL_MS));
+        current = sandboxService.getById(current.id) ?? current;
+      }
+
+      return {
+        jobId: current.id,
+        status: current.status,
+        output: current.output,
+        error: current.error,
+        durationMs: current.durationMs,
+        language: current.language,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err, tool: 'execute_code' }, 'Sandbox tool error');
+      return { error: message };
+    }
+  });
+
+  // ---- remember ------------------------------------------------------------
+  registerToolHandler('remember', async (args, context) => {
+    const { content, namespace, retentionDays, metadata } = args as {
+      content: string;
+      namespace?: string;
+      retentionDays?: number;
+      metadata?: Record<string, unknown>;
+    };
+
+    if (!content || typeof content !== 'string') {
+      return { error: 'content is required and must be a string' };
+    }
+
+    try {
+      const tenantId = context.tenant?.id ?? 'anonymous';
+      const item = await memoryService.create({
+        tenantId,
+        content,
+        namespace,
+        source: 'agent',
+        retentionDays,
+        metadata,
+      });
+      return { id: item.id, namespace: item.namespace, createdAt: item.createdAt };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err, tool: 'remember' }, 'Memory tool error');
+      return { error: message };
+    }
+  });
+
+  // ---- recall --------------------------------------------------------------
+  registerToolHandler('recall', async (args, context) => {
+    const { query, namespace, limit, minScore } = args as {
+      query: string;
+      namespace?: string;
+      limit?: number;
+      minScore?: number;
+    };
+
+    if (!query || typeof query !== 'string') {
+      return { error: 'query is required and must be a string' };
+    }
+
+    try {
+      const tenantId = context.tenant?.id;
+      const results = await memoryService.search({
+        tenantId,
+        query,
+        namespace,
+        limit,
+        minScore,
+      });
+      return {
+        results: results.map((r) => ({
+          id: r.id,
+          content: r.content,
+          namespace: r.namespace,
+          score: r.score,
+          source: r.source,
+          createdAt: r.createdAt,
+        })),
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err, tool: 'recall' }, 'Memory recall error');
+      return { error: message };
+    }
+  });
+
+  logger.info('Registered built-in tool handlers: execute_code, remember, recall');
+}
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -358,7 +494,7 @@ export async function toolsRoutes(server: FastifyInstance): Promise<void> {
     const maxSteps = body.max_steps;
 
     // Build message history that we'll accumulate across turns
-    let messages = [...body.messages] as any[];
+    const messages = [...body.messages] as any[];
     const allToolResults: Array<{
       step: number;
       tool_calls: any[];

@@ -1,6 +1,5 @@
-import type { FastifyInstance } from 'fastify';
-import { z } from 'zod';
 import { ValidationError, type UnifiedRequest, type ToolCall } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
 import {
   generateRequestId,
   stepCountIs,
@@ -13,16 +12,18 @@ import {
   type StepResult,
   type ConversationState,
 } from '@dmr-x/utils';
-import type { Router } from '@dmr-x/router';
-import { executeToolCall } from './tools.routes.js';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
+import { executeToolCall } from './tools.routes.js';
 
 // ---------------------------------------------------------------------------
 // Zod schemas
 // ---------------------------------------------------------------------------
 
 const StopConditionSchema = z.object({
-  type: z.enum(['step_count', 'tool_call', 'text_match']),
+  type: z.enum(['step_count', 'tool_call', 'text_match', 'max_tokens', 'max_cost', 'finish_reason']),
   value: z.union([z.number(), z.string()]),
 });
 
@@ -47,11 +48,14 @@ const AgenticChatRequestSchema = z.object({
   messages: z.array(ChatMessageSchema).min(1),
   tools: z.array(ToolSchema).optional(),
   tool_choice: z.any().optional(),
+  system_prompt: z.string().optional(),
   stopWhen: z.array(StopConditionSchema).optional(),
   approvalRequired: z.boolean().optional().default(false),
   approvalDecisions: z.array(ApprovalDecisionSchema).optional(),
   conversationId: z.string().optional(),
   max_steps: z.number().int().positive().max(50).optional().default(10),
+  max_tokens_budget: z.number().positive().optional(),
+  max_cost_budget: z.number().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
   max_tokens: z.number().positive().optional(),
   top_p: z.number().min(0).max(1).optional(),
@@ -135,6 +139,8 @@ function writeSSE(reply: { raw: { write: (data: string) => void } }, event: stri
 function buildStopConditions(
   conditions: Array<{ type: string; value: number | string }>,
   getResponseText: () => string,
+  getTotalTokens: () => number,
+  getTotalCost: () => number,
 ): StopCondition[] {
   return conditions.map((c) => {
     switch (c.type) {
@@ -145,6 +151,18 @@ function buildStopConditions(
       case 'text_match': {
         const text = c.value as string;
         return () => getResponseText().includes(text);
+      }
+      case 'max_tokens': {
+        const maxTokens = c.value as number;
+        return () => getTotalTokens() >= maxTokens;
+      }
+      case 'max_cost': {
+        const maxCost = c.value as number;
+        return () => getTotalCost() >= maxCost;
+      }
+      case 'finish_reason': {
+        const reason = c.value as string;
+        return ({ steps }) => steps.some((s) => s.finishReason === reason);
       }
       default:
         return () => false;
@@ -197,10 +215,13 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     const maxSteps = body.max_steps;
     const stopConditions = body.stopWhen ?? [];
 
-    // Acquire conversation lock to prevent concurrent mutation
+    // Acquire conversation lock to prevent concurrent mutation.
+    // Uses a loop to avoid TOCTOU: after awaiting the existing lock,
+    // we re-check before creating our own.
     const convId = body.conversationId ?? requestId;
-    const existingLock = conversationLocks.get(convId);
-    if (existingLock) {
+    while (true) {
+      const existingLock = conversationLocks.get(convId);
+      if (!existingLock) break;
       await existingLock;
     }
     let lockResolver: (() => void) | undefined;
@@ -283,10 +304,21 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     }
 
     // Build message history
-    let messages = [...conversation.messages] as any[];
+    const messages = [...conversation.messages] as any[];
+    // Prepend system_prompt if provided (not already in messages)
+    if (body.system_prompt && (!messages.length || messages[0]?.role !== 'system')) {
+      messages.unshift({ role: 'system', content: body.system_prompt });
+    }
     let lastResponseText = '';
+    let totalTokensUsed = 0;
+    let totalCost = 0;
     const allStepResults: StepResult[] = [];
-    const sdkStopConditions = buildStopConditions(stopConditions, () => lastResponseText);
+    const sdkStopConditions = buildStopConditions(
+      stopConditions,
+      () => lastResponseText,
+      () => totalTokensUsed,
+      () => totalCost,
+    );
     const allSteps: Array<{
       turn: number;
       message: any;
@@ -315,7 +347,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
               top_p: body.top_p,
               frequency_penalty: body.frequency_penalty,
               presence_penalty: body.presence_penalty,
-              stream: false,
+              stream: body.stream,
             },
             requestId,
             tenant,
@@ -332,6 +364,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
               ? response.message.content
               : '';
           lastResponseText = responseText;
+
+          // Accumulate token/cost usage
+          if (response.usage) {
+            totalTokensUsed += response.usage.total_tokens ?? 0;
+            // Cost tracking: extract from usage if available
+            const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
+            totalCost += stepCost;
+          }
 
           // Stream the model response for this turn
           writeSSE(reply, 'turn', {
@@ -351,8 +391,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           };
           allStepResults.push(stepResult);
 
+          // Check budget limits
+          const overTokenBudget = body.max_tokens_budget && totalTokensUsed >= body.max_tokens_budget;
+          const overCostBudget = body.max_cost_budget && totalCost >= body.max_cost_budget;
+
           if (
             toolCalls.length === 0 ||
+            overTokenBudget ||
+            overCostBudget ||
             await isStopConditionMet({ stopConditions: sdkStopConditions, steps: allStepResults })
           ) {
             // Update conversation state
@@ -361,6 +407,17 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
               messages,
               status: 'completed',
             });
+
+            // Include budget info in done event if budgets were exceeded
+            if (overTokenBudget || overCostBudget) {
+              writeSSE(reply, 'budget_exceeded', {
+                token_budget: overTokenBudget ? body.max_tokens_budget : undefined,
+                cost_budget: overCostBudget ? body.max_cost_budget : undefined,
+                totalTokensUsed,
+                totalCost,
+              });
+            }
+
             break;
           }
 
@@ -461,7 +518,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     // Non-streaming response
     const nonStreamingStepResults: StepResult[] = [];
     let nonStreamingLastResponseText = '';
-    const nonStreamingStopConditions = buildStopConditions(stopConditions, () => nonStreamingLastResponseText);
+    let nonStreamingTotalTokens = 0;
+    let nonStreamingTotalCost = 0;
+    const nonStreamingStopConditions = buildStopConditions(
+      stopConditions,
+      () => nonStreamingLastResponseText,
+      () => nonStreamingTotalTokens,
+      () => nonStreamingTotalCost,
+    );
 
     for (let turn = 0; turn < maxSteps; turn++) {
         const unifiedRequest = toUnifiedRequest(
@@ -493,6 +557,13 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             : '';
         nonStreamingLastResponseText = responseText;
 
+        // Accumulate token/cost usage
+        if (response.usage) {
+          nonStreamingTotalTokens += response.usage.total_tokens ?? 0;
+          const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
+          nonStreamingTotalCost += stepCost;
+        }
+
         // Check stop conditions using SDK composable conditions
         const stepResult: StepResult = {
           toolCalls: toolCalls.map((tc: ToolCall) => ({ name: tc.function.name })),
@@ -503,8 +574,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
         allSteps.push({ turn, message: response.message, tool_calls: toolCalls, tool_results: [] });
 
+        // Check budget limits
+        const overTokenBudget = body.max_tokens_budget && nonStreamingTotalTokens >= body.max_tokens_budget;
+        const overCostBudget = body.max_cost_budget && nonStreamingTotalCost >= body.max_cost_budget;
+
         if (
           toolCalls.length === 0 ||
+          overTokenBudget ||
+          overCostBudget ||
           await isStopConditionMet({ stopConditions: nonStreamingStopConditions, steps: nonStreamingStepResults })
         ) {
           if (response.message) messages.push(response.message);
@@ -529,6 +606,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             conversationId: conversation.id,
             steps_completed: turn + 1,
             all_steps: allSteps,
+            budget: {
+              totalTokensUsed: nonStreamingTotalTokens,
+              totalCost: nonStreamingTotalCost,
+              tokenBudget: body.max_tokens_budget,
+              costBudget: body.max_cost_budget,
+              exceededToken: overTokenBudget,
+              exceededCost: overCostBudget,
+            },
           };
         }
 
