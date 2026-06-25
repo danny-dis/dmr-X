@@ -4361,7 +4361,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // --- MCP Configuration Endpoints ------------------------------------------
 
   // Helper: Read MCP config file
-  function readMcpConfig(): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function readMcpConfig(): any {
     try {
       const configPath = process.env.DMRX_MCP_CONFIG_PATH || 'dmrx-mcp.config.json';
       const fs = require('fs');

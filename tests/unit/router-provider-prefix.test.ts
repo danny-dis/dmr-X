@@ -54,6 +54,8 @@ function makeRequest(model: string): UnifiedRequest {
     model,
     // Unique content per test keeps the sticky-session hash distinct.
     messages: [{ role: 'user', content: `prompt-${model}-${Math.random()}` }] as any,
+    stream: false,
+    metadata: {},
   };
 }
 
