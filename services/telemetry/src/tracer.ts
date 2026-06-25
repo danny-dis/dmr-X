@@ -11,7 +11,7 @@ import { trace, type Tracer } from '@opentelemetry/api';
  * arrives in the collector.
  */
 export const TRACER_NAME = 'dmr-x-gateway';
-export const TRACER_VERSION = '0.4.0';
+export const TRACER_VERSION = '0.5.0';
 
 /**
  * The DMR-X gateway tracer.

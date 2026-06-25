@@ -115,9 +115,9 @@ describe('pipeline', () => {
 
   it('should build fallback chain from remaining candidates', async () => {
     const candidates: CandidateSet = [
-      makeCandidate({ modelId: 'first', qualityScore: 0.9 }),
-      makeCandidate({ modelId: 'second', qualityScore: 0.8 }),
-      makeCandidate({ modelId: 'third', qualityScore: 0.7 }),
+      makeCandidate({ providerId: 'provider-a', modelId: 'first', qualityScore: 0.9 }),
+      makeCandidate({ providerId: 'provider-b', modelId: 'second', qualityScore: 0.8 }),
+      makeCandidate({ providerId: 'provider-c', modelId: 'third', qualityScore: 0.7 }),
     ];
 
     const result = await runPipeline({
@@ -148,10 +148,10 @@ describe('pipeline', () => {
 });
 
 describe('free-tier strategy', () => {
-  const freeA = makeCandidate({ modelId: 'free-a', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.8 });
-  const freeB = makeCandidate({ modelId: 'free-b', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.6 });
-  const paidA = makeCandidate({ modelId: 'paid-a', costPerInputToken: 0.002, costPerOutputToken: 0.004, qualityScore: 0.9 });
-  const paidB = makeCandidate({ modelId: 'paid-b', costPerInputToken: 0.001, costPerOutputToken: 0.002, qualityScore: 0.7 });
+  const freeA = makeCandidate({ providerId: 'free-provider-a', modelId: 'free-a', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.8 });
+  const freeB = makeCandidate({ providerId: 'free-provider-b', modelId: 'free-b', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.6 });
+  const paidA = makeCandidate({ providerId: 'paid-provider-a', modelId: 'paid-a', costPerInputToken: 0.002, costPerOutputToken: 0.004, qualityScore: 0.9 });
+  const paidB = makeCandidate({ providerId: 'paid-provider-b', modelId: 'paid-b', costPerInputToken: 0.001, costPerOutputToken: 0.002, qualityScore: 0.7 });
   const mixedCandidates: CandidateSet = [paidA, freeA, paidB, freeB];
 
   it('none: keeps normal scoring order', async () => {

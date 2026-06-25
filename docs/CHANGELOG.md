@@ -1,6 +1,18 @@
 # Changelog
 
-## v0.4.0 — Follow-up (Unreleased)
+## v0.5.0 — Stable Release (2026-06-25)
+
+### Bug Fixes
+- **Pipeline fallback chain** — candidates from the same provider are no longer excluded from fallback chains when all candidates share a `providerId`. Tests updated to use distinct provider IDs.
+- **Provider-prefix + meta-model routing** — `parseModelTarget` now recognizes a provider prefix when the model part is a meta-model alias (e.g. `pollinations/auto-smart`), not just when it matches an exact candidate model ID.
+- **Migration count assertion** — updated `sqlite-client.test.ts` to match the current 21 migrations.
+
+### Version
+- All 22 workspace packages bumped to `0.5.0`.
+- Helm chart `appVersion` set to `0.5.0`.
+- OTel tracer version bumped to `0.5.0`.
+
+## v0.4.0 — Follow-up (2026-06-20)
 
 ### Security
 - **fastify 4 → 5 upgrade** — bumped `fastify` 4.29.1 → 5.8.5 to close the Content-Type tab-character bypass CVE present in 4.x. The plugin stack is aligned to its fastify-5-compatible majors: `@fastify/compress` 9, `@fastify/cors` 11, `@fastify/multipart` 10, `@fastify/rate-limit` 11, `@fastify/static` 9. Code adjustments: `setErrorHandler` error param is now `unknown` (cast to `any` for the existing access pattern, same as elsewhere in the file); `reply.code()` → `reply.status()` (1 site in `setNotFoundHandler`); `maxParamLength` moved under `routerOptions` to silence the FSTDEP022 deprecation (top-level key will be removed in v6); `request.body` is now `unknown` but the existing Zod-`safeParse` pattern is forward-compatible so no route body access needed changing. `scripts/dev/server-original.ts` (a historical reference snapshot, not on any build path) was kept internally consistent. Verification: `npx tsc --noEmit` clean across the whole tree, `bun run test` → **1216 passed / 38 skipped**, gateway boots and reaches `DMR-X Gateway running` on `0.0.0.0:3099` with 82 adapters registered.

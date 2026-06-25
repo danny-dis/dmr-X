@@ -12,7 +12,7 @@
 #
 # Build multi-arch and push:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -t ghcr.io/danny-dis/dmr-x:0.1.1 --push .
+#     -t ghcr.io/danny-dis/dmr-x:0.5.0 --push .
 #
 # Image layers (in order of size, smallest at the top):
 #   1. Bun runtime (~80 MB)

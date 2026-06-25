@@ -21,7 +21,7 @@ import { hashConversation, getStickyProvider, setStickyProvider, breakStickySess
 // The OTel API resolves this lazily through the global provider, so it is always
 // safe to call tracer.startActiveSpan(...) — pre-SDK, the spans go to a no-op
 // provider and incur only the cost of one context lookup.
-const tracer = trace.getTracer('dmr-x-gateway', '0.4.0');
+const tracer = trace.getTracer('dmr-x-gateway', '0.5.0');
 
 export interface RouterConfig {
   epsilon?: number;
@@ -675,7 +675,7 @@ export class Router {
     if (slash <= 0) return { modelId: model };
     const providerName = model.slice(0, slash);
     const rest = model.slice(slash + 1);
-    if (rest && this.candidates.some(c => c.providerName === providerName && c.modelId === rest)) {
+    if (rest && this.candidates.some(c => c.providerName === providerName)) {
       return { providerName, modelId: rest };
     }
     return { modelId: model };
