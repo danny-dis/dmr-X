@@ -10,7 +10,7 @@ bun run test
 
 ## Unit Tests
 
-18 test suites in `tests/unit/`:
+41 test suites in `tests/unit/`:
 
 | Test File | Covers |
 |-----------|--------|
@@ -20,20 +20,41 @@ bun run test
 | `cost-latency-scorer.test.ts` | Cost/latency/quality scoring |
 | `final-selector.test.ts` | Epsilon-greedy selection |
 | `task-classifier.test.ts` | Task classification (modality + capabilities) |
+| `router-provider-prefix.test.ts` | Provider prefix routing and meta-model scoping |
 | `anthropic-converter.test.ts` | OpenAI ↔ Anthropic format conversion |
 | `anthropic-stream-serializer.test.ts` | Anthropic SSE streaming |
+| `anthropic-adapter.test.ts` | Anthropic adapter behavior |
+| `openai-adapter.test.ts` | OpenAI adapter behavior |
+| `ollama-adapter.test.ts` | Ollama adapter behavior |
+| `ocr-adapter.test.ts` | OCR adapter behavior |
+| `audio-separation-adapter.test.ts` | Audio separation adapter |
 | `api-contracts.test.ts` | API response shape validation |
+| `admin-validation.test.ts` | Admin input validation |
 | `auth-middleware.test.ts` | API key authentication |
 | `tool-orchestrator.test.ts` | Tool execution and loops |
 | `conversation-state.test.ts` | Conversation state management |
+| `conversation-routes-tenant-isolation.test.ts` | Tenant isolation on conversation routes |
 | `sqlite-client.test.ts` | SQLite client behavior |
+| `migration-checksum.test.ts` | Migration checksum verification |
 | `memory-cache.test.ts` | In-memory cache operations |
+| `rate-limiter.test.ts` | Rate limiting |
+| `circuit-breaker.test.ts` | Circuit breaker pattern |
 | `crypto.test.ts` | AES-256-GCM encryption/decryption |
 | `meta-models.test.ts` | Meta-model alias resolution |
+| `mcp-config.test.ts` | MCP configuration resolution |
+| `mcp-tool-restrictions.test.ts` | MCP tool restriction enforcement |
+| `model-discovery.test.ts` | Local provider model discovery |
 | `event-stream.test.ts` | Stream utility helpers |
 | `http-errors.test.ts` | HTTP error creation and formatting |
 | `stop-conditions.test.ts` | Stop condition evaluation |
 | `stream-transformers.test.ts` | Stream transformation utilities |
+| `worker-pool-fanout.test.ts` | Worker pool fan-out |
+| `bandit-reward-signals.test.ts` | Thompson sampling reward signals |
+| `otel-spans.test.ts` | OpenTelemetry span emission |
+| `telemetry-integration.test.ts` | Telemetry onResponse hook |
+| `request-logs-writes.test.ts` | Request log persistence |
+| `server-hardening.test.ts` | Server limits and security headers |
+| `usage-tracker.test.ts` | Usage tracking and billing |
 
 ## E2E Tests
 

@@ -44,7 +44,7 @@ bun run test             # Run unit tests (vitest)
 bun run lint             # Lint all packages
 ```
 
-**Note:** `bun --watch` works correctly with sql.js as of v0.2.0. Use `bun run dev:gateway` (which uses `bun --watch` internally via `package.json:14`) for local dev.
+**Note:** `bun --watch` works correctly with sql.js (fixed since v0.2.0). Use `bun run dev:gateway` for local dev.
 
 **Build quirk:** `turbo build` can fail on Windows. Build each package individually with `bun run build` if needed.
 
@@ -65,7 +65,7 @@ bun run lint             # Lint all packages
 | `services/adapters/src/` | Provider adapters (openai, anthropic, ollama, generic-openai, etc.) |
 | `services/router/src/` | Routing pipeline, classifier, fallback, bandit |
 | `services/mcp-server/src/` | MCP tool server (tools.ts has tool definitions) |
-| `tests/unit/` | Unit test suites (40 files) |
+| `tests/unit/` | Unit test suites (41 files) |
 
 ## Coding Conventions
 

@@ -303,7 +303,7 @@ if (modality === 'diffusion') { /* size-based token estimation */ }
 
 ## 🎯 CONCLUSION: ✅ ALL WIRING CORRECT
 
-**16 routes** → **19 adapters** → **50+ provider models** → **13+ modalities**
+**16 routes** → **18 adapters** → **50+ provider models** → **13+ modalities**
 
 Every endpoint:
 1. Validates request schema

@@ -121,7 +121,7 @@ dmr-x/
 │   ├── mcp-server/       # MCP tool server (stdio/SSE/HTTP)
 │   └── mcp-client/       # MCP client integration
 ├── tests/
-│   ├── unit/             # Unit tests (40 test files / 498 tests)
+│   ├── unit/             # Unit tests (41 test files / 1250+ tests)
 │   └── e2e/              # Opt-in end-to-end connectivity tests
 ├── scripts/              # Install scripts and release packaging
 ├── docs/                 # Documentation
@@ -255,9 +255,9 @@ DMRX_RUN_E2E=true bun run test -- tests/e2e/connectivity.test.ts
 bun run test
 ```
 
-**Security:** v0.2.0 fixes a cross-tenant data leak, an SSRF DNS-rebinding bypass, and 11 CVEs. See [SECURITY.md](SECURITY.md).
+**Security:** Since v0.2.0, DMR-X has patched a cross-tenant data leak, an SSRF DNS-rebinding bypass, and 11 CVEs. See [SECURITY.md](SECURITY.md).
 
-40 unit test files / 498 tests covering:
+41 unit test files / 1250+ tests covering:
 
 - Routing pipeline (capability filter, availability, cost/latency scoring, final selector, fallback)
 - Anthropic converter and stream serializer

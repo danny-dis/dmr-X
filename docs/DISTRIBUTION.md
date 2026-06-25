@@ -97,8 +97,8 @@ powershell -Command "Expand-Archive -Path dmrx.zip -DestinationPath $env:USERPRO
 ### Triggering a Release
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 The workflow creates a GitHub Release with binaries for all three platforms.

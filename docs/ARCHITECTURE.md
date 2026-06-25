@@ -7,11 +7,11 @@ DMR-X is a universal AI routing and orchestration platform. It accepts requests 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
 | **Runtime** | Bun 1.0+ | Primary runtime (Node.js 18+ also supported) |
-| **HTTP** | Fastify 4.x | High-performance HTTP framework |
+| **HTTP** | Fastify 5.x | High-performance HTTP framework |
 | **Database** | SQLite via sql.js | Zero-dependency embedded database |
-| **Build** | Turbo 2.5 | Monorepo task orchestration |
+| **Build** | Turbo 2.9 | Monorepo task orchestration |
 | **Frontend** | React 19 + Vite 6 | Admin dashboard SPA |
-| **Language** | TypeScript 5.4+ (ESM) | Type-safe, modern module system |
+| **Language** | TypeScript 5.9+ (ESM) | Type-safe, modern module system |
 | **Packaging** | npm workspaces | Monorepo dependency management |
 
 **No external infrastructure required.** No Redis, no PostgreSQL, no message queues. The entire platform runs as a single process with SQLite for persistence.
@@ -135,7 +135,7 @@ dmr-x/
 │   └── mcp-client/           # MCP client integration
 │
 ├── tests/
-│   ├── unit/                 # 40 unit test files (498 tests)
+│   ├── unit/                 # 41 unit test files (1250+ tests)
 │   └── e2e/                  # Opt-in connectivity tests (3 files)
 │
 ├── scripts/                  # Install scripts and release packaging
@@ -284,7 +284,7 @@ Transports: stdio (default), SSE, HTTP. Configured via `DMRX_MCP_TRANSPORT`.
 
 ## UI
 
-`apps/ui` is a React 18 + Vite 6 SPA. Its production build outputs to `apps/gateway/public`, which the gateway serves as static files with SPA fallback.
+`apps/ui` is a React 19 + Vite 6 SPA. Its production build outputs to `apps/gateway/public`, which the gateway serves as static files with SPA fallback.
 
 Pages (22 total per `apps/ui/src/pages/index.ts`): Dashboard, Playground, Providers, Models, FreeTier, Tenants, Policies, Quotas, Requests, Routing, Benchmarks, Observability, Memory, Workers, Federation, Sandbox, Settings, Usage, MCP, Connect, Tools, plus a NotFound route.
 

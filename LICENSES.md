@@ -69,10 +69,10 @@ The SBOM is also available from the container registry:
 
 ```sh
 # Pull the SBOM directly from ghcr
-cosign download sbom ghcr.io/danny-dis/dmr-x:0.1.1
+cosign download sbom ghcr.io/danny-dis/dmr-x:latest
 
 # Or via the release artifact
-gh release download v0.1.1 --pattern 'sbom.cdx.json'
+gh release download v0.5.0 --pattern 'sbom.cdx.json'
 ```
 
 ## Current dependency license summary
