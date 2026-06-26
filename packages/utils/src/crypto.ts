@@ -1,4 +1,4 @@
-import { randomBytes, createHash, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, createHash, createCipheriv, createDecipheriv, timingSafeEqual } from 'node:crypto';
 
 export function generateId(): string {
   return randomBytes(16).toString('hex');
@@ -12,8 +12,61 @@ export function generateApiKey(): string {
   return `dmr-${randomBytes(32).toString('hex')}`;
 }
 
+/**
+ * @deprecated Use hashApiKeyWithSalt() for new keys. This function is kept
+ * for backward compatibility during migration.
+ */
 export function hashApiKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
+}
+
+/**
+ * Hash an API key with a random salt for secure storage.
+ * Returns format: "salt:hash" where salt is 16 bytes hex and hash is SHA-256.
+ *
+ * This prevents rainbow table attacks if the database is compromised.
+ */
+export function hashApiKeyWithSalt(key: string): string {
+  const salt = randomBytes(16).toString('hex');
+  const hash = createHash('sha256').update(salt + key).digest('hex');
+  return `${salt}:${hash}`;
+}
+
+/**
+ * Verify an API key against a stored hash.
+ * Supports both legacy unsalted hashes and new salted hashes.
+ *
+ * @param key - The plaintext API key to verify
+ * @param storedHash - The hash from the database (either "hash" or "salt:hash" format)
+ * @returns true if the key matches
+ */
+export function verifyApiKey(key: string, storedHash: string): boolean {
+  // Check if this is a salted hash (contains exactly one colon separator)
+  const colonIndex = storedHash.indexOf(':');
+  const secondColonIndex = storedHash.indexOf(':', colonIndex + 1);
+
+  if (colonIndex !== -1 && secondColonIndex === -1) {
+    // Salted hash format: "salt:hash"
+    const salt = storedHash.substring(0, colonIndex);
+    const expectedHash = storedHash.substring(colonIndex + 1);
+    const computedHash = createHash('sha256').update(salt + key).digest('hex');
+
+    // Constant-time comparison to prevent timing attacks
+    try {
+      return timingSafeEqual(Buffer.from(computedHash), Buffer.from(expectedHash));
+    } catch {
+      return false;
+    }
+  } else {
+    // Legacy unsalted hash format: just "hash"
+    // Still works but is less secure
+    const computedHash = createHash('sha256').update(key).digest('hex');
+    try {
+      return timingSafeEqual(Buffer.from(computedHash), Buffer.from(storedHash));
+    } catch {
+      return false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import { z } from 'zod';
 
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { compressionService } from '../services/compression.js';
 
 const ChatRequestSchema = z.object({
   model: z.string(),
@@ -38,7 +39,42 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
-    // Convert to UnifiedRequest
+    // Apply compression if enabled
+    let compressionMetadata = undefined;
+    const tenantId = (request as any).tenant?.id;
+    const apiKeyId = (request as any).apiKeyId;
+
+    if (tenantId || apiKeyId) {
+      try {
+        const tenantConfig = tenantId ? compressionService.getTenantConfig(tenantId) : undefined;
+        const apiKeyConfig = apiKeyId ? compressionService.getApiKeyConfig(apiKeyId) : undefined;
+
+        if (tenantConfig?.enabled || apiKeyConfig?.enabled) {
+          const messagesForCompression = body.messages.map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          }));
+
+          const { compressed, metadata } = await compressionService.compressPrompt(
+            messagesForCompression,
+            tenantConfig,
+            apiKeyConfig
+          );
+
+          // Convert back to original format
+          body.messages = compressed.map((m, i) => ({
+            ...body.messages[i],
+            content: m.content,
+          })) as any;
+
+          compressionMetadata = metadata;
+          logger.debug({ requestId, saved: metadata.saved }, 'Applied compression');
+        }
+      } catch (err) {
+        logger.warn({ err, requestId }, 'Compression failed, continuing without');
+      }
+    }
+
     const unifiedRequest: UnifiedRequest = {
       modality: 'llm',
       model: body.model,
@@ -64,7 +100,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       },
     };
 
-    // Streaming: route through pipeline for plan, enforce rate-limit/quota, then stream
     if (body.stream) {
       if (unifiedRequest.metadata?.freeTierStrategy) {
         reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
@@ -77,9 +112,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       };
       reply.raw.writeHead(200, streamHeaders);
 
-      // Get routing plan (runs full pipeline: capability, availability, rate-limit, policy, quota filters)
-      // Wrapped in try-catch: errors are sent as SSE events so the client always gets a 200 stream
-      // rather than a raw HTTP 500 that the UI can't parse.
       let plan;
       try {
         const routed = await router.route(unifiedRequest, {
@@ -120,7 +152,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         return reply;
       }
 
-      // Enforce rate limits and quotas before streaming (same checks as executeWithFallback)
       const rls = (server as any).rateLimitService as RateLimitService | undefined;
       const qs = (server as any).quotaService as QuotaService | undefined;
       const tenantId = (request as any).tenant?.id;
@@ -163,21 +194,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       const adapter = (server as any).getAdapter(plan.primary.providerId);
       if (adapter) {
-        // CRIT-5: wire an AbortController to the client request lifecycle.
-        // When the SSE consumer disconnects (browser tab close, curl cancel,
-        // proxy timeout), `request.raw` fires `close` and we abort the
-        // upstream fetch — otherwise the provider keeps generating tokens
-        // and billing the customer for bytes that go straight into /dev/null.
         const controller = new AbortController();
         const onClientClose = () => controller.abort();
         request.raw.on('close', onClientClose);
 
         try {
           const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
-          // CRIT-6: stamp metrics so the onResponse hook writes a request_logs
-          // row for streaming requests too. Tokens are unknown at this point
-          // (the stream is about to start) and are filled in below as the
-          // usage chunk arrives. The onResponse hook reads the final shape.
           (request as any).metrics = {
             providerId: plan.primary.providerId,
             modelId: plan.primary.modelId,
@@ -201,27 +223,31 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             errorCode: undefined,
             qualityTarget,
             freeTierStrategy: unifiedRequest.metadata?.freeTierStrategy ?? undefined,
+            compression: compressionMetadata ? {
+              saved: compressionMetadata.saved,
+              algorithm: compressionMetadata.algorithmUsed,
+            } : undefined,
           };
           const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
-          // CRIT-6: track when the first token arrives so the request_logs
-          // row can carry `time_to_first_token_ms` for streaming requests.
           const streamStart = Date.now();
           let firstTokenAt: number | undefined;
           let streamErrorCode: string | undefined;
           let streamPromptTokens = 0;
           let streamCompletionTokens = 0;
+          const collectedContent: string[] = [];
           for await (const chunk of stream) {
             if (controller.signal.aborted) break;
             if (chunk.type === 'token' && firstTokenAt === undefined) {
               firstTokenAt = Date.now();
               (request as any).metrics.firstTokenLatencyMs = firstTokenAt - streamStart;
             }
-            // The `done` chunk carries final usage. The union of StreamChunk
-            // shapes means we narrow on `chunk.type` before reading `chunk.data`.
             if (chunk.type === 'done' && (chunk.data as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | undefined)?.usage) {
               const usage = (chunk.data as { usage: { prompt_tokens?: number; completion_tokens?: number } }).usage;
               streamPromptTokens = usage.prompt_tokens ?? streamPromptTokens;
               streamCompletionTokens = usage.completion_tokens ?? streamCompletionTokens;
+            }
+            if (chunk.type === 'token' && chunk.data?.content) {
+              collectedContent.push(chunk.data.content);
             }
             let data: string;
             if (chunk.type === 'token') {
@@ -245,15 +271,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             } else {
               continue;
             }
-            // Backpressure: Node's stream.write returns false when the
-            // kernel buffer is full. If we ignore that, a slow consumer
-            // accumulates memory in the response buffer until OOM.
             if (!reply.raw.write(data)) {
               await new Promise<void>(resolve => reply.raw.once('drain', resolve));
             }
           }
-          // CRIT-6: fill in token totals + error code on the metrics
-          // before the request_logs write happens in onResponse.
           if (streamPromptTokens || streamCompletionTokens) {
             (request as any).metrics.tokens = {
               prompt: streamPromptTokens,
@@ -264,7 +285,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           if (streamErrorCode) {
             (request as any).metrics.errorCode = streamErrorCode;
           }
-          // Record usage after successful stream completion (fire-and-forget)
           try {
             if (rls) {
               await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, streamPromptTokens + streamCompletionTokens);
@@ -275,9 +295,26 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           } catch (usageErr) {
             logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record streaming usage');
           }
+          if (collectedContent.length > 0 && !streamErrorCode) {
+            const { storeRouteCache } = await import('@dmr-x/cache');
+            const assembledResponse = {
+              id: requestId,
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: plan.primary.modelId,
+              choices: [{
+                index: 0,
+                message: { role: 'assistant', content: collectedContent.join('') },
+                finish_reason: 'stop',
+              }],
+              usage: { prompt_tokens: streamPromptTokens, completion_tokens: streamCompletionTokens, total_tokens: streamPromptTokens + streamCompletionTokens },
+            };
+            const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined;
+            if (useCache) {
+              storeRouteCache('chat', tenantId, body as Record<string, unknown>, assembledResponse);
+            }
+          }
         } catch (streamError) {
-          // AbortError is the expected outcome of a client disconnect — log
-          // at debug, not error, so it doesn't pollute the error dashboard.
           if (controller.signal.aborted) {
             logger.debug({ requestId, provider: plan.primary.providerId }, 'Stream aborted by client disconnect');
           } else {
@@ -312,7 +349,18 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Non-streaming: route and execute through full pipeline with fallback
+    const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined;
+
+    if (useCache) {
+      const { checkRouteCache } = await import('@dmr-x/cache');
+      const cached = checkRouteCache('chat', tenantId, body as Record<string, unknown>);
+      if (cached) {
+        logger.debug({ requestId, model: body.model }, 'Cache hit for chat request');
+        reply.header('X-Cache', 'HIT');
+        return cached.response;
+      }
+    }
+
     const { plan, response } = await router.route(unifiedRequest, {
       path: '/v1/chat/completions',
       qualityTarget,
@@ -330,7 +378,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
     }
 
-    // Telemetry: populate metrics for the onResponse hook
+    if (useCache && response) {
+      const { storeRouteCache } = await import('@dmr-x/cache');
+      storeRouteCache('chat', tenantId, body as Record<string, unknown>, response);
+      reply.header('X-Cache', 'MISS');
+    }
+
     (request as any).metrics = {
       providerId: plan.primary.providerId,
       modelId: response.modelId,
@@ -358,6 +411,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         : undefined,
       qualityTarget,
       freeTierStrategy: unifiedRequest.metadata?.freeTierStrategy ?? undefined,
+      compression: compressionMetadata ? {
+        saved: compressionMetadata.saved,
+        algorithm: compressionMetadata.algorithmUsed,
+      } : undefined,
     };
 
     return {

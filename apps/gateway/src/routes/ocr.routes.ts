@@ -8,7 +8,7 @@ import { parseQualityTarget } from '../utils/quality-target.js';
 
 const OcrRequestSchema = z.object({
   model: z.string().optional(),
-  image: z.string().min(1), // base64 or URL
+  image: z.string().min(1),
   language: z.string().optional(),
   detect_direction: z.boolean().optional(),
   paragraph: z.boolean().optional(),
@@ -27,6 +27,14 @@ export async function ocrRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    const tenantId = (request as any).tenant?.id;
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('ocr', tenantId, body as Record<string, unknown>);
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      return cached.response;
+    }
 
     const unifiedRequest = {
       modality: 'ocr' as const,
@@ -50,13 +58,17 @@ export async function ocrRoutes(server: FastifyInstance): Promise<void> {
         qualityTarget,
       });
 
-      return {
+      const result = {
         requestId: response.requestId,
         providerId: response.providerId,
         modelId: response.modelId,
         text: response.ocr?.text,
         ocrTexts: response.ocr?.ocrTexts,
       };
+
+      storeRouteCache('ocr', tenantId, body as Record<string, unknown>, result);
+      reply.header('X-Cache', 'MISS');
+      return result;
     } catch (error: any) {
       if (error instanceof ValidationError) throw error;
       logger.error({ err: error }, 'OCR request error');

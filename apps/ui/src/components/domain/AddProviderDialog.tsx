@@ -358,7 +358,8 @@ export function AddProviderDialog({
     }
     setSubmitting(true);
     try {
-      if (hasOAuthConfig) {
+      const apiKeyProvided = !!form.apiKey.trim();
+      if (hasOAuthConfig && !apiKeyProvided) {
         switch (oauthFlowType) {
           case 'authorization_code':
           case 'pkce':

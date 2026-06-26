@@ -1,4 +1,4 @@
-import { Search, Bell, Sun, Moon, Activity } from 'lucide-react';
+import { Search, Bell, Sun, Moon, Activity, Menu } from 'lucide-react';
 import * as React from 'react';
 import { useLocation } from 'react-router';
 
@@ -18,6 +18,7 @@ export function Topbar() {
   const setTheme = useUIStore((s) => s.setTheme);
   const liveMode = useUIStore((s) => s.liveMode);
   const setLiveMode = useUIStore((s) => s.setLiveMode);
+  const setMobileMenuOpen = useUIStore((s) => s.setMobileMenuOpen);
   const location = useLocation();
   const page = findNavItem(location.pathname);
   const { data: health } = useApiData<ApiHealthResponse>(
@@ -35,6 +36,17 @@ export function Topbar() {
 
   return (
     <header className="flex h-14 items-center gap-2 border-b border-border bg-surface-1/40 px-3 backdrop-blur sm:gap-3 sm:px-5">
+      {/* Mobile hamburger menu */}
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        className="lg:hidden"
+        onClick={() => setMobileMenuOpen(true)}
+        aria-label="Open menu"
+      >
+        <Menu className="size-4" />
+      </Button>
+
       <div className="flex min-w-0 flex-1 items-center gap-2 md:flex-none">
         {page && (
           <>

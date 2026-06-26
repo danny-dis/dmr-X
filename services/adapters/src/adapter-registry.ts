@@ -4,7 +4,6 @@ import type { ProviderAdapter, ProviderConfig } from './adapter.interface.js';
 
 const DEFAULT_CIRCUIT_BREAKER_OPTIONS: CircuitBreakerOptions = {
   failureThreshold: 5,
-  recoveryThreshold: 3,
   resetTimeoutMs: 60000,
 };
 

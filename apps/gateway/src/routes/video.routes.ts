@@ -34,7 +34,7 @@ const VideoRequestSchema = z.object({
 });
 
 export async function videoRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/video/generations', async (request) => {
+  server.post('/video/generations', async (request, reply) => {
     const parsed = VideoRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
@@ -44,6 +44,14 @@ export async function videoRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    const tenantId = (request as any).tenant?.id;
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('video', tenantId, body as Record<string, unknown>);
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      return cached.response;
+    }
 
     const unifiedRequest: UnifiedRequest = {
       modality: 'video',
@@ -79,9 +87,13 @@ export async function videoRoutes(server: FastifyInstance): Promise<void> {
       qualityTarget,
     });
 
-    return {
+    const result = {
       created: Math.floor(Date.now() / 1000),
       data: response.videos || [],
     };
+
+    storeRouteCache('video', tenantId, body as Record<string, unknown>, result);
+    reply.header('X-Cache', 'MISS');
+    return result;
   });
 }

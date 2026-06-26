@@ -18,7 +18,7 @@ const Generate3DRequestSchema = z.object({
 });
 
 export async function threeDRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/3d/generate', async (request) => {
+  server.post('/3d/generate', async (request, reply) => {
     const parsed = Generate3DRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
@@ -28,6 +28,14 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    const tenantId = (request as any).tenant?.id;
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('3d', tenantId, body as Record<string, unknown>);
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      return cached.response;
+    }
 
     const unifiedRequest: UnifiedRequest = {
       modality: '3d',
@@ -49,9 +57,13 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
       qualityTarget,
     });
 
-    return {
+    const result = {
       created: Math.floor(Date.now() / 1000),
       data: response.models3d || [],
     };
+
+    storeRouteCache('3d', tenantId, body as Record<string, unknown>, result);
+    reply.header('X-Cache', 'MISS');
+    return result;
   });
 }

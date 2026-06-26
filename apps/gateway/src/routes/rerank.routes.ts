@@ -6,9 +6,6 @@ import { decrypt, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-// Rerank request schema. Mirrors the shape the OpenAI / Cohere / Jina
-// rerank endpoints accept so existing client SDKs can call us without
-// translation.
 const RerankRequestSchema = z.object({
   model: z.string().optional(),
   query: z.string().min(1),
@@ -18,9 +15,6 @@ const RerankRequestSchema = z.object({
 
 const PROVIDER_NAME = 'cohere';
 
-// Token-overlap Jaccard scorer. Intentionally basic — Cohere is the
-// production path; this is here so the route never 5xxs on a missing
-// provider and the playground / SDKs can demo the wire shape offline.
 function localRerank(query: string, documents: string[], topN: number) {
   const qTokens = new Set(query.toLowerCase().split(/\W+/).filter(Boolean));
   const scored = documents.map((doc, index) => {
@@ -68,16 +62,21 @@ async function cohereRerank(
 }
 
 export async function rerankRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/rerank', async (request) => {
+  server.post('/rerank', async (request, reply) => {
     const parsed = RerankRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
     const body = parsed.data;
 
-    // Try Cohere first — look up the configured provider, decrypt its
-    // API key (stored encrypted in config.apiKey, same pattern as
-    // /admin/providers/test), and forward to the upstream endpoint.
+    const tenantId = (request as any).tenant?.id;
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('rerank', tenantId, body as Record<string, unknown>);
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      return cached.response;
+    }
+
     const db = getDb();
     const cohereRow = db
       .prepare('SELECT base_url, config FROM providers WHERE name = ? AND is_healthy = 1')
@@ -109,11 +108,15 @@ export async function rerankRoutes(server: FastifyInstance): Promise<void> {
       results = localRerank(body.query, body.documents, body.top_n);
     }
 
-    return {
+    const result = {
       id: crypto.randomUUID(),
       model,
       results,
       fallback: usedFallback,
     };
+
+    storeRouteCache('rerank', tenantId, body as Record<string, unknown>, result);
+    reply.header('X-Cache', 'MISS');
+    return result;
   });
 }

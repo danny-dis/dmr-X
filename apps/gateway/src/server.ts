@@ -40,6 +40,7 @@ import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, register
 import { videoRoutes } from './routes/video.routes.js';
 import { geminiRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
+import { compressionRoutes } from './routes/compression.routes.js';
 
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 declare const Bun: unknown | undefined;
@@ -492,12 +493,21 @@ void (async () => {
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-free-tier-strategy'],
   });
 
-  // Rate limiting. The default of 600 req/min is generous — admin dashboards
-  // with 4-5 panels each refetching every 5-15s would otherwise trip a
-  // 100/min limit. Bump the default; operators can still tighten via env.
+  // Rate limiting. Uses tenant ID as key when available (authenticated requests),
+  // falls back to IP for unauthenticated requests. This prevents noisy neighbor
+  // problems where one tenant exhausts all rate limits.
   await server.register(rateLimit, {
     max: parseInt(process.env.DMRX_RATE_LIMIT_MAX || '600', 10),
     timeWindow: process.env.DMRX_RATE_LIMIT_WINDOW || '1 minute',
+    keyGenerator: (request) => {
+      // Use tenant ID if authenticated (set by auth middleware)
+      const tenant = (request as any).tenant;
+      if (tenant?.id) {
+        return `tenant:${tenant.id}`;
+      }
+      // Fall back to IP for unauthenticated requests (health checks, models endpoint)
+      return request.ip;
+    },
   });
 
   // Multipart uploads (for audio endpoints)
@@ -706,6 +716,21 @@ void (async () => {
             metrics.qualityTarget ?? null,
             metrics.freeTierStrategy ?? null,
           );
+
+          // Publish dashboard stats update for SSE subscribers
+          const publishStats = (server as any).publishDashboardStatsUpdate;
+          if (publishStats) {
+            publishStats({
+              type: 'request_completed',
+              provider: metrics.providerId,
+              model: metrics.modelId,
+              latency_ms: latencyMs,
+              tokens: (metrics.tokens?.prompt ?? 0) + (metrics.tokens?.completion ?? 0),
+              cost: metrics.tokens?.costUsd ?? 0,
+              error: !!metrics.errorCode,
+              timestamp: new Date().toISOString(),
+            });
+          }
         } catch (writeErr) {
           // Persistence failures must never break the request. The debounced
           // save will retry the export on the next batch, so a single bad
@@ -963,6 +988,7 @@ void (async () => {
    registerCodingToolHandlers();
    await server.register(agenticRoutes, { prefix: '/v1' });
    await server.register(conversationRoutes, { prefix: '/v1' });
+   await server.register(compressionRoutes, { prefix: '/v1' });
 
   // SPA fallback: serve index.html for non-API GET requests.
   // Pre-read index.html at startup so we catch missing UI builds early
@@ -1195,7 +1221,23 @@ void (async () => {
         }
       }
 
-      // 4) Activate models for providers that have keys (or are keyless)
+      // 4) Re-activate ALL models that were incorrectly deactivated by
+      //    the old health check logic. The `available_only` filter in
+      //    /admin/models handles key-based visibility, so is_active
+      //    should only reflect intentional user/registry decisions.
+      try {
+        const reactivated = db.prepare(
+          `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+           WHERE is_active = 0`
+        ).run();
+        if (reactivated.changes > 0) {
+          logger.info({ count: reactivated.changes }, 'Re-activated models deactivated by previous health checks');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to re-activate models during background init');
+      }
+
+      // 5) Activate models for providers that have keys (or are keyless)
       try {
         const allProviders = db
           .prepare(
@@ -1212,22 +1254,6 @@ void (async () => {
               `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`,
             ).run(p.id);
             logger.info({ provider: p.name }, 'Re-activated keyless provider');
-          }
-
-          const hasOAuthToken = p.auth_method === 'oauth' && !!p.oauth_access_token;
-          if (cfg.hasKey || hasOAuthToken || needsNoKey) {
-            const updated = db
-              .prepare(
-                `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
-                 WHERE provider_id = ? AND is_active = 0`,
-              )
-              .run(p.id);
-            if (updated.changes > 0) {
-              logger.info(
-                { provider: p.name, models: updated.changes },
-                'Activated models for provider',
-              );
-            }
           }
         }
       } catch (err) {
@@ -1255,8 +1281,8 @@ void (async () => {
 
     // ─── Periodic Health Check ──────────────────────────────────────
     // Every 5 minutes, verify provider health and key validity.
-    // Deactivates models for providers whose keys have expired or
-    // whose upstream is unreachable.
+    // Marks providers unhealthy but does NOT deactivate models — the
+    // `available_only` filter in /admin/models handles visibility.
     const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
     setInterval(() => {
       void (async () => {
@@ -1281,15 +1307,11 @@ void (async () => {
             ).get(p.id);
 
             if (!activeKey && !needsNoKey) {
-              // No active keys — deactivate models
-              const deactivated = db.prepare(
-                `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now')
-                 WHERE provider_id = ? AND is_active = 1`
-              ).run(p.id);
-              if (deactivated.changes > 0) {
-                logger.info({ provider: p.name, models: deactivated.changes }, 'Health check: deactivated models — no active keys');
-              }
-              // Mark provider as unhealthy
+              // No active keys — mark provider as unhealthy.
+              // Do NOT deactivate models here: the `available_only` filter
+              // in /admin/models already hides models from keyless providers.
+              // Deactivating them would erase user-added models that should
+              // persist regardless of key status.
               if (p.is_healthy) {
                 db.prepare(
                   `UPDATE providers SET is_healthy = 0, updated_at = datetime('now') WHERE id = ?`

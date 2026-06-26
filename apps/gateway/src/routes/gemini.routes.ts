@@ -10,6 +10,7 @@ import {
 } from '../converters/gemini-converter.js';
 import { createGeminiSSEStream } from '../converters/gemini-stream-serializer.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { compressionService } from '../services/compression.js';
 
 // --- Zod schemas for Gemini wire format ---
 
@@ -74,6 +75,43 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    // Apply compression if enabled
+    let compressionMetadata = undefined;
+    const tenantId = (request as any).tenant?.id;
+    const apiKeyId = (request as any).apiKeyId;
+
+    if (tenantId || apiKeyId) {
+      try {
+        const tenantConfig = tenantId ? compressionService.getTenantConfig(tenantId) : undefined;
+        const apiKeyConfig = apiKeyId ? compressionService.getApiKeyConfig(apiKeyId) : undefined;
+
+        if (tenantConfig?.enabled || apiKeyConfig?.enabled) {
+          // Convert Gemini contents to standard format for compression
+          const messagesForCompression = body.contents.map(c => ({
+            role: c.role === 'model' ? 'assistant' : 'user',
+            content: c.parts.map(p => ('text' in p ? p.text : '') || '').join(''),
+          }));
+
+          const { compressed, metadata } = await compressionService.compressPrompt(
+            messagesForCompression,
+            tenantConfig,
+            apiKeyConfig
+          );
+
+          // Convert back to Gemini format
+          body.contents = compressed.map((m, i) => ({
+            ...body.contents[i],
+            parts: [{ text: m.content }],
+          }));
+
+          compressionMetadata = metadata;
+          logger.debug({ requestId, saved: metadata.saved }, 'Applied compression to Gemini request');
+        }
+      } catch (err) {
+        logger.warn({ err, requestId }, 'Compression failed for Gemini request, continuing without');
+      }
+    }
 
     const unifiedRequest = convertGeminiRequestToUnified(body, {
       requestId,

@@ -10,6 +10,7 @@ import {
 } from '../converters/anthropic-converter.js';
 import { createAnthropicSSEStream } from '../converters/anthropic-stream-serializer.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { compressionService } from '../services/compression.js';
 
 const AnthropicContentBlockSchema = z.union([
   z.object({ type: z.literal('text'), text: z.string() }),
@@ -79,6 +80,43 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    // Apply compression if enabled
+    let compressionMetadata = undefined;
+    const tenantId = (request as any).tenant?.id;
+    const apiKeyId = (request as any).apiKeyId;
+
+    if (tenantId || apiKeyId) {
+      try {
+        const tenantConfig = tenantId ? compressionService.getTenantConfig(tenantId) : undefined;
+        const apiKeyConfig = apiKeyId ? compressionService.getApiKeyConfig(apiKeyId) : undefined;
+
+        if (tenantConfig?.enabled || apiKeyConfig?.enabled) {
+          // Convert Anthropic messages to standard format for compression
+          const messagesForCompression = body.messages.map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          }));
+
+          const { compressed, metadata } = await compressionService.compressPrompt(
+            messagesForCompression,
+            tenantConfig,
+            apiKeyConfig
+          );
+
+          // Convert back to Anthropic format
+          body.messages = compressed.map((m, i) => ({
+            ...body.messages[i],
+            content: m.content,
+          }));
+
+          compressionMetadata = metadata;
+          logger.debug({ requestId, saved: metadata.saved }, 'Applied compression to Anthropic request');
+        }
+      } catch (err) {
+        logger.warn({ err, requestId }, 'Compression failed for Anthropic request, continuing without');
+      }
+    }
 
     const unifiedRequest = convertAnthropicRequestToUnified(body, {
       requestId,

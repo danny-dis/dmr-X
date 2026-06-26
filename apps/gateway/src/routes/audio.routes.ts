@@ -15,7 +15,6 @@ const SpeechRequestSchema = z.object({
 });
 
 export async function audioRoutes(server: FastifyInstance): Promise<void> {
-  // Text-to-speech
   server.post('/audio/speech', async (request, reply) => {
     const parsed = SpeechRequestSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -26,6 +25,23 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    const tenantId = (request as any).tenant?.id;
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('audio_tts', tenantId, body as Record<string, unknown>);
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      const resp = cached.response as any;
+      if (resp.audio?.b64_json) {
+        const contentTypes: Record<string, string> = {
+          mp3: 'audio/mpeg', opus: 'audio/opus', aac: 'audio/aac',
+          flac: 'audio/flac', wav: 'audio/wav', pcm: 'audio/pcm',
+        };
+        reply.header('Content-Type', contentTypes[body.response_format] || 'audio/mpeg');
+        return Buffer.from(resp.audio.b64_json, 'base64');
+      }
+      return cached.response;
+    }
 
     const unifiedRequest: UnifiedRequest = {
       modality: 'audio_tts',
@@ -49,14 +65,12 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
 
       if (response.audio?.b64_json) {
         const contentTypes: Record<string, string> = {
-          mp3: 'audio/mpeg',
-          opus: 'audio/opus',
-          aac: 'audio/aac',
-          flac: 'audio/flac',
-          wav: 'audio/wav',
-          pcm: 'audio/pcm',
+          mp3: 'audio/mpeg', opus: 'audio/opus', aac: 'audio/aac',
+          flac: 'audio/flac', wav: 'audio/wav', pcm: 'audio/pcm',
         };
         reply.header('Content-Type', contentTypes[body.response_format] || 'audio/mpeg');
+        storeRouteCache('audio_tts', tenantId, body as Record<string, unknown>, response);
+        reply.header('X-Cache', 'MISS');
         return Buffer.from(response.audio.b64_json, 'base64');
       }
 
@@ -68,7 +82,6 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     }
   });
 
-  // Speech-to-text (multipart file upload)
   server.post('/audio/transcriptions', async (request, reply) => {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
@@ -81,11 +94,9 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     let responseFormat = 'json';
 
     try {
-      // Handle multipart form data
       const parts = request.parts();
       for await (const part of parts) {
         if (part.type === 'file') {
-          // Collect file data into buffer
           const chunks: Buffer[] = [];
           for await (const chunk of part.file) {
             chunks.push(chunk);
@@ -111,6 +122,20 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Model is required');
     }
 
+    const tenantId = (request as any).tenant?.id;
+    const sttBody = { model, language, prompt, response_format: responseFormat, audio: audioBase64! };
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('audio_stt', tenantId, sttBody);
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      const text = (cached.response as any)?.text || '';
+      if (responseFormat === 'text') {
+        reply.header('Content-Type', 'text/plain');
+        return text;
+      }
+      return cached.response;
+    }
+
     const unifiedRequest: UnifiedRequest = {
       modality: 'audio_stt',
       model,
@@ -132,13 +157,14 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
       });
 
       const text = response.message?.content || '';
+      const result = responseFormat === 'text' ? text : { text };
 
+      storeRouteCache('audio_stt', tenantId, sttBody, result);
+      reply.header('X-Cache', 'MISS');
       if (responseFormat === 'text') {
         reply.header('Content-Type', 'text/plain');
-        return text;
       }
-
-      return { text };
+      return result;
     } catch (error: any) {
       if (error instanceof ValidationError) throw error;
       logger.error({ err: error }, 'STT request error');

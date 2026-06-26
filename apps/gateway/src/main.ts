@@ -1,3 +1,12 @@
+// sql.js returns BigInt for INTEGER columns. JSON.stringify cannot serialize
+// BigInt, which causes 500s with empty bodies when Fastify tries to send the
+// response. Patch the prototype before anything else loads.
+if (typeof BigInt !== 'undefined' && !(BigInt.prototype as any).toJSON) {
+  (BigInt.prototype as any).toJSON = function () {
+    return Number(this);
+  };
+}
+
 import { initDb, closeDb } from '@dmr-x/db';
 import { federationService } from '@dmr-x/federation';
 import { memoryService } from '@dmr-x/memory';

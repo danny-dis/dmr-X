@@ -8,7 +8,7 @@ import { parseQualityTarget } from '../utils/quality-target.js';
 
 const SeparateRequestSchema = z.object({
   model: z.string().optional(),
-  audio: z.string().min(1), // base64 or URL
+  audio: z.string().min(1),
   stem_count: z.enum(['2', '4', '5', '6']).optional(),
   separate_vocals: z.boolean().optional(),
   separate_drums: z.boolean().optional(),
@@ -27,6 +27,14 @@ export async function audioSeparationRoutes(server: FastifyInstance): Promise<vo
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    const tenantId = (request as any).tenant?.id;
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('audio_separation', tenantId, body as Record<string, unknown>);
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      return cached.response;
+    }
 
     const unifiedRequest = {
       modality: 'audio_separation' as const,
@@ -50,13 +58,17 @@ export async function audioSeparationRoutes(server: FastifyInstance): Promise<vo
         qualityTarget,
       });
 
-      return {
+      const result = {
         requestId: response.requestId,
         providerId: response.providerId,
         modelId: response.modelId,
         stems: response.stems,
         archive: response.stemArchive,
       };
+
+      storeRouteCache('audio_separation', tenantId, body as Record<string, unknown>, result);
+      reply.header('X-Cache', 'MISS');
+      return result;
     } catch (error: any) {
       if (error instanceof ValidationError) throw error;
       logger.error({ err: error }, 'Audio separation request error');

@@ -12,10 +12,17 @@ import { useUIStore } from '@/store/useUIStore';
 export function Shell() {
   const location = useLocation();
   const pushRecentPage = useUIStore((s) => s.pushRecentPage);
+  const mobileMenuOpen = useUIStore((s) => s.mobileMenuOpen);
+  const setMobileMenuOpen = useUIStore((s) => s.setMobileMenuOpen);
 
   useEffect(() => {
     pushRecentPage(location.pathname);
   }, [location.pathname, pushRecentPage]);
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [location.pathname, setMobileMenuOpen]);
 
   return (
     <div className="flex h-dvh w-full min-w-0 overflow-hidden bg-bg text-fg">
@@ -25,7 +32,23 @@ export function Shell() {
       >
         Skip to content
       </a>
-      <Sidebar />
+
+      {/* Mobile overlay */}
+      {mobileMenuOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Sidebar - always visible on desktop, slide-in on mobile */}
+      <div className={`
+        fixed inset-y-0 left-0 z-50 transform transition-transform duration-200 lg:relative lg:translate-x-0
+        ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+      `}>
+        <Sidebar />
+      </div>
+
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar />
         <main id="main-content" className="flex-1 overflow-y-auto">

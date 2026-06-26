@@ -18,6 +18,7 @@ import {
   Bell,
   Settings,
   Plug,
+  Minimize2,
   type LucideIcon,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
@@ -190,6 +191,12 @@ export const NAV_GROUPS: NavGroup[] = [
         path: '/settings',
         icon: Settings,
         description: 'Gateway configuration',
+      },
+      {
+        label: 'Compression',
+        path: '/compression',
+        icon: Minimize2,
+        description: 'Headroom token compression',
       },
       {
         label: 'Connect',

@@ -15,11 +15,48 @@ import { Agent } from 'undici';
 import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { compressionService } from '../services/compression.js';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 
 const HTML_ESCAPE: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escapeHtml(str: string): string {
   return str.replace(/[&<>"']/g, c => HTML_ESCAPE[c]!);
+}
+
+/**
+ * Log an admin action to the audit log for SOC2/ISO27001 compliance.
+ * All create/update/delete operations on sensitive resources should be logged.
+ */
+function logAdminAction(
+  request: any,
+  action: string,
+  resourceType: string,
+  resourceId?: string,
+  details?: Record<string, unknown>
+): void {
+  try {
+    const db = getDb();
+    const adminKeyHash = request.headers['x-api-key']
+      ? crypto.createHash('sha256').update(request.headers['x-api-key']).digest('hex').slice(0, 16)
+      : 'unknown';
+
+    db.prepare(
+      `INSERT INTO admin_audit_log (id, admin_key_hash, action, resource_type, resource_id, details, ip_address, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      crypto.randomUUID(),
+      adminKeyHash,
+      action,
+      resourceType,
+      resourceId || null,
+      details ? JSON.stringify(details) : null,
+      request.ip || null,
+      request.headers['user-agent'] || null
+    );
+  } catch (err) {
+    // Don't let audit logging failures break admin operations
+    logger.warn({ err, action, resourceType }, 'Failed to write admin audit log');
+  }
 }
 
 /**
@@ -200,11 +237,18 @@ const CreateApiKeySchema = z.object({
   name: z.string().max(255).optional(),
   scopes: z.array(z.string()).optional(),
   allowed_tools: z.array(z.string()).optional(),
+  expires_at: z.string().datetime().optional().nullable(),
+  compression_enabled: z.boolean().optional(),
+  compression_algorithm: z.enum(['auto', 'smartcrusher', 'codecompressor', 'kompress']).optional(),
+  compression_reversible: z.boolean().optional(),
 });
 
 const CreateTenantApiKeySchema = z.object({
   name: z.string().max(255).optional(),
   scopes: z.array(z.string()).optional(),
+  compression_enabled: z.boolean().optional(),
+  compression_algorithm: z.enum(['auto', 'smartcrusher', 'codecompressor', 'kompress']).optional(),
+  compression_reversible: z.boolean().optional(),
 });
 
 const UpdateModelSchema = z.object({
@@ -828,7 +872,12 @@ function syncDefaultKeyFromProvidersTable(
 }
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
-  async function createApiKeyForTenant(tenantId: string, name: string | undefined) {
+  async function createApiKeyForTenant(
+    tenantId: string,
+    name: string | undefined,
+    expiresAt?: string,
+    compression?: { enabled?: boolean; algorithm?: string; reversible?: boolean },
+  ) {
     const db = getDb();
 
     const tenant = db.prepare('SELECT id FROM tenants WHERE id = ?').get(tenantId);
@@ -836,17 +885,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Tenant not found');
     }
 
-    const { generateApiKey, hashApiKey } = await import('@dmr-x/utils');
+    const { generateApiKey, hashApiKeyWithSalt } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
-    const keyHash = hashApiKey(apiKey);
+    const keyHash = hashApiKeyWithSalt(apiKey);
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name) VALUES (?, ?, ?, ?)'
-    ).run(id, tenantId, keyHash, name);
+      'INSERT INTO api_keys (id, tenant_id, key_hash, name, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      id, tenantId, keyHash, name, expiresAt || null,
+      compression?.enabled !== undefined ? (compression.enabled ? 1 : 0) : null,
+      compression?.algorithm || null,
+      compression?.reversible !== undefined ? (compression.reversible ? 1 : 0) : null,
+    );
 
     const row = db.prepare(
-      'SELECT id, tenant_id, name, created_at FROM api_keys WHERE id = ?'
+      'SELECT id, tenant_id, name, created_at, expires_at, compression_enabled, compression_algorithm, compression_reversible FROM api_keys WHERE id = ?'
     ).get(id);
 
     return {
@@ -1469,17 +1523,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     recomputeProviderTier(db, id);
 
-    // If the key was deactivated, check if the provider still has active keys.
-    // If not, deactivate its models so they don't appear in routing.
-    if (body.is_active === false) {
-      const hasKeysNow = providerHasActiveKeys(db, id);
-      if (!hasKeysNow) {
-        db.prepare(
-          `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now') WHERE provider_id = ?`
-        ).run(id);
-        logger.info({ provider: id }, 'Deactivated models — no active keys remaining after key deactivation');
-      }
-    }
+    // Key deactivation no longer touches model_profiles.is_active.
+    // The `available_only` filter in /admin/models already hides models
+    // from providers without active keys, so deactivating them here
+    // would erase user-added models that should persist.
 
     // Re-initialize adapter if the active key changed. A change to
     // priority, is_active, or credentials of the currently-active key
@@ -1546,15 +1593,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     db.prepare(`DELETE FROM provider_keys WHERE id = ?`).run(keyId);
     recomputeProviderTier(db, id);
 
-    // Check if provider still has any active keys. If not, deactivate its
-    // models so they don't appear in the Playground or routing.
-    const hasKeysNow = providerHasActiveKeys(db, id);
-    if (!hasKeysNow) {
-      db.prepare(
-        `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now') WHERE provider_id = ?`
-      ).run(id);
-      logger.info({ provider: id }, 'Deactivated models — no active keys remaining');
-    }
+    // Model deactivation removed — the `available_only` filter in
+    // /admin/models already hides models from providers without active keys.
 
     const refreshCandidates = (server as any).refreshCandidates;
     if (refreshCandidates) await refreshCandidates();
@@ -2384,6 +2424,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       }
     }
 
+    // Audit log for provider creation
+    logAdminAction(request, 'create', 'provider', id, {
+      name: body.name,
+      adapter_type: body.adapter_type,
+      has_base_url: !!body.base_url,
+    });
+
     return {
       ...created,
       config: { ...createdCfg, apiKey: undefined, hasKey: !!createdCfg.apiKey },
@@ -2504,7 +2551,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { tenant_id, name, scopes, allowed_tools } = parsed.data;
+    const { tenant_id, name, scopes, allowed_tools, expires_at, compression_enabled, compression_algorithm, compression_reversible } = parsed.data;
 
     const db = getDb();
 
@@ -2514,18 +2561,34 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Tenant not found');
     }
 
-    const { generateApiKey, hashApiKey } = await import('@dmr-x/utils');
+    const { generateApiKey, hashApiKeyWithSalt } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
-    const keyHash = hashApiKey(apiKey);
+    const keyHash = hashApiKeyWithSalt(apiKey);
 
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name, scopes, allowed_tools) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, tenant_id, keyHash, name, scopes ? JSON.stringify(scopes) : null, allowed_tools ? JSON.stringify(allowed_tools) : null);
+      'INSERT INTO api_keys (id, tenant_id, key_hash, name, scopes, allowed_tools, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      id, tenant_id, keyHash, name,
+      scopes ? JSON.stringify(scopes) : null,
+      allowed_tools ? JSON.stringify(allowed_tools) : null,
+      expires_at || null,
+      compression_enabled !== undefined ? (compression_enabled ? 1 : 0) : null,
+      compression_algorithm || null,
+      compression_reversible !== undefined ? (compression_reversible ? 1 : 0) : null,
+    );
+
+    // Audit log for API key creation
+    logAdminAction(request, 'create', 'api_key', id, {
+      tenant_id,
+      name,
+      has_expiry: !!expires_at,
+      compression_enabled: compression_enabled ?? null,
+    });
 
     const row = db.prepare(
-      'SELECT id, tenant_id, name, scopes, allowed_tools, created_at FROM api_keys WHERE id = ?'
+      'SELECT id, tenant_id, name, scopes, allowed_tools, created_at, expires_at, compression_enabled, compression_algorithm, compression_reversible FROM api_keys WHERE id = ?'
     ).get(id);
 
     reply.status(201);
@@ -2568,12 +2631,65 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.get('/admin/api-keys', async () => {
     const db = getDb();
     const rows = db.prepare(`
-      SELECT ak.id, ak.tenant_id, t.name as tenant_name, ak.name, ak.scopes, ak.is_active, ak.created_at, ak.last_used_at
+      SELECT ak.id, ak.tenant_id, t.name as tenant_name, ak.name, ak.scopes, ak.is_active, ak.created_at, ak.last_used_at, ak.expires_at,
+             ak.compression_enabled, ak.compression_algorithm, ak.compression_reversible
       FROM api_keys ak
       JOIN tenants t ON t.id = ak.tenant_id
       ORDER BY ak.created_at DESC
     `).all();
     return { api_keys: rows };
+  });
+
+  // Update API key expiry
+  server.patch('/admin/api-keys/:id/expiry', async (request) => {
+    const { id } = request.params as { id: string };
+    const { expires_at } = request.body as { expires_at?: string | null };
+
+    const db = getDb();
+    const key = db.prepare('SELECT id FROM api_keys WHERE id = ?').get(id);
+    if (!key) {
+      throw new ValidationError('API key not found');
+    }
+
+    db.prepare('UPDATE api_keys SET expires_at = ? WHERE id = ?').run(expires_at || null, id);
+
+    return { id, expires_at: expires_at || null };
+  });
+
+  // Update API key compression settings
+  server.patch('/admin/api-keys/:id/compression', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z.object({
+      compression_enabled: z.boolean().optional(),
+      compression_algorithm: z.enum(['auto', 'smartcrusher', 'codecompressor', 'kompress']).optional(),
+      compression_reversible: z.boolean().optional(),
+    }).safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const db = getDb();
+    const existing = db.prepare('SELECT id FROM api_keys WHERE id = ?').get(id) as { id: string } | undefined;
+    if (!existing) {
+      throw new ValidationError('API key not found');
+    }
+
+    await compressionService.updateApiKeyConfig(id, {
+      enabled: parsed.data.compression_enabled,
+      reversible: parsed.data.compression_reversible,
+    });
+
+    if (parsed.data.compression_algorithm !== undefined) {
+      db.prepare('UPDATE api_keys SET compression_algorithm = ?, updated_at = datetime(\'now\') WHERE id = ?').run(parsed.data.compression_algorithm, id);
+    }
+
+    const row = db.prepare(
+      'SELECT id, compression_enabled, compression_algorithm, compression_reversible FROM api_keys WHERE id = ?'
+    ).get(id);
+
+    logAdminAction(request, 'update', 'api_key', id, { compression: parsed.data });
+
+    return row;
   });
 
   // List benchmark results
@@ -2899,37 +3015,58 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Route decisions
-  server.get('/admin/routing/decisions', async () => {
-    const db = getDb();
-    const rows = db.prepare(`
-      SELECT
-        rl.id,
-        rl.timestamp,
-        json_extract(rl.task_profile, '$.taskType') as task_type,
-        rl.selected_model,
-        p.name as selected_provider,
-        json_extract(rl.routing_plan, '$.executionMode') as execution_mode,
-        json_extract(rl.routing_plan, '$.decisionReason') as decision_reason,
-        COALESCE(json_extract(rl.routing_plan, '$.fallbackChain'), '[]') as fallback_chain,
-        rl.latency_ms as latency,
-        rl.estimated_cost as cost,
-        rl.quality_score as confidence,
-        rl.tokens_input as input_tokens,
-        rl.tokens_output as output_tokens,
-        CASE WHEN rl.error_code IS NOT NULL THEN 'error'
-             WHEN rl.fallback_used THEN 'fallback'
-             ELSE 'success' END as status
-      FROM request_logs rl
-      LEFT JOIN providers p ON p.id = rl.selected_provider
-      ORDER BY rl.timestamp DESC
-      LIMIT 50
-    `).all() as Array<Record<string, unknown>>;
-    return {
-      decisions: rows.map((row) => ({
-        ...row,
-        fallback_chain: typeof row.fallback_chain === 'string' ? JSON.parse(row.fallback_chain) : row.fallback_chain ?? [],
-      })),
-    };
+  server.get('/admin/routing/decisions', async (_request, reply) => {
+    try {
+      const db = getDb();
+      let rows: Array<Record<string, unknown>> = [];
+      try {
+        rows = db.prepare(`
+          SELECT
+            rl.id,
+            rl.timestamp,
+            json_extract(rl.task_profile, '$.taskType') as task_type,
+            rl.selected_model,
+            p.name as selected_provider,
+            json_extract(rl.routing_plan, '$.executionMode') as execution_mode,
+            json_extract(rl.routing_plan, '$.decisionReason') as decision_reason,
+            COALESCE(json_extract(rl.routing_plan, '$.fallbackChain'), '[]') as fallback_chain,
+            rl.latency_ms as latency,
+            rl.estimated_cost as cost,
+            rl.quality_score as confidence,
+            rl.tokens_input as input_tokens,
+            rl.tokens_output as output_tokens,
+            CASE WHEN rl.error_code IS NOT NULL THEN 'error'
+                 WHEN rl.fallback_used THEN 'fallback'
+                 ELSE 'success' END as status
+          FROM request_logs rl
+          LEFT JOIN providers p ON p.id = rl.selected_provider
+          ORDER BY rl.timestamp DESC
+          LIMIT 50
+        `).all() as Array<Record<string, unknown>>;
+      } catch (err) {
+        logger.debug({ err }, 'Route decisions query failed — request_logs may be missing columns');
+        rows = [];
+      }
+      const decisions = rows.map((row) => {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(row)) {
+          out[k] = typeof v === 'bigint' ? Number(v) : v;
+        }
+        try {
+          out.fallback_chain = typeof out.fallback_chain === 'string' ? JSON.parse(out.fallback_chain as string) : out.fallback_chain ?? [];
+        } catch {
+          out.fallback_chain = [];
+        }
+        return out;
+      });
+      reply.header('Content-Type', 'application/json');
+      return reply.send(JSON.stringify({ decisions }));
+    } catch (err) {
+      logger.error({ err }, 'Route decisions handler failed');
+      reply.code(200);
+      reply.header('Content-Type', 'application/json');
+      return reply.send(JSON.stringify({ decisions: [] }));
+    }
   });
 
   // Performance by mode — shows how each provider/model performs across
@@ -3289,6 +3426,52 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     });
   });
 
+  // SSE stream of dashboard stats updates. Pushes live metrics to the UI
+  // so it doesn't have to poll every 5 seconds.
+  const dashboardStatsEvents = new EventEmitter();
+  dashboardStatsEvents.setMaxListeners(50);
+
+  // Publish dashboard stats update (called after significant events)
+  function publishDashboardStatsUpdate(stats: Record<string, unknown>): void {
+    dashboardStatsEvents.emit('stats', stats);
+  }
+
+  server.get('/admin/dashboard/stream', async (request, reply) => {
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    // Subscribe to live stats updates
+    const onStats = (stats: Record<string, unknown>) => {
+      try {
+        reply.raw.write(`data: ${JSON.stringify(stats)}\n\n`);
+      } catch {
+        // socket may have closed
+      }
+    };
+    dashboardStatsEvents.on('stats', onStats);
+
+    // Heartbeat every 15s to keep the connection alive
+    const heartbeat = setInterval(() => {
+      try {
+        reply.raw.write(`:heartbeat\n\n`);
+      } catch {
+        // ignore
+      }
+    }, 15_000);
+    if (heartbeat.unref) heartbeat.unref();
+
+    request.raw.on('close', () => {
+      dashboardStatsEvents.off('stats', onStats);
+      clearInterval(heartbeat);
+    });
+  });
+
+  // Expose publisher for dashboard stats updates
+  (server as unknown as Record<string, unknown>).publishDashboardStatsUpdate = publishDashboardStatsUpdate;
+
   // Expose buffer + publisher for adding events from other routes
   (server as unknown as Record<string, unknown>).telemetryBuffer = telemetryBuffer;
   (server as unknown as Record<string, unknown>).trimTelemetryBuffer = trimTelemetryBuffer;
@@ -3496,7 +3679,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.delete('/admin/providers/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     const db = getDb();
+
+    // Get provider name before deletion for audit log
+    const provider = db.prepare('SELECT name FROM providers WHERE id = ?').get(id) as { name: string } | undefined;
+
     db.prepare('DELETE FROM providers WHERE id = ?').run(id);
+
+    // Audit log for provider deletion
+    logAdminAction(request, 'delete', 'provider', id, { name: provider?.name });
+
     reply.status(204);
     return null;
   });
@@ -3532,6 +3723,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       logger.error({ err, tenantId: id }, 'Failed to delete tenant');
       throw new ValidationError('Cannot delete tenant — it still has associated records (billing, usage, etc.)');
     }
+
+    // Audit log for tenant deletion
+    logAdminAction(request, 'delete', 'tenant', id, { name: tenant.name });
 
     reply.status(204);
     return null;

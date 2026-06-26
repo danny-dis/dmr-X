@@ -26,6 +26,7 @@ const WorkersPage = lazy(() => import('@/pages/Workers').then(m => ({ default: m
 const FederationPage = lazy(() => import('@/pages/Federation').then(m => ({ default: m.FederationPage })));
 const ObservabilityPage = lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
 const SettingsPage = lazy(() => import('@/pages/Settings').then(m => ({ default: m.SettingsPage })));
+const CompressionPage = lazy(() => import('@/pages/Compression').then(m => ({ default: m.CompressionPage })));
 const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
 const NotFoundPage = lazy(() => import('@/pages/NotFound').then(m => ({ default: m.NotFoundPage })));
 
@@ -64,6 +65,7 @@ export default function App() {
               <Route path="/federation" element={<FederationPage />} />
               <Route path="/observability" element={<ObservabilityPage />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/compression" element={<CompressionPage />} />
               <Route path="/connect" element={<ConnectPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>

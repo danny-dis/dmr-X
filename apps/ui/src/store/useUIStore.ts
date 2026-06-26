@@ -10,6 +10,7 @@ export interface UIState {
   commandPaletteOpen: boolean;
   theme: ThemeMode;
   liveMode: boolean;
+  mobileMenuOpen: boolean;
   favoriteProviders: string[];
   recentPages: { path: string; at: number }[];
   setSidebarCollapsed: (v: boolean) => void;
@@ -18,6 +19,7 @@ export interface UIState {
   setCommandPaletteOpen: (v: boolean) => void;
   setTheme: (v: ThemeMode) => void;
   setLiveMode: (v: boolean) => void;
+  setMobileMenuOpen: (v: boolean) => void;
   toggleFavoriteProvider: (id: string) => void;
   pushRecentPage: (path: string) => void;
   reset: () => void;
@@ -31,6 +33,7 @@ export const useUIStore = create<UIState>()(
       commandPaletteOpen: false,
       theme: 'dark',
       liveMode: true,
+      mobileMenuOpen: false,
       favoriteProviders: [],
       recentPages: [],
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
@@ -39,6 +42,7 @@ export const useUIStore = create<UIState>()(
       setCommandPaletteOpen: (v) => set({ commandPaletteOpen: v }),
       setTheme: (v) => set({ theme: v }),
       setLiveMode: (v) => set({ liveMode: v }),
+      setMobileMenuOpen: (v) => set({ mobileMenuOpen: v }),
       toggleFavoriteProvider: (id) =>
         set((s) => ({
           favoriteProviders: s.favoriteProviders.includes(id)
@@ -59,6 +63,7 @@ export const useUIStore = create<UIState>()(
           commandPaletteOpen: false,
           theme: 'dark',
           liveMode: true,
+          mobileMenuOpen: false,
           favoriteProviders: [],
           recentPages: [],
         }),

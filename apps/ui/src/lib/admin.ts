@@ -382,6 +382,49 @@ export const Admin = {
     }
   },
 
+  streamDashboardStats: async (signal: AbortSignal, onStats: (stats: Record<string, unknown>) => void) => {
+    const token = getTokenForPath('/admin/dashboard/stream');
+    const url = buildSseUrl(token ? `/admin/dashboard/stream?token=${token}` : '/admin/dashboard/stream');
+
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'text/event-stream',
+      },
+      signal,
+    });
+
+    if (!res.ok || !res.body) throw new Error('Failed to connect to dashboard stream');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              onStats(JSON.parse(line.slice(6)));
+            } catch {
+              // ignore invalid JSON
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        console.error('Dashboard stream error:', err);
+      }
+    }
+  },
+
   // Benchmarks
   runBenchmark: (body: ApiBenchmarkRun) => apiPost<{ status: string; message: string }>('/admin/benchmarks/run', body),
   getLeaderboard: () => apiGet<{ leaderboard: any[] }>('/admin/benchmarks/leaderboard').then(r => r.leaderboard),

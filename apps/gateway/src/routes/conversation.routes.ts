@@ -20,7 +20,10 @@ const AddMessageSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string(),
   audioUrl: z.string().url().optional(),
-  imageUrl: z.string().url().optional(),
+  imageUrl: z.string().refine(
+    (val) => val.startsWith('data:') || /^https?:\/\//.test(val),
+    { message: 'Invalid url' },
+  ).optional(),
   embeddingData: z.string().optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
@@ -44,7 +47,10 @@ const BatchMessageItemSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string(),
   audioUrl: z.string().url().optional(),
-  imageUrl: z.string().url().optional(),
+  imageUrl: z.string().refine(
+    (val) => val.startsWith('data:') || /^https?:\/\//.test(val),
+    { message: 'Invalid url' },
+  ).optional(),
   embeddingData: z.string().optional(),
   model: z.string().optional(),
   provider: z.string().optional(),

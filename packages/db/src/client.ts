@@ -190,6 +190,16 @@ async function migratePlaintextApiKeys(dbWrapper: SqlJsDatabase): Promise<void> 
   }
 }
 
+// sql.js returns BigInt for INTEGER columns; JSON.stringify cannot
+// serialize BigInt. This helper converts every BigInt in a row to Number.
+function coerceBigInt(row: Record<string, unknown>): Record<string, unknown> {
+  for (const key of Object.keys(row)) {
+    const v = row[key];
+    if (typeof v === 'bigint') row[key] = Number(v);
+  }
+  return row;
+}
+
 // Wrapper that mimics better-sqlite3 API on top of sql.js
 class DatabaseWrapper {
   private raw: SqlJsDatabase;
@@ -207,7 +217,7 @@ class DatabaseWrapper {
           stmt.bind(params.length > 0 ? params as initSqlJs.BindParams : undefined);
           const rows: Record<string, unknown>[] = [];
           while (stmt.step()) {
-            rows.push(stmt.getAsObject());
+            rows.push(coerceBigInt(stmt.getAsObject()));
           }
           return rows;
         } finally {
@@ -219,7 +229,7 @@ class DatabaseWrapper {
         try {
           stmt.bind(params.length > 0 ? params as initSqlJs.BindParams : undefined);
           if (stmt.step()) {
-            return stmt.getAsObject();
+            return coerceBigInt(stmt.getAsObject());
           }
           return undefined;
         } finally {

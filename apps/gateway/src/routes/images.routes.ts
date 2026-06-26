@@ -18,7 +18,7 @@ const ImageRequestSchema = z.object({
 });
 
 export async function imagesRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/images/generations', async (request) => {
+  server.post('/images/generations', async (request, reply) => {
     const parsed = ImageRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
@@ -29,6 +29,15 @@ export async function imagesRoutes(server: FastifyInstance): Promise<void> {
     const [width, height] = body.size.split('x').map(Number);
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+
+    const tenantId = (request as any).tenant?.id;
+    const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
+    const cached = checkRouteCache('image', tenantId, body as Record<string, unknown>,
+      (b) => b.response_format === 'b64_json');
+    if (cached) {
+      reply.header('X-Cache', 'HIT');
+      return cached.response;
+    }
 
     const unifiedRequest: UnifiedRequest = {
       modality: 'diffusion',
@@ -53,9 +62,14 @@ export async function imagesRoutes(server: FastifyInstance): Promise<void> {
       qualityTarget,
     });
 
-    return {
+    const result = {
       created: Math.floor(Date.now() / 1000),
       data: response.images || [],
     };
+
+    storeRouteCache('image', tenantId, body as Record<string, unknown>, result,
+      { skipCache: (b) => b.response_format === 'b64_json' });
+    reply.header('X-Cache', 'MISS');
+    return result;
   });
 }

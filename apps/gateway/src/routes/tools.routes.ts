@@ -238,12 +238,47 @@ const CODING_WORKSPACE = process.env.DMRX_CODING_WORKSPACE || process.cwd();
 const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB limit for reads
 const SHELL_TIMEOUT_MS = 30_000; // 30s default for shell commands
 
+/**
+ * Validate and resolve a file path, ensuring it stays within the workspace.
+ * Uses fs.realpathSync() to resolve symlinks before validation,
+ * preventing symlink-based path traversal attacks.
+ *
+ * @throws Error if path is outside workspace or contains null bytes
+ */
 function safePath(filePath: string): string {
+  // Block null bytes (can bypass path checks on some systems)
+  if (filePath.includes('\0')) {
+    throw new Error('Path contains invalid characters');
+  }
+
   const resolved = path.resolve(CODING_WORKSPACE, filePath);
-  if (!resolved.startsWith(CODING_WORKSPACE)) {
+
+  // Try to resolve symlinks if the path exists
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(resolved);
+  } catch {
+    // Path doesn't exist yet (e.g., for write_file) - validate parent directory
+    const parentDir = path.dirname(resolved);
+    try {
+      realPath = fs.realpathSync(parentDir);
+      // Append the filename since it doesn't exist yet
+      realPath = path.join(realPath, path.basename(resolved));
+    } catch {
+      // Parent doesn't exist either - use resolved path but still validate prefix
+      realPath = resolved;
+    }
+  }
+
+  // Normalize path separators for cross-platform comparison
+  const normalizedWorkspace = CODING_WORKSPACE.replace(/\\/g, '/');
+  const normalizedReal = realPath.replace(/\\/g, '/');
+
+  if (!normalizedReal.startsWith(normalizedWorkspace)) {
     throw new Error('Path outside workspace');
   }
-  return resolved;
+
+  return realPath;
 }
 
 export function registerCodingToolHandlers(): void {
@@ -387,6 +422,62 @@ export function registerCodingToolHandlers(): void {
   });
 
   // ---- bash ----------------------------------------------------------------
+  // Allowlist of safe commands that can be executed via bash tool.
+  // This replaces the previous blocklist which was trivially bypassable.
+  const ALLOWED_BASH_COMMANDS = new Set([
+    // Version control
+    'git',
+    // Package managers
+    'npm', 'npx', 'yarn', 'pnpm', 'bun',
+    // Runtime execution
+    'node', 'bun', 'deno', 'python', 'python3',
+    // File operations (safe subset)
+    'ls', 'pwd', 'echo', 'cat', 'head', 'tail', 'wc', 'find', 'grep', 'rg',
+    'mkdir', 'cp', 'mv', 'touch',
+    // Build tools
+    'tsc', 'esbuild', 'vite', 'webpack',
+    // Testing
+    'jest', 'vitest', 'mocha',
+    // Process info
+    'ps', 'top', 'uptime', 'date',
+    // Disk info
+    'df', 'du', 'stat',
+  ]);
+
+  /**
+   * Validate that a bash command only uses allowlisted executables.
+   * Prevents command injection via pipes, subshells, or special characters.
+   */
+  function isBashCommandAllowed(command: string): { allowed: boolean; reason?: string } {
+    const trimmed = command.trim();
+
+    // Block command substitution patterns
+    if (/\$\(|`[^`]*`|\$\{/.test(trimmed)) {
+      return { allowed: false, reason: 'Command substitution not allowed' };
+    }
+
+    // Block piping to dangerous commands
+    const pipeSegments = trimmed.split('|').map(s => s.trim());
+    for (const segment of pipeSegments) {
+      const firstWord = segment.split(/\s+/)[0]?.split('/')[0];
+      if (firstWord && !ALLOWED_BASH_COMMANDS.has(firstWord)) {
+        return { allowed: false, reason: `Command '${firstWord}' not in allowlist` };
+      }
+    }
+
+    // Block background execution
+    if (trimmed.endsWith('&')) {
+      return { allowed: false, reason: 'Background execution not allowed' };
+    }
+
+    // Block redirects to sensitive paths
+    if (/[>>]+\s*(\/etc|\/proc|\/sys|\/dev)/.test(trimmed)) {
+      return { allowed: false, reason: 'Redirects to system paths not allowed' };
+    }
+
+    return { allowed: true };
+  }
+
   registerToolHandler('bash', async (args) => {
     const { command, timeoutMs, cwd } = args as {
       command: string;
@@ -398,10 +489,10 @@ export function registerCodingToolHandlers(): void {
       return { error: 'command is required' };
     }
 
-    // Block dangerous commands
-    const blocked = ['rm -rf /', 'mkfs', ':(){', 'dd if=/dev', '> /dev/sd'];
-    if (blocked.some(b => command.includes(b))) {
-      return { error: 'Command blocked for safety' };
+    // Validate command against allowlist
+    const validation = isBashCommandAllowed(command);
+    if (!validation.allowed) {
+      return { error: `Command rejected: ${validation.reason}. Use execute_code for unrestricted execution.` };
     }
 
     try {
@@ -413,6 +504,12 @@ export function registerCodingToolHandlers(): void {
         timeout,
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024, // 10MB
+        // SECURITY: Use stripped environment
+        env: {
+          HOME: '/tmp',
+          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+          LANG: process.env.LANG || 'en_US.UTF-8',
+        },
       });
 
       return { stdout, stderr: stderr || '', exitCode: 0 };

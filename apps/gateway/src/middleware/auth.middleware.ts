@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { AuthenticationError } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
-import { hashApiKey, logger } from '@dmr-x/utils';
+import { hashApiKey, verifyApiKey, logger } from '@dmr-x/utils';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 // Debounced last_used_at: module-level cache keyed by api_key id.
@@ -154,17 +154,30 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       });
       throw new AuthenticationError('Missing or invalid Authorization header');
     }
-    const keyHash = hashApiKey(apiKey);
 
     const db = getDb();
-    const row = db.prepare(
-      `SELECT ak.id, ak.tenant_id, t.name as tenant_name
+
+    // Fetch all active API key hashes for verification
+    // This supports both legacy unsalted hashes and new salted hashes
+    // Also check expires_at to reject expired keys
+    const activeKeys = db.prepare(
+      `SELECT ak.id, ak.key_hash, ak.tenant_id, t.name as tenant_name
        FROM api_keys ak
        JOIN tenants t ON t.id = ak.tenant_id
-       WHERE ak.key_hash = ? AND ak.is_active = 1`
-    ).get(keyHash) as { id: string; tenant_id: string; tenant_name: string } | undefined;
+       WHERE ak.is_active = 1
+         AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
+    ).all() as Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>;
 
-    if (!row) {
+    // Find matching key using constant-time comparison
+    let matchedKey: typeof activeKeys[0] | undefined;
+    for (const key of activeKeys) {
+      if (verifyApiKey(apiKey, key.key_hash)) {
+        matchedKey = key;
+        break;
+      }
+    }
+
+    if (!matchedKey) {
       (server as any).recordTelemetryEvent?.({
         level: 'warning',
         service: 'gateway',
@@ -176,24 +189,24 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
 
     // Attach tenant info to request
     (request as any).tenant = {
-      id: row.tenant_id,
-      name: row.tenant_name,
-      apiKeyId: row.id,
+      id: matchedKey.tenant_id,
+      name: matchedKey.tenant_name,
+      apiKeyId: matchedKey.id,
     };
 
     // Debounced last_used_at update: only update if >5 minutes since last update
     // to avoid SQLite write contention on the hot path. Uses a module-level cache
     // instead of request-scoped state so the debounce persists across requests.
     const now = Date.now();
-    const lastUsed = lastUsedAtCache.get(row.id);
+    const lastUsed = lastUsedAtCache.get(matchedKey.id);
     if (!lastUsed || now - lastUsed > 5 * 60 * 1000) {
       db.prepare(
         "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
-      ).run(row.id);
+      ).run(matchedKey.id);
       if (lastUsedAtCache.size >= LAST_USED_CACHE_MAX) {
         lastUsedAtCache.clear();
       }
-      lastUsedAtCache.set(row.id, now);
+      lastUsedAtCache.set(matchedKey.id, now);
     }
   });
 }
