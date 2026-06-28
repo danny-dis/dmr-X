@@ -98,6 +98,96 @@ export const META_MODELS: MetaModelDefinition[] = [
       return scored.map(({ codingScore: _, ...rest }) => rest);
     },
   },
+  {
+    alias: 'auto-reasoning',
+    description: 'Best model for reasoning, math, and chain-of-thought tasks. Routes through all providers by default (use costFilter=free for free-only). Requires reasoning capability and 32K+ context. Scores by quality (40%) + reasoning capability (30%) + context window (20%) + speed (10%).',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const MIN_CONTEXT = 32000;
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      const scored = pool
+        .filter(c =>
+          c.capabilities.includes('reasoning') &&
+          (c.contextLength ?? 0) >= MIN_CONTEXT
+        )
+        .map(c => {
+          const qualityComponent = c.qualityScore * 0.4;
+          const reasoningComponent = (c.capabilities.includes('reasoning') ? 1 : 0) * 0.3;
+          const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.2;
+          const speedComponent = Math.max(0, 1 - c.avgLatencyMs / 5000) * 0.1;
+          return { ...c, reasoningScore: qualityComponent + reasoningComponent + contextComponent + speedComponent };
+        })
+        .sort((a, b) => b.reasoningScore - a.reasoningScore);
+
+      return scored.map(({ reasoningScore: _, ...rest }) => rest);
+    },
+  },
+  {
+    alias: 'auto-vision',
+    description: 'Best model for multimodal vision tasks (image analysis, OCR, document understanding). Routes through all providers by default (use costFilter=free for free-only). Requires vision capability. Scores by quality (50%) + vision capability (25%) + speed (15%) + context (10%).',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      const scored = pool
+        .filter(c => c.capabilities.includes('vision'))
+        .map(c => {
+          const qualityComponent = c.qualityScore * 0.5;
+          const visionComponent = (c.capabilities.includes('vision') ? 1 : 0) * 0.25;
+          const speedComponent = Math.max(0, 1 - c.avgLatencyMs / 5000) * 0.15;
+          const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.1;
+          return { ...c, visionScore: qualityComponent + visionComponent + speedComponent + contextComponent };
+        })
+        .sort((a, b) => b.visionScore - a.visionScore);
+
+      return scored.map(({ visionScore: _, ...rest }) => rest);
+    },
+  },
+  {
+    alias: 'auto-cheap',
+    description: 'Cheapest model available. Routes through all providers by default (use costFilter=free for free-only). Sorts by total cost (input + output) ascending, with quality as a tiebreaker.',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      return [...pool].sort((a, b) => {
+        const costA = (a.costPerInputToken ?? 0) + (a.costPerOutputToken ?? 0);
+        const costB = (b.costPerInputToken ?? 0) + (b.costPerOutputToken ?? 0);
+        if (costA !== costB) return costA - costB;
+        return b.qualityScore - a.qualityScore;
+      });
+    },
+  },
+  {
+    alias: 'auto-long-context',
+    description: 'Best model for long document processing. Routes through all providers by default (use costFilter=free for free-only). Requires 128K+ context window. Scores by context size (50%) + quality (30%) + speed (20%).',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const MIN_CONTEXT = 128000;
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+      const scored = pool
+        .filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT)
+        .map(c => {
+          const contextComponent = Math.min((c.contextLength ?? 0) / 1_000_000, 1) * 0.5;
+          const qualityComponent = c.qualityScore * 0.3;
+          const speedComponent = Math.max(0, 1 - c.avgLatencyMs / 5000) * 0.2;
+          return { ...c, longContextScore: contextComponent + qualityComponent + speedComponent };
+        })
+        .sort((a, b) => b.longContextScore - a.longContextScore);
+
+      return scored.map(({ longContextScore: _, ...rest }) => rest);
+    },
+  },
+  {
+    alias: 'auto-free',
+    description: 'Best free model. Always routes through zero-cost providers only (costFilter override ignored). Preserves original order — the pipeline scoring decides the best choice.',
+    costFilter: 'free',
+    ranker: (candidates) => {
+      return candidates.filter(c => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0);
+    },
+  },
 ];
 
 /**
