@@ -29,7 +29,7 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
     const cached = checkRouteCache('embedding', tenantId, body as Record<string, unknown>,
-      (b) => b.encoding_format === 'base64');
+      (b: any) => b.encoding_format === 'base64');
     if (cached) {
       reply.header('X-Cache', 'HIT');
       return cached.response;
@@ -66,7 +66,7 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
     };
 
     storeRouteCache('embedding', tenantId, body as Record<string, unknown>, result,
-      { skipCache: (b) => b.encoding_format === 'base64' });
+      { skipCache: (b: any) => b.encoding_format === 'base64' });
     reply.header('X-Cache', 'MISS');
     return result;
   });

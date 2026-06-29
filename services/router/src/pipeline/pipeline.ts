@@ -125,6 +125,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     sortStrategy,
     taskProfile.requiredCapabilityTier,
     taskProfile.modality, // modality-aware scoring for video/non-token pricing
+    taskProfile.turnType,
   );
 
   // Stage 6.5: Apply free-tier strategy (skip if meta-model already filtered to free-only)

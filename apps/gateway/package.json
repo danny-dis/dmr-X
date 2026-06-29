@@ -19,6 +19,7 @@
   "dependencies": {
     "@dmr-x/adapters": "*",
     "@dmr-x/benchmark": "*",
+    "@dmr-x/cache": "*",
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
     "@dmr-x/federation": "*",

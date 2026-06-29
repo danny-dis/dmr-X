@@ -2,6 +2,16 @@ import { Modality, IntelligenceLayer, CapabilityTier, QualityTarget } from './mo
 
 export type FreeTierStrategy = 'prioritize' | 'load_balance' | 'fallback' | 'none';
 
+export type TurnType =
+  | 'tool_use'
+  | 'code_gen'
+  | 'q_a'
+  | 'creative'
+  | 'summarization'
+  | 'translation'
+  | 'data_analysis'
+  | 'general';
+
 export interface TaskProfile {
   modality: Modality;
   capabilities: string[];
@@ -15,6 +25,8 @@ export interface TaskProfile {
   qualityTarget: QualityTarget;
   /** Required capability tier for routing (soft preference — boosts matching models) */
   requiredCapabilityTier?: CapabilityTier;
+  /** Detected turn type for smarter routing decisions */
+  turnType?: TurnType;
 }
 
 export interface ProviderModel {

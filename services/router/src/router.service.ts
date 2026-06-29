@@ -7,6 +7,7 @@ import { logger } from '@dmr-x/utils';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 
 import { ThompsonSampler } from './bandit/thompson-sampler.js';
+import { ClusterScorer } from './cluster/cluster-scorer.js';
 import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
 import { CompositeExecutor } from './decomposer/composite-executor.js';
 import { SpecialistRouter } from './decomposer/specialist-router.js';
@@ -51,6 +52,7 @@ export class Router {
   private specialistRouter: SpecialistRouter;
   private compositeExecutor: CompositeExecutor | null = null;
   private thompsonSampler: ThompsonSampler;
+  private clusterScorer: ClusterScorer;
   private workerPool: WorkerPoolFanout | null = null;
   private handoverSummarizer: HandoverSummarizer;
   private enablePlanner: boolean;
@@ -60,9 +62,14 @@ export class Router {
     this.taskDecomposer = new TaskDecomposer();
     this.specialistRouter = new SpecialistRouter();
     this.thompsonSampler = new ThompsonSampler();
+    this.clusterScorer = new ClusterScorer();
     this.handoverSummarizer = new HandoverSummarizer();
     this.enablePlanner = config.enablePlanner !== false; // Default enabled
     this.enableHandover = config.enableHandover !== false; // Default enabled
+    // Initialize cluster scorer asynchronously
+    this.clusterScorer.initialize().catch(err => {
+      logger.warn({ error: String(err) }, 'Cluster scorer initialization failed');
+    });
   }
 
   /**
@@ -71,6 +78,13 @@ export class Router {
    */
   getSampler(): ThompsonSampler {
     return this.thompsonSampler;
+  }
+
+  /**
+   * Return the cluster scorer instance. Available for pipeline integration.
+   */
+  getClusterScorer(): ClusterScorer {
+    return this.clusterScorer;
   }
 
   setCandidates(candidates: CandidateSet): void {

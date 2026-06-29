@@ -28,3 +28,9 @@ export {
   type CostLabels,
   type HealthLabels,
 } from './metrics.js';
+
+export {
+  contentCaptureService,
+  type CaptureMode,
+  type CaptureEvent,
+} from './content-capture.js';

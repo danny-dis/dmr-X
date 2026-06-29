@@ -33,7 +33,7 @@ export async function imagesRoutes(server: FastifyInstance): Promise<void> {
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
     const cached = checkRouteCache('image', tenantId, body as Record<string, unknown>,
-      (b) => b.response_format === 'b64_json');
+      (b: any) => b.response_format === 'b64_json');
     if (cached) {
       reply.header('X-Cache', 'HIT');
       return cached.response;
@@ -68,7 +68,7 @@ export async function imagesRoutes(server: FastifyInstance): Promise<void> {
     };
 
     storeRouteCache('image', tenantId, body as Record<string, unknown>, result,
-      { skipCache: (b) => b.response_format === 'b64_json' });
+      { skipCache: (b: any) => b.response_format === 'b64_json' });
     reply.header('X-Cache', 'MISS');
     return result;
   });

@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { AuthenticationError } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
-import { hashApiKey, verifyApiKey, logger } from '@dmr-x/utils';
+import { verifyApiKey, logger } from '@dmr-x/utils';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 // Debounced last_used_at: module-level cache keyed by api_key id.
@@ -12,7 +12,7 @@ const lastUsedAtCache = new Map<string, number>();
 const LAST_USED_CACHE_MAX = 10_000;
 
 // Routes that don't require auth.
-const PUBLIC_ROUTES = new Set(['/health', '/healthz', '/livez', '/ready', '/v1/models']);
+const PUBLIC_ROUTES = new Set(['/health', '/healthz', '/livez', '/ready', '/v1/models', '/validate']);
 const PUBLIC_PREFIXES = ['/assets/'];
 const PUBLIC_FILE_EXTENSIONS = new Set([
   '.css',
@@ -38,7 +38,21 @@ const PUBLIC_FILE_EXTENSIONS = new Set([
 // flip the auth bypass live, without a restart, and without being
 // observable in the startup log. To toggle local mode, restart the gateway.
 export const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
-logger.info({ localMode: LOCAL_MODE, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY, envValue: process.env.DMRX_LOCAL_MODE }, 'Auth middleware status');
+
+/**
+ * Deployment mode: 'selfhosted' (default) mounts admin routes + UI.
+ * 'managed' skips admin routes for SaaS deployments with separate control plane.
+ */
+export const DEPLOYMENT_MODE = (process.env.DMRX_DEPLOYMENT_MODE || 'selfhosted') as 'selfhosted' | 'managed';
+
+/**
+ * Anthropic passthrough: when ANTHROPIC_API_KEY is not set, forward the
+ * client's Authorization/x-api-key headers directly to api.anthropic.com.
+ * This lets Claude Code use DMR-X as a transparent proxy.
+ */
+export const ANTHROPIC_PASSTHROUGH = !process.env.ANTHROPIC_API_KEY;
+
+logger.info({ localMode: LOCAL_MODE, deploymentMode: DEPLOYMENT_MODE, anthropicPassthrough: ANTHROPIC_PASSTHROUGH, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY }, 'Auth middleware status');
 
 function extractApiKey(request: FastifyRequest): string | undefined {
   const authHeader = request.headers.authorization;
@@ -89,8 +103,11 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // so a runtime mutation of process.env cannot flip the auth bypass.
     // Toggling local mode requires a gateway restart.
 
-    // Admin routes: skip auth in local mode for UI access
+    // Admin routes: skip auth in local mode for UI access, block in managed mode
     if (pathname.startsWith('/v1/admin')) {
+      if (DEPLOYMENT_MODE === 'managed') {
+        throw new AuthenticationError('Admin API is not available in managed mode');
+      }
       if (LOCAL_MODE) return;
       if (!adminApiKey || adminApiKey === 'replace-with-admin-key') {
         logger.error('Admin API accessed but DMRX_ADMIN_API_KEY is not set or default. Blocking for safety.');

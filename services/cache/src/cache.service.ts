@@ -244,8 +244,9 @@ export function invalidateTenantCache(tenantId: string): void {
  * Get cache statistics.
  */
 export function getCacheStats(): { size: number; keys: string[] } {
+  const keys = cache.keysByPrefix('');
   return {
-    size: cache.keys().length,
-    keys: cache.keys().slice(0, 100),
+    size: keys.length,
+    keys: keys.slice(0, 100),
   };
 }

@@ -1,4 +1,4 @@
-import type { CandidateSet, QualityTarget, ProviderSort, CapabilityTier, Modality } from '@dmr-x/core';
+import type { CandidateSet, QualityTarget, ProviderSort, CapabilityTier, Modality, TurnType } from '@dmr-x/core';
 import type { RateLimitService } from '@dmr-x/quota';
 
 import { calculateTierMatchScore } from './capability-filter.js';
@@ -32,6 +32,20 @@ const SORT_WEIGHT_OVERRIDES: Record<ProviderSort, Weights> = {
   price: { quality: 0.1, cost: 0.7, latency: 0.1, reliability: 0.05, layerMatch: 0.05 },
   latency: { quality: 0.1, cost: 0.1, latency: 0.7, reliability: 0.05, layerMatch: 0.05 },
   throughput: { quality: 0.1, cost: 0.15, latency: 0.15, reliability: 0.55, layerMatch: 0.05 },
+};
+
+/**
+ * Turn-type-specific weight adjustments applied on top of the base weights.
+ * These bias routing toward providers that excel at the detected turn type.
+ */
+const TURN_TYPE_ADJUSTMENTS: Partial<Record<TurnType, Partial<Weights>>> = {
+  code_gen: { quality: 0.15, cost: -0.05, latency: -0.05, reliability: 0.0, layerMatch: -0.05 },
+  tool_use: { quality: 0.1, cost: -0.05, latency: 0.0, reliability: 0.1, layerMatch: -0.15 },
+  q_a: { quality: -0.05, cost: 0.0, latency: 0.1, reliability: 0.0, layerMatch: -0.05 },
+  creative: { quality: 0.1, cost: -0.05, latency: -0.05, reliability: 0.0, layerMatch: 0.0 },
+  summarization: { quality: -0.1, cost: 0.1, latency: 0.05, reliability: 0.0, layerMatch: -0.05 },
+  translation: { quality: -0.05, cost: 0.05, latency: 0.05, reliability: 0.0, layerMatch: -0.05 },
+  data_analysis: { quality: 0.1, cost: 0.0, latency: -0.05, reliability: 0.0, layerMatch: -0.05 },
 };
 
 /**
@@ -71,11 +85,31 @@ export function costLatencyScorer(
   sortStrategy?: ProviderSort,
   requiredCapabilityTier?: CapabilityTier,
   modality?: Modality,
+  turnType?: TurnType,
 ): CandidateSet {
   // User's sort preference overrides quality target weights
-  const weights = sortStrategy
-    ? SORT_WEIGHT_OVERRIDES[sortStrategy]
-    : WEIGHT_PRESETS[qualityTarget];
+  let weights = sortStrategy
+    ? { ...SORT_WEIGHT_OVERRIDES[sortStrategy] }
+    : { ...WEIGHT_PRESETS[qualityTarget] };
+
+  // Apply turn-type adjustments (additive, clamped to [0, 1])
+  if (turnType && TURN_TYPE_ADJUSTMENTS[turnType]) {
+    const adj = TURN_TYPE_ADJUSTMENTS[turnType]!;
+    for (const key of ['quality', 'cost', 'latency', 'reliability', 'layerMatch'] as const) {
+      if (adj[key] !== undefined) {
+        weights[key] = Math.max(0, Math.min(1, weights[key] + adj[key]!));
+      }
+    }
+    // Re-normalize weights to sum to 1
+    const total = weights.quality + weights.cost + weights.latency + weights.reliability + weights.layerMatch;
+    if (total > 0) {
+      weights.quality /= total;
+      weights.cost /= total;
+      weights.latency /= total;
+      weights.reliability /= total;
+      weights.layerMatch /= total;
+    }
+  }
 
   // Find max values for normalization (use modality-aware effective cost)
   const maxCost = Math.max(...candidates.map((m) => getEffectiveCost(m, modality)));

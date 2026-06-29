@@ -2,6 +2,7 @@ import type { UnifiedRequest, TaskProfile, CapabilityTier } from '@dmr-x/core';
 
 import { extractCapabilities } from './capability-extractor.js';
 import { detectModality } from './modality-detector.js';
+import { detectTurnType } from './turn-type.js';
 
 export interface ClassifyOptions {
   path: string;
@@ -45,6 +46,8 @@ export function classifyTask(request: UnifiedRequest, options: ClassifyOptions):
   // Use explicit override if provided, otherwise infer from quality target
   const requiredCapabilityTier = options.requiredCapabilityTier ?? inferCapabilityTier(qualityTarget);
 
+  const turnType = detectTurnType(request);
+
   return {
     modality,
     capabilities,
@@ -53,6 +56,7 @@ export function classifyTask(request: UnifiedRequest, options: ClassifyOptions):
     streaming: request.stream,
     qualityTarget,
     requiredCapabilityTier,
+    turnType,
   };
 }
 

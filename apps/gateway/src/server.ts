@@ -13,7 +13,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 
-import { getTelemetryService, tracer } from '@dmr-x/telemetry';
+import { getTelemetryService, tracer, contentCaptureService } from '@dmr-x/telemetry';
 import { trace, SpanStatusCode, SpanKind, propagation, context, type Span } from '@opentelemetry/api';
 import { ProviderUnavailableError } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
@@ -22,7 +22,7 @@ import { quotaService, rateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import Fastify from 'fastify';
 
-import { authMiddleware } from './middleware/auth.middleware.js';
+import { authMiddleware, DEPLOYMENT_MODE } from './middleware/auth.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
 import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
@@ -41,6 +41,9 @@ import { videoRoutes } from './routes/video.routes.js';
 import { geminiRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
 import { compressionRoutes } from './routes/compression.routes.js';
+import { routeDecisionRoutes } from './routes/route.routes.js';
+import { validateRoutes } from './routes/validate.routes.js';
+import { countTokensRoutes } from './routes/count-tokens.routes.js';
 
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 declare const Bun: unknown | undefined;
@@ -297,6 +300,65 @@ export async function createServer() {
     freeTierStrategy,
     onProviderSuccess: (providerId: string) => adapterRegistry.recordSuccess(providerId),
     onProviderFailure: (providerId: string) => adapterRegistry.recordFailure(providerId),
+    enablePlanner: process.env.DMRX_ENABLE_PLANNER !== 'false',
+    enableHandover: process.env.DMRX_ENABLE_HANDOVER !== 'false',
+    async summarizationExecutor(input) {
+      const candidates = await registryService.getCandidates();
+      const cheapCandidates = candidates.filter(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0);
+      const candidate = cheapCandidates[0] || candidates[0];
+
+      if (!candidate) {
+        return {
+          content: input.messages.map(m =>
+            typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+          ).join('\n'),
+          tokens: 0
+        };
+      }
+
+      const adapter = adapterRegistry.get(candidate.providerId);
+      if (!adapter) {
+        return {
+          content: input.messages.map(m =>
+            typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+          ).join('\n'),
+          tokens: 0
+        };
+      }
+
+      const request: any = {
+        modality: 'llm',
+        model: input.model,
+        messages: input.messages,
+        max_tokens: input.max_tokens,
+        temperature: input.temperature,
+        stream: false,
+        metadata: {}
+      };
+
+      try {
+        const response = await adapter.execute(request);
+        if (response.message?.content && typeof response.message.content === 'string') {
+          return {
+            content: response.message.content,
+            tokens: response.usage?.total_tokens || 0
+          };
+        }
+        return {
+          content: input.messages.map(m =>
+            typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+          ).join('\n'),
+          tokens: 0
+        };
+      } catch {
+        return {
+          content: input.messages.map(m =>
+            typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+          ).join('\n'),
+          tokens: 0
+        };
+      }
+    }
   });
 
   // Make router and helpers available
@@ -310,6 +372,12 @@ export async function createServer() {
   // OTel SDK hasn't finished starting yet.
   const telemetry = getTelemetryService();
   server.decorate('telemetry', telemetry);
+
+  // Content capture: start flush timer if enabled
+  if (contentCaptureService.isEnabled()) {
+    contentCaptureService.startFlushTimer();
+    logger.info({ mode: contentCaptureService.getMode() }, 'Content capture enabled');
+  }
 
   // Initialize Benchmark services
   const judgeService = new JudgeService(router);
@@ -490,7 +558,7 @@ void (async () => {
   await server.register(cors, {
     origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-free-tier-strategy'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-free-tier-strategy', 'anthropic-version', 'anthropic-beta'],
   });
 
   // Rate limiting. Uses tenant ID as key when available (authenticated requests),
@@ -736,6 +804,21 @@ void (async () => {
           // save will retry the export on the next batch, so a single bad
           // row is fine.
           logger.warn({ err: writeErr, requestId: request.id }, 'request_logs write failed');
+        }
+
+        // Content capture: record the call event for ML-ready streaming
+        if (contentCaptureService.isEnabled()) {
+          contentCaptureService.record({
+            type: 'llm_call',
+            providerId: metrics.providerId,
+            modelId: metrics.modelId,
+            requestId: request.id,
+            inputTokens: metrics.tokens?.prompt,
+            outputTokens: metrics.tokens?.completion,
+            latencyMs,
+            statusCode,
+            error: metrics.errorCode,
+          });
         }
       }
     } catch (err) {
@@ -989,6 +1072,9 @@ void (async () => {
    await server.register(agenticRoutes, { prefix: '/v1' });
    await server.register(conversationRoutes, { prefix: '/v1' });
    await server.register(compressionRoutes, { prefix: '/v1' });
+   await server.register(routeDecisionRoutes, { prefix: '/v1' });
+   await server.register(validateRoutes);
+   await server.register(countTokensRoutes, { prefix: '/v1' });
 
   // SPA fallback: serve index.html for non-API GET requests.
   // Pre-read index.html at startup so we catch missing UI builds early
@@ -1022,12 +1108,18 @@ void (async () => {
       oauthRefreshTimer = null;
     }
     healthChecker.stop();
+    contentCaptureService.stop();
     await adapterRegistry.disposeAll();
   });
 
   // Warn if running in local mode (auth disabled)
   if (LOCAL_MODE) {
     logger.warn('LOCAL MODE: Authentication is disabled. Set DMRX_LOCAL_MODE=false for production.');
+  }
+
+  // Log deployment mode
+  if (DEPLOYMENT_MODE === 'managed') {
+    logger.info('MANAGED MODE: Admin routes and UI are disabled.');
   }
 
   // Validate admin API key strength in production

@@ -4,3 +4,4 @@ export { PROVIDER_CATALOG, getProviderTemplate, getProvidersByCategory, getProvi
 export { autoRegisterProviders, discoverMissingModels, enrichExistingModels } from './auto-register.js';
 export { discoveryWorker, DiscoveryWorker } from './discovery-worker.js';
 export { discoverOpenAIModels, type DiscoveredModel, type ModelDiscoveryOptions } from './model-discovery.js';
+export { classifyModelTier, computeCost, lookupCatalogModel, getCatalogModelsByModality, type ModelTier } from './model-catalog.js';
