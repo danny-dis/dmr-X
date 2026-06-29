@@ -3630,6 +3630,27 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return worker;
   });
 
+  server.post('/admin/workers/cleanup', async (request) => {
+    const parsed = z.object({
+      daysToKeep: z.number().min(1).default(30)
+    }).safeParse(request.body);
+    
+    const daysToKeep = parsed.success ? parsed.data.daysToKeep : 30;
+    workersService.cleanup(daysToKeep);
+    return { ok: true };
+  });
+
+  server.get('/admin/workers/:id/jobs', async (request) => {
+    const { id } = request.params as { id: string };
+    const jobs = workersService.listJobs(id);
+    return { jobs };
+  });
+
+  server.get('/admin/jobs', async () => {
+    const jobs = workersService.listJobs();
+    return { jobs };
+  });
+
   // Federation endpoints
   server.get('/admin/federation', async () => {
     const nodes = federationService.list();
@@ -4246,6 +4267,56 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       }
     }
 
+    const fallbackTools = [
+      { name: 'dmrx_chat', description: 'Chat completions with full routing across all configured LLMs.' },
+      { name: 'dmrx_chat_stream', description: 'Streaming chat completion with token-by-token output.' },
+      { name: 'dmrx_generate_image', description: 'Image generation routed across diffusion providers.' },
+      { name: 'dmrx_generate_image_stream', description: 'Streaming image generation with progressive updates.' },
+      { name: 'dmrx_generate_video', description: 'Video generation across Replicate, Runway, Pika, etc.' },
+      { name: 'dmrx_generate_music', description: 'Music generation across supported providers.' },
+      { name: 'dmrx_generate_3d', description: '3D model generation (text-to-3d / image-to-3d).' },
+      { name: 'dmrx_embed', description: 'Text embeddings across embedding providers.' },
+      { name: 'dmrx_rerank', description: 'Document reranking for RAG pipelines.' },
+      { name: 'dmrx_transcribe', description: 'Speech-to-text across STT providers.' },
+      { name: 'dmrx_speak', description: 'Text-to-speech across TTS providers.' },
+      { name: 'dmrx_models', description: 'List available models with capabilities and health.' },
+      { name: 'dmrx_status', description: 'System status, router health, and provider availability.' },
+      { name: 'dmrx_batch', description: 'Execute multiple tool calls atomically with partial-failure support.' },
+      { name: 'dmrx_workflow', description: 'Define and execute multi-step workflows with branching, looping, and retries.' },
+      { name: 'dmrx_context_save', description: 'Persist conversation context for stateful agent interactions.' },
+      { name: 'dmrx_context_load', description: 'Load a previously saved conversation context by ID.' },
+      { name: 'dmrx_context_list', description: 'List saved conversation contexts with pagination.' },
+      { name: 'dmrx_context_summarize', description: 'Summarize a saved conversation to reduce token cost.' },
+      { name: 'dmrx_context_compress', description: 'Compress a saved conversation while preserving meaning.' },
+    ];
+
+    let tools = fallbackTools;
+
+    if (probeable) {
+      const toolsController = new AbortController();
+      const toolsTimer = setTimeout(() => toolsController.abort(), 2000);
+      try {
+        const headers: Record<string, string> = {};
+        if (process.env.DMRX_MCP_API_KEY) {
+          headers.Authorization = `Bearer ${process.env.DMRX_MCP_API_KEY}`;
+        }
+        const toolsRes = await fetch(`http://${host}:${port}/tools`, {
+          signal: toolsController.signal,
+          headers,
+        });
+        if (toolsRes.ok) {
+          const toolsData = await toolsRes.json();
+          if (toolsData.tools) {
+            tools = toolsData.tools;
+          }
+        }
+      } catch {
+        // Fall back to hardcoded tools if fetch fails
+      } finally {
+        clearTimeout(toolsTimer);
+      }
+    }
+
     return {
       available,
       transport,
@@ -4253,36 +4324,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       port,
       hasApiKey,
       uptime: Math.round(process.uptime()),
-      tools: [
-        { name: 'dmrx_chat', description: 'Chat completions with full routing across all configured LLMs.' },
-        { name: 'dmrx_chat_stream', description: 'Streaming chat completion with token-by-token output.' },
-        { name: 'dmrx_generate_image', description: 'Image generation routed across diffusion providers.' },
-        { name: 'dmrx_generate_image_stream', description: 'Streaming image generation with progressive updates.' },
-        { name: 'dmrx_generate_video', description: 'Video generation across Replicate, Runway, Pika, etc.' },
-        { name: 'dmrx_generate_music', description: 'Music generation across supported providers.' },
-        { name: 'dmrx_generate_3d', description: '3D model generation (text-to-3d / image-to-3d).' },
-        { name: 'dmrx_embed', description: 'Text embeddings across embedding providers.' },
-        { name: 'dmrx_rerank', description: 'Document reranking for RAG pipelines.' },
-        { name: 'dmrx_transcribe', description: 'Speech-to-text across STT providers.' },
-        { name: 'dmrx_speak', description: 'Text-to-speech across TTS providers.' },
-        { name: 'dmrx_models', description: 'List available models with capabilities and health.' },
-        { name: 'dmrx_status', description: 'System status, router health, and provider availability.' },
-        { name: 'dmrx_batch', description: 'Execute multiple tool calls atomically with partial-failure support.' },
-        { name: 'dmrx_workflow', description: 'Define and execute multi-step workflows with branching, looping, and retries.' },
-        { name: 'dmrx_context_save', description: 'Persist conversation context for stateful agent interactions.' },
-        { name: 'dmrx_context_load', description: 'Load a previously saved conversation context by ID.' },
-        { name: 'dmrx_context_list', description: 'List saved conversation contexts with pagination.' },
-        { name: 'dmrx_context_summarize', description: 'Summarize a saved conversation to reduce token cost.' },
-        { name: 'dmrx_context_compress', description: 'Compress a saved conversation while preserving meaning.' },
-      ],
+      tools,
     };
   });
 
-  // MCP tools list endpoint (replaces hardcoded list in /admin/mcp/status)
+  // MCP tools list endpoint that fetches from MCP server if possible
   server.get('/admin/mcp/tools', async () => {
-    // Tool definitions are defined in services/mcp-server/src/tools.ts
-    // Keeping a copy here for the admin API to report available tools
-    const mcpTools = [
+    const transport = (process.env.DMRX_MCP_TRANSPORT || 'stdio').toLowerCase();
+    const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
+    const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+    const probeable = transport === 'sse' || transport === 'http' || transport === 'streamable' || transport === 'streamable-http';
+
+    const fallbackTools = [
       { name: 'dmrx_chat', description: 'Send a chat completion request through DMR-X. Automatically routes to the best available LLM based on quality, cost, and latency targets.' },
       { name: 'dmrx_chat_stream', description: 'Streaming chat completion with token-by-token output via streaming response.' },
       { name: 'dmrx_generate_image', description: 'Generate images through DMR-X. Automatically routes to the best available diffusion model.' },
@@ -4304,7 +4357,32 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       { name: 'dmrx_context_compress', description: 'Compress a saved conversation while preserving meaning.' },
       { name: 'dmrx_generate_3d', description: 'Generate 3D models through DMR-X. Routes to text-to-3d or image-to-3d models.' },
     ];
-    return { tools: mcpTools };
+
+    if (!probeable) {
+      return { tools: fallbackTools };
+    }
+
+    // Try to fetch from MCP server
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    try {
+      const headers: Record<string, string> = {};
+      if (process.env.DMRX_MCP_API_KEY) {
+        headers.Authorization = `Bearer ${process.env.DMRX_MCP_API_KEY}`;
+      }
+      const res = await fetch(`http://${host}:${port}/tools`, {
+        signal: controller.signal,
+        headers,
+      });
+      if (!res.ok) throw new Error('MCP server not reachable');
+      const data = await res.json();
+      return { tools: data.tools || fallbackTools };
+    } catch {
+      // Fallback to hardcoded
+      return { tools: fallbackTools };
+    } finally {
+      clearTimeout(timer);
+    }
   });
 
   // Execute an MCP tool directly (for testing)

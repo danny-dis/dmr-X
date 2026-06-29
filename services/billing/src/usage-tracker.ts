@@ -16,6 +16,10 @@ export interface UsageRecord {
   costCents: number;
   requestId: string;
   createdAt: string;
+  /** Optional virtual key ID for per-key tracking */
+  keyId?: string;
+  /** Optional team ID for per-team tracking */
+  teamId?: string;
 }
 
 export interface UsageAggregate {
@@ -445,6 +449,72 @@ export class UsageTracker {
 
   private endOfDay(date: Date): Date {
     return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+  }
+
+  // ── Per-Key Usage Tracking ─────────────────────────────────────────────────
+
+  /**
+   * Get aggregated usage for a specific virtual key.
+   */
+  getKeyUsage(keyId: string, from?: Date, to?: Date): { requests: number; tokens: number; costCents: number } {
+    const db = getDb();
+    const conditions = ['request_id LIKE ?'];
+    const params: unknown[] = [`${keyId}:*`];
+
+    if (from) {
+      conditions.push('created_at >= ?');
+      params.push(from.toISOString());
+    }
+    if (to) {
+      conditions.push('created_at <= ?');
+      params.push(to.toISOString());
+    }
+
+    const row = db.prepare(
+      `SELECT COUNT(*) as requests, COALESCE(SUM(total_tokens), 0) as tokens, COALESCE(SUM(cost_cents), 0) as cost_cents
+       FROM usage_records
+       WHERE ${conditions.join(' AND ')}`
+    ).get(...params) as any;
+
+    return {
+      requests: row?.requests || 0,
+      tokens: row?.tokens || 0,
+      costCents: row?.cost_cents || 0,
+    };
+  }
+
+  /**
+   * Get per-key usage breakdown for a tenant.
+   */
+  getKeyUsageBreakdown(tenantId: string, from: Date, to: Date): Array<{
+    keyId: string;
+    requests: number;
+    tokens: number;
+    costCents: number;
+  }> {
+    const db = getDb();
+    // Extract key ID from request_id pattern (keyId:requestSuffix)
+    const rows = db.prepare(`
+      SELECT
+        SUBSTR(request_id, 1, INSTR(request_id, ':') - 1) as key_id,
+        COUNT(*) as requests,
+        COALESCE(SUM(total_tokens), 0) as tokens,
+        COALESCE(SUM(cost_cents), 0) as cost_cents
+      FROM usage_records
+      WHERE tenant_id = ?
+        AND created_at >= ?
+        AND created_at <= ?
+        AND request_id LIKE '%:%'
+      GROUP BY key_id
+      ORDER BY cost_cents DESC
+    `).all(tenantId, from.toISOString(), to.toISOString()) as any[];
+
+    return rows.map(row => ({
+      keyId: row.key_id,
+      requests: row.requests,
+      tokens: row.tokens,
+      costCents: row.cost_cents,
+    }));
   }
 }
 

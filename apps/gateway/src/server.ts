@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { Router } from '@dmr-x/router';
@@ -143,6 +143,35 @@ export async function createServer() {
   adapterRegistry.register(new RunwayAdapter());
   adapterRegistry.register(new ComfyUIAdapter());
   adapterRegistry.register(new PollinationsImageAdapter());
+
+  // Cloud Provider Adapters
+  adapterRegistry.register(new BedrockAdapter());
+  adapterRegistry.register(new AzureOpenAIAdapter());
+  adapterRegistry.register(new VertexAIAdapter());
+
+  // Fast Inference Adapters
+  adapterRegistry.register(new GroqAdapter());
+  adapterRegistry.register(new CerebrasAdapter());
+  adapterRegistry.register(new SambanovaAdapter());
+  adapterRegistry.register(new NVIDIANIMAdapter());
+
+  // LLM Provider Adapters
+  adapterRegistry.register(new DeepSeekAdapter());
+  adapterRegistry.register(new XAIAdapter());
+  adapterRegistry.register(new PerplexityAdapter());
+  adapterRegistry.register(new OpenRouterAdapter());
+  adapterRegistry.register(new TogetherAdapter());
+  adapterRegistry.register(new FireworksAdapter());
+  adapterRegistry.register(new HuggingFaceAdapter());
+  adapterRegistry.register(new DatabricksAdapter());
+  adapterRegistry.register(new VLLMAdapter());
+  adapterRegistry.register(new NebiusAdapter());
+  adapterRegistry.register(new NovitaAdapter());
+  adapterRegistry.register(new MoonshotAdapter());
+  adapterRegistry.register(new LMStudioAdapter());
+  adapterRegistry.register(new VolcengineAdapter());
+  adapterRegistry.register(new DashscopeAdapter());
+
   // Audio Separation adapters
   adapterRegistry.register(createAudioSeparationAdapter('demucs'));
   adapterRegistry.register(createAudioSeparationAdapter('audioshake'));
@@ -238,6 +267,120 @@ export async function createServer() {
     await adapterRegistry.initialize('runway', {
       baseUrl: 'https://api.dev.runwayml.com/v1',
       apiKey: process.env.RUNWAY_API_KEY,
+    });
+  }
+
+  // Initialize new cloud provider adapters
+  if (process.env.BEDROCK_AWS_ACCESS_KEY_ID || process.env.BEDROCK_AWS_SECRET_ACCESS_KEY) {
+    await adapterRegistry.initialize('bedrock', {
+      apiKey: process.env.BEDROCK_AWS_ACCESS_KEY_ID,
+      accessToken: process.env.BEDROCK_AWS_SECRET_ACCESS_KEY,
+    });
+  }
+  if (process.env.AZURE_OPENAI_API_KEY && process.env.AZURE_OPENAI_ENDPOINT) {
+    await adapterRegistry.initialize('azure_openai', {
+      baseUrl: process.env.AZURE_OPENAI_ENDPOINT,
+      apiKey: process.env.AZURE_OPENAI_API_KEY,
+    });
+  }
+  if (process.env.VERTEX_PROJECT_ID || process.env.GOOGLE_API_KEY) {
+    try {
+      await adapterRegistry.initialize('vertex_ai', {
+        apiKey: process.env.GOOGLE_API_KEY,
+      });
+    } catch (err) {
+      logger.warn({ err }, 'Skipping vertex_ai init (will retry in background)');
+    }
+  }
+  if (process.env.GROQ_API_KEY) {
+    await adapterRegistry.initialize('groq', {
+      apiKey: process.env.GROQ_API_KEY,
+    });
+  }
+  if (process.env.DEEPSEEK_API_KEY) {
+    await adapterRegistry.initialize('deepseek', {
+      apiKey: process.env.DEEPSEEK_API_KEY,
+    });
+  }
+  if (process.env.XAI_API_KEY) {
+    await adapterRegistry.initialize('xai', {
+      apiKey: process.env.XAI_API_KEY,
+    });
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    await adapterRegistry.initialize('openrouter', {
+      apiKey: process.env.OPENROUTER_API_KEY,
+    });
+  }
+  if (process.env.HUGGINGFACE_API_KEY) {
+    await adapterRegistry.initialize('huggingface', {
+      apiKey: process.env.HUGGINGFACE_API_KEY,
+    });
+  }
+  if (process.env.PERPLEXITY_API_KEY) {
+    await adapterRegistry.initialize('perplexity', {
+      apiKey: process.env.PERPLEXITY_API_KEY,
+    });
+  }
+  if (process.env.TOGETHER_API_KEY) {
+    await adapterRegistry.initialize('together_ai', {
+      apiKey: process.env.TOGETHER_API_KEY,
+    });
+  }
+  if (process.env.FIREWORKS_API_KEY) {
+    await adapterRegistry.initialize('fireworks_ai', {
+      apiKey: process.env.FIREWORKS_API_KEY,
+    });
+  }
+  if (process.env.CEREBRAS_API_KEY) {
+    await adapterRegistry.initialize('cerebras', {
+      apiKey: process.env.CEREBRAS_API_KEY,
+    });
+  }
+  if (process.env.DATABRICKS_HOST && process.env.DATABRICKS_TOKEN) {
+    await adapterRegistry.initialize('databricks', {
+      baseUrl: process.env.DATABRICKS_HOST,
+      apiKey: process.env.DATABRICKS_TOKEN,
+    });
+  }
+  if (process.env.VLLM_API_BASE) {
+    await adapterRegistry.initialize('vllm', {
+      baseUrl: process.env.VLLM_API_BASE,
+    });
+  }
+  if (process.env.SAMBA_API_KEY) {
+    await adapterRegistry.initialize('sambanova', {
+      apiKey: process.env.SAMBA_API_KEY,
+    });
+  }
+  if (process.env.NEBIUS_API_KEY) {
+    await adapterRegistry.initialize('nebius', {
+      apiKey: process.env.NEBIUS_API_KEY,
+    });
+  }
+  if (process.env.NOVITA_API_KEY) {
+    await adapterRegistry.initialize('novita', {
+      apiKey: process.env.NOVITA_API_KEY,
+    });
+  }
+  if (process.env.MOONSHOT_API_KEY) {
+    await adapterRegistry.initialize('moonshot', {
+      apiKey: process.env.MOONSHOT_API_KEY,
+    });
+  }
+  if (process.env.NVIDIA_API_KEY) {
+    await adapterRegistry.initialize('nvidia_nim', {
+      apiKey: process.env.NVIDIA_API_KEY,
+    });
+  }
+  if (process.env.VOLCENGINE_API_KEY) {
+    await adapterRegistry.initialize('volcengine', {
+      apiKey: process.env.VOLCENGINE_API_KEY,
+    });
+  }
+  if (process.env.DASHSCOPE_API_KEY) {
+    await adapterRegistry.initialize('dashscope', {
+      apiKey: process.env.DASHSCOPE_API_KEY,
     });
   }
 

@@ -28,6 +28,7 @@ const ObservabilityPage = lazy(() => import('@/pages/Observability').then(m => (
 const SettingsPage = lazy(() => import('@/pages/Settings').then(m => ({ default: m.SettingsPage })));
 const CompressionPage = lazy(() => import('@/pages/Compression').then(m => ({ default: m.CompressionPage })));
 const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
+const FusionPanelPage = lazy(() => import('@/pages/FusionPanel').then(m => ({ default: m.FusionPanelPage })));
 const NotFoundPage = lazy(() => import('@/pages/NotFound').then(m => ({ default: m.NotFoundPage })));
 
 function PageLoader() {
@@ -50,6 +51,7 @@ export default function App() {
               <Route path="/requests" element={<RequestsPage />} />
               <Route path="/routing" element={<RoutingPage />} />
               <Route path="/quota" element={<QuotaPage />} />
+              <Route path="/fusion" element={<FusionPanelPage />} />
               <Route path="/providers" element={<ProvidersPage />} />
               <Route path="/models" element={<ModelsPage />} />
               <Route path="/free-tier" element={<FreeTierPage />} />

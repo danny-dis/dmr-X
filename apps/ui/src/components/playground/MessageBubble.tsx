@@ -12,7 +12,7 @@ interface MessageBubbleProps {
   message: Message;
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubbleComponent({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = React.useState(false);
   const [feedback, setFeedback] = React.useState<'up' | 'down' | null>(null);
@@ -167,6 +167,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     </div>
   );
 }
+
+export const MessageBubble = React.memo(MessageBubbleComponent);
 
 function SparkleIcon() {
   return (

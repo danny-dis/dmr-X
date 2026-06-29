@@ -70,7 +70,7 @@ export interface McpConfigFile {
     apiKey?: string;
   }>;
 
-  /** External MCP server configurations */
+  /** External MCP server configurations (legacy) */
   externalServers?: Array<{
     id: string;
     name: string;
@@ -79,6 +79,21 @@ export interface McpConfigFile {
     args?: string[];
     url?: string;
   }>;
+
+  /** MCP aggregation configuration */
+  aggregation?: {
+    /** Aggregated external MCP servers */
+    servers?: Array<{
+      id: string;
+      name: string;
+      transport: 'stdio' | 'sse';
+      command?: string;
+      args?: string[];
+      url?: string;
+      status?: string;
+      toolCount?: number;
+    }>;
+  };
 
   /** Telemetry configuration */
   telemetry?: {

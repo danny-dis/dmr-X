@@ -81,6 +81,106 @@ providerHealth.addCallback((result: ObservableResult) => {
   }
 });
 
+// ─── Cache Metrics ───────────────────────────────────────────────────────────
+
+export const cacheHitCount: Counter = METER.createCounter('dmr_cache_hits_total', {
+  description: 'Total cache hits (exact and semantic)',
+  unit: 'hits',
+});
+
+export const cacheMissCount: Counter = METER.createCounter('dmr_cache_misses_total', {
+  description: 'Total cache misses',
+  unit: 'misses',
+});
+
+export const cacheLatency: Histogram = METER.createHistogram('dmr_cache_latency_ms', {
+  description: 'Cache lookup latency in milliseconds',
+  unit: 'ms',
+});
+
+// ─── Routing Metrics ─────────────────────────────────────────────────────────
+
+export const routingDecisionCount: Counter = METER.createCounter('dmr_routing_decisions_total', {
+  description: 'Total routing decisions by strategy',
+  unit: 'decisions',
+});
+
+export const fallbackCount: Counter = METER.createCounter('dmr_fallback_total', {
+  description: 'Total fallback attempts',
+  unit: 'fallbacks',
+});
+
+export const fallbackSuccessCount: Counter = METER.createCounter('dmr_fallback_success_total', {
+  description: 'Total successful fallbacks',
+  unit: 'fallbacks',
+});
+
+export const rateLimitHitCount: Counter = METER.createCounter('dmr_rate_limit_hits_total', {
+  description: 'Total rate limit hits',
+  unit: 'hits',
+});
+
+// ─── Queue / In-Flight Metrics ───────────────────────────────────────────────
+
+const inFlightRegistry = new Map<string, number>();
+
+export const inFlightRequests: ObservableGauge = METER.createObservableGauge(
+  'dmr_in_flight_requests',
+  {
+    description: 'Current number of in-flight requests per provider',
+    unit: 'requests',
+  }
+);
+
+inFlightRequests.addCallback((result: ObservableResult) => {
+  for (const [providerId, count] of inFlightRegistry) {
+    result.observe(count, { provider_id: providerId });
+  }
+});
+
+export function incrementInFlight(providerId: string): void {
+  inFlightRegistry.set(providerId, (inFlightRegistry.get(providerId) || 0) + 1);
+}
+
+export function decrementInFlight(providerId: string): void {
+  const current = inFlightRegistry.get(providerId) || 0;
+  if (current > 0) {
+    inFlightRegistry.set(providerId, current - 1);
+  }
+}
+
+// ─── Tenant / Key / Team Metrics ─────────────────────────────────────────────
+
+export const tenantRequestCount: Counter = METER.createCounter('dmr_tenant_requests_total', {
+  description: 'Total requests per tenant',
+  unit: 'requests',
+});
+
+export const tenantCostTotal: Counter = METER.createCounter('dmr_tenant_cost_usd', {
+  description: 'Total cost per tenant in USD',
+  unit: 'usd',
+});
+
+export const keyRequestCount: Counter = METER.createCounter('dmr_key_requests_total', {
+  description: 'Total requests per virtual key',
+  unit: 'requests',
+});
+
+export const keyCostTotal: Counter = METER.createCounter('dmr_key_cost_usd', {
+  description: 'Total cost per virtual key in USD',
+  unit: 'usd',
+});
+
+export const teamRequestCount: Counter = METER.createCounter('dmr_team_requests_total', {
+  description: 'Total requests per team',
+  unit: 'requests',
+});
+
+export const teamCostTotal: Counter = METER.createCounter('dmr_team_cost_usd', {
+  description: 'Total cost per team in USD',
+  unit: 'usd',
+});
+
 // ─── Health Registry Helpers ─────────────────────────────────────────────────
 
 export function setProviderHealthStatus(providerId: string, healthy: boolean): void {

@@ -19,4 +19,5 @@ export { FederationPage } from './Federation';
 export { ObservabilityPage } from './Observability';
 export { SettingsPage } from './Settings';
 export { ConnectPage } from './Connect';
+export { FusionPanelPage } from './FusionPanel';
 export { NotFoundPage } from './NotFound';

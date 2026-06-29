@@ -17,11 +17,29 @@ import {
   errorCount,
   setProviderHealthStatus,
   getAllProviderHealth,
+  cacheHitCount,
+  cacheMissCount,
+  cacheLatency,
+  routingDecisionCount,
+  fallbackCount,
+  fallbackSuccessCount,
+  rateLimitHitCount,
+  incrementInFlight,
+  decrementInFlight,
+  tenantRequestCount,
+  tenantCostTotal,
+  keyRequestCount,
+  keyCostTotal,
+  teamRequestCount,
+  teamCostTotal,
   type RequestLabels,
   type ErrorLabels,
   type TokenLabels,
   type CostLabels,
 } from './metrics.js';
+import { requestLogger, type RequestLogContext } from './request-logger.js';
+import { auditLogger } from './audit-logger.js';
+import { loggingIntegrations, type LogEvent } from './logging-integrations.js';
 
 const logger = createLogger('telemetry');
 
@@ -285,6 +303,240 @@ export class TelemetryService {
       { provider_id: params.providerId, healthy: params.healthy },
       'Provider health updated'
     );
+  }
+
+  // ─── Cache Metrics ───────────────────────────────────────────────────────
+
+  recordCacheHit(params: { providerId: string; modelId: string; hitType: 'exact' | 'semantic' }): void {
+    cacheHitCount.add(1, {
+      provider_id: params.providerId,
+      model_id: params.modelId,
+      hit_type: params.hitType,
+    });
+  }
+
+  recordCacheMiss(params: { providerId: string; modelId: string }): void {
+    cacheMissCount.add(1, {
+      provider_id: params.providerId,
+      model_id: params.modelId,
+    });
+  }
+
+  recordCacheLatency(params: { latencyMs: number }): void {
+    cacheLatency.record(params.latencyMs);
+  }
+
+  // ─── Routing Metrics ─────────────────────────────────────────────────────
+
+  recordRoutingDecision(params: {
+    strategy: string;
+    providerId: string;
+    modelId: string;
+  }): void {
+    routingDecisionCount.add(1, {
+      strategy: params.strategy,
+      provider_id: params.providerId,
+      model_id: params.modelId,
+    });
+  }
+
+  recordFallback(params: {
+    fromProvider: string;
+    fromModel: string;
+    toProvider: string;
+    toModel: string;
+    trigger: string;
+    success: boolean;
+  }): void {
+    fallbackCount.add(1, {
+      from_provider: params.fromProvider,
+      to_provider: params.toProvider,
+      trigger: params.trigger,
+    });
+    if (params.success) {
+      fallbackSuccessCount.add(1, {
+        from_provider: params.fromProvider,
+        to_provider: params.toProvider,
+        trigger: params.trigger,
+      });
+    }
+  }
+
+  recordRateLimitHit(params: {
+    providerId: string;
+    modelId: string;
+  }): void {
+    rateLimitHitCount.add(1, {
+      provider_id: params.providerId,
+      model_id: params.modelId,
+    });
+  }
+
+  // ─── In-Flight Metrics ──────────────────────────────────────────────────
+
+  recordInFlightStart(params: { providerId: string }): void {
+    incrementInFlight(params.providerId);
+  }
+
+  recordInFlightEnd(params: { providerId: string }): void {
+    decrementInFlight(params.providerId);
+  }
+
+  // ─── Tenant/Key/Team Metrics ────────────────────────────────────────────
+
+  recordTenantUsage(params: {
+    tenantId: string;
+    providerId: string;
+    modelId: string;
+    tokens: number;
+    costUsd: number;
+  }): void {
+    tenantRequestCount.add(1, {
+      tenant_id: params.tenantId,
+      provider_id: params.providerId,
+      model_id: params.modelId,
+    });
+    if (params.costUsd > 0) {
+      tenantCostTotal.add(params.costUsd, {
+        tenant_id: params.tenantId,
+        provider_id: params.providerId,
+        model_id: params.modelId,
+      });
+    }
+  }
+
+  recordKeyUsage(params: {
+    keyId: string;
+    providerId: string;
+    modelId: string;
+    tokens: number;
+    costUsd: number;
+  }): void {
+    keyRequestCount.add(1, {
+      key_id: params.keyId,
+      provider_id: params.providerId,
+      model_id: params.modelId,
+    });
+    if (params.costUsd > 0) {
+      keyCostTotal.add(params.costUsd, {
+        key_id: params.keyId,
+        provider_id: params.providerId,
+        model_id: params.modelId,
+      });
+    }
+  }
+
+  recordTeamUsage(params: {
+    teamId: string;
+    providerId: string;
+    modelId: string;
+    tokens: number;
+    costUsd: number;
+  }): void {
+    teamRequestCount.add(1, {
+      team_id: params.teamId,
+      provider_id: params.providerId,
+      model_id: params.modelId,
+    });
+    if (params.costUsd > 0) {
+      teamCostTotal.add(params.costUsd, {
+        team_id: params.teamId,
+        provider_id: params.providerId,
+        model_id: params.modelId,
+      });
+    }
+  }
+
+  // ─── Structured Request Logging ─────────────────────────────────────────
+
+  /**
+   * Log a completed request with full structured context.
+   * Integrates with request logger, audit logger, and external integrations.
+   */
+  logRequest(ctx: RequestLogContext): void {
+    // Structured request log
+    requestLogger.log(ctx);
+
+    // External integrations (Langfuse, Helicone, webhook)
+    const logEvent: LogEvent = {
+      requestId: ctx.requestId,
+      timestamp: new Date().toISOString(),
+      providerId: ctx.providerId,
+      modelId: ctx.modelId,
+      modality: ctx.modality,
+      statusCode: ctx.statusCode,
+      latencyMs: ctx.latencyMs,
+      promptTokens: ctx.promptTokens,
+      completionTokens: ctx.completionTokens,
+      totalTokens: ctx.totalTokens,
+      costCents: ctx.costCents,
+      error: ctx.error,
+      metadata: {
+        tenantId: ctx.tenantId,
+        teamId: ctx.teamId,
+        keyId: ctx.keyId,
+        routingStrategy: ctx.routingStrategy,
+        cached: ctx.cached,
+      },
+    };
+    loggingIntegrations.log(logEvent).catch(() => {});
+  }
+
+  /**
+   * Log a routing decision.
+   */
+  logRoutingDecision(params: {
+    requestId: string;
+    strategy: string;
+    selectedProvider: string;
+    selectedModel: string;
+    candidateCount: number;
+    fallbackCount: number;
+  }): void {
+    requestLogger.logRoutingDecision(params);
+    this.recordRoutingDecision({
+      strategy: params.strategy,
+      providerId: params.selectedProvider,
+      modelId: params.selectedModel,
+    });
+  }
+
+  /**
+   * Log a fallback event.
+   */
+  logFallback(params: {
+    requestId: string;
+    fromProvider: string;
+    fromModel: string;
+    toProvider: string;
+    toModel: string;
+    trigger: string;
+    error?: string;
+  }): void {
+    requestLogger.logFallback(params);
+    this.recordFallback({
+      fromProvider: params.fromProvider,
+      fromModel: params.fromModel,
+      toProvider: params.toProvider,
+      toModel: params.toModel,
+      trigger: params.trigger,
+      success: true,
+    });
+  }
+
+  /**
+   * Log an admin action for audit trail.
+   */
+  logAdminAction(params: {
+    action: string;
+    actorId?: string;
+    tenantId?: string;
+    targetType: string;
+    targetId?: string;
+    details?: Record<string, unknown>;
+  }): void {
+    auditLogger.log({ ...params, details: params.details || {} });
+    requestLogger.logAdminAction(params);
   }
 
   // ─── Health Endpoint Helper ─────────────────────────────────────────────

@@ -248,15 +248,28 @@ export function MCPPage() {
                 </div>
               ) : (
                 <div className="divide-y divide-border max-h-[500px] overflow-y-auto">
-                  {(tools ?? data?.tools ?? []).map((tool) => (
-                    <div key={tool.name} className="p-4 hover:bg-surface-1 transition-colors">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-mono font-semibold text-primary">{tool.name}</span>
-                        <Badge tone="primary" size="sm" variant="secondary">built-in</Badge>
+                  {(tools ?? data?.tools ?? []).map((tool) => {
+                    let badgeText = 'built-in';
+                    let badgeTone: 'primary' | 'muted' = 'primary';
+                    
+                    if (!tool.name.startsWith('dmrx_')) {
+                      if (tool.name.includes('__')) {
+                        const serverId = tool.name.split('__')[0];
+                        badgeText = `aggregated • ${serverId}`;
+                        badgeTone = 'muted';
+                      }
+                    }
+
+                    return (
+                      <div key={tool.name} className="p-4 hover:bg-surface-1 transition-colors">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-mono font-semibold text-primary">{tool.name}</span>
+                          <Badge tone={badgeTone} size="sm" variant="secondary">{badgeText}</Badge>
+                        </div>
+                        <p className="text-xs text-fg-muted">{tool.description}</p>
                       </div>
-                      <p className="text-xs text-fg-muted">{tool.description}</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {(tools ?? data?.tools ?? []).length === 0 && (
                     <div className="p-8 text-center text-xs text-fg-muted">
                       No tools available. Check the MCP server configuration.

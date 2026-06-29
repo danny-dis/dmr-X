@@ -5,6 +5,11 @@ import { logger } from '@dmr-x/utils';
 import type { ThompsonSampler } from './thompson-sampler.js';
 import { calculateReward } from './thompson-sampler.js';
 
+// Decay-weighted analytics constants (from freellmapi)
+const HALF_LIFE_DAYS = 2; // A 2-day-old request counts half as much as a fresh one
+const DECAY_WINDOW_DAYS = 7; // Look back 7 days
+const STATS_CACHE_TTL_MS = 60_000; // Cache stats for 60 seconds
+
 export interface RequestRecord {
   requestId: string;
   providerId: string;
@@ -191,6 +196,105 @@ export class RewardUpdater {
    */
   getBanditSnapshot() {
     return this.sampler.snapshot();
+  }
+
+  /**
+   * Load persisted arms with exponential decay weighting.
+   * Recent requests have more influence than old ones.
+   * This prevents old failures from permanently penalizing a model.
+   */
+  async loadWithDecay(): Promise<{ loaded: number }> {
+    const db = getDb();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bandit_state (
+        provider_id TEXT NOT NULL,
+        model_id    TEXT NOT NULL,
+        task_type   TEXT NOT NULL DEFAULT 'general',
+        alpha       REAL NOT NULL DEFAULT 1,
+        beta        REAL NOT NULL DEFAULT 1,
+        pulls       INTEGER NOT NULL DEFAULT 0,
+        total_reward REAL NOT NULL DEFAULT 0,
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (provider_id, model_id, task_type)
+      )
+    `);
+
+    // Load with decay: weight each arm by how recently it was updated
+    const now = Date.now();
+    const rows = db.prepare(`
+      SELECT provider_id as "providerId", model_id as "modelId", task_type as "taskType",
+             alpha, beta, pulls, total_reward as "totalReward", updated_at as "updatedAt"
+      FROM bandit_state
+    `).all() as Array<{
+      providerId: string;
+      modelId: string;
+      taskType: string;
+      alpha: number;
+      beta: number;
+      pulls: number;
+      totalReward: number;
+      updatedAt: string;
+    }>;
+
+    let loaded = 0;
+    for (const r of rows) {
+      // Calculate age in days
+      const updatedAt = new Date(r.updatedAt).getTime();
+      const ageDays = Math.max(0, (now - updatedAt) / (24 * 60 * 60 * 1000));
+
+      // Apply exponential decay: weight = 2^(-age/halfLife)
+      const decayWeight = Math.pow(0.5, ageDays / HALF_LIFE_DAYS);
+
+      // Decay the alpha/beta towards the prior (1,1) by the decay weight
+      // This effectively "forgets" old data proportionally
+      const decayedAlpha = 1 + (r.alpha - 1) * decayWeight;
+      const decayedBeta = 1 + (r.beta - 1) * decayWeight;
+
+      this.sampler.restore(`${r.providerId}:${r.modelId}`, decayedAlpha, decayedBeta, r.pulls, r.totalReward);
+      loaded++;
+    }
+
+    if (loaded > 0) {
+      logger.info({ loaded }, 'Loaded bandit arms with decay weighting');
+    }
+    return { loaded };
+  }
+
+  /**
+   * Get decay-weighted stats for a model (for dashboard display).
+   */
+  getDecayWeightedStats(providerId: string, modelId: string): { successRate: number; totalRequests: number; decayWeight: number } {
+    const db = getDb();
+    const now = Date.now();
+
+    const rows = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN error_code IS NULL THEN 1 ELSE 0 END) as successes,
+        CAST((julianday('now') - julianday(timestamp)) AS INTEGER) as age_days
+      FROM request_logs
+      WHERE selected_provider = ? AND selected_model = ?
+        AND timestamp > datetime('now', '-' || ? || ' days')
+      GROUP BY age_days
+    `).all(providerId, modelId, DECAY_WINDOW_DAYS) as Array<{
+      total: number;
+      successes: number;
+      age_days: number;
+    }>;
+
+    let weightedSuccesses = 0;
+    let weightedTotal = 0;
+    for (const row of rows) {
+      const weight = Math.pow(0.5, row.age_days / HALF_LIFE_DAYS);
+      weightedSuccesses += weight * row.successes;
+      weightedTotal += weight * row.total;
+    }
+
+    return {
+      successRate: weightedTotal > 0 ? weightedSuccesses / weightedTotal : 0.5,
+      totalRequests: Math.round(weightedTotal),
+      decayWeight: weightedTotal > 0 ? 1 : 0,
+    };
   }
 
   /**

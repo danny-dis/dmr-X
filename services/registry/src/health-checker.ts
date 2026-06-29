@@ -4,6 +4,24 @@ import { logger } from '@dmr-x/utils';
 
 import { registryService } from './registry.service.js';
 
+const CONSECUTIVE_FAILURES_TO_DISABLE = 3;
+
+// Track consecutive failures per provider
+const failureCount = new Map<string, number>();
+
+// Distinguish transport errors from auth errors
+function isAuthError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('invalid api key') || lower.includes('authentication');
+}
+
+function isTransportError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return lower.includes('timeout') || lower.includes('econnrefused') || lower.includes('enotfound') || lower.includes('dns') || lower.includes('network') || lower.includes('fetch') || lower.includes('tls') || lower.includes('ssl');
+}
+
 export class HealthChecker {
   private interval: ReturnType<typeof setInterval> | null = null;
   private providerIdMap = new Map<string, string>(); // adapter ID -> DB UUID
@@ -99,12 +117,53 @@ export class HealthChecker {
         // Sync circuit breaker state with health check result
         if (status.healthy) {
           this.adapterRegistry.recordSuccess(adapterId);
+          // Clear failure count on success
+          failureCount.delete(adapterId);
         } else {
           this.adapterRegistry.recordFailure(adapterId);
-          logger.warn(
-            { adapterId, providerUuid, error: status.error },
-            'Provider unhealthy'
-          );
+
+          // Distinguish transport errors from auth errors
+          if (isTransportError(status.error)) {
+            // Transport errors (DNS/timeout/TLS) — don't increment failure count
+            // These are transient and shouldn't disable the key
+            logger.warn(
+              { adapterId, providerUuid, error: status.error },
+              'Provider transport error (not incrementing failure count)'
+            );
+          } else if (isAuthError(status.error)) {
+            // Auth errors (401/403) — increment failure count
+            const count = (failureCount.get(adapterId) ?? 0) + 1;
+            failureCount.set(adapterId, count);
+            logger.warn(
+              { adapterId, providerUuid, error: status.error, failureCount: count },
+              'Provider auth error'
+            );
+
+            // Auto-disable after consecutive failures
+            if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
+              logger.warn(
+                { adapterId, providerUuid, failureCount: count },
+                'Auto-disabling provider after consecutive auth failures'
+              );
+              this.disableProvider(providerUuid);
+            }
+          } else {
+            // Unknown error type — increment failure count as precaution
+            const count = (failureCount.get(adapterId) ?? 0) + 1;
+            failureCount.set(adapterId, count);
+            logger.warn(
+              { adapterId, providerUuid, error: status.error, failureCount: count },
+              'Provider unhealthy'
+            );
+
+            if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
+              logger.warn(
+                { adapterId, providerUuid, failureCount: count },
+                'Auto-disabling provider after consecutive failures'
+              );
+              this.disableProvider(providerUuid);
+            }
+          }
         }
       } catch (error) {
         logger.error({ err: error, adapterId }, 'Health check failed');
@@ -113,8 +172,34 @@ export class HealthChecker {
         const providerUuid = this.getProviderUuid(adapterId);
         if (providerUuid) {
           registryService.updateHealth(providerUuid, false);
+          // Increment failure count on exception
+          const count = (failureCount.get(adapterId) ?? 0) + 1;
+          failureCount.set(adapterId, count);
+          if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
+            this.disableProvider(providerUuid);
+          }
         }
       }
     }
+  }
+
+  /**
+   * Disable a provider in the database.
+   */
+  private disableProvider(providerUuid: string): void {
+    try {
+      const db = getDb();
+      db.prepare('UPDATE providers SET enabled = 0 WHERE id = ?').run(providerUuid);
+      logger.warn({ providerUuid }, 'Provider auto-disabled due to consecutive failures');
+    } catch (error) {
+      logger.error({ err: error, providerUuid }, 'Failed to auto-disable provider');
+    }
+  }
+
+  /**
+   * Re-enable a provider (called when a successful request comes through).
+   */
+  static reEnableProvider(adapterId: string): void {
+    failureCount.delete(adapterId);
   }
 }

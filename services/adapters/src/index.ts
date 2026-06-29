@@ -15,6 +15,34 @@ export { AnthropicAdapter } from './anthropic/anthropic.adapter.js';
 export { OllamaAdapter } from './ollama/ollama.adapter.js';
 export { GenericOpenAIAdapter } from './generic-openai/generic-openai.adapter.js';
 
+// Cloud Provider Adapters
+export { BedrockAdapter } from './bedrock/bedrock.adapter.js';
+export { AzureOpenAIAdapter } from './azure-openai/azure-openai.adapter.js';
+export { VertexAIAdapter } from './vertex-ai/vertex-ai.adapter.js';
+
+// Fast Inference Adapters
+export { GroqAdapter } from './groq/groq.adapter.js';
+export { CerebrasAdapter } from './cerebras/cerebras.adapter.js';
+export { SambanovaAdapter } from './sambanova/sambanova.adapter.js';
+export { NVIDIANIMAdapter } from './nvidia-nim/nvidia-nim.adapter.js';
+
+// LLM Provider Adapters
+export { DeepSeekAdapter } from './deepseek/deepseek.adapter.js';
+export { XAIAdapter } from './xai/xai.adapter.js';
+export { PerplexityAdapter } from './perplexity/perplexity.adapter.js';
+export { OpenRouterAdapter } from './openrouter/openrouter.adapter.js';
+export { TogetherAdapter } from './together/together.adapter.js';
+export { FireworksAdapter } from './fireworks/fireworks.adapter.js';
+export { HuggingFaceAdapter } from './huggingface/huggingface.adapter.js';
+export { DatabricksAdapter } from './databricks/databricks.adapter.js';
+export { VLLMAdapter } from './vllm/vllm.adapter.js';
+export { NebiusAdapter } from './nebius/nebius.adapter.js';
+export { NovitaAdapter } from './novita/novita.adapter.js';
+export { MoonshotAdapter } from './moonshot/moonshot.adapter.js';
+export { LMStudioAdapter } from './lmstudio/lmstudio.adapter.js';
+export { VolcengineAdapter } from './volcengine/volcengine.adapter.js';
+export { DashscopeAdapter } from './dashscope/dashscope.adapter.js';
+
 // Diffusion Adapters
 export { ReplicateAdapter } from './replicate/replicate.adapter.js';
 export { StabilityAdapter } from './stability/stability.adapter.js';

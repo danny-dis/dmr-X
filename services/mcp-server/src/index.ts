@@ -427,7 +427,17 @@ async function buildConfig(): Promise<BuiltConfig> {
 
   // Parse external MCP servers from config file or env var
   let externalServers: MCPServerConfig[] = [];
-  if (configFile?.externalServers?.length) {
+  // First try aggregation.servers (new path from UI)
+  if (configFile?.aggregation?.servers?.length) {
+    externalServers = configFile.aggregation.servers.filter(
+      (s): s is MCPServerConfig =>
+        typeof s.id === 'string' &&
+        typeof s.name === 'string' &&
+        (s.transport === 'stdio' || s.transport === 'sse')
+    );
+  }
+  // Then fall back to externalServers (legacy)
+  if (externalServers.length === 0 && configFile?.externalServers?.length) {
     externalServers = configFile.externalServers.filter(
       (s): s is MCPServerConfig =>
         typeof s.id === 'string' &&
@@ -435,6 +445,7 @@ async function buildConfig(): Promise<BuiltConfig> {
         (s.transport === 'stdio' || s.transport === 'sse')
     );
   }
+  // Then fall back to env var
   if (externalServers.length === 0) {
     externalServers = parseExternalMcpServers();
   }
@@ -630,6 +641,19 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
       return;
     }
 
+    if (url.pathname === '/tools') {
+      const authResult = checkAuthAndGetAllowedTools(req, res);
+      if (!authResult.authorized) return;
+      // Create temp server/state to get full tools list
+      const { state: tempState } = createDMRXMcpServer({
+        ...config,
+        allowedTools: authResult.allowedTools,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ tools: tempState.sdkTools }));
+      return;
+    }
+
     if (url.pathname === '/metrics') {
       // Prometheus metrics are served by the TelemetryService's own HTTP server
       // but we also proxy here for convenience
@@ -750,6 +774,19 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
     if (url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', transport: 'streamable-http', sessions: sessions.size }));
+      return;
+    }
+
+    if (url.pathname === '/tools') {
+      const authResult = checkAuthAndGetAllowedTools(req, res);
+      if (!authResult.authorized) return;
+      // Create temp server/state to get full tools list
+      const { state: tempState } = createDMRXMcpServer({
+        ...config,
+        allowedTools: authResult.allowedTools,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ tools: tempState.sdkTools }));
       return;
     }
 

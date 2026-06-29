@@ -26,6 +26,7 @@ import type { AdapterExecutor } from '../fallback/fallback-executor.js';
 export class WorkerPoolFanout {
   private workerId: string | null = null;
   private readonly enabled: boolean;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly adapterExecutor: AdapterExecutor,
@@ -45,8 +46,32 @@ export class WorkerPoolFanout {
       type: 'router-fanout',
     });
     this.workerId = w.id;
+    this.startHeartbeat();
     logger.info({ workerId: w.id, name: workerName }, 'WorkerPoolFanout registered worker');
     return w.id;
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatInterval || !this.workerId) return;
+    
+    // Send heartbeat every 10 seconds
+    this.heartbeatInterval = setInterval(() => {
+      if (this.workerId) {
+        const success = workersService.heartbeat(this.workerId);
+        if (!success) {
+          logger.warn({ workerId: this.workerId }, 'Worker heartbeat failed');
+        }
+      }
+    }, 10_000);
+    
+    logger.info({ workerId: this.workerId }, 'Started worker heartbeat');
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
   }
 
   /**
@@ -217,6 +242,7 @@ export class WorkerPoolFanout {
 
   /** Tear down: drain the worker so it stops accepting new jobs. */
   shutdown(): void {
+    this.stopHeartbeat();
     if (this.workerId) {
       workersService.drain(this.workerId);
       logger.info({ workerId: this.workerId }, 'WorkerPoolFanout drained worker');

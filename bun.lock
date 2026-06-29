@@ -395,6 +395,7 @@
       "version": "0.5.1",
       "dependencies": {
         "@dmr-x/core": "*",
+        "@dmr-x/db": "*",
         "@dmr-x/utils": "*",
         "@opentelemetry/api": "1.9.0",
         "@opentelemetry/exporter-prometheus": "^0.217.0",

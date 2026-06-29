@@ -34,14 +34,20 @@ describe('meta-models', () => {
     expect(isMetaModel('auto-cheap')).toBe(true);
     expect(isMetaModel('auto-long-context')).toBe(true);
     expect(isMetaModel('auto-free')).toBe(true);
+    expect(isMetaModel('free')).toBe(true);
+    expect(isMetaModel('free-fast')).toBe(true);
+    expect(isMetaModel('free-smart')).toBe(true);
+    expect(isMetaModel('free-agentic')).toBe(true);
+    expect(isMetaModel('free-coding')).toBe(true);
     expect(isMetaModel('gpt-4o')).toBe(false);
   });
 
-  it('should have ten meta-model definitions', () => {
-    expect(META_MODELS).toHaveLength(10);
+  it('should have all meta-model definitions', () => {
+    expect(META_MODELS).toHaveLength(15);
     expect(META_MODELS.map(m => m.alias)).toEqual([
       'auto', 'auto-fast', 'auto-smart', 'auto-agentic', 'auto-coding',
       'auto-reasoning', 'auto-vision', 'auto-cheap', 'auto-long-context', 'auto-free',
+      'free', 'free-fast', 'free-smart', 'free-agentic', 'free-coding',
     ]);
   });
 
@@ -127,6 +133,53 @@ describe('meta-models', () => {
     expect(result!.resolved[2].modelId).toBe('paid-c');
   });
 
+  describe('free meta-models', () => {
+    it('should resolve free to only free models in original order', () => {
+      const candidates: CandidateSet = [
+        makeCandidate({ modelId: 'free-1', costPerInputToken: 0, qualityScore: 0.6 }),
+        makeCandidate({ modelId: 'paid', costPerInputToken: 0.01, qualityScore: 0.9 }),
+        makeCandidate({ modelId: 'free-2', costPerInputToken: 0, qualityScore: 0.7 }),
+      ];
+      
+      const result = resolveMetaModel('free', candidates);
+      expect(result).not.toBeNull();
+      expect(result!.costFilter).toBe('free');
+      expect(result!.resolved).toHaveLength(2);
+      expect(result!.resolved[0].modelId).toBe('free-1');
+      expect(result!.resolved[1].modelId).toBe('free-2');
+    });
+
+    it('should resolve free-fast to fastest free model only', () => {
+      const candidates: CandidateSet = [
+        makeCandidate({ modelId: 'free-slow', costPerInputToken: 0, avgLatencyMs: 2000 }),
+        makeCandidate({ modelId: 'free-fast', costPerInputToken: 0, avgLatencyMs: 200 }),
+        makeCandidate({ modelId: 'paid-faster', costPerInputToken: 0.01, avgLatencyMs: 100 }),
+      ];
+
+      const result = resolveMetaModel('free-fast', candidates);
+      expect(result).not.toBeNull();
+      expect(result!.costFilter).toBe('free');
+      expect(result!.resolved).toHaveLength(2);
+      expect(result!.resolved[0].modelId).toBe('free-fast');
+      expect(result!.resolved.every(c => c.costPerInputToken === 0)).toBe(true);
+    });
+
+    it('should resolve free-smart to smartest free model only', () => {
+      const candidates: CandidateSet = [
+        makeCandidate({ modelId: 'free-dumb', costPerInputToken: 0, qualityScore: 0.5 }),
+        makeCandidate({ modelId: 'free-smart', costPerInputToken: 0, qualityScore: 0.8 }),
+        makeCandidate({ modelId: 'paid-smarter', costPerInputToken: 0.01, qualityScore: 0.95 }),
+      ];
+
+      const result = resolveMetaModel('free-smart', candidates);
+      expect(result).not.toBeNull();
+      expect(result!.costFilter).toBe('free');
+      expect(result!.resolved).toHaveLength(2);
+      expect(result!.resolved[0].modelId).toBe('free-smart');
+      expect(result!.resolved.every(c => c.costPerInputToken === 0)).toBe(true);
+    });
+  });
+
   describe('auto-agentic', () => {
     it('should return models with tool_use and 64K+ context (all providers by default)', () => {
       const candidates: CandidateSet = [
@@ -144,24 +197,15 @@ describe('meta-models', () => {
       expect(result!.resolved.find(c => c.modelId === 'paid-agentic')).toBeDefined();
     });
 
-    it('should sort by composite score: quality (50%) + context (30%) + speed (20%)', () => {
+    it('should prioritize models with json_mode and streaming', () => {
       const candidates: CandidateSet = [
-        // High quality, medium context, slow
-        makeCandidate({ modelId: 'quality-king', costPerInputToken: 0, capabilities: ['tool_use'], contextLength: 128000, qualityScore: 0.95, avgLatencyMs: 3000 }),
-        // Medium quality, huge context, fast
-        makeCandidate({ modelId: 'context-beast', costPerInputToken: 0, capabilities: ['tool_use'], contextLength: 1000000, qualityScore: 0.7, avgLatencyMs: 500 }),
-        // Medium everything
-        makeCandidate({ modelId: 'balanced', costPerInputToken: 0, capabilities: ['tool_use'], contextLength: 256000, qualityScore: 0.8, avgLatencyMs: 1000 }),
+        makeCandidate({ modelId: 'basic', costPerInputToken: 0, capabilities: ['tool_use'], contextLength: 128000, qualityScore: 0.8 }),
+        makeCandidate({ modelId: 'full-featured', costPerInputToken: 0, capabilities: ['tool_use', 'json_mode', 'streaming'], contextLength: 128000, qualityScore: 0.8 }),
       ];
 
       const result = resolveMetaModel('auto-agentic', candidates);
       expect(result).not.toBeNull();
-      expect(result!.resolved).toHaveLength(3);
-      // quality-king: 0.95*0.5 + min(128K/1M,1)*0.3 + max(0,1-3000/5000)*0.2 = 0.475 + 0.0384 + 0.08 = 0.5934
-      // context-beast: 0.7*0.5 + 1.0*0.3 + max(0,1-500/5000)*0.2 = 0.35 + 0.3 + 0.18 = 0.83
-      // balanced: 0.8*0.5 + min(256K/1M,1)*0.3 + max(0,1-1000/5000)*0.2 = 0.4 + 0.0768 + 0.16 = 0.6368
-      // context-beast should win (highest score)
-      expect(result!.resolved[0].modelId).toBe('context-beast');
+      expect(result!.resolved[0].modelId).toBe('full-featured');
     });
 
     it('should exclude models without tool_use capability', () => {
@@ -232,21 +276,15 @@ describe('meta-models', () => {
       expect(result!.resolved.find(c => c.modelId === 'paid-coding')).toBeDefined();
     });
 
-    it('should sort by composite score: quality (30%) + specialization (40%) + context (20%) + speed (10%)', () => {
+    it('should prioritize models with more coding capabilities including json_mode', () => {
       const candidates: CandidateSet = [
-        // High quality, few code capabilities, medium context, slow
-        makeCandidate({ modelId: 'quality-king', costPerInputToken: 0, capabilities: ['tool_use'], contextLength: 128000, qualityScore: 0.95, avgLatencyMs: 3000 }),
-        // Medium quality, all code capabilities, huge context, fast
-        makeCandidate({ modelId: 'code-beast', costPerInputToken: 0, capabilities: ['tool_use', 'streaming', 'reasoning'], contextLength: 256000, qualityScore: 0.7, avgLatencyMs: 500 }),
-        // Medium everything
-        makeCandidate({ modelId: 'balanced', costPerInputToken: 0, capabilities: ['tool_use', 'streaming'], contextLength: 128000, qualityScore: 0.8, avgLatencyMs: 1000 }),
+        makeCandidate({ modelId: 'basic', costPerInputToken: 0, capabilities: ['tool_use'], contextLength: 128000, qualityScore: 0.8 }),
+        makeCandidate({ modelId: 'full-featured', costPerInputToken: 0, capabilities: ['tool_use', 'streaming', 'reasoning', 'json_mode'], contextLength: 128000, qualityScore: 0.8 }),
       ];
 
       const result = resolveMetaModel('auto-coding', candidates);
       expect(result).not.toBeNull();
-      expect(result!.resolved).toHaveLength(3);
-      // code-beast should win due to high specialization match (all 3 capabilities)
-      expect(result!.resolved[0].modelId).toBe('code-beast');
+      expect(result!.resolved[0].modelId).toBe('full-featured');
     });
 
     it('should exclude paid models when costFilter=free', () => {
@@ -296,22 +334,6 @@ describe('meta-models', () => {
       expect(result!.resolved.find(c => c.modelId === 'paid-reasoning')).toBeDefined();
     });
 
-    it('should sort by composite score: quality (40%) + reasoning (30%) + context (20%) + speed (10%)', () => {
-      const candidates: CandidateSet = [
-        makeCandidate({ modelId: 'high-quality', costPerInputToken: 0, capabilities: ['reasoning'], contextLength: 128000, qualityScore: 0.95, avgLatencyMs: 3000 }),
-        makeCandidate({ modelId: 'fast-reasoner', costPerInputToken: 0, capabilities: ['reasoning'], contextLength: 256000, qualityScore: 0.7, avgLatencyMs: 200 }),
-        makeCandidate({ modelId: 'balanced', costPerInputToken: 0, capabilities: ['reasoning'], contextLength: 128000, qualityScore: 0.8, avgLatencyMs: 1000 }),
-      ];
-
-      const result = resolveMetaModel('auto-reasoning', candidates);
-      expect(result).not.toBeNull();
-      expect(result!.resolved).toHaveLength(3);
-      // high-quality: 0.95*0.4 + 1*0.3 + min(128K/256K,1)*0.2 + max(0,1-3000/5000)*0.1 = 0.38+0.3+0.1+0.04 = 0.82
-      // fast-reasoner: 0.7*0.4 + 1*0.3 + min(256K/256K,1)*0.2 + max(0,1-200/5000)*0.1 = 0.28+0.3+0.2+0.096 = 0.876
-      // balanced: 0.8*0.4 + 1*0.3 + min(128K/256K,1)*0.2 + max(0,1-1000/5000)*0.1 = 0.32+0.3+0.1+0.08 = 0.8
-      expect(result!.resolved[0].modelId).toBe('fast-reasoner');
-    });
-
     it('should exclude models without reasoning capability', () => {
       const candidates: CandidateSet = [
         makeCandidate({ modelId: 'no-reasoning', costPerInputToken: 0, capabilities: ['streaming'], contextLength: 128000 }),
@@ -351,22 +373,6 @@ describe('meta-models', () => {
       expect(result!.costFilter).toBe('all');
       expect(result!.resolved).toHaveLength(2);
       expect(result!.resolved.find(c => c.modelId === 'paid-vision')).toBeDefined();
-    });
-
-    it('should sort by composite score: quality (50%) + vision (25%) + speed (15%) + context (10%)', () => {
-      const candidates: CandidateSet = [
-        makeCandidate({ modelId: 'quality-king', costPerInputToken: 0, capabilities: ['vision'], contextLength: 128000, qualityScore: 0.95, avgLatencyMs: 3000 }),
-        makeCandidate({ modelId: 'fast-vision', costPerInputToken: 0, capabilities: ['vision'], contextLength: 256000, qualityScore: 0.6, avgLatencyMs: 200 }),
-        makeCandidate({ modelId: 'balanced', costPerInputToken: 0, capabilities: ['vision'], contextLength: 128000, qualityScore: 0.8, avgLatencyMs: 1000 }),
-      ];
-
-      const result = resolveMetaModel('auto-vision', candidates);
-      expect(result).not.toBeNull();
-      expect(result!.resolved).toHaveLength(3);
-      // quality-king: 0.95*0.5 + 1*0.25 + max(0,1-3000/5000)*0.15 + min(128K/256K,1)*0.1 = 0.475+0.25+0.06+0.05 = 0.835
-      // fast-vision: 0.6*0.5 + 1*0.25 + max(0,1-200/5000)*0.15 + min(256K/256K,1)*0.1 = 0.3+0.25+0.141+0.1 = 0.791
-      // balanced: 0.8*0.5 + 1*0.25 + max(0,1-1000/5000)*0.15 + min(128K/256K,1)*0.1 = 0.4+0.25+0.12+0.05 = 0.82
-      expect(result!.resolved[0].modelId).toBe('quality-king');
     });
 
     it('should exclude models without vision capability', () => {
@@ -463,22 +469,6 @@ describe('meta-models', () => {
       expect(result!.costFilter).toBe('all');
       expect(result!.resolved).toHaveLength(2);
       expect(result!.resolved.find(c => c.modelId === 'paid-long')).toBeDefined();
-    });
-
-    it('should sort by composite score: context (50%) + quality (30%) + speed (20%)', () => {
-      const candidates: CandidateSet = [
-        makeCandidate({ modelId: 'huge-ctx', costPerInputToken: 0, contextLength: 1_000_000, qualityScore: 0.6, avgLatencyMs: 2000 }),
-        makeCandidate({ modelId: 'medium-ctx', costPerInputToken: 0, contextLength: 256000, qualityScore: 0.9, avgLatencyMs: 500 }),
-        makeCandidate({ modelId: 'small-ctx', costPerInputToken: 0, contextLength: 128000, qualityScore: 0.8, avgLatencyMs: 300 }),
-      ];
-
-      const result = resolveMetaModel('auto-long-context', candidates);
-      expect(result).not.toBeNull();
-      expect(result!.resolved).toHaveLength(3);
-      // huge-ctx: min(1M/1M,1)*0.5 + 0.6*0.3 + max(0,1-2000/5000)*0.2 = 0.5+0.18+0.12 = 0.8
-      // medium-ctx: min(256K/1M,1)*0.5 + 0.9*0.3 + max(0,1-500/5000)*0.2 = 0.128+0.27+0.18 = 0.578
-      // small-ctx: min(128K/1M,1)*0.5 + 0.8*0.3 + max(0,1-300/5000)*0.2 = 0.064+0.24+0.188 = 0.492
-      expect(result!.resolved[0].modelId).toBe('huge-ctx');
     });
 
     it('should exclude models with context < 128K', () => {

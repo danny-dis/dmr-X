@@ -12,3 +12,9 @@ export { TaskDecomposer, SpecialistRouter, CompositeExecutor, type SubTask, type
 export { ThompsonSampler, calculateReward } from './bandit/thompson-sampler.js';
 export { RewardUpdater, type RequestRecord } from './bandit/reward-updater.js';
 export { META_MODELS, isMetaModel, resolveMetaModel, type MetaModelDefinition } from './meta-models.js';
+
+// Routing strategies
+export { selectLeastBusy, incrementInFlight, decrementInFlight } from './strategies/least-busy.js';
+export { selectUsageBased, recordRequest, getUsageStats } from './strategies/usage-based.js';
+export { selectLowestLatency, recordLatency, getLatencyStats } from './strategies/latency-based.js';
+export { selectByTags, filterByTags } from './strategies/tag-based.js';

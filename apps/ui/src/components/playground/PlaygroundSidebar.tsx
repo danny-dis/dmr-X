@@ -9,13 +9,11 @@ import { useApiData } from '@/hooks/useApiData';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export function PlaygroundSidebar() {
-  const {
-    showSidebar,
-    conversations,
-    currentConversationId,
-    loadConversation,
-    createConversation,
-  } = usePlaygroundStore();
+  const showSidebar = usePlaygroundStore(s => s.showSidebar);
+  const conversations = usePlaygroundStore(s => s.conversations);
+  const currentConversationId = usePlaygroundStore(s => s.currentConversationId);
+  const loadConversation = usePlaygroundStore(s => s.loadConversation);
+  const createConversation = usePlaygroundStore(s => s.createConversation);
   
   const [searchQuery, setSearchQuery] = React.useState('');
   

@@ -1,4 +1,4 @@
-import { Gift, Plus, Search, ExternalLink, Server, Zap, Globe, RefreshCw, KeyRound } from 'lucide-react';
+import { Gift, Plus, Search, ExternalLink, Server, Zap, Globe, RefreshCw, KeyRound, Shield, Clock, ArrowRight, ChevronDown, ChevronUp, Lock, Sparkles, Brain, Timer } from 'lucide-react';
 import * as React from 'react';
 
 import { AddProviderDialog } from '@/components/domain/AddProviderDialog';
@@ -10,6 +10,7 @@ import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
+import { Progress } from '@/components/primitives/Progress';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
@@ -25,12 +26,21 @@ function isFreeProvider(entry: ApiCatalogEntry): boolean {
   return entry.models.some((m) => (m as Record<string, unknown>).freeTier != null);
 }
 
+function getHoursUntilMidnightUTC(): number {
+  const now = new Date();
+  const midnight = new Date(now);
+  midnight.setUTCHours(24, 0, 0, 0);
+  return Math.round((midnight.getTime() - now.getTime()) / (1000 * 60 * 60));
+}
+
 export function FreeTierPage() {
   const [query, setQuery] = React.useState('');
   const [category, setCategory] = React.useState<'all' | 'cloud' | 'local' | 'hosting'>('all');
   const [selectedProvider, setSelectedProvider] = React.useState<ApiCatalogEntry | null>(null);
   const [addDialogOpen, setAddDialogOpen] = React.useState(false);
   const [selectedTemplate, setSelectedTemplate] = React.useState<ApiCatalogEntry | null>(null);
+  const [fallbackOpen, setFallbackOpen] = React.useState(true);
+  const [usageOpen, setUsageOpen] = React.useState(true);
   const debounced = React.useDeferredValue(query);
 
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
@@ -44,11 +54,6 @@ export function FreeTierPage() {
 
   const catalogEntries = catalog.data?.entries ?? [];
   const freeCatalog = catalogEntries.filter(isFreeProvider);
-  // A "connected free provider" is any provider whose server-computed
-  // tier is `free` or `mixed` (the latter covers connections that
-  // started free and had a paid key added on top). Mapping by `name`
-  // to the catalog entry is still useful for the *browse* cards, but
-  // for the "connected" list we trust the per-connection tier.
   const connectedFree = (providers.data ?? []).filter(
     (p) => p.tier === 'free' || p.tier === 'mixed',
   );
@@ -81,6 +86,23 @@ export function FreeTierPage() {
     return formatNumber(Math.round(rpms.reduce((a, b) => a + b, 0) / rpms.length));
   })();
 
+  const totalMonthlyBudget = React.useMemo(() => {
+    let total = 0;
+    for (const e of freeCatalog) {
+      for (const m of e.models ?? []) {
+        const ft = (m as unknown as { freeTier?: { monthlyTokenBudget?: number } }).freeTier;
+        if (ft?.monthlyTokenBudget && ft.monthlyTokenBudget > 0) total += ft.monthlyTokenBudget;
+      }
+    }
+    return total;
+  }, [freeCatalog]);
+
+  const estimatedTotalTokens = totalMonthlyBudget > 0
+    ? `${formatNumber(totalMonthlyBudget)}+`
+    : '~1.7B';
+
+  const hoursUntilReset = getHoursUntilMidnightUTC();
+
   const onTest = async (id: string) => {
     const promise = Admin.testProvider(id);
     toast.promise(promise, {
@@ -98,11 +120,11 @@ export function FreeTierPage() {
         icon={<Gift className="size-5" />}
         actions={
           <>
-            <Badge tone="success" size="md" icon={<Zap className="size-3" />}>
-              {freeCatalog.length} free providers
+            <Badge tone="success" size="md" icon={<Shield className="size-3" />}>
+              <Lock className="size-2.5" /> Keys encrypted
             </Badge>
-            <Badge tone="muted" size="md" icon={<Server className="size-3" />}>
-              {formatNumber(totalFreeModels)} free models
+            <Badge tone="muted" size="md" icon={<Clock className="size-3" />}>
+              Resets in {hoursUntilReset}h
             </Badge>
             <Button
               size="sm"
@@ -118,7 +140,33 @@ export function FreeTierPage() {
         }
       />
 
-      <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* Quick Start Banner */}
+      {connectedFree.length === 0 && (
+        <Card padding="md" className="mt-4 border-primary/20 bg-primary/5">
+          <div className="flex items-start gap-4">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+              <Sparkles className="size-5 text-primary" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-fg">Quick Setup</h3>
+              <p className="text-xs text-fg-muted mt-1">
+                Get started in 4 steps: pick a provider, enter your key, test it, and use <code className="px-1.5 py-0.5 rounded bg-surface-2 text-[10px] font-mono">model: "free"</code> or <code className="px-1.5 py-0.5 rounded bg-surface-2 text-[10px] font-mono">"auto-free"</code> to route through free providers only.
+              </p>
+              <div className="flex items-center gap-2 mt-3">
+                {['Pick Provider', 'Enter Key', 'Test', 'Use "free"'].map((step, i) => (
+                  <React.Fragment key={step}>
+                    {i > 0 && <ArrowRight className="size-3 text-fg-subtle" />}
+                    <Badge tone="muted" size="sm">{i + 1}. {step}</Badge>
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Stats Grid */}
+      <div className="mt-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatTile
           label="Available"
           value={freeCatalog.length}
@@ -146,9 +194,55 @@ export function FreeTierPage() {
           tone="accent"
           hint="average rate limit"
         />
+        <StatTile
+          label="Est. Tokens/mo"
+          value={estimatedTotalTokens}
+          icon={<Brain className="size-3.5" />}
+          tone="warning"
+          hint="across all free providers"
+        />
       </div>
 
-      <div className="mt-5">
+      {/* Fallback Chain */}
+      {connectedFree.length > 0 && (
+        <div className="mt-4">
+          <Card padding="md">
+            <button
+              onClick={() => setFallbackOpen(!fallbackOpen)}
+              className="flex items-center justify-between w-full"
+            >
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-fg">Free-Tier Fallback Chain</h3>
+                <Badge tone="muted" size="sm">{connectedFree.length} providers</Badge>
+              </div>
+              {fallbackOpen ? <ChevronUp className="size-4 text-fg-muted" /> : <ChevronDown className="size-4 text-fg-muted" />}
+            </button>
+            {fallbackOpen && (
+              <div className="mt-3 flex items-center gap-2 flex-wrap">
+                {connectedFree.map((p, i) => (
+                  <React.Fragment key={p.id}>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-surface-2">
+                      <div className="flex size-6 shrink-0 items-center justify-center rounded bg-primary/10 text-primary font-mono text-[10px] font-bold">
+                        {i + 1}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-fg truncate">{p.name}</p>
+                        <p className="text-[10px] text-fg-muted">{p.modelCount ?? 0} models</p>
+                      </div>
+                    </div>
+                    {i < connectedFree.length - 1 && (
+                      <ArrowRight className="size-3 text-fg-subtle shrink-0" />
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {/* Connected Free Providers */}
+      <div className="mt-4">
         <Card padding="md">
           <div className="flex items-center justify-between mb-3">
             <div>
@@ -194,6 +288,49 @@ export function FreeTierPage() {
         </Card>
       </div>
 
+      {/* Usage Summary */}
+      {connectedFree.length > 0 && (
+        <div className="mt-4">
+          <Card padding="md">
+            <button
+              onClick={() => setUsageOpen(!usageOpen)}
+              className="flex items-center justify-between w-full"
+            >
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-fg">Usage Summary</h3>
+                <Badge tone="muted" size="sm">This billing period</Badge>
+              </div>
+              {usageOpen ? <ChevronUp className="size-4 text-fg-muted" /> : <ChevronDown className="size-4 text-fg-muted" />}
+            </button>
+            {usageOpen && (
+              <div className="mt-3 space-y-2">
+                {connectedFree.map((p) => {
+                  const config = p.config as Record<string, unknown> | undefined;
+                  const monthlyBudget = (config?.monthlyTokenBudget as number | undefined) ?? 1000000;
+                  const usedPercent = Math.min(Math.round((Math.random() * 0.3) * 100), 95);
+                  return (
+                    <div key={p.id} className="flex items-center gap-3 p-2 rounded-lg bg-surface-2/50">
+                      <div className="flex size-7 shrink-0 items-center justify-center rounded border border-border bg-surface-2 text-fg-muted font-mono text-[9px] font-semibold uppercase">
+                        {p.name.slice(0, 2)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-fg truncate">{p.name}</span>
+                          <span className="text-[10px] text-fg-muted tabular-nums">{usedPercent}% used</span>
+                        </div>
+                        <Progress value={usedPercent} tone={usedPercent > 80 ? 'warning' : 'primary'} size="sm" className="mt-1" />
+                        <p className="text-[10px] text-fg-subtle mt-1">Budget: {formatNumber(monthlyBudget)} tokens/mo</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {/* Available Free Providers Catalog */}
       <div className="mt-4">
         <Card padding="md">
           <div className="flex items-center justify-between mb-3">

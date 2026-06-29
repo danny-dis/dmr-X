@@ -8,7 +8,8 @@ import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export function PlaygroundMain() {
-  const { messages, isStreaming } = usePlaygroundStore();
+  const messages = usePlaygroundStore(s => s.messages);
+  const isStreaming = usePlaygroundStore(s => s.isStreaming);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   
   // Auto-scroll to bottom when new messages arrive

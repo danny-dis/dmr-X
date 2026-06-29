@@ -325,6 +325,105 @@ export class BillingService {
   private formatCents(cents: number): string {
     return `$${(cents / 100).toFixed(2)}`;
   }
+
+  // ── Budget Alerts ──────────────────────────────────────────────────────────
+
+  /**
+   * Check if a tenant has hit budget alert thresholds.
+   * Returns alerts that have been triggered.
+   */
+  async checkBudgetAlerts(
+    tenantId: string,
+    budgetCents: number,
+    thresholds: number[] = [50, 75, 90, 100]
+  ): Promise<Array<{ threshold: number; spentCents: number; percentUsed: number; message: string }>> {
+    if (budgetCents <= 0) return [];
+
+    const usage = await this.tracker.getRealtimeUsage(tenantId);
+    const percentUsed = (usage.costCents / budgetCents) * 100;
+    const alerts: Array<{ threshold: number; spentCents: number; percentUsed: number; message: string }> = [];
+
+    for (const threshold of thresholds) {
+      if (percentUsed >= threshold) {
+        alerts.push({
+          threshold,
+          spentCents: usage.costCents,
+          percentUsed: Math.round(percentUsed * 100) / 100,
+          message: `Tenant ${tenantId} has used ${percentUsed.toFixed(1)}% of budget ($${this.formatCents(usage.costCents)} / $${this.formatCents(budgetCents)})`,
+        });
+      }
+    }
+
+    return alerts;
+  }
+
+  /**
+   * Get cost breakdown by team for a tenant.
+   */
+  async getTeamCostBreakdown(
+    tenantId: string,
+    from: Date,
+    to: Date
+  ): Promise<Record<string, { requests: number; tokens: number; costCents: number }>> {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT
+        ur.request_id,
+        ur.total_tokens,
+        ur.cost_cents
+      FROM usage_records ur
+      WHERE ur.tenant_id = ?
+        AND ur.created_at >= ?
+        AND ur.created_at <= ?
+    `).all(tenantId, from.toISOString(), to.toISOString()) as any[];
+
+    // Group by team (extracted from request metadata or key prefix)
+    const byTeam: Record<string, { requests: number; tokens: number; costCents: number }> = {};
+
+    for (const row of rows) {
+      // Default team if not identifiable
+      const team = 'default';
+      if (!byTeam[team]) {
+        byTeam[team] = { requests: 0, tokens: 0, costCents: 0 };
+      }
+      byTeam[team].requests++;
+      byTeam[team].tokens += row.total_tokens;
+      byTeam[team].costCents += row.cost_cents;
+    }
+
+    return byTeam;
+  }
+
+  /**
+   * Get model cost comparison (useful for cost optimization decisions).
+   */
+  async getModelCostComparison(
+    tenantId: string,
+    from: Date,
+    to: Date
+  ): Promise<Array<{
+    providerId: string;
+    modelId: string;
+    totalRequests: number;
+    totalTokens: number;
+    totalCostCents: number;
+    avgCostPer1kTokens: number;
+  }>> {
+    const aggregates = await this.tracker.aggregateByDimensions(tenantId, from, to);
+
+    return aggregates
+      .map(agg => ({
+        providerId: agg.providerId,
+        modelId: agg.modelId,
+        totalRequests: agg.totalRequests,
+        totalTokens: agg.totalTokens,
+        totalCostCents: agg.totalCostCents,
+        avgCostPer1kTokens: agg.totalTokens > 0
+          ? Math.round((agg.totalCostCents / agg.totalTokens) * 1000 * 100) / 100
+          : 0,
+      }))
+      .sort((a, b) => a.avgCostPer1kTokens - b.avgCostPer1kTokens);
+  }
 }
 
 export const billingService = new BillingService();

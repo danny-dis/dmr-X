@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
+import { semanticCacheService } from '@dmr-x/cache';
 
 const ChatRequestSchema = z.object({
   model: z.string(),
@@ -352,10 +353,22 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined;
 
     if (useCache) {
+      // First check semantic cache
+      if (semanticCacheService.isEnabled()) {
+        const semanticCached = await semanticCacheService.lookup('chat', tenantId, body as Record<string, unknown>);
+        if (semanticCached) {
+          logger.debug({ requestId, model: body.model, similarity: semanticCached.similarity }, 'Semantic cache hit for chat request');
+          reply.header('X-Cache', 'HIT');
+          reply.header('X-Semantic-Similarity', String(semanticCached.similarity));
+          return semanticCached.entry.response;
+        }
+      }
+
+      // Then check exact-match cache
       const { checkRouteCache } = await import('@dmr-x/cache');
       const cached = checkRouteCache('chat', tenantId, body as Record<string, unknown>);
       if (cached) {
-        logger.debug({ requestId, model: body.model }, 'Cache hit for chat request');
+        logger.debug({ requestId, model: body.model }, 'Exact cache hit for chat request');
         reply.header('X-Cache', 'HIT');
         return cached.response;
       }
@@ -381,6 +394,13 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     if (useCache && response) {
       const { storeRouteCache } = await import('@dmr-x/cache');
       storeRouteCache('chat', tenantId, body as Record<string, unknown>, response);
+
+      // Also store in semantic cache
+      if (semanticCacheService.isEnabled()) {
+        const tokens = response.usage?.total_tokens ?? 0;
+        await semanticCacheService.store('chat', tenantId, body as Record<string, unknown>, response, tokens, 0);
+      }
+
       reply.header('X-Cache', 'MISS');
     }
 

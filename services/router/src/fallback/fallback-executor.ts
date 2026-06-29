@@ -11,6 +11,16 @@ export interface AdapterExecutor {
   ): Promise<UnifiedResponse>;
 }
 
+export interface FallbackStepConfig {
+  /** Trigger: when to use this fallback */
+  trigger: 'error' | 'timeout' | 'rate_limit' | 'context_window' | 'content_policy';
+  /** Provider/model to fallback to */
+  providerId: string;
+  modelId: string;
+  /** Delay before trying this fallback (ms) */
+  waitMs?: number;
+}
+
 export interface FallbackOptions {
   rateLimitService?: RateLimitService;
   quotaService?: QuotaService;
@@ -18,6 +28,8 @@ export interface FallbackOptions {
   requestId?: string;
   onSuccess?: (providerId: string) => void;
   onFailure?: (providerId: string) => void;
+  /** Optional configured fallback chain (from config.yaml) */
+  configuredFallbacks?: FallbackStepConfig[];
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -31,6 +43,59 @@ function isQuotaError(error: unknown): boolean {
   return error instanceof QuotaExhaustedError;
 }
 
+/**
+ * Detect context-window errors (input too long).
+ * Providers return 400/413/422 with messages about context length, max tokens, etc.
+ */
+function isContextWindowError(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) return false;
+  if (error.statusCode !== 400 && error.statusCode !== 413 && error.statusCode !== 422) return false;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes('context_length') ||
+    msg.includes('context window') ||
+    msg.includes('maximum context') ||
+    msg.includes('token limit') ||
+    msg.includes('too many tokens') ||
+    msg.includes('input is too long') ||
+    msg.includes('max_tokens') ||
+    msg.includes('request too large') ||
+    msg.includes('payload too large')
+  );
+}
+
+/**
+ * Detect content-policy / moderation errors.
+ * Providers return 400/422 with messages about content filtering.
+ */
+function isContentPolicyError(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) return false;
+  if (error.statusCode !== 400 && error.statusCode !== 422) return false;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes('content_policy') ||
+    msg.includes('content policy') ||
+    msg.includes('safety') ||
+    msg.includes('blocked') ||
+    msg.includes('content filter') ||
+    msg.includes('moderation') ||
+    msg.includes('flagged') ||
+    msg.includes('harmful') ||
+    msg.includes('violates')
+  );
+}
+
+/**
+ * Determine the error category for fallback routing.
+ */
+function classifyError(error: unknown): 'rate_limit' | 'context_window' | 'content_policy' | 'quota' | 'error' {
+  if (isRateLimitError(error)) return 'rate_limit';
+  if (isContextWindowError(error)) return 'context_window';
+  if (isContentPolicyError(error)) return 'content_policy';
+  if (isQuotaError(error)) return 'quota';
+  return 'error';
+}
+
 export async function executeWithFallback(
   plan: RoutingPlan,
   request: UnifiedRequest,
@@ -42,6 +107,7 @@ export async function executeWithFallback(
   const qs = options?.quotaService;
   const tenantId = options?.tenantId;
   let anyNonRateLimitError = false;
+  let primaryErrorRaw: unknown = null;
 
   // Try primary
   try {
@@ -79,6 +145,7 @@ export async function executeWithFallback(
     }
     return response;
   } catch (error) {
+    primaryErrorRaw = error;
     // Record circuit breaker failure (wrapped in try/catch to prevent callback errors from breaking fallback chain)
     try { options?.onFailure?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
     if (!isRateLimitError(error)) {
@@ -100,10 +167,34 @@ export async function executeWithFallback(
     }
   }
 
-  // Try fallback chain
-  for (const step of plan.chain) {
-    // Check if this trigger matches the error type
-    // For Phase 1, we try all fallbacks regardless of trigger
+  // Classify the primary error for smart fallback selection
+  const errorCategory = classifyError(primaryErrorRaw);
+
+  // Try configured fallbacks first (from config.yaml), then built-in chain
+  const configuredSteps = options?.configuredFallbacks || [];
+  const allFallbackSteps = [
+    // Configured fallbacks filtered by error category
+    ...configuredSteps
+      .filter(f => f.trigger === errorCategory || f.trigger === 'error')
+      .map(f => ({
+        provider: { providerId: f.providerId, modelId: f.modelId, adapterType: '', score: 0 },
+        trigger: f.trigger as any,
+        waitMs: f.waitMs || 0,
+      })),
+    // Built-in fallback chain
+    ...plan.chain,
+  ];
+
+  // Deduplicate by providerId:modelId
+  const seen = new Set<string>();
+  const deduplicated = allFallbackSteps.filter(step => {
+    const key = `${step.provider.providerId}:${step.provider.modelId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  for (const step of deduplicated) {
     try {
       // Re-check rate limit before executing fallback
       if (rls) {
@@ -114,7 +205,7 @@ export async function executeWithFallback(
         }
       }
 
-      if (step.waitMs > 0) {
+      if (step.waitMs && step.waitMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, step.waitMs));
       }
 
@@ -140,6 +231,10 @@ export async function executeWithFallback(
       } catch (usageErr) {
         logger.warn({ err: usageErr, provider: step.provider.providerId, requestId: options?.requestId }, 'Failed to record usage for fallback provider');
       }
+      logger.info(
+        { provider: step.provider.providerId, modelId: step.provider.modelId, errorCategory, trigger: step.trigger },
+        'Fallback succeeded'
+      );
       return response;
     } catch (error) {
       // Record circuit breaker failure (wrapped in try/catch)

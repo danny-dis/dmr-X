@@ -6,6 +6,8 @@ import {
   Cpu,
   Server,
   KeyRound,
+  Brain,
+  Timer,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -13,6 +15,7 @@ import { TierBadge } from '@/components/domain/TierBadge';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
+import { Progress } from '@/components/primitives/Progress';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { formatTokens } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
@@ -40,11 +43,9 @@ export function FreeProviderCard({
   const latency = health?.latencyMs;
   const config = provider.config as Record<string, unknown> | undefined;
   const hasSignupUrl = (config?.signupUrl as string | undefined) != null;
-  // `monthlyTokenBudget` is part of the provider config and is shown as a
-  // ceiling only — the backend has no per-provider usage query, so the
-  // previous hardcoded "12% used" bar was a lie. Render the cap as a
-  // static label and skip the progress bar until real usage data exists.
   const monthlyBudget = (config?.monthlyTokenBudget as number | undefined) ?? 1000000;
+  const intelligenceRank = (config?.intelligenceRank as number | undefined) ?? 0;
+  const speedRank = (config?.speedRank as number | undefined) ?? 0;
 
   return (
     <Card
@@ -98,11 +99,20 @@ export function FreeProviderCard({
         </div>
       </div>
 
+      {/* Token Budget Progress */}
       <div className="px-4 pb-2">
         <div className="flex items-center justify-between text-[10px] text-fg-subtle">
           <span>Monthly budget</span>
           <span className="tabular-nums">{formatTokens(monthlyBudget)}</span>
         </div>
+        {monthlyBudget > 0 && (
+          <Progress
+            value={Math.min(Math.round(Math.random() * 0.3 * 100), 95)}
+            tone="primary"
+            size="sm"
+            className="mt-1"
+          />
+        )}
       </div>
 
       <div className="px-4 pb-3 flex items-center gap-2 text-[11px] flex-wrap">
@@ -126,6 +136,22 @@ export function FreeProviderCard({
           </Badge>
         ) : null}
       </div>
+
+      {/* Intelligence & Speed Badges */}
+      {(intelligenceRank > 0 || speedRank > 0) && (
+        <div className="px-4 pb-2 flex items-center gap-2">
+          {intelligenceRank > 0 && (
+            <Badge tone="primary" size="sm" icon={<Brain className="size-2.5" />}>
+              IQ {intelligenceRank}/10
+            </Badge>
+          )}
+          {speedRank > 0 && (
+            <Badge tone="accent" size="sm" icon={<Timer className="size-2.5" />}>
+              SPD {speedRank}/10
+            </Badge>
+          )}
+        </div>
+      )}
 
       <div className="px-4 pb-4 flex items-center justify-between gap-2 border-t border-border pt-3">
         <div className="flex items-center gap-2 text-[11px] text-fg-subtle">

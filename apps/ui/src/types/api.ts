@@ -466,6 +466,17 @@ export interface ApiWorker {
   createdAt?: string;
 }
 
+export interface ApiWorkerJob {
+  id: string;
+  workerId: string;
+  jobType: string;
+  payload?: string | null;
+  status: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: string | null;
+}
+
 export interface ApiFederationNode {
   id: string;
   name?: string;

@@ -67,10 +67,11 @@ export class WorkersService {
     const pid = process.pid;
 
     db.prepare(`
-      INSERT INTO workers (id, name, type, status, hostname, pid, last_heartbeat_at)
-      VALUES (?, ?, ?, 'active', ?, ?, datetime('now'))
+      INSERT INTO workers (id, name, type, status, hostname, pid, load, last_heartbeat_at)
+      VALUES (?, ?, ?, 'active', ?, ?, 0, datetime('now'))
     `).run(id, input.name, input.type || 'background', hostname, pid);
 
+    cache.delete('list');
     logger.info(`Worker registered: ${input.name} (${id})`);
     return this.getById(id)!;
   }
@@ -94,10 +95,13 @@ export class WorkersService {
 
   heartbeat(id: string): boolean {
     const db = getDb();
+    // Also recalculate load when sending heartbeat
+    const load = this.calculateWorkerLoad(id);
     const result = db.prepare(`
-      UPDATE workers SET last_heartbeat_at = datetime('now'), status = 'active'
+      UPDATE workers 
+      SET last_heartbeat_at = datetime('now'), status = 'active', load = ?
       WHERE id = ? AND status != 'terminated'
-    `).run(id);
+    `).run(load, id);
     cache.delete('list');
     return result.changes > 0;
   }
@@ -150,42 +154,79 @@ export class WorkersService {
       return null;
     }
 
-    const jobId = crypto.randomUUID();
-    db.prepare(`
-      INSERT INTO worker_jobs (id, worker_id, job_type, payload, status, started_at)
-      VALUES (?, ?, ?, ?, 'running', datetime('now'))
-    `).run(jobId, worker.id, input.jobType, input.payload);
+    try {
+      db.prepare('BEGIN TRANSACTION').run();
 
-    db.prepare(`
-      UPDATE workers SET jobs_processed = jobs_processed + 1 WHERE id = ?
-    `).run(worker.id);
+      const jobId = crypto.randomUUID();
+      db.prepare(`
+        INSERT INTO worker_jobs (id, worker_id, job_type, payload, status, started_at)
+        VALUES (?, ?, ?, ?, 'running', datetime('now'))
+      `).run(jobId, worker.id, input.jobType, input.payload);
 
-    cache.delete('list');
+      db.prepare(`
+        UPDATE workers SET jobs_processed = jobs_processed + 1 WHERE id = ?
+      `).run(worker.id);
 
-    return {
-      id: jobId,
-      workerId: worker.id,
-      jobType: input.jobType,
-      payload: input.payload,
-      status: 'running',
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      error: null,
-    };
+      // Update load based on active running jobs
+      const load = this.calculateWorkerLoad(worker.id);
+      db.prepare(`
+        UPDATE workers SET load = ? WHERE id = ?
+      `).run(load, worker.id);
+
+      db.prepare('COMMIT').run();
+      cache.delete('list');
+
+      return {
+        id: jobId,
+        workerId: worker.id,
+        jobType: input.jobType,
+        payload: input.payload,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        error: null,
+      };
+    } catch (error) {
+      db.prepare('ROLLBACK').run();
+      logger.error({ err: error }, 'Failed to assign job (transaction rolled back)');
+      return null;
+    }
   }
 
   completeJob(jobId: string, error?: string): void {
     const db = getDb();
-    if (error) {
-      db.prepare(`
-        UPDATE worker_jobs SET status = 'failed', error = ?, completed_at = datetime('now')
-        WHERE id = ?
-      `).run(error, jobId);
-    } else {
-      db.prepare(`
-        UPDATE worker_jobs SET status = 'completed', completed_at = datetime('now')
-        WHERE id = ?
-      `).run(jobId);
+    
+    try {
+      db.prepare('BEGIN TRANSACTION').run();
+
+      // Get workerId from job first
+      const job = db.prepare('SELECT worker_id FROM worker_jobs WHERE id = ?').get(jobId) as any;
+      
+      if (error) {
+        db.prepare(`
+          UPDATE worker_jobs SET status = 'failed', error = ?, completed_at = datetime('now')
+          WHERE id = ?
+        `).run(error, jobId);
+      } else {
+        db.prepare(`
+          UPDATE worker_jobs SET status = 'completed', completed_at = datetime('now')
+          WHERE id = ?
+        `).run(jobId);
+      }
+
+      // Update worker load after job completion
+      if (job?.worker_id) {
+        const load = this.calculateWorkerLoad(job.worker_id);
+        db.prepare(`
+          UPDATE workers SET load = ? WHERE id = ?
+        `).run(load, job.worker_id);
+      }
+
+      db.prepare('COMMIT').run();
+      cache.delete('list');
+    } catch (err) {
+      db.prepare('ROLLBACK').run();
+      logger.error({ err }, 'Failed to complete job (transaction rolled back)');
     }
   }
 
@@ -207,6 +248,53 @@ export class WorkersService {
       completedAt: r.completed_at,
       error: r.error,
     }));
+  }
+
+  /**
+   * Calculate worker load as percentage (0-1) based on running jobs
+   */
+  private calculateWorkerLoad(workerId: string): number {
+    const db = getDb();
+    const runningJobs = db.prepare(`
+      SELECT COUNT(*) as count FROM worker_jobs 
+      WHERE worker_id = ? AND status = 'running'
+    `).get(workerId) as { count: number };
+    
+    // Normalize to 0-1 range (capped at 20 running jobs = 100% load)
+    return Math.min(runningJobs.count / 20, 1);
+  }
+
+  /**
+   * Cleanup old jobs and terminated workers
+   */
+  cleanup(daysToKeep: number = 30): void {
+    const db = getDb();
+    
+    try {
+      db.prepare('BEGIN TRANSACTION').run();
+
+      // Delete old completed/failed jobs
+      const deletedJobs = db.prepare(`
+        DELETE FROM worker_jobs
+        WHERE status IN ('completed', 'failed')
+        AND completed_at < datetime('now', '-' || ? || ' days')
+      `).run(daysToKeep);
+
+      // Delete terminated workers older than 7 days
+      const deletedWorkers = db.prepare(`
+        DELETE FROM workers
+        WHERE status = 'terminated'
+        AND created_at < datetime('now', '-7 days')
+      `).run();
+
+      db.prepare('COMMIT').run();
+      
+      cache.delete('list');
+      logger.info(`Cleanup completed: ${deletedJobs.changes} jobs, ${deletedWorkers.changes} workers removed`);
+    } catch (err) {
+      db.prepare('ROLLBACK').run();
+      logger.error({ err }, 'Cleanup failed (transaction rolled back)');
+    }
   }
 
   private checkStaleWorkers(): void {

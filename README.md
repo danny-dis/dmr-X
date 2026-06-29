@@ -1,6 +1,6 @@
 # DMR-X
 
-Universal AI routing and orchestration platform. A single gateway that accepts requests in **OpenAI**, **Anthropic**, and **Google Gemini** wire formats, routes them to the best available provider, and returns responses in the same format.
+Universal AI routing, orchestration, and **Model Context Protocol (MCP) platform**. A single gateway that accepts requests in **OpenAI**, **Anthropic**, and **Google Gemini** wire formats, routes them to the best available provider, and returns responses in the same format. Also includes a full-featured MCP server for seamless agent integration.
 
 ## Key Features
 

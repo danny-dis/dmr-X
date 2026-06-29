@@ -4,6 +4,10 @@ import {
   ExternalLink,
   KeyRound,
   Activity,
+  Brain,
+  Timer,
+  Shield,
+  Lock,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -134,6 +138,9 @@ export function FreeTierDrawer({ provider, open, onOpenChange, onCreated }: Free
             <Badge tone="muted" size="sm" icon={<Zap className="size-2.5" />}>
               Free Tier
             </Badge>
+            <Badge tone="primary" size="sm" icon={<Shield className="size-2.5" />}>
+              <Lock className="size-2" /> Encrypted
+            </Badge>
             {provider.category && (
               <Badge tone="muted" size="sm">{provider.category}</Badge>
             )}
@@ -218,9 +225,21 @@ export function FreeTierDrawer({ provider, open, onOpenChange, onCreated }: Free
                     <div key={model.id} className="py-2 border-b border-border/60 last:border-b-0">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-fg">{model.id}</span>
-                        <Badge tone="muted" size="sm">
-                          {model.modality?.[0] ?? 'llm'}
-                        </Badge>
+                        <div className="flex items-center gap-1">
+                          {ft?.intelligenceRank != null && ft.intelligenceRank > 0 && (
+                            <Badge tone="primary" size="sm" icon={<Brain className="size-2" />}>
+                              IQ {ft.intelligenceRank}
+                            </Badge>
+                          )}
+                          {ft?.speedRank != null && ft.speedRank > 0 && (
+                            <Badge tone="accent" size="sm" icon={<Timer className="size-2" />}>
+                              SPD {ft.speedRank}
+                            </Badge>
+                          )}
+                          <Badge tone="muted" size="sm">
+                            {model.modality?.[0] ?? 'llm'}
+                          </Badge>
+                        </div>
                       </div>
                       <div className="mt-1 flex items-center gap-3 text-[10px] text-fg-subtle">
                         {ft?.rateLimits?.rpm != null && ft.rateLimits.rpm > 0 && (

@@ -19,7 +19,11 @@ import { costLatencyScorer } from './cost-latency-scorer.js';
 import { finalSelector, type ThompsonSamplerLike } from './final-selector.js';
 import { rateLimitFilter } from './rate-limit-filter.js';
 import type { RateLimitFilterResult } from './rate-limit-filter.js';
+import { selectLeastBusy } from '../strategies/least-busy.js';
+import { selectUsageBased } from '../strategies/usage-based.js';
+import { selectLowestLatency } from '../strategies/latency-based.js';
 
+export type RoutingStrategy = 'thompson' | 'least-busy' | 'usage-based' | 'latency-based' | 'cost-optimized';
 
 export interface PipelineInput {
   taskProfile: TaskProfile;
@@ -39,6 +43,8 @@ export interface PipelineInput {
   metaModelFilteredFree?: boolean;
   /** Optional Thompson sampler for smarter exploration of free models */
   thompsonSampler?: ThompsonSamplerLike;
+  /** Routing strategy override: 'thompson' (default), 'least-busy', 'usage-based', 'latency-based', 'cost-optimized' */
+  routingStrategy?: RoutingStrategy;
 }
 
 export interface PipelineOutput {
@@ -48,7 +54,7 @@ export interface PipelineOutput {
 }
 
 export async function runPipeline(input: PipelineInput): Promise<PipelineOutput> {
-  const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler } = input;
+  const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler, routingStrategy = 'thompson' } = input;
 
   // Stage 1: Capability Filter
   let filtered = capabilityFilter(
@@ -138,8 +144,73 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     scored = applyProviderOrder(scored, providerPreferences.order);
   }
 
-  // Stage 7: Final Selection
-  const { selected, remaining } = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+  // Stage 7: Final Selection — supports multiple routing strategies
+  let selected: SelectedProvider;
+  let remaining: ProviderModel[];
+
+  switch (routingStrategy) {
+    case 'least-busy': {
+      const lbResult = selectLeastBusy(scored);
+      if (lbResult) {
+        selected = lbResult;
+        remaining = scored.filter(m => !(m.providerId === lbResult.providerId && m.modelId === lbResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'usage-based': {
+      const ubResult = selectUsageBased(scored);
+      if (ubResult) {
+        selected = ubResult;
+        remaining = scored.filter(m => !(m.providerId === ubResult.providerId && m.modelId === ubResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'latency-based': {
+      const lbResult = selectLowestLatency(scored);
+      if (lbResult) {
+        selected = lbResult;
+        remaining = scored.filter(m => !(m.providerId === lbResult.providerId && m.modelId === lbResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'cost-optimized': {
+      // Sort by cost ascending, break ties by quality
+      const costSorted = [...scored].sort((a, b) => {
+        const aCost = (a.costPerInputToken ?? 0) + (a.costPerOutputToken ?? 0);
+        const bCost = (b.costPerInputToken ?? 0) + (b.costPerOutputToken ?? 0);
+        if (aCost !== bCost) return aCost - bCost;
+        return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
+      });
+      const first = costSorted[0];
+      selected = {
+        providerId: first.providerId,
+        modelId: first.modelId,
+        adapterType: first.providerName,
+        score: first.qualityScore,
+      };
+      remaining = costSorted.slice(1);
+      break;
+    }
+    case 'thompson':
+    default: {
+      const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+      selected = fb.selected;
+      remaining = fb.remaining;
+      break;
+    }
+  }
 
   // Build fallback chain from remaining candidates
   const chain = buildFallbackChain(remaining, selected);

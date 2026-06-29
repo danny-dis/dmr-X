@@ -45,8 +45,10 @@ const samplePrompts: SamplePrompt[] = [
   },
 ];
 
-export function EmptyState() {
-  const { setMode, mode, setPromptSeed } = usePlaygroundStore();
+function EmptyStateComponent() {
+  const setMode = usePlaygroundStore(s => s.setMode);
+  const mode = usePlaygroundStore(s => s.mode);
+  const setPromptSeed = usePlaygroundStore(s => s.setPromptSeed);
 
   // Clicking a sample-prompt tile seeds the prompt input via the store.
   // PlaygroundInput watches `pendingPrompt` and applies it to its local
@@ -97,3 +99,5 @@ export function EmptyState() {
     </div>
   );
 }
+
+export const EmptyState = React.memo(EmptyStateComponent);

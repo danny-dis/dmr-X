@@ -470,6 +470,12 @@ export const Admin = {
   registerWorker: (body: ApiWorkerRegister) => apiPost<ApiWorker>('/admin/workers', body),
   drainWorker: (id: string) => apiPost<ApiWorker>(`/admin/workers/${id}/drain`),
   resumeWorker: (id: string) => apiPost<ApiWorker>(`/admin/workers/${id}/resume`),
+  cleanupWorkers: (daysToKeep?: number) =>
+    apiPost<{ ok: true }>('/admin/workers/cleanup', { daysToKeep: daysToKeep ?? 30 }),
+  listWorkerJobs: (id?: string) =>
+    id
+      ? apiGet<{ jobs: ApiWorkerJob[] }>(`/admin/workers/${id}/jobs`).then(r => r.jobs ?? [])
+      : apiGet<{ jobs: ApiWorkerJob[] }>('/admin/jobs').then(r => r.jobs ?? []),
 
   // Federation
   listFederation: () => apiGet<{ nodes: ApiFederationNode[] }>('/admin/federation').then(r => r.nodes ?? []),

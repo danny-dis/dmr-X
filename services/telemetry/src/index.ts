@@ -22,6 +22,21 @@ export {
   setProviderHealthStatus,
   getProviderHealthStatus,
   getAllProviderHealth,
+  cacheHitCount,
+  cacheMissCount,
+  cacheLatency,
+  routingDecisionCount,
+  fallbackCount,
+  fallbackSuccessCount,
+  rateLimitHitCount,
+  incrementInFlight,
+  decrementInFlight,
+  tenantRequestCount,
+  tenantCostTotal,
+  keyRequestCount,
+  keyCostTotal,
+  teamRequestCount,
+  teamCostTotal,
   type RequestLabels,
   type ErrorLabels,
   type TokenLabels,
@@ -34,3 +49,21 @@ export {
   type CaptureMode,
   type CaptureEvent,
 } from './content-capture.js';
+
+export {
+  requestLogger,
+  type RequestLogContext,
+  type RequestLogOptions,
+} from './request-logger.js';
+
+export {
+  auditLogger,
+  type AuditLogEntry,
+  type AuditLogQuery,
+} from './audit-logger.js';
+
+export {
+  loggingIntegrations,
+  type LogEvent,
+  type LoggingIntegration,
+} from './logging-integrations.js';

@@ -9,7 +9,7 @@ interface StreamingBubbleProps {
   message: Message;
 }
 
-export function StreamingBubble({ message }: StreamingBubbleProps) {
+function StreamingBubbleComponent({ message }: StreamingBubbleProps) {
   const { cancelStreaming } = usePlaygroundStore();
 
   return (
@@ -57,6 +57,8 @@ export function StreamingBubble({ message }: StreamingBubbleProps) {
     </div>
   );
 }
+
+export const StreamingBubble = React.memo(StreamingBubbleComponent);
 
 function SparkleIcon() {
   return (

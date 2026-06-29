@@ -10,6 +10,28 @@ interface WindowData {
   windowStart: number;
 }
 
+// Escalating cooldown durations (ms) based on 429 hit count within 24h
+const COOLDOWN_DURATIONS = [
+  2 * 60_000,      // 1st hit: 2 minutes
+  10 * 60_000,     // 2nd hit: 10 minutes
+  60 * 60_000,     // 3rd hit: 1 hour
+  24 * 60 * 60_000, // 4th+ hit: 24 hours
+];
+
+const TRANSIENT_COOLDOWN_MS = 90_000; // 90s for RPM/TPM 429s
+const PAYMENT_REQUIRED_COOLDOWN_MS = 24 * 60 * 60_000; // 24h for 402
+const MODEL_FORBIDDEN_COOLDOWN_MS = 24 * 60 * 60_000; // 24h for 403
+
+// Provider-wide daily request caps (configurable via env)
+const DEFAULT_PROVIDER_DAILY_CAPS: Record<string, number> = {
+  openrouter: 1000,
+};
+
+// Rate limit hit tracking for escalation
+interface RateLimitHit {
+  timestamps: number[];
+}
+
 /**
  * Rate-limit tracking service using in-memory cache for sliding windows.
  *
@@ -23,6 +45,11 @@ export class RateLimitService {
   private configs = new Map<string, RateLimitConfig>();
   private penalties = new Map<string, { points: number; lastPenalty: number }>();
   private decayInterval: NodeJS.Timeout | null = null;
+  // Escalating cooldown state
+  private cooldowns = new Map<string, number>(); // key -> expiry timestamp
+  private rateLimitHits = new Map<string, RateLimitHit>(); // key -> hit timestamps
+  // Provider-wide daily request tracking
+  private providerDailyRequests = new Map<string, { count: number; windowStart: number }>();
 
   /**
    * Register rate limit config for a provider/model.
@@ -186,6 +213,231 @@ export class RateLimitService {
       clearInterval(this.decayInterval);
       this.decayInterval = null;
     }
+  }
+
+  // ── Escalating Cooldown ──────────────────────────────────────────────────
+
+  /**
+   * Record a 429 hit for escalation tracking.
+   * Returns the cooldown duration to apply.
+   */
+  recordRateLimitHit(providerId: string, modelId: string): number {
+    const key = `${providerId}:${modelId}`;
+    const now = Date.now();
+    const hit = this.rateLimitHits.get(key) || { timestamps: [] };
+
+    // Prune hits older than 24h
+    hit.timestamps = hit.timestamps.filter(t => t > now - 24 * 60 * 60_000);
+    hit.timestamps.push(now);
+    this.rateLimitHits.set(key, hit);
+
+    // Escalate based on hit count
+    const idx = Math.min(hit.timestamps.length - 1, COOLDOWN_DURATIONS.length - 1);
+    const duration = COOLDOWN_DURATIONS[idx];
+
+    this.setCooldown(providerId, modelId, duration);
+    logger.warn({ providerId, modelId, hitCount: hit.timestamps.length, cooldownMs: duration }, 'Escalating cooldown applied');
+    return duration;
+  }
+
+  /**
+   * Set a cooldown for a provider/model pair.
+   */
+  setCooldown(providerId: string, modelId: string, durationMs: number): void {
+    const key = `${providerId}:${modelId}:cooldown`;
+    this.cooldowns.set(key, Date.now() + durationMs);
+  }
+
+  /**
+   * Set a transient cooldown (90s for RPM/TPM 429s).
+   */
+  setTransientCooldown(providerId: string, modelId: string): void {
+    this.setCooldown(providerId, modelId, TRANSIENT_COOLDOWN_MS);
+  }
+
+  /**
+   * Set a payment-required cooldown (24h for 402).
+   */
+  setPaymentRequiredCooldown(providerId: string, modelId: string): void {
+    this.setCooldown(providerId, modelId, PAYMENT_REQUIRED_COOLDOWN_MS);
+  }
+
+  /**
+   * Set a model-forbidden cooldown (24h for 403).
+   */
+  setModelForbiddenCooldown(providerId: string, modelId: string): void {
+    this.setCooldown(providerId, modelId, MODEL_FORBIDDEN_COOLDOWN_MS);
+  }
+
+  /**
+   * Check if a provider/model is on cooldown.
+   */
+  isOnCooldown(providerId: string, modelId: string): boolean {
+    const key = `${providerId}:${modelId}:cooldown`;
+    const expiry = this.cooldowns.get(key);
+    if (!expiry) return false;
+    if (Date.now() > expiry) {
+      this.cooldowns.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Get cooldown expiry for a provider/model.
+   */
+  getCooldownExpiry(providerId: string, modelId: string): number | null {
+    const key = `${providerId}:${modelId}:cooldown`;
+    const expiry = this.cooldowns.get(key);
+    if (!expiry) return null;
+    if (Date.now() > expiry) {
+      this.cooldowns.delete(key);
+      return null;
+    }
+    return expiry;
+  }
+
+  /**
+   * Clear cooldown for a provider/model (on successful request).
+   */
+  clearCooldown(providerId: string, modelId: string): void {
+    const key = `${providerId}:${modelId}:cooldown`;
+    this.cooldowns.delete(key);
+    // Also clear hit tracking to allow fresh escalation
+    const hitKey = `${providerId}:${modelId}`;
+    this.rateLimitHits.delete(hitKey);
+  }
+
+  // ── Provider-Wide Daily Request Caps ─────────────────────────────────────
+
+  /**
+   * Get the provider-wide daily request cap.
+   * Configurable via PROVIDER_DAILY_CAP_{PROVIDER_ID} env var.
+   */
+  getProviderDailyCap(providerId: string): number | null {
+    const envKey = `PROVIDER_DAILY_CAP_${providerId.toUpperCase()}`;
+    const envVal = process.env[envKey];
+    if (envVal !== undefined) {
+      const n = Number(envVal);
+      if (Number.isFinite(n) && n >= 0) return n === 0 ? null : n;
+    }
+    return DEFAULT_PROVIDER_DAILY_CAPS[providerId] ?? null;
+  }
+
+  /**
+   * Check if a provider has exceeded its daily request cap.
+   */
+  checkProviderDailyCap(providerId: string): { allowed: boolean; used: number; cap: number | null } {
+    const cap = this.getProviderDailyCap(providerId);
+    if (cap === null) return { allowed: true, used: 0, cap: null };
+
+    const now = Date.now();
+    const key = `provider:${providerId}:daily`;
+    const data = this.providerDailyRequests.get(key);
+
+    if (!data || now - data.windowStart > 86_400_000) {
+      return { allowed: true, used: 0, cap };
+    }
+
+    return { allowed: data.count < cap, used: data.count, cap };
+  }
+
+  /**
+   * Record a request against the provider-wide daily cap.
+   */
+  recordProviderDailyRequest(providerId: string): void {
+    const now = Date.now();
+    const key = `provider:${providerId}:daily`;
+    const data = this.providerDailyRequests.get(key);
+
+    if (!data || now - data.windowStart > 86_400_000) {
+      this.providerDailyRequests.set(key, { count: 1, windowStart: now });
+    } else {
+      data.count++;
+    }
+  }
+
+  /**
+   * Get all active cooldowns (for dashboard display).
+   */
+  getActiveCooldowns(): Array<{ providerId: string; modelId: string; expiresAt: number }> {
+    const now = Date.now();
+    const result: Array<{ providerId: string; modelId: string; expiresAt: number }> = [];
+    for (const [key, expiry] of this.cooldowns) {
+      if (expiry > now) {
+        const parts = key.split(':');
+        if (parts.length >= 2) {
+          result.push({ providerId: parts[0], modelId: parts[1], expiresAt: expiry });
+        }
+      }
+    }
+    return result;
+  }
+
+  // ── Self-Correcting Catalog (Learn Limits from Errors) ───────────────────
+
+  /**
+   * Parse a provider-reported limit from an error message.
+   * E.g., "Limit 30000, Requested 33476" from Groq 413 errors.
+   */
+  parseProviderLimit(message: string | undefined | null): { kind: 'tpm' | 'tpd' | 'rpm' | 'rpd'; limit: number } | null {
+    if (!message) return null;
+
+    // Extract the numeric limit
+    const limitMatch = message.match(/\blimit[:\s]+([\d,]+)/i);
+    if (!limitMatch) return null;
+    const limit = Number(limitMatch[1]!.replace(/,/g, ''));
+    if (!Number.isFinite(limit) || limit <= 0) return null;
+
+    // Determine the axis (TPM/TPD/RPM/RPD)
+    const patterns: Array<{ kind: 'tpm' | 'tpd' | 'rpm' | 'rpd'; re: RegExp }> = [
+      { kind: 'tpd', re: /tokens?\s*per\s*day|\btpd\b/i },
+      { kind: 'tpm', re: /tokens?\s*per\s*min(?:ute)?|\btpm\b/i },
+      { kind: 'rpd', re: /requests?\s*per\s*day|\brpd\b/i },
+      { kind: 'rpm', re: /requests?\s*per\s*min(?:ute)?|\brpm\b/i },
+    ];
+
+    for (const { kind, re } of patterns) {
+      if (re.test(message)) return { kind, limit };
+    }
+
+    return null;
+  }
+
+  /**
+   * Learn a real limit from an error and persist it.
+   * Only lowers limits, never raises them.
+   */
+  learnLimitFromError(modelId: string, err: { message?: string }): { kind: string; limit: number } | null {
+    const parsed = this.parseProviderLimit(err?.message);
+    if (!parsed) return null;
+
+    try {
+      const { getDb } = require('@dmr-x/db');
+      const db = getDb();
+      const columnMap: Record<string, string> = {
+        tpm: 'tpm_limit',
+        tpd: 'tpd_limit',
+        rpm: 'rpm_limit',
+        rpd: 'rpd_limit',
+      };
+      const col = columnMap[parsed.kind];
+      if (!col) return null;
+
+      // Only lower limits, never raise them
+      const result = db.prepare(
+        `UPDATE model_profiles SET ${col} = ? WHERE model_id = ? AND (${col} IS NULL OR ${col} > ?)`
+      ).run(parsed.limit, modelId, parsed.limit);
+
+      if (result.changes > 0) {
+        logger.warn({ modelId, kind: parsed.kind, limit: parsed.limit }, 'Learned real limit from error');
+        return { kind: parsed.kind, limit: parsed.limit };
+      }
+    } catch (error) {
+      logger.debug({ err: error, modelId }, 'Failed to learn limit from error');
+    }
+
+    return null;
   }
 
   /**

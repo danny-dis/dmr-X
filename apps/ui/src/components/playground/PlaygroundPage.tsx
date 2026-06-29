@@ -10,7 +10,8 @@ import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export function PlaygroundPage() {
-  const { showSidebar, setShowSidebar } = usePlaygroundStore();
+  const showSidebar = usePlaygroundStore(s => s.showSidebar);
+  const setShowSidebar = usePlaygroundStore(s => s.setShowSidebar);
   
   return (
     <div className="h-[calc(100dvh-64px)] flex bg-surface-1">

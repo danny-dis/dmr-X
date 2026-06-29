@@ -30,24 +30,22 @@ const modeOptions = [
 ];
 
 export function PlaygroundInput() {
-  const {
-    mode,
-    model,
-    config,
-    costFilter,
-    isTemporary,
-    isStreaming,
-    setMode,
-    setModel,
-    setCostFilter,
-    setConfig,
-    setTools,
-    toggleTemporary,
-    sendMessage,
-    cancelStreaming,
-    consumePromptSeed,
-    pendingPrompt,
-  } = usePlaygroundStore();
+  const mode = usePlaygroundStore(s => s.mode);
+  const model = usePlaygroundStore(s => s.model);
+  const config = usePlaygroundStore(s => s.config);
+  const costFilter = usePlaygroundStore(s => s.costFilter);
+  const isTemporary = usePlaygroundStore(s => s.isTemporary);
+  const isStreaming = usePlaygroundStore(s => s.isStreaming);
+  const setMode = usePlaygroundStore(s => s.setMode);
+  const setModel = usePlaygroundStore(s => s.setModel);
+  const setCostFilter = usePlaygroundStore(s => s.setCostFilter);
+  const setConfig = usePlaygroundStore(s => s.setConfig);
+  const setTools = usePlaygroundStore(s => s.setTools);
+  const toggleTemporary = usePlaygroundStore(s => s.toggleTemporary);
+  const sendMessage = usePlaygroundStore(s => s.sendMessage);
+  const cancelStreaming = usePlaygroundStore(s => s.cancelStreaming);
+  const consumePromptSeed = usePlaygroundStore(s => s.consumePromptSeed);
+  const pendingPrompt = usePlaygroundStore(s => s.pendingPrompt);
 
   const [prompt, setPrompt] = React.useState('');
   const [showConfig, setShowConfig] = React.useState(false);

@@ -23,7 +23,7 @@ const modeIcons = {
   moderate: ShieldAlert,
 };
 
-export function ConversationItem({ conversation, isActive, onClick }: ConversationItemProps) {
+function ConversationItemComponent({ conversation, isActive, onClick }: ConversationItemProps) {
   const { deleteConversation, renameConversation } = usePlaygroundStore();
   const [showMenu, setShowMenu] = React.useState(false);
   // Inline-edit state for Rename. When `isEditing` is true the title text
@@ -164,3 +164,5 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
     </div>
   );
 }
+
+export const ConversationItem = React.memo(ConversationItemComponent);

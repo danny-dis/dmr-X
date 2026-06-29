@@ -19,6 +19,7 @@ import {
   Settings,
   Plug,
   Minimize2,
+  Layers,
   type LucideIcon,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
@@ -82,6 +83,12 @@ export const NAV_GROUPS: NavGroup[] = [
         path: '/quota',
         icon: GaugeIcon,
         description: 'Tenant usage limits',
+      },
+      {
+        label: 'Fusion Panel',
+        path: '/fusion',
+        icon: Layers,
+        description: 'Multi-model diversity',
       },
     ],
   },
