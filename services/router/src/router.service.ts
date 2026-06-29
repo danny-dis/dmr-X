@@ -13,7 +13,9 @@ import { SpecialistRouter } from './decomposer/specialist-router.js';
 import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
+import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
+import { planStayOrSwitch, type ModelTier } from './planner/ev-planner.js';
 import { runPipeline } from './pipeline/pipeline.js';
 import { hashConversation, getStickyProvider, setStickyProvider, breakStickySession } from './sticky/sticky-session.js';
 
@@ -28,6 +30,8 @@ export interface RouterConfig {
   defaultQualityTarget?: 'frontier' | 'balanced' | 'economy';
   enableDecomposition?: boolean; // Enable task decomposition for complex prompts
   decompositionThreshold?: number; // Min prompt length to trigger decomposition
+  enablePlanner?: boolean; // Enable STAY vs SWITCH planner (borrowed from workweave/router)
+  enableHandover?: boolean; // Enable handover summarization on model switches
   rateLimitService?: RateLimitService;
   quotaService?: QuotaService;
   policyService?: PolicyService;
@@ -36,6 +40,8 @@ export interface RouterConfig {
   metaModelCostFilter?: 'free' | 'all';
   onProviderSuccess?: (providerId: string) => void;
   onProviderFailure?: (providerId: string) => void;
+  /** Executor for handover summarization (provides the LLM call) */
+  summarizationExecutor?: SummarizationExecutor;
 }
 
 export class Router {
@@ -46,11 +52,17 @@ export class Router {
   private compositeExecutor: CompositeExecutor | null = null;
   private thompsonSampler: ThompsonSampler;
   private workerPool: WorkerPoolFanout | null = null;
+  private handoverSummarizer: HandoverSummarizer;
+  private enablePlanner: boolean;
+  private enableHandover: boolean;
 
   constructor(private readonly config: RouterConfig = {}) {
     this.taskDecomposer = new TaskDecomposer();
     this.specialistRouter = new SpecialistRouter();
     this.thompsonSampler = new ThompsonSampler();
+    this.handoverSummarizer = new HandoverSummarizer();
+    this.enablePlanner = config.enablePlanner !== false; // Default enabled
+    this.enableHandover = config.enableHandover !== false; // Default enabled
   }
 
   /**
@@ -140,6 +152,7 @@ export class Router {
     const messages = request.messages || [];
     const conversationHash = hashConversation(messages);
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
+    const effectiveFreeTierStrategy = freeTierStrategy;
 
     // Parse an optional `providerName/modelId` prefix out of the requested
     // model. The prefix is only honored when it names a known provider —
@@ -173,40 +186,104 @@ export class Router {
               // Break sticky session and fall through to normal routing
               await breakStickySession(conversationHash, `Rate limited: ${check.reason}`);
             } else {
-              logger.info(
-                { providerId: sticky.providerId, modelId: sticky.modelId },
-                'Using sticky session'
-              );
-
-              if (!this.adapterExecutor) {
-                throw new Error('No adapter executor configured');
-              }
-
-              const plan: RoutingPlan = {
-                primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
-                chain: [],
-                timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
-                maxRetries: 1,
-              };
-
-              if (options.planOnly) {
-                return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
-              }
-
-              try {
-                const response = await executeWithFallback(plan, request, this.adapterExecutor, {
+              // Planner-aware sticky session decision
+              if (this.enablePlanner) {
+                // Run the routing pipeline to get a fresh decision for comparison
+                const taskProfile = classifyTask(request, options);
+                const pipelineResult = await runPipeline({
+                  taskProfile,
+                  candidates: this.candidates,
+                  epsilon: this.config.epsilon ?? 0.05,
                   rateLimitService: this.config.rateLimitService,
                   quotaService: this.config.quotaService,
+                  policyService: this.config.policyService,
                   tenantId: (request as any).metadata?.tenant?.id,
-                  requestId,
-                  onSuccess: this.config.onProviderSuccess,
-                  onFailure: this.config.onProviderFailure,
+                  estimatedTokens: this.estimateTokens(request),
+                  freeTierStrategy: effectiveFreeTierStrategy,
+                  thompsonSampler: this.thompsonSampler,
                 });
-                return { plan, response };
-              } catch (error) {
-                // Break sticky session on provider failure
-                await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
-                throw error;
+
+                // Get the fresh decision's cost info
+                const freshCandidate = this.candidates.find(
+                  c => c.providerId === pipelineResult.selected.providerId && c.modelId === pipelineResult.selected.modelId
+                );
+
+                if (freshCandidate) {
+                  const plannerResult = planStayOrSwitch({
+                    pinnedModel: {
+                      id: sticky.modelId,
+                      providerId: sticky.providerId,
+                      tier: { level: 'mid', quality: stickyCandidate.qualityScore || 0.5, costPer1K: (stickyCandidate.costPerInputToken || 0) + (stickyCandidate.costPerOutputToken || 0) },
+                      costPer1K: (stickyCandidate.costPerInputToken || 0) + (stickyCandidate.costPerOutputToken || 0),
+                      cacheWarm: true,
+                    },
+                    freshDecision: {
+                      id: pipelineResult.selected.modelId,
+                      providerId: pipelineResult.selected.providerId,
+                      tier: { level: 'mid', quality: freshCandidate.qualityScore || 0.5, costPer1K: (freshCandidate.costPerInputToken || 0) + (freshCandidate.costPerOutputToken || 0) },
+                      costPer1K: (freshCandidate.costPerInputToken || 0) + (freshCandidate.costPerOutputToken || 0),
+                    },
+                    estimatedTokens: this.estimateTokens(request),
+                    remainingTurns: 5, // Estimate remaining turns
+                    summarizationAvailable: !!this.config.summarizationExecutor,
+                    summarizationCost: 0, // Will be computed if summarization is triggered
+                  });
+
+                  logger.info(
+                    {
+                      decision: plannerResult.decision,
+                      reason: plannerResult.reason,
+                      pinnedModel: sticky.modelId,
+                      freshModel: pipelineResult.selected.modelId,
+                    },
+                    'Planner decision'
+                  );
+
+                  // If planner says SWITCH, break sticky and use fresh decision
+                  if (plannerResult.decision === 'SWITCH') {
+                    await breakStickySession(conversationHash, `Planner: ${plannerResult.reason}`);
+                    // Fall through to normal routing below
+                  }
+                }
+              }
+
+              // If we're still in sticky mode (planner said STAY or planner disabled)
+              if (!this.enablePlanner || (await getStickyProvider(conversationHash, this.config.rateLimitService, freeTierStrategy, () => false))) {
+                logger.info(
+                  { providerId: sticky.providerId, modelId: sticky.modelId },
+                  'Using sticky session'
+                );
+
+                if (!this.adapterExecutor) {
+                  throw new Error('No adapter executor configured');
+                }
+
+                const plan: RoutingPlan = {
+                  primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
+                  chain: [],
+                  timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
+                  maxRetries: 1,
+                };
+
+                if (options.planOnly) {
+                  return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
+                }
+
+                try {
+                  const response = await executeWithFallback(plan, request, this.adapterExecutor, {
+                    rateLimitService: this.config.rateLimitService,
+                    quotaService: this.config.quotaService,
+                    tenantId: (request as any).metadata?.tenant?.id,
+                    requestId,
+                    onSuccess: this.config.onProviderSuccess,
+                    onFailure: this.config.onProviderFailure,
+                  });
+                  return { plan, response };
+                } catch (error) {
+                  // Break sticky session on provider failure
+                  await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
+                  throw error;
+                }
               }
             }
           } else {
@@ -380,7 +457,6 @@ export class Router {
     }
 
     const providerPreferences: ProviderPreferences | undefined = request.metadata?.providerPreferences;
-    const effectiveFreeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
     const pipelineResult = await tracer.startActiveSpan('router.score', async (span) => {
       try {
         span.setAttribute('router.candidate_pool_size', pipelineCandidates.length);
