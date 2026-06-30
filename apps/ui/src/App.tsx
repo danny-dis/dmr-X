@@ -29,6 +29,7 @@ const SettingsPage = lazy(() => import('@/pages/Settings').then(m => ({ default:
 const CompressionPage = lazy(() => import('@/pages/Compression').then(m => ({ default: m.CompressionPage })));
 const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
 const FusionPanelPage = lazy(() => import('@/pages/FusionPanel').then(m => ({ default: m.FusionPanelPage })));
+const ClaudeCodePage = lazy(() => import('@/pages/ClaudeCode').then(m => ({ default: m.ClaudeCodePage })));
 const NotFoundPage = lazy(() => import('@/pages/NotFound').then(m => ({ default: m.NotFoundPage })));
 
 function PageLoader() {
@@ -69,6 +70,7 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/compression" element={<CompressionPage />} />
               <Route path="/connect" element={<ConnectPage />} />
+              <Route path="/claude-code" element={<ClaudeCodePage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>

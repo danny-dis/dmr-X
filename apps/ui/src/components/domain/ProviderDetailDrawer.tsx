@@ -18,6 +18,14 @@ import {
   Power,
   PowerOff,
   AlertCircle,
+  Eye,
+  EyeOff,
+  Copy,
+  Check,
+  Search,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -41,7 +49,7 @@ import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import { formatDateTime, formatDuration } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
-import type { ApiProvider, ApiProviderKey } from '@/types/api';
+import type { ApiProvider, ApiProviderKey, ApiModel } from '@/types/api';
 
 export interface ProviderDetailDrawerProps {
   provider: ApiProvider | null;
@@ -118,6 +126,19 @@ export function ProviderDetailDrawer({
   const [addKeyOpen, setAddKeyOpen] = React.useState(false);
   const [togglingKeyId, setTogglingKeyId] = React.useState<string | null>(null);
 
+  // Per-key testing
+  const [testingKeyId, setTestingKeyId] = React.useState<string | null>(null);
+  const [keyTestResults, setKeyTestResults] = React.useState<
+    Record<string, { ok: boolean; latencyMs: number; error?: string }>
+  >({});
+
+  // API key visibility toggle
+  const [visibleKeyIds, setVisibleKeyIds] = React.useState<Set<string>>(new Set());
+
+  // Model discovery
+  const [discoveredModels, setDiscoveredModels] = React.useState<ApiModel[]>([]);
+  const [discovering, setDiscovering] = React.useState(false);
+
   React.useEffect(() => {
     if (!open) {
       setToggling(false);
@@ -133,6 +154,11 @@ export function ProviderDetailDrawer({
       setPendingDeleteKeyId(null);
       setAddKeyOpen(false);
       setTogglingKeyId(null);
+      setTestingKeyId(null);
+      setKeyTestResults({});
+      setVisibleKeyIds(new Set());
+      setDiscoveredModels([]);
+      setDiscovering(false);
     }
   }, [open]);
 
@@ -301,6 +327,79 @@ export function ProviderDetailDrawer({
     } finally {
       setDeletingKey(false);
     }
+  };
+
+  const handleTestKey = async (key: ApiProviderKey) => {
+    if (!provider) return;
+    setTestingKeyId(key.id);
+    try {
+      const result = await Admin.testProvider(provider.id);
+      setKeyTestResults((prev) => ({
+        ...prev,
+        [key.id]: { ok: result.ok, latencyMs: result.latencyMs, error: result.error },
+      }));
+    } catch (err) {
+      setKeyTestResults((prev) => ({
+        ...prev,
+        [key.id]: { ok: false, latencyMs: 0, error: err instanceof Error ? err.message : 'Unknown error' },
+      }));
+    } finally {
+      setTestingKeyId(null);
+    }
+  };
+
+  const handleTestAllKeys = async () => {
+    if (!provider?.keys) return;
+    setTesting(true);
+    setKeyTestResults({});
+    try {
+      const result = await Admin.testProvider(provider.id);
+      const newResults: typeof keyTestResults = {};
+      for (const key of provider.keys) {
+        newResults[key.id] = { ok: result.ok, latencyMs: result.latencyMs, error: result.error };
+      }
+      setKeyTestResults(newResults);
+      if (result.ok) {
+        toast.success(`All keys tested · ${formatDuration(result.latencyMs)}`);
+      } else {
+        toast.error('Key test failed', { description: result.error });
+      }
+    } catch (err) {
+      toast.error('Test failed', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleDiscoverModels = async () => {
+    if (!provider) return;
+    setDiscovering(true);
+    try {
+      const models = await Admin.listModels({ providerId: provider.id });
+      setDiscoveredModels(models);
+      if (models.length > 0) {
+        toast.success(`Discovered ${models.length} models`, { description: provider.name });
+      } else {
+        toast.info('No models found', { description: 'Check your API key and try again.' });
+      }
+    } catch (err) {
+      toast.error('Model discovery failed', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  const toggleKeyVisibility = (keyId: string) => {
+    setVisibleKeyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(keyId)) next.delete(keyId);
+      else next.add(keyId);
+      return next;
+    });
   };
 
   if (!provider) {
@@ -499,15 +598,27 @@ export function ProviderDetailDrawer({
                     ({provider.keys.length})
                   </span>
                 </h3>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setAddKeyOpen(true)}
-                  leftIcon={<Plus className="size-3" />}
-                >
-                  Add another key
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTestAllKeys}
+                    loading={testing}
+                    leftIcon={<Activity className="size-3" />}
+                  >
+                    Test all
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setAddKeyOpen(true)}
+                    leftIcon={<Plus className="size-3" />}
+                  >
+                    Add key
+                  </Button>
+                </div>
               </div>
               <div className="space-y-2">
                 {provider.keys.map((key) => {
@@ -533,7 +644,9 @@ export function ProviderDetailDrawer({
                           </div>
                           <div className="mt-1 flex items-center gap-3 text-[10px] text-fg-subtle flex-wrap">
                             {key.masked_key_prefix && (
-                              <span className="font-mono">{key.masked_key_prefix}</span>
+                              <span className="font-mono">
+                                {visibleKeyIds.has(key.id) ? key.masked_key_prefix : '••••••••'}
+                              </span>
                             )}
                             {key.auth_method && key.auth_method !== 'api_key' && (
                               <span>{key.auth_method}</span>
@@ -544,27 +657,66 @@ export function ProviderDetailDrawer({
                             {key.last_used_at && (
                               <span>used {formatDateTime(key.last_used_at)}</span>
                             )}
+                            {keyTestResults[key.id] && (
+                              <span className={cn(
+                                'font-medium',
+                                keyTestResults[key.id].ok ? 'text-success' : 'text-danger',
+                              )}>
+                                {keyTestResults[key.id].ok
+                                  ? `OK · ${formatDuration(keyTestResults[key.id].latencyMs)}`
+                                  : keyTestResults[key.id].error ?? 'Failed'}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-0.5 shrink-0">
                           {key.has_api_key && (
-                            <Button
-                              size="icon-sm"
-                              variant="ghost"
-                              onClick={() => {
-                                if (isRotating) {
-                                  setRotatingKeyId(null);
-                                  setRotatingKeyValue('');
-                                } else {
-                                  setRotatingKeyId(key.id);
-                                  setRotatingKeyValue('');
-                                }
-                              }}
-                              aria-label={isRotating ? 'Cancel rotate' : 'Rotate key'}
-                              title={isRotating ? 'Cancel' : 'Rotate key'}
-                            >
-                              <RotateCw className="size-3.5" />
-                            </Button>
+                            <>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => toggleKeyVisibility(key.id)}
+                                aria-label={visibleKeyIds.has(key.id) ? 'Hide key' : 'Show key'}
+                                title={visibleKeyIds.has(key.id) ? 'Hide' : 'Show'}
+                              >
+                                {visibleKeyIds.has(key.id) ? (
+                                  <EyeOff className="size-3.5" />
+                                ) : (
+                                  <Eye className="size-3.5" />
+                                )}
+                              </Button>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => void handleTestKey(key)}
+                                disabled={testingKeyId === key.id}
+                                aria-label="Test key"
+                                title="Test key"
+                              >
+                                {testingKeyId === key.id ? (
+                                  <Loader2 className="size-3.5 animate-spin" />
+                                ) : (
+                                  <Activity className="size-3.5" />
+                                )}
+                              </Button>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  if (isRotating) {
+                                    setRotatingKeyId(null);
+                                    setRotatingKeyValue('');
+                                  } else {
+                                    setRotatingKeyId(key.id);
+                                    setRotatingKeyValue('');
+                                  }
+                                }}
+                                aria-label={isRotating ? 'Cancel rotate' : 'Rotate key'}
+                                title={isRotating ? 'Cancel' : 'Rotate key'}
+                              >
+                                <RotateCw className="size-3.5" />
+                              </Button>
+                            </>
                           )}
                           <Button
                             size="icon-sm"
@@ -726,20 +878,109 @@ export function ProviderDetailDrawer({
                 value={provider.modelCount ?? provider.models?.length ?? 0}
               />
             </div>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="mt-2 w-full"
-              onClick={onRefreshModels}
-              loading={refreshing}
-              leftIcon={<Activity className="size-3.5" />}
-            >
-              Refresh models
-            </Button>
+            <div className="flex gap-2 mt-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="flex-1"
+                onClick={onRefreshModels}
+                loading={refreshing}
+                leftIcon={<RefreshCw className="size-3.5" />}
+              >
+                Test connection
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="flex-1"
+                onClick={handleDiscoverModels}
+                loading={discovering}
+                leftIcon={<Search className="size-3.5" />}
+              >
+                Discover models
+              </Button>
+            </div>
             <p className="text-[10px] text-fg-subtle mt-1 ml-0.5">
-              Tests connection &amp; schedules auto-discovery
+              Discover models from the provider's API
             </p>
           </section>
+
+          {discoveredModels.length > 0 && (
+            <section>
+              <h3 className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Cpu className="size-3" />
+                Discovered Models
+                <span className="text-fg-subtle font-normal normal-case tracking-normal">
+                  ({discoveredModels.length})
+                </span>
+              </h3>
+              <div className="rounded-lg border border-border bg-surface-2/40 divide-y divide-border/60 max-h-48 overflow-y-auto">
+                {discoveredModels.map((model) => (
+                  <div key={model.id} className="px-3 py-2 flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-fg truncate">
+                        {model.displayName ?? model.name ?? model.modelId ?? model.id}
+                      </div>
+                      <div className="text-[10px] text-fg-subtle flex items-center gap-2 mt-0.5">
+                        <span className="font-mono">{model.modelId ?? model.id}</span>
+                        {model.modality && (
+                          <Badge tone="muted" size="sm">{model.modality}</Badge>
+                        )}
+                        {model.contextWindow && (
+                          <span>{(model.contextWindow / 1000).toFixed(0)}k ctx</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {model.supportsVision && (
+                        <Badge tone="info" size="sm">vision</Badge>
+                      )}
+                      {model.supportsToolUse && (
+                        <Badge tone="primary" size="sm">tools</Badge>
+                      )}
+                      {model.supportsReasoning && (
+                        <Badge tone="warning" size="sm">reasoning</Badge>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {provider.models && provider.models.length > 0 && discoveredModels.length === 0 && (
+            <section>
+              <h3 className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Cpu className="size-3" />
+                Configured Models
+                <span className="text-fg-subtle font-normal normal-case tracking-normal">
+                  ({provider.models.length})
+                </span>
+              </h3>
+              <div className="rounded-lg border border-border bg-surface-2/40 divide-y divide-border/60 max-h-48 overflow-y-auto">
+                {provider.models.map((model) => (
+                  <div key={model.id} className="px-3 py-2 flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-fg truncate">
+                        {model.displayName ?? model.name ?? model.modelId ?? model.id}
+                      </div>
+                      <div className="text-[10px] text-fg-subtle font-mono mt-0.5">
+                        {model.modelId ?? model.id}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {model.supportsVision && (
+                        <Badge tone="info" size="sm">vision</Badge>
+                      )}
+                      {model.supportsToolUse && (
+                        <Badge tone="primary" size="sm">tools</Badge>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section>
             <div className="flex items-center justify-between mb-2">

@@ -194,6 +194,12 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'System',
     items: [
       {
+        label: 'Claude Code',
+        path: '/claude-code',
+        icon: Terminal,
+        description: 'Claude Code integration',
+      },
+      {
         label: 'Settings',
         path: '/settings',
         icon: Settings,

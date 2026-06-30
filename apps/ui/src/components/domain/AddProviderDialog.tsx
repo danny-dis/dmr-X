@@ -31,16 +31,25 @@ export interface AddProviderDialogProps {
   forceTier?: 'free' | 'paid';
 }
 
-const ADAPTER_PRESETS: { id: string; label: string; baseUrl?: string }[] = [
-  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1' },
-  { id: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com' },
-  { id: 'cohere', label: 'Cohere', baseUrl: 'https://api.cohere.ai/v1' },
-  { id: 'google', label: 'Google', baseUrl: 'https://generativelanguage.googleapis.com/v1' },
-  { id: 'mistral', label: 'Mistral', baseUrl: 'https://api.mistral.ai/v1' },
-  { id: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1' },
-  { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1' },
-  { id: 'pollinations', label: 'Pollinations (free, no key)', baseUrl: 'https://text.pollinations.ai/openai' },
-  { id: 'generic-openai', label: 'OpenAI-compatible', baseUrl: '' },
+const ADAPTER_PRESETS: {
+  id: string;
+  label: string;
+  baseUrl?: string;
+  exploreUrl?: string;
+  hint?: string;
+}[] = [
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', exploreUrl: 'https://platform.openai.com/docs/models', hint: 'Get your API key at platform.openai.com/api-keys' },
+  { id: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com', exploreUrl: 'https://docs.anthropic.com/en/docs/about-claude/models', hint: 'Requires custom headers: anthropic-version: 2023-06-01' },
+  { id: 'cohere', label: 'Cohere', baseUrl: 'https://api.cohere.ai/v1', exploreUrl: 'https://docs.cohere.com/docs/models' },
+  { id: 'google', label: 'Google', baseUrl: 'https://generativelanguage.googleapis.com/v1', exploreUrl: 'https://ai.google.dev/gemini-api/docs/models/gemini' },
+  { id: 'mistral', label: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', exploreUrl: 'https://docs.mistral.ai/getting-started/models/models_overview/' },
+  { id: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', exploreUrl: 'https://console.groq.com/docs/models' },
+  { id: 'xai', label: 'xAI', baseUrl: 'https://api.x.ai/v1', exploreUrl: 'https://docs.x.ai/overview' },
+  { id: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', exploreUrl: 'https://openrouter.ai/models', hint: 'Access 200+ models with a single key' },
+  { id: 'huggingface', label: 'Hugging Face', baseUrl: 'https://router.huggingface.co/v1', exploreUrl: 'https://huggingface.co/models', hint: 'Use your HF access token' },
+  { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', hint: 'No API key needed for local models' },
+  { id: 'pollinations', label: 'Pollinations (free, no key)', baseUrl: 'https://text.pollinations.ai/openai', hint: 'Free, no API key required' },
+  { id: 'generic-openai', label: 'OpenAI-compatible', baseUrl: '', hint: 'Works with any OpenAI-compatible API' },
 ];
 
 interface FormState {
@@ -453,6 +462,28 @@ export function AddProviderDialog({
               <FieldDescription>
                 Adapter type determines how requests are formatted.
               </FieldDescription>
+              {(() => {
+                const preset = ADAPTER_PRESETS.find((p) => p.id === form.adapterType);
+                if (!preset) return null;
+                return (
+                  <div className="mt-2 flex items-center gap-3">
+                    {preset.exploreUrl && (
+                      <a
+                        href={preset.exploreUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                      >
+                        <ExternalLink className="size-2.5" />
+                        Explore models
+                      </a>
+                    )}
+                    {preset.hint && (
+                      <span className="text-[10px] text-fg-subtle">{preset.hint}</span>
+                    )}
+                  </div>
+                );
+              })()}
             </Field>
 
             <Field>
