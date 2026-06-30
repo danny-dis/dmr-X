@@ -1,4 +1,5 @@
 import { ValidationError } from '@dmr-x/core';
+import { tokenizerRegistry } from '@dmr-x/tokenizers';
 import { logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -11,45 +12,6 @@ const CountTokensSchema = z.object({
   })).min(1),
   system: z.union([z.string(), z.array(z.any())]).optional(),
 });
-
-function estimateTokens(text: string): number {
-  // GPT-style heuristic: ~4 chars per token for English, ~2 for CJK
-  let count = 0;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    // CJK unified ideographs range
-    if (code >= 0x4e00 && code <= 0x9fff) {
-      count += 1;
-    } else {
-      count += 0.25;
-    }
-  }
-  return Math.ceil(count);
-}
-
-function countMessageTokens(messages: { role: string; content: any }[]): number {
-  // Approximate per-message overhead (role + separators)
-  const OVERHEAD_PER_MESSAGE = 4;
-  let tokens = 0;
-
-  for (const msg of messages) {
-    tokens += OVERHEAD_PER_MESSAGE;
-    if (typeof msg.content === 'string') {
-      tokens += estimateTokens(msg.content);
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (block.type === 'text' && typeof block.text === 'string') {
-          tokens += estimateTokens(block.text);
-        } else if (block.type === 'image') {
-          // Rough estimate for image tokens
-          tokens += 1000;
-        }
-      }
-    }
-  }
-
-  return tokens;
-}
 
 export async function countTokensRoutes(server: FastifyInstance): Promise<void> {
   server.post('/messages/count_tokens', async (request, reply) => {
@@ -72,12 +34,14 @@ export async function countTokensRoutes(server: FastifyInstance): Promise<void> 
 
     allMessages.push(...body.messages.map(m => ({ role: m.role, content: m.content ?? '' })));
 
-    const tokenCount = countMessageTokens(allMessages);
+    const tokenizer = tokenizerRegistry.get(body.model);
+    const tokenCount = tokenizer.countMessageTokens(allMessages);
 
-    logger.debug({ model: body.model, tokenCount }, 'Token count estimated');
+    logger.debug({ model: body.model, tokenCount, tokenizer: tokenizer.family }, 'Token count estimated');
 
     return {
       input_tokens: tokenCount,
+      tokenizer_used: tokenizer.family,
     };
   });
 }

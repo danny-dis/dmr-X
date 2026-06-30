@@ -11,6 +11,10 @@ export interface ScheduledJob {
   createdAt: string;
 }
 
+/**
+ * @deprecated Use TaskQueue instead. This scheduler is kept for backward compatibility
+ * but lacks retry/backoff, persistence, and priority support.
+ */
 export class Scheduler {
   private pendingJobs: ScheduledJob[] = [];
   private processing = false;
@@ -69,4 +73,5 @@ export class Scheduler {
   }
 }
 
+/** @deprecated Use taskQueue instead */
 export const scheduler = new Scheduler();
