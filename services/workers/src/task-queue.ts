@@ -6,18 +6,10 @@ import type {
   EnqueueInput,
   QueueConfig,
   QueueStats,
-  JobPriority,
-  JobStatus,
 } from './task-queue.types.js';
 
-const PRIORITY_ORDER: Record<JobPriority, number> = {
-  critical: 0,
-  high: 1,
-  normal: 2,
-  low: 3,
-};
-
 const cache = createNamespacedCache('task-queue');
+const STUCK_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export class TaskQueue {
   private pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -32,7 +24,11 @@ export class TaskQueue {
 
   start(): void {
     if (this.pollInterval) return;
-    this.pollInterval = setInterval(() => this.poll(), this.pollIntervalMs);
+    this.pollInterval = setInterval(() => {
+      if (this.processing) return;
+      this.processing = true;
+      this.poll().finally(() => { this.processing = false; });
+    }, this.pollIntervalMs);
     logger.info({ pollIntervalMs: this.pollIntervalMs }, 'Task queue started');
   }
 
@@ -86,12 +82,22 @@ export class TaskQueue {
   }
 
   async poll(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
+    const db = getDb();
+    const now = new Date().toISOString();
+    const cutoff = new Date(Date.now() - STUCK_JOB_TIMEOUT_MS).toISOString();
 
     try {
-      const db = getDb();
-      const now = new Date().toISOString();
+      // Recover stuck jobs (running for too long)
+      const stuckResult = db.prepare(`
+        UPDATE worker_jobs SET status = 'retryable', retries = retries + 1,
+          next_retry_at = ?, backoff_ms = backoff_ms * 2
+        WHERE status = 'running' AND started_at < ? AND dead_letter_at IS NULL
+      `).run(now, cutoff);
+
+      if (stuckResult.changes > 0) {
+        logger.warn({ count: stuckResult.changes }, 'Recovered stuck jobs');
+        cache.delete('stats');
+      }
 
       // Count running jobs
       const runningCount = db.prepare(
@@ -99,10 +105,7 @@ export class TaskQueue {
       ).get() as { count: number };
 
       const availableSlots = this.maxConcurrentJobs - runningCount.count;
-      if (availableSlots <= 0) {
-        this.processing = false;
-        return;
-      }
+      if (availableSlots <= 0) return;
 
       // Get next jobs ordered by priority then enqueue time
       const jobs = db.prepare(`
@@ -120,62 +123,75 @@ export class TaskQueue {
         LIMIT ?
       `).all(now, availableSlots) as any[];
 
-      for (const job of jobs) {
-        // Find available worker
-        const worker = db.prepare(`
-          SELECT id FROM workers WHERE status = 'active'
-          ORDER BY load ASC, jobs_processed ASC LIMIT 1
-        `).get() as { id: string } | undefined;
+      if (jobs.length === 0) return;
 
-        if (!worker) break;
+      // Batch query available workers once
+      const workers = db.prepare(`
+        SELECT id FROM workers WHERE status = 'active'
+        ORDER BY load ASC, jobs_processed ASC LIMIT ?
+      `).all(jobs.length) as { id: string }[];
 
-        // Assign job to worker
-        db.prepare(`
-          UPDATE worker_jobs
-          SET status = 'running', worker_id = ?, started_at = ?
-          WHERE id = ?
-        `).run(worker.id, now, job.id);
+      if (workers.length === 0) return;
 
-        db.prepare(`
-          UPDATE workers SET jobs_processed = jobs_processed + 1 WHERE id = ?
-        `).run(worker.id);
+      // Assign jobs to workers in a transaction
+      db.prepare('BEGIN TRANSACTION').run();
+      try {
+        let workerIdx = 0;
+        for (const job of jobs) {
+          if (workerIdx >= workers.length) break;
+          const worker = workers[workerIdx];
 
-        logger.debug({ jobId: job.id, workerId: worker.id }, 'Job assigned to worker');
+          // Atomic assignment: only assign if still pending/retryable
+          const result = db.prepare(`
+            UPDATE worker_jobs
+            SET status = 'running', worker_id = ?, started_at = ?
+            WHERE id = ? AND status IN ('pending', 'retryable')
+          `).run(worker.id, now, job.id);
+
+          if (result.changes > 0) {
+            db.prepare(`
+              UPDATE workers SET jobs_processed = jobs_processed + 1 WHERE id = ?
+            `).run(worker.id);
+            workerIdx++;
+            logger.debug({ jobId: job.id, workerId: worker.id }, 'Job assigned to worker');
+          }
+        }
+        db.prepare('COMMIT').run();
+      } catch (err) {
+        db.prepare('ROLLBACK').run();
+        throw err;
       }
 
       // Handle failed jobs: move to retryable or dead_letter
-      const failedJobs = db.prepare(`
-        SELECT * FROM worker_jobs WHERE status = 'failed' AND dead_letter_at IS NULL
-      `).all() as any[];
+      const failedCount = db.prepare(
+        `SELECT COUNT(*) as count FROM worker_jobs WHERE status = 'failed' AND dead_letter_at IS NULL`
+      ).get() as { count: number };
 
-      for (const job of failedJobs) {
-        if (job.retries >= job.max_retries) {
-          // Dead letter
-          db.prepare(`
-            UPDATE worker_jobs
-            SET status = 'dead_letter', dead_letter_at = ?
-            WHERE id = ?
-          `).run(now, job.id);
-          logger.warn({ jobId: job.id, retries: job.retries }, 'Job moved to dead letter');
-        } else {
-          // Calculate backoff with jitter
-          const backoff = this.calculateBackoff(job.backoff_ms, job.retries);
-          const nextRetryAt = new Date(Date.now() + backoff).toISOString();
+      if (failedCount.count > 0) {
+        const failedJobs = db.prepare(`
+          SELECT * FROM worker_jobs WHERE status = 'failed' AND dead_letter_at IS NULL
+        `).all() as any[];
 
-          db.prepare(`
-            UPDATE worker_jobs
-            SET status = 'retryable', retries = retries + 1, next_retry_at = ?, backoff_ms = ?
-            WHERE id = ?
-          `).run(nextRetryAt, backoff, job.id);
-          logger.debug({ jobId: job.id, retries: job.retries + 1, backoff }, 'Job scheduled for retry');
+        for (const job of failedJobs) {
+          if (job.retries >= job.max_retries) {
+            db.prepare(`
+              UPDATE worker_jobs SET status = 'dead_letter', dead_letter_at = ? WHERE id = ?
+            `).run(now, job.id);
+            logger.warn({ jobId: job.id, retries: job.retries }, 'Job moved to dead letter');
+          } else {
+            const backoff = this.calculateBackoff(job.backoff_ms, job.retries);
+            const nextRetryAt = new Date(Date.now() + backoff).toISOString();
+            db.prepare(`
+              UPDATE worker_jobs SET status = 'retryable', retries = retries + 1, next_retry_at = ?, backoff_ms = ? WHERE id = ?
+            `).run(nextRetryAt, backoff, job.id);
+            logger.debug({ jobId: job.id, retries: job.retries + 1, backoff }, 'Job scheduled for retry');
+          }
         }
       }
 
       cache.delete('stats');
     } catch (err) {
       logger.error({ err }, 'Task queue poll error');
-    } finally {
-      this.processing = false;
     }
   }
 
@@ -223,6 +239,16 @@ export class TaskQueue {
       ORDER BY dead_letter_at DESC LIMIT ?
     `).all(limit) as any[];
     return rows.map(r => this.mapRow(r));
+  }
+
+  cleanupDeadLetter(keepDays: number = 7): number {
+    const db = getDb();
+    const result = db.prepare(`
+      DELETE FROM worker_jobs WHERE status = 'dead_letter'
+      AND dead_letter_at < datetime('now', '-' || ? || ' days')
+    `).run(keepDays);
+    cache.delete('stats');
+    return result.changes;
   }
 
   private mapRow(row: any): QueuedJob {

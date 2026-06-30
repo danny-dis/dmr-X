@@ -1,10 +1,14 @@
 import type { Tokenizer, Message } from './types.js';
+import { HeuristicTokenizer } from './heuristic-tokenizer.js';
+import { logger } from '@dmr-x/utils';
 
 const OVERHEAD_PER_MESSAGE = 4;
+const fallback = new HeuristicTokenizer();
 
 export class TiktokenTokenizer implements Tokenizer {
   private encoding: any = null;
   private encodingName: string;
+  private loadPromise: Promise<void> | null = null;
   family: string;
 
   constructor(family: string, encodingName: string) {
@@ -12,28 +16,34 @@ export class TiktokenTokenizer implements Tokenizer {
     this.encodingName = encodingName;
   }
 
-  private async loadEncoding(): Promise<void> {
-    if (this.encoding) return;
+  private loadEncoding(): Promise<void> {
+    if (this.encoding) return Promise.resolve();
+    if (this.loadPromise) return this.loadPromise;
 
-    try {
-      const { encoding_for_model } = await import('tiktoken');
+    this.loadPromise = (async () => {
       try {
-        this.encoding = encoding_for_model(this.encodingName);
-      } catch {
-        const tiktoken = await import('tiktoken');
-        this.encoding = (tiktoken as any)[this.encodingName]?.();
-        if (!this.encoding) {
-          throw new Error(`Unknown encoding: ${this.encodingName}`);
+        const { encoding_for_model } = await import('tiktoken');
+        try {
+          this.encoding = encoding_for_model(this.encodingName);
+        } catch {
+          const tiktoken = await import('tiktoken');
+          this.encoding = (tiktoken as any)[this.encodingName]?.();
+          if (!this.encoding) {
+            throw new Error(`Unknown encoding: ${this.encodingName}`);
+          }
         }
+      } catch (err) {
+        logger.warn({ err, encoding: this.encodingName }, 'Failed to load tiktoken, using heuristic fallback');
+        this.loadPromise = null;
       }
-    } catch (err) {
-      throw new Error(`Failed to load tiktoken encoding '${this.encodingName}': ${err}`);
-    }
+    })();
+
+    return this.loadPromise;
   }
 
   countTokens(text: string): number {
     if (!this.encoding) {
-      return this.heuristicCount(text);
+      return fallback.countTokens(text);
     }
     const tokens = this.encoding.encode(text);
     return tokens.length;
@@ -60,18 +70,5 @@ export class TiktokenTokenizer implements Tokenizer {
 
   async initialize(): Promise<void> {
     await this.loadEncoding();
-  }
-
-  private heuristicCount(text: string): number {
-    let count = 0;
-    for (let i = 0; i < text.length; i++) {
-      const code = text.charCodeAt(i);
-      if (code >= 0x4e00 && code <= 0x9fff) {
-        count += 1;
-      } else {
-        count += 0.25;
-      }
-    }
-    return Math.ceil(count);
   }
 }

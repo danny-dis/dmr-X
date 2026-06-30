@@ -16,4 +16,5 @@ export interface SecretsProvider {
   revoke(secretId: string): Promise<void>;
   listVersions(secretId: string): Promise<SecretVersion[]>;
   getActiveVersion(secretId: string): Promise<SecretVersion | null>;
+  decryptValue(encryptedValue: string): string;
 }
