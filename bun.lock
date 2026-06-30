@@ -372,6 +372,7 @@
         "@dmr-x/policy": "*",
         "@dmr-x/quota": "*",
         "@dmr-x/utils": "*",
+        "@dmr-x/workers": "*",
         "@opentelemetry/api": "^1.9.0",
       },
       "devDependencies": {

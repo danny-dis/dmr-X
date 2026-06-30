@@ -13,7 +13,7 @@ export interface ModelInfo {
 }
 
 export interface ProviderConfig {
-  baseUrl: string;
+  baseUrl?: string;
   apiKey?: string;
   accessToken?: string;
   authMethod?: 'api_key' | 'oauth';

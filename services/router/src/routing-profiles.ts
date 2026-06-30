@@ -61,7 +61,7 @@ export function initProfilesTable(): void {
 export function getProfiles(): RoutingProfile[] {
   try {
     const db = getDb();
-    return db.prepare('SELECT * FROM routing_profiles ORDER BY is_default DESC, name ASC').all() as RoutingProfile[];
+    return db.prepare('SELECT * FROM routing_profiles ORDER BY is_default DESC, name ASC').all() as unknown as RoutingProfile[];
   } catch {
     return [];
   }
@@ -73,7 +73,7 @@ export function getProfiles(): RoutingProfile[] {
 export function getProfile(id: number): RoutingProfile | null {
   try {
     const db = getDb();
-    return db.prepare('SELECT * FROM routing_profiles WHERE id = ?').get(id) as RoutingProfile | null;
+    return db.prepare('SELECT * FROM routing_profiles WHERE id = ?').get(id) as unknown as RoutingProfile | null;
   } catch {
     return null;
   }
@@ -87,7 +87,7 @@ export function createProfile(name: string, description: string = ''): RoutingPr
   const result = db.prepare(
     'INSERT INTO routing_profiles (name, description) VALUES (?, ?)'
   ).run(name, description);
-  return getProfile(Number(result.lastInsertRowid))!;
+  return getProfile(Number((result as any).lastInsertRowid))!;
 }
 
 /**
@@ -130,7 +130,7 @@ export function getProfileModels(profileId: number): ProfileModel[] {
     const db = getDb();
     return db.prepare(
       'SELECT * FROM profile_models WHERE profile_id = ? ORDER BY priority ASC'
-    ).all(profileId) as ProfileModel[];
+    ).all(profileId) as unknown as ProfileModel[];
   } catch {
     return [];
   }
@@ -144,7 +144,7 @@ export function addModelToProfile(profileId: number, providerId: string, modelId
   const result = db.prepare(
     'INSERT INTO profile_models (profile_id, provider_id, model_id, priority) VALUES (?, ?, ?, ?)'
   ).run(profileId, providerId, modelId, priority);
-  return db.prepare('SELECT * FROM profile_models WHERE id = ?').get(result.lastInsertRowid) as ProfileModel;
+  return db.prepare('SELECT * FROM profile_models WHERE id = ?').get((result as any).lastInsertRowid) as unknown as ProfileModel;
 }
 
 /**

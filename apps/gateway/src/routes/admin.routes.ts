@@ -4305,7 +4305,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           headers,
         });
         if (toolsRes.ok) {
-          const toolsData = await toolsRes.json();
+          const toolsData: any = await toolsRes.json();
           if (toolsData.tools) {
             tools = toolsData.tools;
           }
@@ -4375,7 +4375,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         headers,
       });
       if (!res.ok) throw new Error('MCP server not reachable');
-      const data = await res.json();
+      const data: any = await res.json();
       return { tools: data.tools || fallbackTools };
     } catch {
       // Fallback to hardcoded
