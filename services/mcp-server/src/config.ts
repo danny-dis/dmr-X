@@ -273,7 +273,7 @@ function loadFromPath(filePath: string): McpConfigFile | null {
   try {
     const content = readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(content);
-    if (typeof parsed !== 'object' || parsed === null) {
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       console.error(`Config file ${filePath} is not a valid JSON object — ignoring`);
       return null;
     }
@@ -354,7 +354,69 @@ export function resolveConfigBool(
   const raw = resolveConfig<string | boolean>(configFile, key, envVar, defaultValue);
   if (typeof raw === 'boolean') return raw;
   if (typeof raw === 'string') {
-    return raw.toLowerCase() === 'true' || raw === '1';
+    const lower = raw.toLowerCase();
+    if (lower === 'true' || lower === '1' || lower === 'yes' || lower === 'on') return true;
+    if (lower === 'false' || lower === '0' || lower === 'no' || lower === 'off') return false;
+    // Unknown string - return default value
+    console.warn(`Unknown boolean value "${raw}" for config key "${key}" — using default: ${defaultValue}`);
+    return defaultValue;
   }
   return defaultValue;
+}
+
+// ---------------------------------------------------------------------------
+// Config validation
+// ---------------------------------------------------------------------------
+
+const VALID_TRANSPORTS = ['stdio', 'sse', 'http'];
+
+/**
+ * Validate configuration values and return any warnings or errors.
+ */
+export function validateConfig(config: McpConfigFile): { valid: boolean; errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Validate transport
+  if (config.transport && !VALID_TRANSPORTS.includes(config.transport)) {
+    errors.push(`Invalid transport "${config.transport}" — must be one of: ${VALID_TRANSPORTS.join(', ')}`);
+  }
+
+  // Validate port
+  if (config.port !== undefined) {
+    if (typeof config.port !== 'number' || config.port < 0 || config.port > 65535) {
+      errors.push(`Invalid port "${config.port}" — must be a number between 0 and 65535`);
+    }
+  }
+
+  // Validate router epsilon
+  if (config.router?.epsilon !== undefined) {
+    if (typeof config.router.epsilon !== 'number' || config.router.epsilon < 0 || config.router.epsilon > 1) {
+      errors.push(`Invalid router epsilon "${config.router.epsilon}" — must be between 0 and 1`);
+    }
+  }
+
+  // Validate federation peers
+  if (config.federation?.peers) {
+    for (const peer of config.federation.peers) {
+      if (!peer.id || !peer.name || !peer.url) {
+        errors.push(`Invalid federation peer — must have id, name, and url`);
+      }
+      try {
+        new URL(peer.url);
+      } catch {
+        errors.push(`Invalid federation peer URL "${peer.url}" for peer "${peer.id}"`);
+      }
+    }
+  }
+
+  // Validate discovery method
+  if (config.federation?.discoveryMethod) {
+    const validMethods = ['mdns', 'static', 'consul'];
+    if (!validMethods.includes(config.federation.discoveryMethod)) {
+      errors.push(`Invalid discovery method "${config.federation.discoveryMethod}" — must be one of: ${validMethods.join(', ')}`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
 }

@@ -627,6 +627,9 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
   const registry = client.getRegistry();
   const allServers = registry.listAll();
 
+  // Maximum size for external tool arguments (1MB)
+  const MAX_EXTERNAL_ARGS_SIZE = 1_000_000;
+
   for (const connected of allServers) {
     const serverId = connected.config.id;
     for (const tool of connected.tools) {
@@ -653,6 +656,37 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
           const rateLimitResponse = checkRateLimit(state, namespacedName);
           if (rateLimitResponse) return rateLimitResponse;
           const args = (params?.args ?? {}) as Record<string, unknown>;
+
+          // Validate args size
+          const argsSize = JSON.stringify(args).length;
+          if (argsSize > MAX_EXTERNAL_ARGS_SIZE) {
+            state.lastError = `External tool arguments too large: ${argsSize} bytes (max: ${MAX_EXTERNAL_ARGS_SIZE})`;
+            return toolError(
+              state.lastError,
+              'INPUT_TOO_LARGE',
+              `external-${serverId}-${tool.name}`
+            );
+          }
+
+          // Run input validation for injection detection
+          if (state.guardrailsEnabled) {
+            const validationResult = state.inputValidator.validateInput(JSON.stringify(args));
+            if (!validationResult.valid) {
+              logAuditEvent(state, 'input_validation.deny', namespacedName, {
+                requestId: `external-${serverId}-${tool.name}`,
+                reason: validationResult.blockReason,
+                detections: validationResult.detections.map(d => d.patternName),
+                serverId,
+                upstreamTool: tool.name,
+              });
+              return toolError(
+                validationResult.blockReason || 'Input validation failed',
+                'INPUT_VALIDATION_FAILED',
+                `external-${serverId}-${tool.name}`
+              );
+            }
+          }
+
           try {
             // Use the registry's 3-arg form so we route to a specific
             // serverId, not by tool-name lookup (which can be ambiguous
@@ -677,6 +711,13 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
             }
             errorDetail.server = serverId;
             errorDetail.tool = tool.name;
+
+            logAuditEvent(state, 'tool.error', namespacedName, {
+              requestId: `external-${serverId}-${tool.name}`,
+              error: message,
+              serverId,
+              upstreamTool: tool.name,
+            });
 
             return {
               content: [{ type: 'text' as const, text: JSON.stringify({ error: errorDetail }, null, 2) }],

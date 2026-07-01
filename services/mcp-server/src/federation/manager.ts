@@ -12,6 +12,8 @@
  */
 
 import { createLogger } from '@dmr-x/utils';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 const logger = createLogger('mcp-server:federation');
 
@@ -89,6 +91,19 @@ export interface FederationState {
   remoteTools: Map<string, FederatedTool>;
   /** Last sync timestamp */
   lastSync?: string;
+  /** Connection pool for peer MCP clients */
+  connectionPool: Map<string, PeerConnection>;
+}
+
+export interface PeerConnection {
+  /** Peer instance ID */
+  peerId: string;
+  /** MCP Client instance */
+  client: Client;
+  /** When the connection was established */
+  connectedAt: Date;
+  /** Whether the connection is currently active */
+  active: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +141,7 @@ export class FederationManager {
       instanceName: this.config.instanceName,
       peers: new Map(),
       remoteTools: new Map(),
+      connectionPool: new Map(),
     };
 
     // Add static peers
@@ -179,6 +195,7 @@ export class FederationManager {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
     }
+    await this.closeAllConnections();
     logger.info('Federation manager stopped');
   }
 
@@ -274,7 +291,8 @@ export class FederationManager {
   /**
    * Remove a peer
    */
-  removePeer(peerId: string): void {
+  async removePeer(peerId: string): Promise<void> {
+    await this.closePeerConnection(peerId);
     this.state.peers.delete(peerId);
     // Remove remote tools from this peer
     for (const [toolId, tool] of this.state.remoteTools) {
@@ -350,6 +368,8 @@ export class FederationManager {
         peer.lastSeen = new Date().toISOString();
       } catch {
         peer.latencyMs = undefined;
+        // Close connection to unhealthy peer
+        await this.closePeerConnection(peerId);
       }
     }
   }
@@ -391,6 +411,7 @@ export class FederationManager {
     peerCount: number;
     healthyPeerCount: number;
     remoteToolCount: number;
+    activeConnections: number;
     lastSync?: string;
   } {
     return {
@@ -399,12 +420,13 @@ export class FederationManager {
       peerCount: this.state.peers.size,
       healthyPeerCount: this.getHealthyPeers().length,
       remoteToolCount: this.state.remoteTools.size,
+      activeConnections: this.state.connectionPool.size,
       lastSync: this.state.lastSync,
     };
   }
 
   /**
-   * Call a remote tool
+   * Call a remote tool on a federated peer
    */
   async callRemoteTool(
     toolName: string,
@@ -420,8 +442,94 @@ export class FederationManager {
       throw new Error(`Peer not available: ${tool.instanceId}`);
     }
 
-    // TODO: Implement actual A2A task execution
-    throw new Error('Remote tool execution not yet implemented');
+    // Get or create connection to the peer
+    const client = await this.getPeerConnection(peer);
+
+    try {
+      logger.info({ peerId: peer.id, toolName }, 'Calling remote tool');
+
+      // Call the tool on the peer with timeout
+      const timeoutMs = this.config.peerTimeout * 1000;
+      const result = await Promise.race([
+        client.callTool({ name: tool.name, arguments: args }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Remote tool call timed out after ${timeoutMs}ms`)), timeoutMs)
+        ),
+      ]);
+
+      logger.info({ peerId: peer.id, toolName }, 'Remote tool call completed');
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error({ peerId: peer.id, toolName, error: message }, 'Remote tool call failed');
+
+      // Mark peer as unhealthy if connection failed
+      if (message.includes('ECONNREFUSED') || message.includes('timeout') || message.includes('ECONNRESET')) {
+        peer.healthy = false;
+        logger.warn({ peerId: peer.id }, 'Marked peer as unhealthy due to connection failure');
+      }
+
+      throw new Error(`Remote tool call failed: ${message}`);
+    }
+  }
+
+  /**
+   * Get or create a connection to a peer
+   */
+  private async getPeerConnection(peer: FederationPeer): Promise<Client> {
+    // Check if we already have an active connection
+    const existing = this.state.connectionPool.get(peer.id);
+    if (existing && existing.active) {
+      return existing.client;
+    }
+
+    // Create new connection
+    logger.info({ peerId: peer.id, url: peer.url }, 'Creating new peer connection');
+
+    const client = new Client(
+      { name: `dmrx-federation-${this.config.instanceId}`, version: '0.1.0' },
+      { capabilities: {} }
+    );
+
+    const transport = new SSEClientTransport(new URL(`${peer.url}/sse`));
+    await client.connect(transport);
+
+    // Store in connection pool
+    this.state.connectionPool.set(peer.id, {
+      peerId: peer.id,
+      client,
+      connectedAt: new Date(),
+      active: true,
+    });
+
+    logger.info({ peerId: peer.id }, 'Peer connection established');
+    return client;
+  }
+
+  /**
+   * Close connection to a specific peer
+   */
+  private async closePeerConnection(peerId: string): Promise<void> {
+    const conn = this.state.connectionPool.get(peerId);
+    if (conn) {
+      conn.active = false;
+      try {
+        await conn.client.close();
+      } catch {
+        // Ignore close errors
+      }
+      this.state.connectionPool.delete(peerId);
+      logger.info({ peerId }, 'Peer connection closed');
+    }
+  }
+
+  /**
+   * Close all peer connections
+   */
+  private async closeAllConnections(): Promise<void> {
+    for (const [peerId] of this.state.connectionPool) {
+      await this.closePeerConnection(peerId);
+    }
   }
 }
 
