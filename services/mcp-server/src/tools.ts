@@ -388,6 +388,18 @@ export const TOOL_NAMES = {
   // Tool search and discovery
   TOOL_SEARCH: 'dmrx_tool_search',
   TOOL_LIST: 'dmrx_tool_list',
+  // Tool templates and presets
+  TEMPLATE_LIST: 'dmrx_template_list',
+  TEMPLATE_GET: 'dmrx_template_get',
+  TEMPLATE_CREATE: 'dmrx_template_create',
+  TEMPLATE_UPDATE: 'dmrx_template_update',
+  TEMPLATE_DELETE: 'dmrx_template_delete',
+  TEMPLATE_EXECUTE: 'dmrx_template_execute',
+  PRESET_LIST: 'dmrx_preset_list',
+  PRESET_GET: 'dmrx_preset_get',
+  PRESET_CREATE: 'dmrx_preset_create',
+  PRESET_UPDATE: 'dmrx_preset_update',
+  PRESET_DELETE: 'dmrx_preset_delete',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -706,6 +718,91 @@ export const dmrxToolListParams = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// dmrx_template_* — Tool Templates
+// ---------------------------------------------------------------------------
+
+export const dmrxTemplateListParams = {
+  tag: z.string().optional().describe('Filter by tag'),
+  search: z.string().optional().describe('Search by name or description'),
+} as const;
+
+export const dmrxTemplateGetParams = {
+  id: z.string().describe('Template ID'),
+} as const;
+
+export const dmrxTemplateCreateParams = {
+  name: z.string().min(1).max(100).describe('Template name'),
+  description: z.string().max(500).optional().describe('Template description'),
+  steps: z.array(z.object({
+    id: z.string().describe('Step ID for input mapping'),
+    tool_name: z.string().describe('Tool to execute (e.g., "dmrx_bash", "dmrx_chat")'),
+    parameters: z.record(z.unknown()).describe('Default parameters for this step'),
+    input_mapping: z.record(z.string()).optional().describe('Map outputs from previous steps: { "param": "$step_id.output_field" }'),
+    condition: z.string().optional().describe('Conditional execution expression'),
+    description: z.string().optional().describe('Step description'),
+  })).min(1).max(20).describe('Ordered list of steps to execute'),
+  tags: z.array(z.string()).optional().describe('Tags for discovery'),
+  version: z.string().optional().describe('Semantic version (default: 1.0.0)'),
+} as const;
+
+export const dmrxTemplateUpdateParams = {
+  id: z.string().describe('Template ID'),
+  name: z.string().min(1).max(100).optional().describe('Template name'),
+  description: z.string().max(500).optional().describe('Template description'),
+  steps: z.array(z.object({
+    id: z.string().describe('Step ID for input mapping'),
+    tool_name: z.string().describe('Tool to execute'),
+    parameters: z.record(z.unknown()).describe('Default parameters'),
+    input_mapping: z.record(z.string()).optional().describe('Input mapping from previous steps'),
+    condition: z.string().optional().describe('Conditional execution'),
+    description: z.string().optional().describe('Step description'),
+  })).optional().describe('Updated steps'),
+  tags: z.array(z.string()).optional().describe('Updated tags'),
+  version: z.string().optional().describe('Updated version'),
+} as const;
+
+export const dmrxTemplateDeleteParams = {
+  id: z.string().describe('Template ID'),
+} as const;
+
+export const dmrxTemplateExecuteParams = {
+  id: z.string().describe('Template ID'),
+  inputs: z.record(z.unknown()).optional().describe('Override parameters for specific steps (key: "step_id.param", value: override)'),
+} as const;
+
+// ---------------------------------------------------------------------------
+// dmrx_preset_* — Tool Presets
+// ---------------------------------------------------------------------------
+
+export const dmrxPresetListParams = {
+  tool_name: z.string().optional().describe('Filter by tool name'),
+} as const;
+
+export const dmrxPresetGetParams = {
+  id: z.string().describe('Preset ID'),
+} as const;
+
+export const dmrxPresetCreateParams = {
+  tool_name: z.string().describe('Tool name (e.g., "dmrx_chat", "dmrx_bash")'),
+  defaults: z.record(z.unknown()).describe('Default parameter values'),
+  overrides: z.record(z.unknown()).optional().describe('Forced values (cannot be overridden by user)'),
+  priority: z.number().int().min(0).max(1000).optional().describe('Priority (higher = evaluated first, default: 0)'),
+  description: z.string().max(500).optional().describe('Preset description'),
+} as const;
+
+export const dmrxPresetUpdateParams = {
+  id: z.string().describe('Preset ID'),
+  defaults: z.record(z.unknown()).optional().describe('Updated default values'),
+  overrides: z.record(z.unknown()).optional().describe('Updated forced values'),
+  priority: z.number().int().min(0).max(1000).optional().describe('Updated priority'),
+  description: z.string().max(500).optional().describe('Updated description'),
+} as const;
+
+export const dmrxPresetDeleteParams = {
+  id: z.string().describe('Preset ID'),
+} as const;
+
+// ---------------------------------------------------------------------------
 // Tool descriptions
 // ---------------------------------------------------------------------------
 
@@ -784,4 +881,30 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   dmrx_tool_list:
     'List all available tools in the DMR-X system, including proxied external MCP tools. ' +
     'Optionally filter by modality or other criteria.',
+  dmrx_template_list:
+    'List saved tool templates for the current tenant. Templates are pre-configured tool call patterns ' +
+    'that can be reused. Filter by tag or search by name.',
+  dmrx_template_get:
+    'Get a tool template by ID. Returns the full template including all steps and parameters.',
+  dmrx_template_create:
+    'Create a new tool template. Templates define multi-step tool call patterns with input mapping ' +
+    'between steps. Use for saving and reusing common workflows.',
+  dmrx_template_update:
+    'Update an existing tool template. Modify name, description, steps, or tags.',
+  dmrx_template_delete:
+    'Delete a tool template (soft delete). The template is deactivated but not removed.',
+  dmrx_template_execute:
+    'Execute a tool template. Runs all steps in sequence, passing outputs between steps via input_mapping. ' +
+    'Returns aggregated results.',
+  dmrx_preset_list:
+    'List tool presets for the current tenant. Presets provide default parameter values for specific tools.',
+  dmrx_preset_get:
+    'Get a tool preset by ID. Returns the full preset including defaults and overrides.',
+  dmrx_preset_create:
+    'Create a new tool preset. Presets define default parameters that are automatically applied when ' +
+    'the tool is called. Overrides are forced values that cannot be changed by users.',
+  dmrx_preset_update:
+    'Update an existing tool preset. Modify defaults, overrides, priority, or description.',
+  dmrx_preset_delete:
+    'Delete a tool preset (soft delete). The preset is deactivated but not removed.',
 };

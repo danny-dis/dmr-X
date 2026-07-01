@@ -22,6 +22,7 @@ import {
   type Result,
 } from '@dmr-x/utils';
 import { trace, SpanStatusCode, SpanKind, propagation, context } from '@opentelemetry/api';
+import { getRateLimitTracker, supportsRateLimitHeaders } from '@dmr-x/quota';
 
 import type {
   ProviderAdapter,
@@ -180,6 +181,38 @@ export abstract class BaseAdapter implements ProviderAdapter {
    */
   onAfterError(hook: AfterErrorHook): void {
     this.hooks.registerAfterError(hook);
+  }
+
+  /**
+   * Enable automatic rate limit tracking for this adapter.
+   * Extracts X-RateLimit-* headers from successful responses and stores
+   * them for smart key rotation and quota-aware routing.
+   */
+  enableRateLimitTracking(): void {
+    if (!supportsRateLimitHeaders(this.providerId)) {
+      logger.debug({ providerId: this.providerId }, 'Provider does not support rate limit headers');
+      return;
+    }
+
+    this.hooks.registerAfterSuccess(async (ctx, response) => {
+      // Only track for API key requests (not OAuth tokens)
+      if (this.config.apiKey) {
+        try {
+          const tracker = getRateLimitTracker();
+          tracker.trackResponse({
+            keyId: this.config.apiKey,
+            providerId: this.providerId,
+            response,
+          });
+        } catch (error) {
+          // Non-critical, just log
+          logger.debug({ error, providerId: this.providerId }, 'Failed to track rate limits');
+        }
+      }
+      return response;
+    });
+
+    logger.info({ providerId: this.providerId }, 'Rate limit tracking enabled');
   }
 
   /**

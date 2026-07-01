@@ -5,3 +5,4 @@ export { autoRegisterProviders, discoverMissingModels, enrichExistingModels } fr
 export { discoveryWorker, DiscoveryWorker } from './discovery-worker.js';
 export { discoverOpenAIModels, type DiscoveredModel, type ModelDiscoveryOptions } from './model-discovery.js';
 export { classifyModelTier, computeCost, lookupCatalogModel, getCatalogModelsByModality, type ModelTier } from './model-catalog.js';
+export { lookupModelPricing, resolveCrossProviderPrices, modelsDevCostToPerToken, fetchModelsDevData, clearModelsDevCache, type CrossProviderPrices, type ModelsDevApiResponse } from './cross-provider-pricing.js';

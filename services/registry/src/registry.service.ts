@@ -3,11 +3,29 @@ import crypto from 'node:crypto';
 import type { ProviderModel, CandidateSet } from '@dmr-x/core';
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
+import {
+  lookupModelPricing,
+  fetchModelsDevData,
+  type ModelsDevApiResponse,
+} from './cross-provider-pricing.js';
 
 const cache = createNamespacedCache('registry');
 
 export class RegistryService {
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private modelsDevData: ModelsDevApiResponse | null = null;
+
+  /**
+   * Initialize models.dev data for cross-provider pricing
+   */
+  async initializeModelsDevData(): Promise<void> {
+    try {
+      this.modelsDevData = await fetchModelsDevData();
+      logger.info('Initialized models.dev pricing data');
+    } catch (error) {
+      logger.warn({ error }, 'Failed to initialize models.dev data');
+    }
+  }
 
   getCandidates(modality?: string): CandidateSet {
     const db = getDb();
@@ -55,35 +73,59 @@ export class RegistryService {
       ? db.prepare(query).all(modality)
       : db.prepare(query).all();
 
-    return rows.map((row: any) => ({
-      providerId: row.providerId,
-      providerName: row.providerName,
-      modelId: row.modelId,
-      modality: row.modality,
-      intelligenceLayer: row.intelligenceLayer,
-      capabilityTier: row.capabilityTier || 'executor',
-      capabilities: this.extractCapabilities(row),
-      costPerInputToken: parseFloat(row.costPerInputToken) || 0,
-      costPerOutputToken: parseFloat(row.costPerOutputToken) || 0,
-      costPerImage: parseFloat(row.costPerImage) || 0,
-      avgLatencyMs: row.avgLatencyMs || 1000,
-      qualityScore: this.calculateQualityScore(parseFloat(row.qualityScore) || 0.5, parseFloat(row.eloRating) || 1200),
-      maxOutputTokens: row.maxOutputTokens || undefined,
-      contextLength: row.contextWindow || undefined,
-      isHealthy: row.isHealthy === 1 || row.isHealthy === true,
-      subscriptionOnly: row.subscriptionOnly === 1 || row.subscriptionOnly === true,
-      freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
-        intelligenceRank: row.intelligenceRank ?? 0,
-        speedRank: row.speedRank ?? 0,
-        monthlyTokenBudget: row.monthlyTokenBudget ?? 0,
-        rateLimits: {
-          rpm: row.rateLimitRpm ?? 0,
-          rpd: row.rateLimitRpd ?? 0,
-          tpm: row.rateLimitTpm ?? 0,
-          tpd: row.rateLimitTpd ?? 0,
-        },
-      } : undefined,
-    }));
+    return rows.map((row: any) => {
+      // Resolve pricing from models.dev for all providers
+      let costPerInputToken = parseFloat(row.costPerInputToken) || 0;
+      let costPerOutputToken = parseFloat(row.costPerOutputToken) || 0;
+
+      if (this.modelsDevData) {
+        const modelsDevPrices = lookupModelPricing({
+          provider: row.providerId,
+          modelId: row.modelId,
+          modelsDevData: this.modelsDevData,
+        });
+
+        if (modelsDevPrices) {
+          // Use models.dev pricing if available (more accurate and up-to-date)
+          if (modelsDevPrices.promptPricePerToken !== null) {
+            costPerInputToken = modelsDevPrices.promptPricePerToken;
+          }
+          if (modelsDevPrices.completionPricePerToken !== null) {
+            costPerOutputToken = modelsDevPrices.completionPricePerToken;
+          }
+        }
+      }
+
+      return {
+        providerId: row.providerId,
+        providerName: row.providerName,
+        modelId: row.modelId,
+        modality: row.modality,
+        intelligenceLayer: row.intelligenceLayer,
+        capabilityTier: row.capabilityTier || 'executor',
+        capabilities: this.extractCapabilities(row),
+        costPerInputToken,
+        costPerOutputToken,
+        costPerImage: parseFloat(row.costPerImage) || 0,
+        avgLatencyMs: row.avgLatencyMs || 1000,
+        qualityScore: this.calculateQualityScore(parseFloat(row.qualityScore) || 0.5, parseFloat(row.eloRating) || 1200),
+        maxOutputTokens: row.maxOutputTokens || undefined,
+        contextLength: row.contextWindow || undefined,
+        isHealthy: row.isHealthy === 1 || row.isHealthy === true,
+        subscriptionOnly: row.subscriptionOnly === 1 || row.subscriptionOnly === true,
+        freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
+          intelligenceRank: row.intelligenceRank ?? 0,
+          speedRank: row.speedRank ?? 0,
+          monthlyTokenBudget: row.monthlyTokenBudget ?? 0,
+          rateLimits: {
+            rpm: row.rateLimitRpm ?? 0,
+            rpd: row.rateLimitRpd ?? 0,
+            tpm: row.rateLimitTpm ?? 0,
+            tpd: row.rateLimitTpd ?? 0,
+          },
+        } : undefined,
+      };
+    });
   }
 
   /**

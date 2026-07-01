@@ -1,8 +1,8 @@
 /**
  * Guardrails module for MCP Server
- * 
+ *
  * Provides PII detection and redaction, content filtering,
- * and response sanitization for compliance and security.
+ * input validation, and response sanitization for compliance and security.
  */
 
 export {
@@ -14,3 +14,14 @@ export {
   type PIIDetection,
   type GuardrailsResult,
 } from './filter-engine.js';
+
+export {
+  InputValidator,
+  getInputValidator,
+  resetInputValidator,
+  createInputValidationHook,
+  type InputValidatorConfig,
+  type InjectionPattern,
+  type InjectionDetection,
+  type InputValidationResult,
+} from './input-validator.js';

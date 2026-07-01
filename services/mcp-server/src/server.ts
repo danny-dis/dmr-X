@@ -22,6 +22,10 @@ import { MCPClient } from '@dmr-x/mcp-client';
 import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
 import { HybridSearchEngine, type ToolDocument } from '@dmr-x/tool-search';
 import { getRBACEngine, type RBACConfig, type Principal } from '@dmr-x/policy';
+import { InputValidator, type InputValidatorConfig } from './guardrails/input-validator.js';
+import { GuardrailsEngine } from './guardrails/filter-engine.js';
+import { ToolInvocationPolicyEngine, getToolInvocationPolicyEngine } from './policies/tool-invocation-policy.js';
+import { ToolTemplatesService, getToolTemplatesService } from './templates/tool-templates.js';
 import type { AgentCardConfig } from './a2a/agent-card.js';
 import type { FederationConfig } from './federation/manager.js';
 import { logger } from '@dmr-x/utils';
@@ -59,6 +63,17 @@ import {
   dmrxGenerate3DParams as threeDParams,
   dmrxToolSearchParams as toolSearchParams,
   dmrxToolListParams as toolListParams,
+  dmrxTemplateListParams as templateListParams,
+  dmrxTemplateGetParams as templateGetParams,
+  dmrxTemplateCreateParams as templateCreateParams,
+  dmrxTemplateUpdateParams as templateUpdateParams,
+  dmrxTemplateDeleteParams as templateDeleteParams,
+  dmrxTemplateExecuteParams as templateExecuteParams,
+  dmrxPresetListParams as presetListParams,
+  dmrxPresetGetParams as presetGetParams,
+  dmrxPresetCreateParams as presetCreateParams,
+  dmrxPresetUpdateParams as presetUpdateParams,
+  dmrxPresetDeleteParams as presetDeleteParams,
   dmrxChatOutput,
   dmrxImageOutput,
   dmrxEmbeddingOutput,
@@ -137,6 +152,8 @@ export interface DMRXMcpServerConfig {
     contentFiltering?: boolean;
     blockedKeywords?: string[];
     logDetections?: boolean;
+    /** Input validation configuration */
+    inputValidation?: InputValidatorConfig;
   };
   /** Audit logging configuration */
   audit?: {
@@ -174,6 +191,14 @@ interface ServerState {
   rbacEnabled: boolean;
   /** Guardrails enabled */
   guardrailsEnabled: boolean;
+  /** Input validator for injection detection */
+  inputValidator: InputValidator;
+  /** Guardrails engine for output PII redaction */
+  guardrailsEngine: GuardrailsEngine;
+  /** Tool invocation policy engine */
+  policyEngine: ToolInvocationPolicyEngine;
+  /** Tool templates and presets service */
+  templatesService: ToolTemplatesService;
   /** Audit logging enabled */
   auditEnabled: boolean;
 }
@@ -740,10 +765,65 @@ function processGuardrails(
   text: string
 ): string {
   if (!state.guardrailsEnabled) return text;
-  
-  // Simple implementation - in production, use the full GuardrailsEngine
-  // For now, just return the text as-is
-  return text;
+
+  // Use the GuardrailsEngine for PII detection and redaction
+  const result = state.guardrailsEngine.process(text);
+  return result.sanitized;
+}
+
+/**
+ * Validate tool call input for injection attempts and length limits.
+ * Returns an error response if validation fails, undefined if validation passes.
+ */
+function validateToolInput(
+  state: ServerState,
+  toolName: string,
+  params: Record<string, unknown>,
+  requestId: string
+): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | undefined {
+  if (!state.guardrailsEnabled) return undefined;
+
+  const result = state.inputValidator.validateInput(JSON.stringify(params));
+  if (!result.valid) {
+    logAuditEvent(state, 'policy.deny', toolName, {
+      requestId,
+      reason: result.blockReason,
+      detections: result.detections.map(d => d.patternName),
+    });
+    return toolError(result.blockReason || 'Input validation failed', 'INPUT_VALIDATION_FAILED', requestId);
+  }
+
+  return undefined;
+}
+
+/**
+ * Evaluate tool call against invocation policies.
+ * Returns an error response if the tool call is blocked, undefined if allowed.
+ */
+function evaluateToolPolicy(
+  state: ServerState,
+  toolName: string,
+  params: Record<string, unknown>,
+  requestId: string,
+  tenantId: string = 'default'
+): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | undefined {
+  const result = state.policyEngine.evaluate({
+    tenant_id: tenantId,
+    tool_name: toolName,
+    tool_input: params,
+    request_id: requestId,
+  });
+
+  if (!result.allowed) {
+    logAuditEvent(state, 'policy.deny', toolName, {
+      requestId,
+      reason: result.reason,
+      policyId: result.policy?.id,
+    });
+    return toolError(result.reason || 'Tool call blocked by policy', 'POLICY_DENIED', requestId);
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -826,6 +906,16 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     searchEngine,
     rbacEnabled: config.rbac?.enabled ?? false,
     guardrailsEnabled: config.guardrails?.enabled ?? false,
+    inputValidator: new InputValidator(config.guardrails?.inputValidation),
+    guardrailsEngine: new GuardrailsEngine({
+      enabled: config.guardrails?.enabled ?? false,
+      piiRedaction: config.guardrails?.piiRedaction ?? true,
+      contentFiltering: config.guardrails?.contentFiltering ?? true,
+      blockedKeywords: config.guardrails?.blockedKeywords ?? [],
+      logDetections: config.guardrails?.logDetections ?? true,
+    }),
+    policyEngine: getToolInvocationPolicyEngine(),
+    templatesService: getToolTemplatesService(),
     auditEnabled: config.audit?.enabled ?? false,
   };
 
@@ -933,6 +1023,15 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         return toolError('Access denied by RBAC policy', 'RBAC_DENIED', requestId);
       }
 
+      // Input validation
+      const validationError = validateToolInput(state, TOOL_NAMES.CHAT, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.CHAT, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       // Audit logging
       logAuditEvent(state, 'tool.invocation', TOOL_NAMES.CHAT, { requestId, params: { ...params, messages: '[omitted]' } });
 
@@ -1019,6 +1118,16 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       state.requestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_IMAGE);
       if (rateLimitResponse) return rateLimitResponse;
+
+      // Input validation
+      const requestId = crypto.randomUUID();
+      const validationError = validateToolInput(state, TOOL_NAMES.GENERATE_IMAGE, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.GENERATE_IMAGE, params, requestId, tenantId);
+      if (policyError) return policyError;
 
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE }, 'routing');
@@ -2305,6 +2414,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.WORKFLOW);
       if (rateLimitResponse) return rateLimitResponse;
 
+      // Tool invocation policy check
+      const requestId = crypto.randomUUID();
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.WORKFLOW, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.WORKFLOW, stepCount: (params.steps || []).length }, 'routing');
 
@@ -2413,6 +2528,17 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.WRITE_FILE);
       if (rateLimitResponse) return rateLimitResponse;
+
+      // Input validation
+      const requestId = crypto.randomUUID();
+      const validationError = validateToolInput(state, TOOL_NAMES.WRITE_FILE, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.WRITE_FILE, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       try {
         const fs = await import('node:fs');
         const path = await import('node:path');
@@ -2514,6 +2640,17 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.BASH);
       if (rateLimitResponse) return rateLimitResponse;
+
+      // Input validation
+      const requestId = crypto.randomUUID();
+      const validationError = validateToolInput(state, TOOL_NAMES.BASH, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.BASH, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       try {
         const { execSync } = await import('node:child_process');
         const cmd = params.command;
@@ -2770,6 +2907,551 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         state.lastError = message;
         mcpLog(server, 'error', { tool: TOOL_NAMES.TOOL_LIST, message }, 'tool-list');
         return toolError(message, 'TOOL_LIST_ERROR');
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_template_list
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TEMPLATE_LIST,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TEMPLATE_LIST],
+      inputSchema: templateListParams as any,
+      annotations: { title: 'List Templates', readOnlyHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TEMPLATE_LIST);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+      const tenantId = params._tenant_id || 'default';
+
+      try {
+        const templates = state.templatesService.listTemplates(tenantId, {
+          tag: params.tag,
+          search: params.search,
+        });
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              templates: templates.map(t => ({
+                id: t.id,
+                name: t.name,
+                description: t.description,
+                version: t.version,
+                tags: t.tags,
+                step_count: t.steps.length,
+                created_at: t.created_at,
+              })),
+              total_count: templates.length,
+            }, null, 2),
+          }],
+          structuredContent: {
+            templates,
+            total_count: templates.length,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'TEMPLATE_LIST_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_template_get
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TEMPLATE_GET,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TEMPLATE_GET],
+      inputSchema: templateGetParams as any,
+      annotations: { title: 'Get Template', readOnlyHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TEMPLATE_GET);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+
+      try {
+        const template = state.templatesService.getTemplate(params.id);
+        if (!template) {
+          return toolError('Template not found', 'TEMPLATE_NOT_FOUND', requestId);
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(template, null, 2),
+          }],
+          structuredContent: template,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'TEMPLATE_GET_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_template_create
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TEMPLATE_CREATE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TEMPLATE_CREATE],
+      inputSchema: templateCreateParams as any,
+      annotations: { title: 'Create Template', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TEMPLATE_CREATE);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+      const tenantId = params._tenant_id || 'default';
+
+      try {
+        const template = state.templatesService.createTemplate({
+          tenant_id: tenantId,
+          name: params.name,
+          description: params.description,
+          steps: params.steps,
+          tags: params.tags || [],
+          version: params.version || '1.0.0',
+          created_by: params._user_id,
+          is_active: true,
+        });
+
+        logAuditEvent(state, 'tool.invocation', TOOL_NAMES.TEMPLATE_CREATE, { requestId, templateId: template.id });
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(template, null, 2),
+          }],
+          structuredContent: template,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'TEMPLATE_CREATE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_template_update
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TEMPLATE_UPDATE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TEMPLATE_UPDATE],
+      inputSchema: templateUpdateParams as any,
+      annotations: { title: 'Update Template', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TEMPLATE_UPDATE);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+
+      try {
+        const updates: Record<string, unknown> = {};
+        if (params.name !== undefined) updates.name = params.name;
+        if (params.description !== undefined) updates.description = params.description;
+        if (params.steps !== undefined) updates.steps = params.steps;
+        if (params.tags !== undefined) updates.tags = params.tags;
+        if (params.version !== undefined) updates.version = params.version;
+
+        const success = state.templatesService.updateTemplate(params.id, updates);
+        if (!success) {
+          return toolError('Template not found', 'TEMPLATE_NOT_FOUND', requestId);
+        }
+
+        const template = state.templatesService.getTemplate(params.id);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(template, null, 2),
+          }],
+          structuredContent: template,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'TEMPLATE_UPDATE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_template_delete
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TEMPLATE_DELETE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TEMPLATE_DELETE],
+      inputSchema: templateDeleteParams as any,
+      annotations: { title: 'Delete Template', readOnlyHint: false, destructiveHint: true },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TEMPLATE_DELETE);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+
+      try {
+        const success = state.templatesService.deleteTemplate(params.id);
+        if (!success) {
+          return toolError('Template not found', 'TEMPLATE_NOT_FOUND', requestId);
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: true, id: params.id }, null, 2),
+          }],
+          structuredContent: { success: true, id: params.id },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'TEMPLATE_DELETE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_template_execute
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.TEMPLATE_EXECUTE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.TEMPLATE_EXECUTE],
+      inputSchema: templateExecuteParams as any,
+      annotations: { title: 'Execute Template', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TEMPLATE_EXECUTE);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+      const tenantId = params._tenant_id || 'default';
+
+      try {
+        const template = state.templatesService.getTemplate(params.id);
+        if (!template) {
+          return toolError('Template not found', 'TEMPLATE_NOT_FOUND', requestId);
+        }
+
+        // Log execution start
+        const executionId = state.templatesService.logExecution({
+          template_id: template.id,
+          tenant_id: tenantId,
+          status: 'running',
+          steps_total: template.steps.length,
+          request_id: requestId,
+          user_id: params._user_id,
+        });
+
+        const startTime = Date.now();
+        const stepOutputs: Record<string, unknown> = {};
+        const results: Array<{ step_id: string; tool: string; success: boolean; output?: unknown; error?: string }> = [];
+
+        // Execute each step
+        for (const step of template.steps) {
+          try {
+            // Merge parameters with any overrides from params.inputs
+            let stepParams = { ...step.parameters };
+
+            // Apply input mapping from previous steps
+            if (step.input_mapping) {
+              for (const [targetKey, sourceRef] of Object.entries(step.input_mapping)) {
+                // Parse source reference: "$step_id.field" or "$step_id"
+                const match = sourceRef.match(/^\$(\w+)(?:\.(\w+))?$/);
+                if (match) {
+                  const [, sourceStepId, sourceField] = match;
+                  const sourceOutput = stepOutputs[sourceStepId];
+                  if (sourceOutput !== undefined) {
+                    stepParams[targetKey] = sourceField
+                      ? (sourceOutput as Record<string, unknown>)?.[sourceField]
+                      : sourceOutput;
+                  }
+                }
+              }
+            }
+
+            // Apply user overrides (key format: "step_id.param")
+            if (params.inputs) {
+              for (const [key, value] of Object.entries(params.inputs)) {
+                const [stepId, param] = key.split('.');
+                if (stepId === step.id && param) {
+                  stepParams[param] = value;
+                }
+              }
+            }
+
+            // Execute the tool
+            const output = await executeDMRXTool(state.router, state.adapterRegistry, step.tool_name, stepParams);
+            results.push({ step_id: step.id, tool: step.tool_name, success: true, output });
+            stepOutputs[step.id] = output;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            results.push({ step_id: step.id, tool: step.tool_name, success: false, error: message });
+            stepOutputs[step.id] = { error: message };
+          }
+        }
+
+        const durationMs = Date.now() - startTime;
+        const allSuccess = results.every(r => r.success);
+
+        // Update execution log
+        state.templatesService.logExecution({
+          template_id: template.id,
+          tenant_id: tenantId,
+          status: allSuccess ? 'completed' : 'failed',
+          steps_completed: results.filter(r => r.success).length,
+          steps_total: template.steps.length,
+          output: results,
+          duration_ms: durationMs,
+          request_id: requestId,
+          user_id: params._user_id,
+        });
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              template_id: template.id,
+              template_name: template.name,
+              success: allSuccess,
+              results,
+              step_outputs: stepOutputs,
+              duration_ms: durationMs,
+            }, null, 2),
+          }],
+          structuredContent: {
+            template_id: template.id,
+            template_name: template.name,
+            success: allSuccess,
+            results,
+            step_outputs: stepOutputs,
+            duration_ms: durationMs,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'TEMPLATE_EXECUTE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_preset_list
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.PRESET_LIST,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.PRESET_LIST],
+      inputSchema: presetListParams as any,
+      annotations: { title: 'List Presets', readOnlyHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.PRESET_LIST);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+      const tenantId = params._tenant_id || 'default';
+
+      try {
+        const presets = state.templatesService.listPresets(tenantId, params.tool_name);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              presets: presets.map(p => ({
+                id: p.id,
+                tool_name: p.tool_name,
+                priority: p.priority,
+                description: p.description,
+                has_defaults: Object.keys(p.defaults).length > 0,
+                has_overrides: p.overrides ? Object.keys(p.overrides).length > 0 : false,
+                created_at: p.created_at,
+              })),
+              total_count: presets.length,
+            }, null, 2),
+          }],
+          structuredContent: {
+            presets,
+            total_count: presets.length,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'PRESET_LIST_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_preset_get
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.PRESET_GET,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.PRESET_GET],
+      inputSchema: presetGetParams as any,
+      annotations: { title: 'Get Preset', readOnlyHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.PRESET_GET);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+
+      try {
+        const preset = state.templatesService.getPreset(params.id);
+        if (!preset) {
+          return toolError('Preset not found', 'PRESET_NOT_FOUND', requestId);
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(preset, null, 2),
+          }],
+          structuredContent: preset,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'PRESET_GET_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_preset_create
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.PRESET_CREATE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.PRESET_CREATE],
+      inputSchema: presetCreateParams as any,
+      annotations: { title: 'Create Preset', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.PRESET_CREATE);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+      const tenantId = params._tenant_id || 'default';
+
+      try {
+        const preset = state.templatesService.createPreset({
+          tenant_id: tenantId,
+          tool_name: params.tool_name,
+          defaults: params.defaults,
+          overrides: params.overrides,
+          priority: params.priority || 0,
+          description: params.description,
+          created_by: params._user_id,
+          is_active: true,
+        });
+
+        logAuditEvent(state, 'tool.invocation', TOOL_NAMES.PRESET_CREATE, { requestId, presetId: preset.id });
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(preset, null, 2),
+          }],
+          structuredContent: preset,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'PRESET_CREATE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_preset_update
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.PRESET_UPDATE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.PRESET_UPDATE],
+      inputSchema: presetUpdateParams as any,
+      annotations: { title: 'Update Preset', readOnlyHint: false, destructiveHint: false },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.PRESET_UPDATE);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+
+      try {
+        const updates: Record<string, unknown> = {};
+        if (params.defaults !== undefined) updates.defaults = params.defaults;
+        if (params.overrides !== undefined) updates.overrides = params.overrides;
+        if (params.priority !== undefined) updates.priority = params.priority;
+        if (params.description !== undefined) updates.description = params.description;
+
+        const success = state.templatesService.updatePreset(params.id, updates);
+        if (!success) {
+          return toolError('Preset not found', 'PRESET_NOT_FOUND', requestId);
+        }
+
+        const preset = state.templatesService.getPreset(params.id);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(preset, null, 2),
+          }],
+          structuredContent: preset,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'PRESET_UPDATE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_preset_delete
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.PRESET_DELETE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.PRESET_DELETE],
+      inputSchema: presetDeleteParams as any,
+      annotations: { title: 'Delete Preset', readOnlyHint: false, destructiveHint: true },
+    },
+    async (params: any) => {
+      const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.PRESET_DELETE);
+      if (rateLimitResponse) return rateLimitResponse;
+
+      const requestId = crypto.randomUUID();
+
+      try {
+        const success = state.templatesService.deletePreset(params.id);
+        if (!success) {
+          return toolError('Preset not found', 'PRESET_NOT_FOUND', requestId);
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: true, id: params.id }, null, 2),
+          }],
+          structuredContent: { success: true, id: params.id },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'PRESET_DELETE_ERROR', requestId);
       }
     }
   );

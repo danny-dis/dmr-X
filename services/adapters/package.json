@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@dmr-x/core": "*",
+    "@dmr-x/quota": "*",
     "@dmr-x/utils": "*",
     "@opentelemetry/api": "^1.9.0"
   },
