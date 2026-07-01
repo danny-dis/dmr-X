@@ -78,69 +78,58 @@ export interface GuardrailsResult {
 
 const DEFAULT_PII_PATTERNS: RedactionPattern[] = [
   {
-    name: 'SSN',
+    name: 'ssn',
     regex: /\b\d{3}[-]?\d{2}[-]?\d{4}\b/g,
-    replacement: '[SSN-REDACTED]',
     severity: 'critical',
   },
   {
-    name: 'Credit Card',
-    regex: /\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|6(?:011|5[0-9]{2})[0-9]{12}|(?:2131|1800|35\d{3})\d{11})\b/g,
-    replacement: '[CARD-REDACTED]',
+    name: 'credit-card',
+    regex: /\b(?:4[0-9]{3}|5[1-5][0-9]{2}|3[47][0-9]{2}|3(?:0[0-5]|[68][0-9])|6(?:011|5[0-9]{2}))[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{1,4}\b/g,
     severity: 'critical',
   },
   {
-    name: 'Email',
+    name: 'email',
     regex: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
-    replacement: '[EMAIL-REDACTED]',
     severity: 'high',
   },
   {
-    name: 'Phone (US)',
-    regex: /\b(?:\+?1[-.]?)?\(?[0-9]{3}\)?[-.]?[0-9]{3}[-.]?[0-9]{4}\b/g,
-    replacement: '[PHONE-REDACTED]',
+    name: 'phone',
+    regex: /\b(?:\+?1[-.]?)?\(?\d{3}\)?[-.]?\s*\d{3}[-.]?\s*\d{4}\b/g,
     severity: 'medium',
   },
   {
-    name: 'IP Address',
+    name: 'ip-address',
     regex: /\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/g,
-    replacement: '[IP-REDACTED]',
     severity: 'medium',
   },
   {
     name: 'AWS Access Key',
     regex: /\bAKIA[0-9A-Z]{16}\b/g,
-    replacement: '[AWS-KEY-REDACTED]',
     severity: 'critical',
   },
   {
     name: 'AWS Secret Key',
     regex: /\b[0-9a-zA-Z/+=]{40}\b/g,
-    replacement: '[AWS-SECRET-REDACTED]',
     severity: 'critical',
   },
   {
     name: 'GitHub Token',
     regex: /\bghp_[0-9a-zA-Z]{36}\b/g,
-    replacement: '[GH-TOKEN-REDACTED]',
     severity: 'critical',
   },
   {
     name: 'GitHub OAuth',
     regex: /\bgho_[0-9a-zA-Z]{36}\b/g,
-    replacement: '[GH-OAUTH-REDACTED]',
     severity: 'critical',
   },
   {
     name: 'Slack Token',
     regex: /\bxox[baprs]-[0-9a-zA-Z-]+/g,
-    replacement: '[SLACK-TOKEN-REDACTED]',
     severity: 'critical',
   },
   {
     name: 'Private Key',
     regex: /-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----/g,
-    replacement: '[PRIVATE-KEY-REDACTED]',
     severity: 'critical',
   },
 ];
@@ -261,7 +250,7 @@ export class GuardrailsEngine {
           severity: pattern.severity,
           start: match.index,
           end: match.index + match[0].length,
-          redacted: pattern.replacement || this.config.redactionReplacement,
+          redacted: pattern.replacement ?? this.config.redactionReplacement,
         };
 
         detections.push(detection);
@@ -328,13 +317,27 @@ export class GuardrailsEngine {
    * Get statistics
    */
   getStats(): {
+    piiPatternCount: number;
     patternCount: number;
     blockedKeywordCount: number;
+    config: { enabled: boolean; piiRedaction: boolean };
   } {
     return {
+      piiPatternCount: this.patterns.length,
       patternCount: this.patterns.length,
       blockedKeywordCount: this.config.blockedKeywords.length,
+      config: {
+        enabled: this.config.enabled,
+        piiRedaction: this.config.piiRedaction,
+      },
     };
+  }
+
+  /**
+   * Alias for process() — matches the test contract.
+   */
+  processResponse(text: string): GuardrailsResult {
+    return this.process(text);
   }
 }
 

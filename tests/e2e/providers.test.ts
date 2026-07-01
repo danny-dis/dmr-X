@@ -6,13 +6,15 @@ import { TestClient } from './test-client.js';
  * Verifies that the integrated providers (Google, OpenRouter, Pollinations)
  * are correctly registered and responding to requests.
  */
-describe('Provider Integration E2E', () => {
+const describeE2E = process.env.DMRX_RUN_E2E === 'true' ? describe : describe.skip;
+
+describeE2E('Provider Integration E2E', () => {
   let client: TestClient;
 
   beforeAll(() => {
-    // Gateway must be running on localhost:3001
-    // DMRX_LOCAL_MODE=true allows us to skip API key auth for local tests
-    client = new TestClient('http://localhost:3001');
+    // Gateway must be running; DMRX_LOCAL_MODE=true allows skipping API key auth
+    const baseUrl = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
+    client = new TestClient(baseUrl);
   });
 
   describe('Registry Discovery', () => {

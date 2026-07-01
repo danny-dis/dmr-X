@@ -5,6 +5,7 @@ import { AddProviderDialog } from '@/components/domain/AddProviderDialog';
 import { ProviderCard } from '@/components/domain/ProviderCard';
 import { ProviderDetailDrawer } from '@/components/domain/ProviderDetailDrawer';
 import { PageHeader, PageContainer } from '@/components/layout';
+import { BackLink } from '@/components/primitives/BackLink';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
@@ -57,6 +58,7 @@ export function ProvidersPage() {
 
   return (
     <PageContainer size="wide">
+      <BackLink to="/" label="Dashboard" />
       <PageHeader
         title="Providers"
         description="AI provider catalog — connect, manage, and monitor all upstream services"

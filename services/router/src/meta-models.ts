@@ -8,7 +8,7 @@ const isFree = (c: any) => {
   if (c.pricingTier) {
     return c.pricingTier === 'free' || c.pricingTier === 'free_with_limits';
   }
-  return (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0;
+  return (c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0;
 };
 
 /**
@@ -30,22 +30,42 @@ export const META_MODELS: MetaModelDefinition[] = [
   // --- Auto Models (all providers by default) ---
   {
     alias: 'auto',
-    description: 'Auto-pick the best model. Routes through all providers by default (use costFilter=free for free-only). Preserves original order — the pipeline scoring decides the best choice.',
-    costFilter: 'all',
-    ranker: (candidates, costFilterOverride) => {
-      const filter = costFilterOverride ?? 'all';
-      if (filter === 'all') return candidates;
-      return candidates.filter(isFree);
-    },
-  },
-  {
-    alias: 'auto-fast',
-    description: 'Fastest model. Routes through all providers by default (use costFilter=free for free-only). Explicitly prioritizes low latency.',
+    description: 'Auto-pick the best model with cost-quality balance. Routes through all providers by default (use costFilter=free for free-only). Scores by quality (35%) + cost efficiency (30%) + speed (20%) + context (15%).',
     costFilter: 'all',
     ranker: (candidates, costFilterOverride) => {
       const filter = costFilterOverride ?? 'all';
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      return pool.sort((a, b) => (a.avgLatencyMs ?? 9999) - (b.avgLatencyMs ?? 9999));
+      const scored = pool.map(c => {
+        const qualityComponent = (c.qualityScore ?? 0) * 0.35;
+        // Cost efficiency: cheaper models score higher (normalized to 0-1 range)
+        const totalCost = (c.costPerInputToken ?? 0) + (c.costPerOutputToken ?? 0);
+        const costComponent = Math.max(0, 1 - Math.min(totalCost * 1000, 1)) * 0.30;
+        const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 2000) / 5000) * 0.20;
+        const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.15;
+        return { ...c, autoScore: qualityComponent + costComponent + speedComponent + contextComponent };
+      });
+      return scored.sort((a, b) => b.autoScore - a.autoScore).map(({ autoScore: _, ...rest }) => rest);
+    },
+  },
+  {
+    alias: 'auto-fast',
+    description: 'Fastest model with quality baseline. Routes through all providers by default (use costFilter=free for free-only). Requires 0.5+ quality score. Scores by speed (60%) + quality (25%) + cost efficiency (15%).',
+    costFilter: 'all',
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const MIN_QUALITY = 0.5;
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
+      const scored = pool
+        .filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY)
+        .map(c => {
+          const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.6;
+          const qualityComponent = (c.qualityScore ?? 0) * 0.25;
+          const totalCost = (c.costPerInputToken ?? 0) + (c.costPerOutputToken ?? 0);
+          const costComponent = Math.max(0, 1 - Math.min(totalCost * 1000, 1)) * 0.15;
+          return { ...c, fastScore: speedComponent + qualityComponent + costComponent };
+        })
+        .sort((a, b) => b.fastScore - a.fastScore);
+      return scored.map(({ fastScore: _, ...rest }) => rest);
     },
   },
   {
@@ -87,7 +107,7 @@ export const META_MODELS: MetaModelDefinition[] = [
   },
   {
     alias: 'auto-coding',
-    description: 'Best model for code generation. Routes through all providers by default (use costFilter=free for free-only). Scores by specialization match (40%) + quality (30%) + context window (20%) + speed (10%).',
+    description: 'Best model for code generation. Routes through all providers by default (use costFilter=free for free-only). Scores by specialization match (35%) + quality (25%) + cost efficiency (20%) + context window (15%) + speed (5%).',
     costFilter: 'all',
     ranker: (candidates, costFilterOverride) => {
       const filter = costFilterOverride ?? 'all';
@@ -99,11 +119,13 @@ export const META_MODELS: MetaModelDefinition[] = [
         .map(c => {
           // Specialization match: how many code-related capabilities the model has
           const specMatch = codeCapabilities.filter(cap => c.capabilities.includes(cap)).length / codeCapabilities.length;
-          const qualityComponent = (c.qualityScore ?? 0) * 0.3;
-          const specComponent = specMatch * 0.4;
-          const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.2;
-          const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.1;
-          return { ...c, codingScore: qualityComponent + specComponent + contextComponent + speedComponent };
+          const qualityComponent = (c.qualityScore ?? 0) * 0.25;
+          const specComponent = specMatch * 0.35;
+          const totalCost = (c.costPerInputToken ?? 0) + (c.costPerOutputToken ?? 0);
+          const costComponent = Math.max(0, 1 - Math.min(totalCost * 1000, 1)) * 0.20;
+          const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.15;
+          const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.05;
+          return { ...c, codingScore: qualityComponent + specComponent + costComponent + contextComponent + speedComponent };
         })
         .sort((a, b) => b.codingScore - a.codingScore);
 
@@ -158,25 +180,28 @@ export const META_MODELS: MetaModelDefinition[] = [
   },
   {
     alias: 'auto-eco',
-    description: 'Cheapest possible model (eco profile). Routes through all providers by default (use costFilter=free for free-only). Prioritizes free models first, then cheapest paid models, with quality as tiebreaker.',
+    description: 'Cheapest possible model (eco profile). Routes through all providers by default (use costFilter=free for free-only). Requires 0.3+ quality baseline. Prioritizes free models first, then cheapest paid models, with quality as tiebreaker.',
     costFilter: 'all',
     ranker: (candidates, costFilterOverride) => {
       const filter = costFilterOverride ?? 'all';
+      const MIN_QUALITY = 0.3;
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      return pool.sort((a, b) => {
-        // First: free models come first
-        const aFree = isFree(a);
-        const bFree = isFree(b);
-        if (aFree !== bFree) return bFree ? 1 : -1;
-        
-        // Then: cheapest cost
-        const costA = (a.costPerInputToken ?? 0) + (a.costPerOutputToken ?? 0);
-        const costB = (b.costPerInputToken ?? 0) + (b.costPerOutputToken ?? 0);
-        if (costA !== costB) return costA - costB;
-        
-        // Finally: quality as tiebreaker
-        return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
-      });
+      return pool
+        .filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY)
+        .sort((a, b) => {
+          // First: free models come first
+          const aFree = isFree(a);
+          const bFree = isFree(b);
+          if (aFree !== bFree) return bFree ? 1 : -1;
+          
+          // Then: cheapest cost
+          const costA = (a.costPerInputToken ?? 0) + (a.costPerOutputToken ?? 0);
+          const costB = (b.costPerInputToken ?? 0) + (b.costPerOutputToken ?? 0);
+          if (costA !== costB) return costA - costB;
+          
+          // Finally: quality as tiebreaker
+          return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
+        });
     },
   },
   {
@@ -185,21 +210,24 @@ export const META_MODELS: MetaModelDefinition[] = [
     costFilter: 'all',
     ranker: (candidates, costFilterOverride) => {
       const filter = costFilterOverride ?? 'all';
+      const MIN_QUALITY = 0.3;
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      return pool.sort((a, b) => {
-        // First: free models come first
-        const aFree = isFree(a);
-        const bFree = isFree(b);
-        if (aFree !== bFree) return bFree ? 1 : -1;
-        
-        // Then: cheapest cost
-        const costA = (a.costPerInputToken ?? 0) + (a.costPerOutputToken ?? 0);
-        const costB = (b.costPerInputToken ?? 0) + (b.costPerOutputToken ?? 0);
-        if (costA !== costB) return costA - costB;
-        
-        // Finally: quality as tiebreaker
-        return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
-      });
+      return pool
+        .filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY)
+        .sort((a, b) => {
+          // First: free models come first
+          const aFree = isFree(a);
+          const bFree = isFree(b);
+          if (aFree !== bFree) return bFree ? 1 : -1;
+          
+          // Then: cheapest cost
+          const costA = (a.costPerInputToken ?? 0) + (a.costPerOutputToken ?? 0);
+          const costB = (b.costPerInputToken ?? 0) + (b.costPerOutputToken ?? 0);
+          if (costA !== costB) return costA - costB;
+          
+          // Finally: quality as tiebreaker
+          return (b.qualityScore ?? 0) - (a.qualityScore ?? 0);
+        });
     },
   },
   {
@@ -210,35 +238,6 @@ export const META_MODELS: MetaModelDefinition[] = [
       const filter = costFilterOverride ?? 'all';
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
       return pool.sort((a, b) => (b.qualityScore ?? 0) - (a.qualityScore ?? 0));
-    },
-  },
-  {
-    alias: 'auto-agentic',
-    description: 'Best model for agentic/tool-calling work. Routes through all providers by default (use costFilter=free for free-only). Requires tool_use capability. Scores by quality (40%) + tool capabilities (30%) + context window (20%) + speed (10%).',
-    costFilter: 'all',
-    ranker: (candidates, costFilterOverride) => {
-      const filter = costFilterOverride ?? 'all';
-      const MIN_CONTEXT = 64000;
-      const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      const scored = pool
-        .filter(c =>
-          c.capabilities.includes('tool_use')
-        )
-        .map(c => {
-          // Tool capability bonus: reward json_mode, streaming, and reasoning
-          const toolBonus = 1 + 
-            (c.capabilities.includes('json_mode') ? 0.2 : 0) + 
-            (c.capabilities.includes('streaming') ? 0.1 : 0) +
-            (c.capabilities.includes('reasoning') ? 0.2 : 0);
-          const qualityComponent = (c.qualityScore ?? 0) * 0.4;
-          const toolComponent = toolBonus * 0.3;
-          const contextComponent = Math.min((c.contextLength ?? 0) / 1_000_000, 1) * 0.2;
-          const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.1;
-          return { ...c, agenticScore: qualityComponent + toolComponent + contextComponent + speedComponent };
-        })
-        .sort((a, b) => b.agenticScore - a.agenticScore);
-
-      return scored.map(({ agenticScore: _, ...rest }) => rest);
     },
   },
   {

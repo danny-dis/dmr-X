@@ -2,6 +2,7 @@ import { Cpu } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
+import { BackLink } from '@/components/primitives/BackLink';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { Skeleton } from '@/components/primitives/Skeleton';
 
@@ -23,6 +24,7 @@ function TabLoader() {
 export function InfrastructurePage() {
   return (
     <PageContainer size="wide">
+      <BackLink to="/" label="Dashboard" />
       <PageHeader
         title="Infrastructure"
         description="MCP server, tool execution, workers, federation & sandbox"

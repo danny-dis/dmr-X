@@ -91,3 +91,13 @@ __pycache__/
 .opencode/
 .openclaude/
 .gitnexus/
+.chimera/
+.mimocode/
+
+# ─── Temp / local directories ─────────────────────────────────────────────
+jan-repo/
+temp-clawrouter/
+
+# ─── Turbo / build output artifacts ───────────────────────────────────────
+turbo-dry.json
+turbo-output.txt

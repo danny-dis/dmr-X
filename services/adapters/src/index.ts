@@ -39,6 +39,7 @@ export { VLLMAdapter } from './vllm/vllm.adapter.js';
 export { NebiusAdapter } from './nebius/nebius.adapter.js';
 export { NovitaAdapter } from './novita/novita.adapter.js';
 export { MoonshotAdapter } from './moonshot/moonshot.adapter.js';
+export { MiniMaxAdapter } from './minimax/minimax.adapter.js';
 export { LMStudioAdapter } from './lmstudio/lmstudio.adapter.js';
 export { VolcengineAdapter } from './volcengine/volcengine.adapter.js';
 export { DashscopeAdapter } from './dashscope/dashscope.adapter.js';

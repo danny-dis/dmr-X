@@ -86,8 +86,11 @@ export class ToolInvocationPolicyEngine {
       ORDER BY priority DESC
     `).all(context.tool_name) as ToolInvocationPolicy[];
 
-    // Evaluate tenant policies first, then global
-    const allPolicies = [...tenantPolicies, ...globalPolicies];
+    // Evaluate tenant policies first (sorted by priority desc), then global (sorted by priority desc)
+    const allPolicies = [
+      ...tenantPolicies.sort((a, b) => b.priority - a.priority),
+      ...globalPolicies.sort((a, b) => b.priority - a.priority),
+    ];
 
     for (const policy of allPolicies) {
       if (this.matchesPolicy(policy, context)) {

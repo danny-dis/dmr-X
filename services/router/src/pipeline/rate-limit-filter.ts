@@ -14,6 +14,7 @@ export interface RateLimitFilterResult {
 
 /**
  * Filter candidates that would exceed their rate limits.
+ * Also filters out models on cooldown (e.g., from 402/403 errors).
  * Runs checks in parallel for performance.
  * Returns both allowed candidates and rate-limited info for smart retry.
  */
@@ -26,6 +27,20 @@ export async function rateLimitFilter(
   const tokensForCheck = Math.max(estimatedTokens, 1);
   const results = await Promise.all(
     candidates.map(async (candidate) => {
+      // Check if model is on cooldown (e.g., from 402 Payment Required or 403 Forbidden)
+      if (rateLimitService.isOnCooldown(candidate.providerId, candidate.modelId)) {
+        const cooldownExpiry = rateLimitService.getCooldownExpiry(candidate.providerId, candidate.modelId);
+        const retryAfterMs = cooldownExpiry ? Math.max(0, cooldownExpiry - Date.now()) : 60000;
+        return {
+          candidate,
+          result: {
+            allowed: false,
+            retryAfterMs,
+            reason: `Model on cooldown (expires in ${Math.ceil(retryAfterMs / 1000)}s)`,
+          },
+        };
+      }
+
       const result = rateLimitService.checkLimit(
         candidate.providerId,
         candidate.modelId,

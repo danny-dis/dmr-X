@@ -226,6 +226,86 @@ export class RegistryService {
 
     return row || null;
   }
+
+  // ── Per-Model Health Tracking ──────────────────────────────────────────────
+
+  /** Consecutive failure counts per model (providerId:modelId -> count) */
+  private modelFailureCounts = new Map<string, number>();
+  /** Timestamps when models were marked unhealthy (for auto-recovery) */
+  private modelUnhealthySince = new Map<string, number>();
+  /** Models marked as permanently failed (e.g., 402/403) — cooldown handled by RateLimitService */
+  private modelPermanentlyFailed = new Set<string>();
+
+  private static readonly MODEL_FAILURE_THRESHOLD = 3;
+  private static readonly MODEL_RECOVERY_MS = 5 * 60 * 1000; // 5 minutes auto-recovery
+
+  /**
+   * Record a model-level failure. After MODEL_FAILURE_THRESHOLD consecutive failures,
+   * the model is marked unhealthy and filtered from candidates.
+   */
+  recordModelFailure(providerId: string, modelId: string): void {
+    const key = `${providerId}:${modelId}`;
+    const count = (this.modelFailureCounts.get(key) ?? 0) + 1;
+    this.modelFailureCounts.set(key, count);
+
+    if (count >= RegistryService.MODEL_FAILURE_THRESHOLD) {
+      this.modelUnhealthySince.set(key, Date.now());
+      logger.warn({ providerId, modelId, failureCount: count }, 'Model marked unhealthy after consecutive failures');
+    }
+  }
+
+  /**
+   * Record a model-level success. Clears failure count and unhealthy status.
+   */
+  recordModelSuccess(providerId: string, modelId: string): void {
+    const key = `${providerId}:${modelId}`;
+    this.modelFailureCounts.delete(key);
+    this.modelUnhealthySince.delete(key);
+  }
+
+  /**
+   * Mark a model as permanently failed (e.g., 402 Payment Required, 403 Forbidden).
+   * The RateLimitService handles the actual cooldown.
+   */
+  markModelPermanentlyFailed(providerId: string, modelId: string): void {
+    const key = `${providerId}:${modelId}`;
+    this.modelPermanentlyFailed.add(key);
+    this.modelFailureCounts.delete(key);
+    this.modelUnhealthySince.delete(key);
+  }
+
+  /**
+   * Check if a model is unhealthy (too many consecutive failures or permanently failed).
+   * Auto-recovers after MODEL_RECOVERY_MS to give the model another chance.
+   */
+  isModelUnhealthy(providerId: string, modelId: string): boolean {
+    const key = `${providerId}:${modelId}`;
+
+    // Permanently failed models stay unhealthy (cooldown handled by RateLimitService)
+    if (this.modelPermanentlyFailed.has(key)) {
+      return true;
+    }
+
+    const unhealthySince = this.modelUnhealthySince.get(key);
+    if (!unhealthySince) return false;
+
+    // Auto-recover after threshold period
+    if (Date.now() - unhealthySince > RegistryService.MODEL_RECOVERY_MS) {
+      this.modelUnhealthySince.delete(key);
+      this.modelFailureCounts.delete(key);
+      logger.info({ providerId, modelId }, 'Model auto-recovered after cooldown period');
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Get unhealthy model count (for monitoring/admin).
+   */
+  getUnhealthyModelCount(): number {
+    return this.modelUnhealthySince.size + this.modelPermanentlyFailed.size;
+  }
 }
 
 export const registryService = new RegistryService();

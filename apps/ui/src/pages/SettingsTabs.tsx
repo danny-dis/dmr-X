@@ -1,12 +1,14 @@
-import { Settings } from 'lucide-react';
+import { Settings, Shield } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
+import { BackLink } from '@/components/primitives/BackLink';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { Skeleton } from '@/components/primitives/Skeleton';
 
 // Lazy-load tab content for code splitting
 const GeneralTab = React.lazy(() => import('@/pages/Settings').then(m => ({ default: m.SettingsPage })));
+const PoliciesTab = React.lazy(() => import('@/pages/Policies').then(m => ({ default: m.PoliciesPage })));
 const CompressionTab = React.lazy(() => import('@/pages/Compression').then(m => ({ default: m.CompressionPage })));
 const ApiReferenceTab = React.lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
 const ClaudeCodeTab = React.lazy(() => import('@/pages/ClaudeCode').then(m => ({ default: m.ClaudeCodePage })));
@@ -22,9 +24,10 @@ function TabLoader() {
 export function SettingsTabsPage() {
   return (
     <PageContainer size="wide">
+      <BackLink to="/" label="Dashboard" />
       <PageHeader
         title="Settings"
-        description="Gateway configuration, compression, API reference & integrations"
+        description="Gateway configuration, policies, compression, API reference & integrations"
         icon={<Settings className="size-5" />}
       />
 
@@ -32,6 +35,10 @@ export function SettingsTabsPage() {
         <Tabs defaultValue="general">
           <TabsList>
             <TabsTrigger value="general">General</TabsTrigger>
+            <TabsTrigger value="policies">
+              <Shield className="size-3" />
+              Policies
+            </TabsTrigger>
             <TabsTrigger value="compression">Compression</TabsTrigger>
             <TabsTrigger value="api-reference">API Reference</TabsTrigger>
             <TabsTrigger value="claude-code">Claude Code</TabsTrigger>
@@ -40,6 +47,12 @@ export function SettingsTabsPage() {
           <TabsContent value="general">
             <React.Suspense fallback={<TabLoader />}>
               <GeneralTab />
+            </React.Suspense>
+          </TabsContent>
+
+          <TabsContent value="policies">
+            <React.Suspense fallback={<TabLoader />}>
+              <PoliciesTab />
             </React.Suspense>
           </TabsContent>
 

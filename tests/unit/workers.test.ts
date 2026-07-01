@@ -1,10 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { getDb } from '@dmr-x/db';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { initDb, closeDb, getDb } from '@dmr-x/db';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { WorkersService } from '../../services/workers/src/workers.service.js';
 
 describe('WorkersService', () => {
   let workersService: WorkersService;
   let db: ReturnType<typeof getDb>;
+  let tempDir: string;
+
+  beforeAll(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'dmrx-workers-'));
+    process.env.DMRX_DATA_DIR = tempDir;
+    await initDb();
+  });
+
+  afterAll(async () => {
+    await closeDb();
+    delete process.env.DMRX_DATA_DIR;
+  });
 
   beforeEach(() => {
     workersService = new WorkersService();

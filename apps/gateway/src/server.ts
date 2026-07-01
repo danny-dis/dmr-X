@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { Router } from '@dmr-x/router';
@@ -168,6 +168,7 @@ export async function createServer() {
   adapterRegistry.register(new NebiusAdapter());
   adapterRegistry.register(new NovitaAdapter());
   adapterRegistry.register(new MoonshotAdapter());
+  adapterRegistry.register(new MiniMaxAdapter());
   adapterRegistry.register(new LMStudioAdapter());
   adapterRegistry.register(new VolcengineAdapter());
   adapterRegistry.register(new DashscopeAdapter());
@@ -366,6 +367,11 @@ export async function createServer() {
   if (process.env.MOONSHOT_API_KEY) {
     await adapterRegistry.initialize('moonshot', {
       apiKey: process.env.MOONSHOT_API_KEY,
+    });
+  }
+  if (process.env.MINIMAX_API_KEY) {
+    await adapterRegistry.initialize('minimax', {
+      apiKey: process.env.MINIMAX_API_KEY,
     });
   }
   if (process.env.NVIDIA_API_KEY) {
@@ -570,6 +576,30 @@ export async function createServer() {
     const candidates = await registryService.getCandidates();
     router.setCandidates(candidates);
     logger.info({ count: candidates.length }, 'Loaded routing candidates');
+
+    // Load rate limit configs from model_profiles into RateLimitService
+    // This enables actual rate limit enforcement for free-tier models
+    let rateLimitConfigCount = 0;
+    for (const candidate of candidates) {
+      const hasRateLimits =
+        (candidate.freeTierMetadata?.rateLimits?.rpm ?? 0) > 0 ||
+        (candidate.freeTierMetadata?.rateLimits?.rpd ?? 0) > 0 ||
+        (candidate.freeTierMetadata?.rateLimits?.tpm ?? 0) > 0 ||
+        (candidate.freeTierMetadata?.rateLimits?.tpd ?? 0) > 0;
+
+      if (hasRateLimits) {
+        rateLimitService.setConfig(candidate.providerId, candidate.modelId, {
+          rpm: candidate.freeTierMetadata!.rateLimits.rpm || undefined,
+          rpd: candidate.freeTierMetadata!.rateLimits.rpd || undefined,
+          tpm: candidate.freeTierMetadata!.rateLimits.tpm || undefined,
+          tpd: candidate.freeTierMetadata!.rateLimits.tpd || undefined,
+        });
+        rateLimitConfigCount++;
+      }
+    }
+    if (rateLimitConfigCount > 0) {
+      logger.info({ count: rateLimitConfigCount }, 'Loaded rate limit configs from catalog');
+    }
   } catch (err) {
     logger.warn({ err }, 'Could not load candidates from registry (DB may not be ready)');
   }
@@ -579,6 +609,25 @@ export async function createServer() {
     try {
       const candidates = await registryService.getCandidates();
       router.setCandidates(candidates);
+
+      // Refresh rate limit configs from updated model_profiles
+      for (const candidate of candidates) {
+        const hasRateLimits =
+          (candidate.freeTierMetadata?.rateLimits?.rpm ?? 0) > 0 ||
+          (candidate.freeTierMetadata?.rateLimits?.rpd ?? 0) > 0 ||
+          (candidate.freeTierMetadata?.rateLimits?.tpm ?? 0) > 0 ||
+          (candidate.freeTierMetadata?.rateLimits?.tpd ?? 0) > 0;
+
+        if (hasRateLimits) {
+          rateLimitService.setConfig(candidate.providerId, candidate.modelId, {
+            rpm: candidate.freeTierMetadata!.rateLimits.rpm || undefined,
+            rpd: candidate.freeTierMetadata!.rateLimits.rpd || undefined,
+            tpm: candidate.freeTierMetadata!.rateLimits.tpm || undefined,
+            tpd: candidate.freeTierMetadata!.rateLimits.tpd || undefined,
+          });
+        }
+      }
+
       logger.info({ count: candidates.length }, 'Refreshed routing candidates');
     } catch (err) {
       logger.warn({ err }, 'Failed to refresh routing candidates');

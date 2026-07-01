@@ -39,6 +39,20 @@ function isRateLimitError(error: unknown): boolean {
   return false;
 }
 
+function isPaymentRequiredError(error: unknown): boolean {
+  if (error instanceof ProviderError) {
+    return error.statusCode === 402;
+  }
+  return false;
+}
+
+function isForbiddenError(error: unknown): boolean {
+  if (error instanceof ProviderError) {
+    return error.statusCode === 403;
+  }
+  return false;
+}
+
 function isQuotaError(error: unknown): boolean {
   return error instanceof QuotaExhaustedError;
 }
@@ -165,6 +179,22 @@ export async function executeWithFallback(
         logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record rate limit usage');
       }
     }
+    // On 402 (Payment Required), apply 24h cooldown — model needs credit to work
+    if (rls && isPaymentRequiredError(error)) {
+      rls.setPaymentRequiredCooldown(plan.primary.providerId, plan.primary.modelId);
+      logger.warn(
+        { provider: plan.primary.providerId, modelId: plan.primary.modelId },
+        'Payment required (402) — applying 24h cooldown'
+      );
+    }
+    // On 403 (Forbidden), apply 24h cooldown — model is not accessible
+    if (rls && isForbiddenError(error)) {
+      rls.setModelForbiddenCooldown(plan.primary.providerId, plan.primary.modelId);
+      logger.warn(
+        { provider: plan.primary.providerId, modelId: plan.primary.modelId },
+        'Model forbidden (403) — applying 24h cooldown'
+      );
+    }
   }
 
   // Classify the primary error for smart fallback selection
@@ -258,6 +288,22 @@ export async function executeWithFallback(
         } catch (usageErr) {
           logger.warn({ err: usageErr, provider: step.provider.providerId }, 'Failed to record rate limit usage');
         }
+      }
+      // On 402 (Payment Required), apply 24h cooldown — model needs credit to work
+      if (rls && isPaymentRequiredError(error)) {
+        rls.setPaymentRequiredCooldown(step.provider.providerId, step.provider.modelId);
+        logger.warn(
+          { provider: step.provider.providerId, modelId: step.provider.modelId },
+          'Payment required (402) on fallback — applying 24h cooldown'
+        );
+      }
+      // On 403 (Forbidden), apply 24h cooldown — model is not accessible
+      if (rls && isForbiddenError(error)) {
+        rls.setModelForbiddenCooldown(step.provider.providerId, step.provider.modelId);
+        logger.warn(
+          { provider: step.provider.providerId, modelId: step.provider.modelId },
+          'Model forbidden (403) on fallback — applying 24h cooldown'
+        );
       }
     }
   }

@@ -90,7 +90,7 @@ const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   },
   {
     name: 'prompt-leak',
-    regex: /(?:show|reveal|print|display|output|echo|repeat)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions?|rules?|guidelines?|initial\s+message)/gi,
+    regex: /(?:show|reveal|print|display|output|echo|repeat)\s+(?:me\s+)?(?:your\s+)?(?:system\s+)?(?:prompt|instructions?|rules?|guidelines?|initial\s+message)/gi,
     severity: 'high',
     description: 'Attempt to extract system prompt',
   },
@@ -103,9 +103,9 @@ const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   },
   {
     name: 'markdown-injection',
-    regex: /^#{1,6}\s+(?:system|assistant|human)\s*$/gm,
+    regex: /(?:^#{1,6}\s+(?:system|assistant|human)\s*$|^```(?:system|assistant|human)\s)/gmi,
     severity: 'medium',
-    description: 'Markdown header injection for role switching',
+    description: 'Markdown header or code block injection for role switching',
   },
   // Code execution attempts
   {
@@ -114,12 +114,24 @@ const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
     severity: 'critical',
     description: 'Code execution function call attempt',
   },
+  {
+    name: 'code-execution',
+    regex: /(?:rm\s+-rf|mkfs|dd\s+if=|chmod\s+777|curl\s+.*\|\s*sh|wget\s+.*\|\s*sh|exec\s+\/bin\/|eval\s+\$\(|python\s+-c|node\s+-e)\b/gi,
+    severity: 'critical',
+    description: 'Dangerous shell command execution attempt',
+  },
   // Data exfiltration patterns
   {
     name: 'exfiltration-url',
     regex: /(?:curl|wget|fetch|axios|http\.get|https\.get|XMLHttpRequest)\s*\(\s*['"`]https?:\/\//gi,
     severity: 'critical',
     description: 'Potential data exfiltration via HTTP request',
+  },
+  {
+    name: 'data-exfiltration',
+    regex: /(?:send|transmit|upload|exfiltrate|post|transfer)\s+(?:all\s+)?(?:data|info|information|content|files?|secrets?|keys?|credentials?|tokens?)\s+(?:to|at|into)\s+\S+/gi,
+    severity: 'high',
+    description: 'Potential data exfiltration via natural language instruction',
   },
   // Path traversal
   {
@@ -137,9 +149,9 @@ const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   },
   // Encoded payloads
   {
-    name: 'base64-encoded',
-    regex: /(?:base64|atob|btoa|Buffer\.from)\s*\(\s*['"`][A-Za-z0-9+/=]{20,}/g,
-    severity: 'medium',
+    name: 'base64-payload',
+    regex: /(?:base64|atob|btoa|Buffer\.from)\s*\(\s*['"`][A-Za-z0-9+/=]{20,}|(?:^|\s)[A-Za-z0-9+/]{40,}={0,2}(?:\s|$)/g,
+    severity: 'high',
     description: 'Base64 encoded payload detected',
   },
   // SQL injection patterns
@@ -151,7 +163,7 @@ const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   },
   // Command injection
   {
-    name: 'command-substitution',
+    name: 'shell-substitution',
     regex: /\$\(|`[^`]+`|\$\{[^}]+\}/g,
     severity: 'high',
     description: 'Shell command substitution attempt',

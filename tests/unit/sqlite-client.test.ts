@@ -49,7 +49,7 @@ describe('sqlite-client', () => {
     it('initializes sql.js and applies all migrations', async () => {
       const wrapper = await initDb();
       const row = wrapper.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-      expect(row.v).toBe(30);
+      expect(row.v).toBe(34);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

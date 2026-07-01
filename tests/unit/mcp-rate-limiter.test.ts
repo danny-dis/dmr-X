@@ -93,7 +93,7 @@ describe('RateLimiter', () => {
       // Fourth should be blocked
       const result = limiter.check('dmrx_chat');
       expect(result).not.toBeNull();
-      expect(result!.retryAfter).toBeGreaterThan(0);
+      expect(result).toContain('Rate limit exceeded');
 
       limiter.dispose();
     });

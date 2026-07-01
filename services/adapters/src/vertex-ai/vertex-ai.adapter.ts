@@ -59,12 +59,31 @@ export class VertexAIAdapter extends BaseAdapter {
 
   private mapModelId(model: string): string {
     const modelMap: Record<string, string> = {
-      'gemini-pro': 'gemini-2.0-flash',
-      'gemini-1.5-pro': 'gemini-1.5-pro-002',
-      'gemini-1.5-flash': 'gemini-1.5-flash-002',
-      'gemini-2.0-flash': 'gemini-2.0-flash',
+      // Gemini 3.x series (latest)
+      'gemini-3.1-pro': 'gemini-3.1-pro-preview',
+      'gemini-3.1-pro-preview': 'gemini-3.1-pro-preview',
+      'gemini-3.1-flash': 'gemini-3.1-flash-preview',
+      'gemini-3.1-flash-preview': 'gemini-3.1-flash-preview',
+      'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite-preview',
+      'gemini-3.1-flash-lite-preview': 'gemini-3.1-flash-lite-preview',
+      'gemini-3.0-flash': 'gemini-3.0-flash-preview',
+      'gemini-3.0-flash-preview': 'gemini-3.0-flash-preview',
+      // Gemini 2.5 series
       'gemini-2.5-pro': 'gemini-2.5-pro-preview-05-06',
+      'gemini-2.5-pro-preview-05-06': 'gemini-2.5-pro-preview-05-06',
       'gemini-2.5-flash': 'gemini-2.5-flash-preview-04-17',
+      'gemini-2.5-flash-preview-04-17': 'gemini-2.5-flash-preview-04-17',
+      'gemini-2.5-flash-lite': 'gemini-2.5-flash-lite',
+      // Gemini 2.0 series
+      'gemini-pro': 'gemini-2.0-flash',
+      'gemini-2.0-flash': 'gemini-2.0-flash',
+      'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite',
+      // Gemini 1.5 series (legacy)
+      'gemini-1.5-pro': 'gemini-1.5-pro-002',
+      'gemini-1.5-pro-002': 'gemini-1.5-pro-002',
+      'gemini-1.5-flash': 'gemini-1.5-flash-002',
+      'gemini-1.5-flash-002': 'gemini-1.5-flash-002',
+      // Embeddings
       'text-embedding': 'text-embedding-004',
       'text-embedding-004': 'text-embedding-004',
       'textembedding': 'text-embedding-004',
@@ -259,11 +278,22 @@ export class VertexAIAdapter extends BaseAdapter {
 
   async listModels(): Promise<ModelInfo[]> {
     return [
-      { modelId: 'gemini-2.0-flash', modality: 'llm', capabilities: ['chat', 'vision', 'tools'] },
-      { modelId: 'gemini-2.5-pro-preview-05-06', modality: 'llm', capabilities: ['chat', 'vision', 'tools'] },
-      { modelId: 'gemini-2.5-flash-preview-04-17', modality: 'llm', capabilities: ['chat', 'vision', 'tools'] },
-      { modelId: 'gemini-1.5-pro-002', modality: 'llm', capabilities: ['chat', 'vision', 'tools'] },
+      // Gemini 3.x series (latest, June 2026)
+      { modelId: 'gemini-3.1-pro-preview', modality: 'llm', capabilities: ['chat', 'vision', 'tool_use', 'reasoning'] },
+      { modelId: 'gemini-3.1-flash-preview', modality: 'llm', capabilities: ['chat', 'vision', 'tool_use'] },
+      { modelId: 'gemini-3.1-flash-lite-preview', modality: 'llm', capabilities: ['chat', 'vision'] },
+      { modelId: 'gemini-3.0-flash-preview', modality: 'llm', capabilities: ['chat', 'vision', 'tool_use'] },
+      // Gemini 2.5 series
+      { modelId: 'gemini-2.5-pro-preview-05-06', modality: 'llm', capabilities: ['chat', 'vision', 'tool_use', 'reasoning'] },
+      { modelId: 'gemini-2.5-flash-preview-04-17', modality: 'llm', capabilities: ['chat', 'vision', 'tool_use'] },
+      { modelId: 'gemini-2.5-flash-lite', modality: 'llm', capabilities: ['chat', 'vision'] },
+      // Gemini 2.0 series (deprecated June 2026, migrate to 2.5/3.x)
+      { modelId: 'gemini-2.0-flash', modality: 'llm', capabilities: ['chat', 'vision', 'tool_use'] },
+      { modelId: 'gemini-2.0-flash-lite', modality: 'llm', capabilities: ['chat', 'vision'] },
+      // Gemini 1.5 series (legacy)
+      { modelId: 'gemini-1.5-pro-002', modality: 'llm', capabilities: ['chat', 'vision', 'tool_use'] },
       { modelId: 'gemini-1.5-flash-002', modality: 'llm', capabilities: ['chat', 'vision'] },
+      // Embeddings
       { modelId: 'text-embedding-004', modality: 'embedding', capabilities: ['embedding'] },
     ];
   }

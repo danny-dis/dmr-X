@@ -86,16 +86,13 @@ describe('mcp config', () => {
       consoleErrorSpy.mockRestore();
     });
 
-    it('returns an array root as-is (the type guard only rejects null/non-objects)', () => {
-      // Implementation note: `typeof [] === 'object'`, so a JSON array passes the
-      // object/typeof check. The function returns it cast as McpConfigFile. Callers
-      // should treat the result defensively.
+    it('returns null for an array root (type guard rejects non-objects)', () => {
       const path = join(tempDir, 'array.json');
       writeFileSync(path, '[1, 2, 3]');
       process.env.DMRX_MCP_CONFIG = path;
       const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const cfg = loadConfigFile();
-      expect(cfg).toEqual([1, 2, 3]);
+      expect(cfg).toBeNull();
       consoleErrorSpy.mockRestore();
     });
 
@@ -210,13 +207,20 @@ describe('mcp config', () => {
       }
     );
 
-    it.each(['false', 'FALSE', '0', 'no', 'NO', 'yes', 'YES'])(
-      'treats %p as false (only "true" and "1" are truthy)',
+    it.each(['false', 'FALSE', '0', 'no', 'NO'])(
+      'treats %p as false (only "true", "1", "yes", "on" are truthy)',
       (val) => {
         process.env.DMRX_TEST_BOOL = val;
-        // Note: the current implementation only treats 'true' (any case) and '1' as truthy.
-        // 'yes' and 'no' are NOT recognized — they fall through to the false branch.
         expect(resolveConfigBool(null, 'flag', 'DMRX_TEST_BOOL', true)).toBe(false);
+        delete process.env.DMRX_TEST_BOOL;
+      }
+    );
+
+    it.each(['yes', 'YES'])(
+      'treats %p as truthy',
+      (val) => {
+        process.env.DMRX_TEST_BOOL = val;
+        expect(resolveConfigBool(null, 'flag', 'DMRX_TEST_BOOL', false)).toBe(true);
         delete process.env.DMRX_TEST_BOOL;
       }
     );

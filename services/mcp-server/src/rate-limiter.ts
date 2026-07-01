@@ -81,7 +81,7 @@ export class RateLimiter {
 
   /**
    * Checks if a tool call is allowed. Returns null if allowed, or an
-   * error message if rate-limited.
+   * error message string if rate-limited.
    */
   check(toolName: string): string | null {
     const limit = this.config.get(toolName);
@@ -113,6 +113,7 @@ export class RateLimiter {
 
   /**
    * Returns current rate limit status for a tool.
+   * For unconfigured tools, returns { configured: false }.
    */
   status(toolName: string): { configured: boolean; limit?: number; window?: string; remaining?: number } {
     const limit = this.config.get(toolName);
@@ -132,6 +133,15 @@ export class RateLimiter {
   }
 
   /**
+   * Alias for status() — returns status with windowMs instead of window string.
+   */
+  getStatus(toolName: string): { limit: number; windowMs: number; remaining: number } {
+    const s = this.status(toolName);
+    if (!s.configured) return { limit: Infinity, windowMs: 60_000, remaining: Infinity };
+    return { limit: s.limit!, windowMs: this.config.get(toolName)!.windowMs, remaining: s.remaining! };
+  }
+
+  /**
    * Returns all configured rate limits.
    */
   listConfig(): Array<{ tool: string; maxRequests: number; window: string }> {
@@ -140,6 +150,13 @@ export class RateLimiter {
       maxRequests: cfg.maxRequests,
       window: this.formatWindow(cfg.windowMs),
     }));
+  }
+
+  /**
+   * Resets the rate limit window for a specific tool.
+   */
+  reset(toolName: string): void {
+    this.windows.delete(toolName);
   }
 
   /**

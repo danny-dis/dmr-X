@@ -5,7 +5,6 @@ import {
   Boxes,
   Database,
   Users,
-  Shield,
   Wallet,
   Cpu,
   Settings,
@@ -61,12 +60,6 @@ export const NAV_GROUPS: NavGroup[] = [
         path: '/routing',
         icon: Activity,
         description: 'Decisions & strategies',
-      },
-      {
-        label: 'Policies',
-        path: '/policies',
-        icon: Shield,
-        description: 'Routing & access rules',
       },
       {
         label: 'Fusion Panel',

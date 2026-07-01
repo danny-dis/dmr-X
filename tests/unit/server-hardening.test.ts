@@ -169,12 +169,12 @@ describe('Fastify server hardening', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('enforces maxParamLength (404 on oversized param)', async () => {
+  it('enforces maxParamLength (414 on oversized param)', async () => {
     app.get('/items/:id', async () => ({ ok: true }));
     const oversized = 'x'.repeat(500);
     const res = await app.inject({ method: 'GET', url: `/items/${oversized}` });
-    // Fastify returns 404 for paths where the param exceeds maxParamLength
-    expect(res.statusCode).toBe(404);
+    // Fastify 5 returns 414 (URI Too Long) when param exceeds maxParamLength
+    expect(res.statusCode).toBe(414);
   });
 
   it('honors request id header when provided', async () => {

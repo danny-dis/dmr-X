@@ -363,6 +363,7 @@
       "name": "@dmr-x/quota",
       "version": "0.5.1",
       "dependencies": {
+        "@dmr-x/billing": "*",
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
         "@dmr-x/registry": "*",

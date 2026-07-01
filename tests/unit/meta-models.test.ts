@@ -43,15 +43,16 @@ describe('meta-models', () => {
   });
 
   it('should have all meta-model definitions', () => {
-    expect(META_MODELS).toHaveLength(15);
+    expect(META_MODELS).toHaveLength(17);
     expect(META_MODELS.map(m => m.alias)).toEqual([
       'auto', 'auto-fast', 'auto-smart', 'auto-agentic', 'auto-coding',
-      'auto-reasoning', 'auto-vision', 'auto-cheap', 'auto-long-context', 'auto-free',
+      'auto-reasoning', 'auto-vision', 'auto-eco', 'auto-cheap', 'auto-premium',
+      'auto-long-context', 'auto-free',
       'free', 'free-fast', 'free-smart', 'free-agentic', 'free-coding',
     ]);
   });
 
-  it('should resolve auto as neutral pass-through (no re-sorting) with costFilter=all', () => {
+  it('should resolve auto with cost-quality balance scoring and costFilter=all', () => {
     const candidates: CandidateSet = [
       makeCandidate({ modelId: 'first', qualityScore: 0.5, avgLatencyMs: 200, costPerInputToken: 0 }),
       makeCandidate({ modelId: 'second', qualityScore: 0.9, avgLatencyMs: 2000, costPerInputToken: 0 }),
@@ -61,14 +62,13 @@ describe('meta-models', () => {
     const result = resolveMetaModel('auto', candidates);
     expect(result).not.toBeNull();
     expect(result!.costFilter).toBe('all');
-    // auto with costFilter=all should NOT re-sort and should include paid models
-    expect(result!.resolved[0].modelId).toBe('first');
-    expect(result!.resolved[1].modelId).toBe('second');
-    expect(result!.resolved[2].modelId).toBe('paid');
+    // auto scores by quality(35%) + cost(30%) + speed(20%) + context(15%)
+    // second (0.9 quality, free) should rank highest
+    expect(result!.resolved[0].modelId).toBe('second');
     expect(result!.resolved).toHaveLength(3);
   });
 
-  it('should resolve auto-fast to lowest latency model (all providers)', () => {
+  it('should resolve auto-fast to best speed-quality model (all providers)', () => {
     const candidates: CandidateSet = [
       makeCandidate({ modelId: 'slow', qualityScore: 0.9, avgLatencyMs: 2000, costPerInputToken: 0 }),
       makeCandidate({ modelId: 'fast', qualityScore: 0.5, avgLatencyMs: 200, costPerInputToken: 0 }),
@@ -78,8 +78,9 @@ describe('meta-models', () => {
     const result = resolveMetaModel('auto-fast', candidates);
     expect(result).not.toBeNull();
     expect(result!.costFilter).toBe('all');
-    // paid-fast has lowest latency, should win in costFilter=all mode
-    expect(result!.resolved[0].modelId).toBe('paid-fast');
+    // auto-fast scores by speed(60%) + quality(25%) + cost(15%), requires quality >= 0.5
+    // fast has best speed+cost balance, should win
+    expect(result!.resolved[0].modelId).toBe('fast');
   });
 
   it('should resolve auto-smart to highest quality model (all providers)', () => {
@@ -117,7 +118,7 @@ describe('meta-models', () => {
     expect(result!.resolved.find(c => c.modelId === 'paid-1')).toBeUndefined();
   });
 
-  it('should preserve all candidates in original order with costFilter=all', () => {
+  it('should rank candidates by cost-quality balance with costFilter=all', () => {
     const candidates: CandidateSet = [
       makeCandidate({ modelId: 'free-a', costPerInputToken: 0, qualityScore: 0.6 }),
       makeCandidate({ modelId: 'free-b', costPerInputToken: 0, qualityScore: 0.8 }),
@@ -127,9 +128,10 @@ describe('meta-models', () => {
     const result = resolveMetaModel('auto', candidates);
     expect(result).not.toBeNull();
     expect(result!.resolved).toHaveLength(3);
-    // auto is neutral with costFilter=all — preserves original order including paid
-    expect(result!.resolved[0].modelId).toBe('free-a');
-    expect(result!.resolved[1].modelId).toBe('free-b');
+    // auto scores by quality(35%) + cost(30%) + speed(20%) + context(15%)
+    // free-b ranks highest (good quality + free), paid-c penalized by cost
+    expect(result!.resolved[0].modelId).toBe('free-b');
+    expect(result!.resolved[1].modelId).toBe('free-a');
     expect(result!.resolved[2].modelId).toBe('paid-c');
   });
 

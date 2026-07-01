@@ -240,6 +240,8 @@ describe('retryWithWait', () => {
         };
       },
       addPenalty() { return 0; },
+      isOnCooldown(_providerId: string, _modelId: string) { return false; },
+      getCooldownExpiry(_providerId: string, _modelId: string) { return null; },
     };
   }
 
@@ -285,6 +287,8 @@ describe('retryWithWait', () => {
         };
       },
       addPenalty() { return 0; },
+      isOnCooldown(_providerId: string, _modelId: string) { return false; },
+      getCooldownExpiry(_providerId: string, _modelId: string) { return null; },
     };
 
     const result = await runPipeline({
@@ -364,6 +368,8 @@ describe('free-tier headroom', () => {
         };
       },
       addPenalty() { return 0; },
+      isOnCooldown(_providerId: string, _modelId: string) { return false; },
+      getCooldownExpiry(_providerId: string, _modelId: string) { return null; },
     };
 
     // Run multiple times to verify high-headroom model is favored

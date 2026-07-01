@@ -2,6 +2,7 @@ import { Wallet } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
+import { BackLink } from '@/components/primitives/BackLink';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 
 // Lazy-load tab content for code splitting
@@ -24,6 +25,7 @@ function TabLoader() {
 export function BillingPage() {
   return (
     <PageContainer size="wide">
+      <BackLink to="/" label="Dashboard" />
       <PageHeader
         title="Billing"
         description="Costs, credits, quotas, and usage history"
