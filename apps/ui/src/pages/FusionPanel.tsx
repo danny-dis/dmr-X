@@ -6,6 +6,7 @@ import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
@@ -129,27 +130,26 @@ export function FusionPanelPage() {
         <Card padding="md">
           <h3 className="text-sm font-semibold text-fg mb-3">Add Model Slot</h3>
           <div className="flex items-center gap-3">
-            <select
-              value={selectedProvider}
-              onChange={(e) => { setSelectedProvider(e.target.value); setSelectedModel(''); }}
-              className="h-9 px-3 rounded-lg border border-border bg-surface text-xs text-fg min-w-[180px]"
-            >
-              <option value="">Select provider…</option>
-              {enabledProviders.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              disabled={!selectedProvider}
-              className="h-9 px-3 rounded-lg border border-border bg-surface text-xs text-fg min-w-[240px] disabled:opacity-50"
-            >
-              <option value="">Select model…</option>
-              {availableModels.map(m => (
-                <option key={m.id} value={m.id}>{m.id}</option>
-              ))}
-            </select>
+            <Select value={selectedProvider} onValueChange={(v) => { setSelectedProvider(v); setSelectedModel(''); }}>
+              <SelectTrigger className="w-48 h-9">
+                <SelectValue placeholder="Select provider…" />
+              </SelectTrigger>
+              <SelectContent>
+                {enabledProviders.map(p => (
+                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={selectedModel} onValueChange={setSelectedModel} disabled={!selectedProvider}>
+              <SelectTrigger className="w-60 h-9" disabled={!selectedProvider}>
+                <SelectValue placeholder="Select model…" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableModels.map(m => (
+                  <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button size="sm" onClick={addSlot} disabled={!selectedProvider || !selectedModel}>
               <Plus className="size-3" />
               Add Slot

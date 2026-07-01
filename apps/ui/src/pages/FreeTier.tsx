@@ -307,7 +307,8 @@ export function FreeTierPage() {
                 {connectedFree.map((p) => {
                   const config = p.config as Record<string, unknown> | undefined;
                   const monthlyBudget = (config?.monthlyTokenBudget as number | undefined) ?? 1000000;
-                  const usedPercent = Math.min(Math.round((Math.random() * 0.3) * 100), 95);
+                  const tokensUsed = p.tokens_used ?? 0;
+                  const usedPercent = monthlyBudget > 0 ? Math.min(Math.round((tokensUsed / monthlyBudget) * 100), 100) : 0;
                   return (
                     <div key={p.id} className="flex items-center gap-3 p-2 rounded-lg bg-surface-2/50">
                       <div className="flex size-7 shrink-0 items-center justify-center rounded border border-border bg-surface-2 text-fg-muted font-mono text-[9px] font-semibold uppercase">
@@ -316,7 +317,7 @@ export function FreeTierPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-medium text-fg truncate">{p.name}</span>
-                          <span className="text-[10px] text-fg-muted tabular-nums">{usedPercent}% used</span>
+                          <span className="text-[10px] text-fg-muted tabular-nums">{formatNumber(tokensUsed)} / {formatNumber(monthlyBudget)} ({usedPercent}%)</span>
                         </div>
                         <Progress value={usedPercent} tone={usedPercent > 80 ? 'warning' : 'primary'} size="sm" className="mt-1" />
                         <p className="text-[10px] text-fg-subtle mt-1">Budget: {formatNumber(monthlyBudget)} tokens/mo</p>

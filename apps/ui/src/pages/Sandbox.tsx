@@ -1,11 +1,10 @@
-import { Terminal, Plus, Play, Code, Cpu, Clock, ChevronRight, RefreshCw, X } from 'lucide-react';
+import { Terminal, Plus, Code, X } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { Code as CodeBlock } from '@/components/primitives/Code';
 import {
   Dialog, DialogContent, DialogHeader,
   DialogTitle, DialogDescription, DialogBody, DialogFooter,
@@ -84,24 +83,7 @@ export function SandboxPage() {
         }
       />
 
-      <Card padding="md" className="mt-5">
-        <CardHeader className="px-0 pt-0">
-          <CardTitle>Submit a job</CardTitle>
-          <p className="text-[10px] text-fg-muted mt-0.5">Run code in a sandboxed worker</p>
-        </CardHeader>
-        <CardContent className="px-0">
-          <CodeBlock inline={false} copyable>
-{`POST /admin/sandbox/jobs
-{
-  "language": "python",
-  "code": "print('hello from sandbox')",
-  "timeoutMs": 5000
-}`}
-          </CodeBlock>
-        </CardContent>
-      </Card>
-
-      <div className="mt-3">
+      <div className="mt-5">
         <Card padding="none">
           <div className="px-4 py-3 border-b border-border flex items-center justify-between">
             <h3 className="text-sm font-semibold text-fg">Recent jobs</h3>

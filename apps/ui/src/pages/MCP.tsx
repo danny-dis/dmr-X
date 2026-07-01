@@ -9,12 +9,15 @@ import { McpFederationConfig } from '@/components/domain/mcp/McpFederationConfig
 import { McpAggregationConfig } from '@/components/domain/mcp/McpAggregationConfig';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
+import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Code } from '@/components/primitives/Code';
 import { Input } from '@/components/primitives/Input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
+import { Textarea } from '@/components/primitives/Textarea';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { apiPost } from '@/lib/api';
@@ -299,15 +302,15 @@ export function MCPPage() {
                     }
                   }}
                 />
-                <button
-                  type="button"
+                <Button
+                  size="sm"
                   onClick={handleToolSearch}
                   disabled={!searchQuery.trim() || isSearching}
-                  className="px-4 py-2 text-xs bg-primary text-white rounded hover:bg-primary/90 disabled:opacity-50 flex items-center gap-2"
+                  loading={isSearching}
                 >
                   <Search className="size-3" />
-                  {isSearching ? 'Searching...' : 'Search'}
-                </button>
+                  Search
+                </Button>
               </div>
 
               {searchError && (
@@ -367,30 +370,32 @@ export function MCPPage() {
             <TabsContent value="test" className="p-4 space-y-4">
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-fg-subtle uppercase">Tool</label>
-                <select
-                  value={selectedTool}
-                  onChange={(e) => setSelectedTool(e.target.value)}
-                  className="w-full p-2 text-xs bg-surface-2 border border-border rounded"
-                >
-                  <option value="">Select a tool...</option>
-                  {(tools ?? []).map((tool) => (
-                    <option key={tool.name} value={tool.name}>{tool.name}</option>
-                  ))}
-                </select>
+                <Select value={selectedTool} onValueChange={setSelectedTool}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a tool..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(tools ?? []).map((tool) => (
+                      <SelectItem key={tool.name} value={tool.name}>{tool.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-fg-subtle uppercase">Parameters (JSON)</label>
-                <textarea
+                <Textarea
                   value={toolParams}
                   onChange={(e) => setToolParams(e.target.value)}
                   placeholder='{"prompt": "your prompt here"}'
-                  className="w-full h-32 p-2 text-xs font-mono bg-surface-2 border border-border rounded resize-none"
+                  rows={6}
+                  className="font-mono text-xs"
                 />
               </div>
-              <button
-                type="button"
+              <Button
+                size="sm"
                 disabled={!selectedTool || isExecuting}
+                loading={isExecuting}
                 onClick={async () => {
                   setIsExecuting(true);
                   setToolError(null);
@@ -405,10 +410,10 @@ export function MCPPage() {
                     setIsExecuting(false);
                   }
                 }}
-                className="px-3 py-1.5 text-xs font-medium bg-primary text-white rounded hover:bg-primary/80 disabled:opacity-50"
               >
-                {isExecuting ? 'Executing...' : 'Execute'}
-              </button>
+                <Play className="size-3" />
+                Execute
+              </Button>
               {toolError && (
                 <div className="p-3 rounded-lg bg-danger/5 border border-danger/20 text-xs text-danger">{toolError}</div>
               )}
