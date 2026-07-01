@@ -248,9 +248,14 @@ function applyProviderPreferences(
 ): CandidateSet {
   let result = candidates;
 
-  // When strategy is 'free', filter to zero-cost models only
+  // When strategy is 'free', filter to free models only
   if (prefs.strategy === 'free') {
-    result = result.filter((m) => (m.costPerInputToken ?? 0) === 0 && (m.costPerOutputToken ?? 0) === 0);
+    result = result.filter((m) => {
+      if (m.pricingTier) {
+        return m.pricingTier === 'free' || m.pricingTier === 'free_with_limits';
+      }
+      return (m.costPerInputToken ?? 0) === 0 && (m.costPerOutputToken ?? 0) === 0;
+    });
   }
 
   // Filter by `only` list (whitelist)
@@ -334,6 +339,10 @@ function applyProviderOrder(scored: CandidateSet, order: string[]): CandidateSet
 }
 
 function isFreeModel(model: ProviderModel): boolean {
+  // Use unified pricing tier if available, fall back to cost-based check
+  if (model.pricingTier) {
+    return model.pricingTier === 'free' || model.pricingTier === 'free_with_limits';
+  }
   return (model.costPerInputToken ?? 0) === 0 && (model.costPerOutputToken ?? 0) === 0;
 }
 

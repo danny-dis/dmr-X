@@ -183,7 +183,11 @@ export class Router {
         freeTierStrategy,
         (providerId, modelId) => {
           const candidate = this.candidates.find(c => c.providerId === providerId && c.modelId === modelId);
-          return candidate ? candidate.costPerInputToken === 0 && candidate.costPerOutputToken === 0 : false;
+          if (!candidate) return false;
+          if (candidate.pricingTier) {
+            return candidate.pricingTier === 'free' || candidate.pricingTier === 'free_with_limits';
+          }
+          return candidate.costPerInputToken === 0 && candidate.costPerOutputToken === 0;
         }
       );
       if (sticky) {

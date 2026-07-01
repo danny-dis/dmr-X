@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
 import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
-import { useApiData } from '@/hooks/useApiData';
+import { useApiData, useUrlState, useUrlNullableState } from '@/hooks';
 import { ModalityBadge } from '@/icons/Modality';
 import { Admin } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
@@ -27,20 +27,29 @@ const CAPABILITY_TIER_LABELS: Record<string, string> = {
   temp_worker: 'Temp Worker',
 };
 
+const PRICING_TIER_CONFIG: Record<string, { label: string; tone: 'success' | 'info' | 'warning' | 'danger' | 'muted' }> = {
+  free: { label: 'Free', tone: 'success' },
+  free_with_limits: { label: 'Free (limited)', tone: 'info' },
+  paid: { label: 'Paid', tone: 'warning' },
+  subscription_only: { label: 'Subscription', tone: 'danger' },
+  unknown: { label: '?', tone: 'muted' },
+};
+
 export function ModelsPage() {
-  const [query, setQuery] = React.useState('');
-  const [modality, setModality] = React.useState<string | null>(null);
-  const [providerFilter, setProviderFilter] = React.useState<string | null>(null);
-  const [layerFilter, setLayerFilter] = React.useState<string | null>(null);
-  const [capabilityFilter, setCapabilityFilter] = React.useState<string | null>(null);
-  const [showUnavailable, setShowUnavailable] = React.useState(false);
+  const [query, setQuery] = useUrlState('q', '');
+  const [modality, setModality] = useUrlNullableState('modality');
+  const [providerFilter, setProviderFilter] = useUrlNullableState('provider');
+  const [layerFilter, setLayerFilter] = useUrlNullableState('layer');
+  const [capabilityFilter, setCapabilityFilter] = useUrlNullableState('tier');
+  const [pricingTierFilter, setPricingTierFilter] = useUrlNullableState('pricing');
+  const [showUnavailable, setShowUnavailable] = useUrlState('unavailable', 'false');
   const [page, setPage] = React.useState(1);
   const [selectedModel, setSelectedModel] = React.useState<ApiModel | null>(null);
   const [createModelOpen, setCreateModelOpen] = React.useState(false);
   const pageSize = 24;
 
   // Fetch all models (with provider_available flag from backend)
-  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: showUnavailable ? 'false' : 'true' }), [], { refetchInterval: 30000 });
+  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: showUnavailable === 'true' ? 'false' : 'true' }), [], { refetchInterval: 30000 });
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
 
   // Build a lookup of provider key status
@@ -58,6 +67,7 @@ export function ModelsPage() {
     if (providerFilter && m.provider_id !== providerFilter) return false;
     if (layerFilter && m.intelligence_layer !== layerFilter) return false;
     if (capabilityFilter && m.capability_tier !== capabilityFilter) return false;
+    if (pricingTierFilter && (m as any).pricing_tier !== pricingTierFilter) return false;
     return true;
   });
 
@@ -129,16 +139,16 @@ export function ModelsPage() {
           </select>
           {unavailableCount > 0 && (
             <button
-              onClick={() => setShowUnavailable(!showUnavailable)}
+              onClick={() => setShowUnavailable(showUnavailable === 'true' ? 'false' : 'true')}
               className={`h-7 px-2.5 rounded-md text-[11px] font-medium transition-colors ${
-                showUnavailable
+                showUnavailable === 'true'
                   ? 'bg-warning/10 text-warning border border-warning/20'
                   : 'text-fg-muted hover:bg-surface-2 border border-transparent'
               }`}
-              title={showUnavailable ? 'Hide models without keys' : 'Show models without keys'}
+              title={showUnavailable === 'true' ? 'Hide models without keys' : 'Show models without keys'}
             >
               <Key className="size-3 inline mr-1" />
-              {showUnavailable ? 'Hide' : 'Show'} unavailable
+              {showUnavailable === 'true' ? 'Hide' : 'Show'} unavailable
             </button>
           )}
           <div className="flex items-center gap-1">
@@ -187,6 +197,29 @@ export function ModelsPage() {
               </button>
             ))}
           </div>
+          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-border">
+            <button
+              onClick={() => setPricingTierFilter(null)}
+              className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                !pricingTierFilter ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+              }`}
+            >
+              all pricing
+            </button>
+            {Object.entries(PRICING_TIER_CONFIG).filter(([k]) => k !== 'unknown').map(([key, config]) => (
+              <button
+                key={key}
+                onClick={() => setPricingTierFilter(key === pricingTierFilter ? null : key)}
+                className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                  pricingTierFilter === key
+                    ? 'bg-primary/10 text-primary border border-primary/20'
+                    : 'text-fg-muted hover:bg-surface-2 border border-transparent'
+                }`}
+              >
+                {config.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {models.isLoading ? (
@@ -227,6 +260,14 @@ export function ModelsPage() {
                       {m.provider ?? 'unknown'}
                     </Badge>
                     {m.modality && <ModalityBadge modality={m.modality} size={14} />}
+                    {(() => {
+                      const tier = (m as any).pricing_tier;
+                      if (tier && tier !== 'unknown') {
+                        const config = PRICING_TIER_CONFIG[tier] ?? PRICING_TIER_CONFIG.unknown;
+                        return <Badge tone={config.tone} size="sm">{config.label}</Badge>;
+                      }
+                      return null;
+                    })()}
                   </div>
                 <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
                   <div>

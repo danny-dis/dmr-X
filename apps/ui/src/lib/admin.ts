@@ -541,6 +541,29 @@ export const Admin = {
   listAggregatedServers: () => apiGet<{ servers: ApiMcpAggregatedServer[] }>('/admin/mcp/aggregation/servers'),
   addAggregatedServer: (body: { id: string; name: string; transport: string; url?: string; command?: string; args?: string[] }) => apiPost<ApiMcpAggregatedServer>('/admin/mcp/aggregation/servers', body),
   removeAggregatedServer: (id: string) => apiDelete<{ ok: true }>(`/admin/mcp/aggregation/servers/${id}`),
+
+  // Credits
+  getCreditBalance: (tenantId?: string) => apiGet<any>(`/admin/credits/balance${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  topupCredits: (amountCents: number, description?: string) => apiPost<any>('/admin/credits/topup', { amount_cents: amountCents, description, tenant_id: 'default' }),
+  getCreditTransactions: (opts?: { type?: string; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.type) params.set('type', opts.type);
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    if (opts?.offset) params.set('offset', String(opts.offset));
+    const qs = params.toString();
+    return apiGet<any>(`/admin/credits/transactions${qs ? `?${qs}` : ''}`);
+  },
+
+  // Model Classifications
+  getModelClassifications: (opts?: { tier?: string; provider_id?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.tier) params.set('tier', opts.tier);
+    if (opts?.provider_id) params.set('provider_id', opts.provider_id);
+    const qs = params.toString();
+    return apiGet<any>(`/admin/models/classifications${qs ? `?${qs}` : ''}`);
+  },
+  verifyModelFree: (providerId: string, modelId: string) => apiPost<any>('/admin/models/verify-free', { provider_id: providerId, model_id: modelId }),
+  getFreeModels: () => apiGet<any>('/admin/models/free'),
 };
 
 function buildSseUrl(path: string): string {

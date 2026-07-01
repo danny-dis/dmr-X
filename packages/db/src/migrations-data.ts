@@ -839,5 +839,97 @@ CREATE INDEX IF NOT EXISTS idx_discovery_log_key
 ON rate_limit_discovery_log(key_id, discovered_at DESC);
 `,
 },
+31: {
+  filename: '031_rate_limit_state_persistence.sql',
+  sql: `-- Persist rate-limit cooldowns, penalties, and hit tracking across restarts
+
+CREATE TABLE IF NOT EXISTS rate_limit_cooldowns (
+  provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  cooldown_expiry INTEGER NOT NULL,
+  penalty_points INTEGER NOT NULL DEFAULT 0,
+  last_penalty_at INTEGER,
+  hit_timestamps TEXT DEFAULT '[]',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (provider_id, model_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rl_cooldowns_active
+ON rate_limit_cooldowns(cooldown_expiry)
+WHERE cooldown_expiry > 0;
+
+CREATE TABLE IF NOT EXISTS rate_limit_daily_caps (
+  provider_id TEXT NOT NULL PRIMARY KEY,
+  request_count INTEGER NOT NULL DEFAULT 0,
+  window_start INTEGER NOT NULL
+);
+`,
+},
+32: {
+  filename: '032_credit_balance_system.sql',
+  sql: `-- Credit/Balance system for prepaid spending limits
+
+CREATE TABLE IF NOT EXISTS credits (
+  tenant_id TEXT PRIMARY KEY,
+  balance_cents INTEGER NOT NULL DEFAULT 0,
+  total_topup_cents INTEGER NOT NULL DEFAULT 0,
+  total_used_cents INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS credit_transactions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  balance_after_cents INTEGER NOT NULL,
+  description TEXT,
+  request_id TEXT,
+  admin_key_hash TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_credit_tx_tenant
+ON credit_transactions(tenant_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_credit_tx_type
+ON credit_transactions(tenant_id, type, created_at DESC);
+`,
+},
+33: {
+  filename: '033_model_classifications.sql',
+  sql: `-- Unified Model Classification
+
+CREATE TABLE IF NOT EXISTS model_classifications (
+  provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  pricingTier TEXT NOT NULL DEFAULT 'unknown',
+  input_cost_per_1m REAL NOT NULL DEFAULT 0,
+  output_cost_per_1m REAL NOT NULL DEFAULT 0,
+  has_free_tier INTEGER NOT NULL DEFAULT 0,
+  rate_limit_rpm INTEGER,
+  rate_limit_rpd INTEGER,
+  rate_limit_tpm INTEGER,
+  rate_limit_tpd INTEGER,
+  monthly_budget INTEGER NOT NULL DEFAULT 0,
+  verified_free INTEGER NOT NULL DEFAULT 0,
+  last_verification TEXT,
+  source TEXT NOT NULL DEFAULT 'catalog',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (provider_id, model_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_class_pricing
+ON model_classifications(pricingTier);
+
+CREATE INDEX IF NOT EXISTS idx_model_class_free
+ON model_classifications(verified_free, pricingTier)
+WHERE pricingTier IN ('free', 'free_with_limits');
+
+CREATE INDEX IF NOT EXISTS idx_model_class_cost
+ON model_classifications(input_cost_per_1m, output_cost_per_1m);
+`,
+},
 };
 

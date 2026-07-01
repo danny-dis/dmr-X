@@ -1,5 +1,6 @@
 import { getDb } from '@dmr-x/db';
 import type { FastifyInstance } from 'fastify';
+import { classifyModel } from '@dmr-x/registry';
 
 export async function modelsRoutes(server: FastifyInstance): Promise<void> {
   server.get('/models', async () => {
@@ -17,28 +18,32 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
 
     return {
       object: 'list',
-      data: rows.map((row) => ({
-        id: row.model_id,
-        object: 'model',
-        created: row.created_at ? Math.floor(new Date(row.created_at).getTime() / 1000) : 0,
-        owned_by: row.provider_name,
-        meta: {
-          modality: row.modality,
-          display_name: row.display_name,
-          context_window: row.context_window,
-          max_output_tokens: row.max_output_tokens,
-          supports_streaming: row.supports_streaming,
-          supports_vision: row.supports_vision,
-          supports_tool_use: row.supports_tool_use,
-          supports_json_mode: row.supports_json_mode,
-          supports_function_call: row.supports_function_call,
-          supports_reasoning: row.supports_reasoning,
-          input_cost_per_1k: row.input_cost_per_1k,
-          output_cost_per_1k: row.output_cost_per_1k,
-          cost_per_image: row.cost_per_image,
-          cost_per_1k_chars: row.cost_per_1k_chars,
-        },
-      })),
+      data: rows.map((row) => {
+        const classification = classifyModel(row.provider_name?.toLowerCase() || '', row.model_id);
+        return {
+          id: row.model_id,
+          object: 'model',
+          created: row.created_at ? Math.floor(new Date(row.created_at).getTime() / 1000) : 0,
+          owned_by: row.provider_name,
+          meta: {
+            modality: row.modality,
+            display_name: row.display_name,
+            context_window: row.context_window,
+            max_output_tokens: row.max_output_tokens,
+            supports_streaming: row.supports_streaming,
+            supports_vision: row.supports_vision,
+            supports_tool_use: row.supports_tool_use,
+            supports_json_mode: row.supports_json_mode,
+            supports_function_call: row.supports_function_call,
+            supports_reasoning: row.supports_reasoning,
+            input_cost_per_1k: row.input_cost_per_1k,
+            output_cost_per_1k: row.output_cost_per_1k,
+            cost_per_image: row.cost_per_image,
+            cost_per_1k_chars: row.cost_per_1k_chars,
+            pricing_tier: classification?.pricingTier ?? 'unknown',
+          },
+        };
+      }),
     };
   });
 

@@ -1,4 +1,4 @@
-import { Boxes, Plus, Search, Star, Globe, Zap, KeyRound, RefreshCw, Trash2 } from 'lucide-react';
+import { Boxes, Plus, Search, Star, Globe, Zap, KeyRound, RefreshCw, Trash2, Gift } from 'lucide-react';
 import * as React from 'react';
 
 import { AddProviderDialog } from '@/components/domain/AddProviderDialog';
@@ -11,18 +11,23 @@ import { Card } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
+import { useApiData, useUrlState } from '@/hooks';
 import { Admin } from '@/lib/admin';
 import { useUIStore } from '@/store/useUIStore';
 import type { ApiCatalogEntry, ApiProvider } from '@/types/api';
 
+// Lazy-load Free Tier tab content
+const FreeTierTab = React.lazy(() => import('@/pages/FreeTier').then(m => ({ default: m.FreeTierPage })));
+
 export function ProvidersPage() {
-  const [query, setQuery] = React.useState('');
-  const [category, setCategory] = React.useState<'all' | 'cloud' | 'local'>('all');
+  const [query, setQuery] = useUrlState('q', '');
+  const [category, setCategory] = useUrlState<'all' | 'cloud' | 'local'>('category', 'all');
   const [selectedProvider, setSelectedProvider] = React.useState<ApiProvider | null>(null);
   const [addDialogOpen, setAddDialogOpen] = React.useState(false);
   const [selectedTemplate, setSelectedTemplate] = React.useState<ApiCatalogEntry | null>(null);
+  const [showAllCatalog, setShowAllCatalog] = React.useState(false);
   const debounced = React.useDeferredValue(query);
 
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
@@ -74,6 +79,18 @@ export function ProvidersPage() {
           </>
         }
       />
+
+      <div className="mt-5">
+        <Tabs defaultValue="providers">
+          <TabsList>
+            <TabsTrigger value="providers">Providers</TabsTrigger>
+            <TabsTrigger value="free-tier">
+              <Gift className="size-3" />
+              Free Tier
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="providers">
 
       <div className="mt-5 flex items-center gap-2">
         <div className="flex-1 max-w-md">
@@ -162,22 +179,32 @@ export function ProvidersPage() {
           {catalog.isLoading ? (
             <Skeleton className="h-24 w-full" />
           ) : catalog.data && catalog.data.entries.length > 0 ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              {catalog.data.entries.slice(0, 20).map((e) => (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {(showAllCatalog ? catalog.data.entries : catalog.data.entries.slice(0, 20)).map((e) => (
+                  <button
+                    key={e.id ?? e.name}
+                    onClick={() => {
+                      setSelectedTemplate(e);
+                      setAddDialogOpen(true);
+                    }}
+                    className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 hover:border-border-strong hover:bg-surface-3 transition-colors text-left"
+                  >
+                    <Plus className="size-3 text-fg-subtle" />
+                    <span className="text-xs font-medium text-fg truncate flex-1">{e.name}</span>
+                    <Badge tone="muted" size="sm">{e.category}</Badge>
+                  </button>
+                ))}
+              </div>
+              {catalog.data.entries.length > 20 && (
                 <button
-                  key={e.id ?? e.name}
-                  onClick={() => {
-                    setSelectedTemplate(e);
-                    setAddDialogOpen(true);
-                  }}
-                  className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 hover:border-border-strong hover:bg-surface-3 transition-colors text-left"
+                  onClick={() => setShowAllCatalog(!showAllCatalog)}
+                  className="mt-2 text-xs text-primary hover:underline"
                 >
-                  <Plus className="size-3 text-fg-subtle" />
-                  <span className="text-xs font-medium text-fg truncate flex-1">{e.name}</span>
-                  <Badge tone="muted" size="sm">{e.category}</Badge>
+                  {showAllCatalog ? 'Show less' : `Show all ${catalog.data.entries.length} templates`}
                 </button>
-              ))}
-            </div>
+              )}
+            </>
           ) : (
             <p className="text-fg-subtle text-xs">No catalog entries</p>
           )}
@@ -201,6 +228,16 @@ export function ProvidersPage() {
         template={selectedTemplate}
         onCreated={() => void providers.refetch()}
       />
+
+          </TabsContent>
+
+          <TabsContent value="free-tier">
+            <React.Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
+              <FreeTierTab />
+            </React.Suspense>
+          </TabsContent>
+        </Tabs>
+      </div>
     </PageContainer>
   );
 }

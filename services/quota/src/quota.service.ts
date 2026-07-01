@@ -6,6 +6,8 @@ import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { PROVIDER_CATALOG } from '@dmr-x/registry';
 import { logger } from '@dmr-x/utils';
 
+import { creditService } from '@dmr-x/billing';
+
 
 const quotaCache = createNamespacedCache('quota');
 const budgetCache = createNamespacedCache('freebudget');
@@ -84,26 +86,45 @@ export class QuotaService {
   }
 
   /**
-   * Get accumulated token usage for a provider's free-tier budget
+   * Get accumulated token usage for a provider's free-tier budget (current month).
    */
   async getProviderBudgetUsage(tenantId: string, providerId: string): Promise<number> {
-    const key = `${tenantId}:${providerId}`;
+    const periodKey = this.getCurrentMonthKey();
+    const key = `${tenantId}:${providerId}:${periodKey}`;
     const usage = budgetCache.get(key);
     return parseInt(usage || '0');
   }
 
   /**
-   * Record usage against a provider's free-tier monthly budget
+   * Get the next budget reset time (start of next calendar month).
+   */
+  getNextBudgetReset(): Date {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+  }
+
+  /**
+   * Get current month key in YYYY-MM format.
+   */
+  private getCurrentMonthKey(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  /**
+   * Record usage against a provider's free-tier monthly budget.
+   * Period-aware: resets counter at the start of each calendar month.
    */
   async recordProviderBudgetUsage(
     tenantId: string,
     providerId: string,
     tokens: number
   ): Promise<void> {
-    const key = `${tenantId}:${providerId}`;
+    const periodKey = this.getCurrentMonthKey();
+    const key = `${tenantId}:${providerId}:${periodKey}`;
     budgetCache.incrBy(key, tokens);
-    // Expire at end of month (30 days)
-    budgetCache.expire(key, 30 * 24 * 60 * 60);
+    // Expire at end of month + 7 days grace
+    budgetCache.expire(key, 37 * 24 * 60 * 60);
   }
 
   /**
@@ -131,10 +152,64 @@ export class QuotaService {
       `INSERT INTO billing_records (id, tenant_id, request_id, amount, description)
        VALUES (?, ?, ?, ?, ?)`
     ).run(id, tenantId, null, cost, `Usage: ${tokens} tokens via ${providerId}`);
+
+    // Deduct from credit balance if cost > 0
+    if (cost > 0) {
+      creditService.deductUsage(tenantId, Math.round(cost * 100));
+    }
+
+    // Check budget alerts asynchronously (fire-and-forget)
+    this.checkBudgetAlerts(tenantId, providerId).catch(() => {});
   }
 
   /**
-   * Check if a request would exceed quota
+   * Check if usage has crossed alert thresholds and log warnings.
+   * Thresholds: 80% (warning), 95% (critical), 100% (exhausted).
+   */
+  private async checkBudgetAlerts(tenantId: string, providerId: string): Promise<void> {
+    try {
+      const allocations = await this.getAllocations(tenantId);
+      for (const allocation of allocations) {
+        if (allocation.providerId && allocation.providerId !== providerId) continue;
+
+        const usage = await this.getUsage(tenantId, allocation);
+
+        // Check each limit dimension
+        const checks: Array<{ limit?: number; used: number; label: string }> = [
+          { limit: allocation.maxTokens, used: usage.tokens, label: 'tokens' },
+          { limit: allocation.maxRequests, used: usage.requests, label: 'requests' },
+          { limit: allocation.maxCost, used: usage.cost, label: 'cost' },
+        ];
+
+        for (const { limit, used, label } of checks) {
+          if (!limit || limit <= 0) continue;
+          const percent = (used / limit) * 100;
+
+          if (percent >= 100) {
+            logger.warn(
+              { tenantId, providerId, limit, used, label, percent: Math.round(percent) },
+              `Budget EXHAUSTED: ${label} limit reached`
+            );
+          } else if (percent >= 95) {
+            logger.warn(
+              { tenantId, providerId, limit, used, label, percent: Math.round(percent) },
+              `Budget CRITICAL: ${label} at ${Math.round(percent)}%`
+            );
+          } else if (percent >= 80) {
+            logger.info(
+              { tenantId, providerId, limit, used, label, percent: Math.round(percent) },
+              `Budget WARNING: ${label} at ${Math.round(percent)}%`
+            );
+          }
+        }
+      }
+    } catch {
+      // Don't let alert checking break the request path
+    }
+  }
+
+  /**
+   * Check if a request would exceed quota (including credit balance)
    */
   async checkQuota(
     tenantId: string,
@@ -142,6 +217,18 @@ export class QuotaService {
     estimatedTokens: number,
     estimatedCost: number
   ): Promise<void> {
+    // Check credit balance first (hard spending limit)
+    if (estimatedCost > 0) {
+      const creditCheck = creditService.checkSufficientCredits(tenantId, Math.round(estimatedCost * 100));
+      if (!creditCheck.sufficient) {
+        logger.warn(
+          { tenantId, required: estimatedCost, available: creditCheck.balance / 100 },
+          'Insufficient credit balance'
+        );
+        throw new QuotaExhaustedError();
+      }
+    }
+
     const allocations = await this.getAllocations(tenantId);
 
     for (const allocation of allocations) {

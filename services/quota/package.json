@@ -17,6 +17,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@dmr-x/billing": "*",
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
     "@dmr-x/registry": "*",

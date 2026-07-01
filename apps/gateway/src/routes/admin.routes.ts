@@ -2500,6 +2500,75 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return row;
   });
 
+  // ── Model Classification Routes ──────────────────────────────────────────
+
+  // Get all model classifications (pricing tiers)
+  server.get('/admin/models/classifications', async (request) => {
+    const { classifyAllModels, loadClassification } = await import('@dmr-x/registry');
+    const query = request.query as any;
+    const tier = query?.tier;
+    const providerId = query?.provider_id;
+
+    let classifications = Array.from(classifyAllModels().values());
+
+    // Load persisted verification data
+    classifications = classifications.map(c => {
+      const persisted = loadClassification(c.providerId, c.modelId);
+      if (persisted?.verifiedFree) {
+        return { ...c, verifiedFree: true, lastVerification: persisted.lastVerification, source: 'verified' };
+      }
+      return c;
+    });
+
+    // Filter by tier
+    if (tier) {
+      classifications = classifications.filter(c => c.pricingTier === tier);
+    }
+
+    // Filter by provider
+    if (providerId) {
+      classifications = classifications.filter(c => c.providerId === providerId);
+    }
+
+    return {
+      total: classifications.length,
+      byTier: {
+        free: classifications.filter(c => c.pricingTier === 'free').length,
+        free_with_limits: classifications.filter(c => c.pricingTier === 'free_with_limits').length,
+        paid: classifications.filter(c => c.pricingTier === 'paid').length,
+        subscription_only: classifications.filter(c => c.pricingTier === 'subscription_only').length,
+        unknown: classifications.filter(c => c.pricingTier === 'unknown').length,
+      },
+      classifications,
+    };
+  });
+
+  // Verify a model is actually free (runtime probe)
+  server.post('/admin/models/verify-free', async (request) => {
+    const { verifyModelFree } = await import('@dmr-x/registry');
+    const body = request.body as any;
+    const { provider_id, model_id } = body;
+
+    if (!provider_id || !model_id) {
+      throw new ValidationError('provider_id and model_id are required');
+    }
+
+    const result = await verifyModelFree(provider_id, model_id);
+    logAdminAction(request, 'models.verify_free', 'model', `${provider_id}/${model_id}`, { isFree: result.isActuallyFree });
+    return result;
+  });
+
+  // Get free models (catalog + verified)
+  server.get('/admin/models/free', async () => {
+    const { getFreeModels } = await import('@dmr-x/registry');
+    const freeModels = getFreeModels();
+    return {
+      total: freeModels.length,
+      verified: freeModels.filter(m => m.verifiedFree).length,
+      models: freeModels,
+    };
+  });
+
   // Create model
   server.post('/admin/models', async (request, reply) => {
     const parsed = CreateModelSchema.safeParse(request.body);
@@ -2933,6 +3002,49 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       plan_limits: { requests: null, tokens: null, spend: null },
       overage_flags: [],
     };
+  });
+
+  // ── Credit/Balance Routes ─────────────────────────────────────────────────
+
+  // Get credit balance
+  server.get('/admin/credits/balance', async (request) => {
+    const { creditService } = await import('@dmr-x/billing');
+    const tenantId = (request.query as any)?.tenant_id || 'default';
+    const balance = creditService.getOrCreateBalance(tenantId);
+    return balance;
+  });
+
+  // Top up credits
+  server.post('/admin/credits/topup', async (request) => {
+    const { creditService } = await import('@dmr-x/billing');
+    const body = request.body as any;
+    const tenantId = body?.tenant_id || 'default';
+    const amountCents = body?.amount_cents;
+    const description = body?.description;
+
+    if (!amountCents || amountCents <= 0) {
+      throw new ValidationError('amount_cents must be a positive integer');
+    }
+
+    const adminKeyHash = request.headers['x-api-key']
+      ? crypto.createHash('sha256').update(request.headers['x-api-key'] as string).digest('hex').slice(0, 16)
+      : 'unknown';
+
+    const balance = creditService.topUp(tenantId, amountCents, description, adminKeyHash);
+    logAdminAction(request, 'credits.topup', 'credit', tenantId, { amount_cents: amountCents });
+    return balance;
+  });
+
+  // Credit transaction history
+  server.get('/admin/credits/transactions', async (request) => {
+    const { creditService } = await import('@dmr-x/billing');
+    const query = request.query as any;
+    const tenantId = query?.tenant_id || 'default';
+    const type = query?.type;
+    const limit = parseInt(query?.limit || '50', 10);
+    const offset = parseInt(query?.offset || '0', 10);
+
+    return creditService.getTransactions(tenantId, { type, limit, offset });
   });
 
   // Dashboard stats

@@ -1,5 +1,5 @@
 import type { RateLimitConfig, RateLimitCheckResult, RateLimitState } from '@dmr-x/core';
-import { createNamespacedCache } from '@dmr-x/db';
+import { createNamespacedCache, getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 
 const cache = createNamespacedCache('rl');
@@ -50,6 +50,145 @@ export class RateLimitService {
   private rateLimitHits = new Map<string, RateLimitHit>(); // key -> hit timestamps
   // Provider-wide daily request tracking
   private providerDailyRequests = new Map<string, { count: number; windowStart: number }>();
+  private persistTimer: NodeJS.Timeout | null = null;
+
+  constructor() {
+    this.recoverState();
+    // Persist state every 60 seconds
+    this.persistTimer = setInterval(() => this.persistState(), 60_000);
+  }
+
+  /**
+   * Recover cooldowns, penalties, and daily caps from SQLite on startup.
+   */
+  private recoverState(): void {
+    try {
+      const db = getDb();
+      const now = Date.now();
+
+      const rows = db.prepare(
+        `SELECT provider_id, model_id, cooldown_expiry, penalty_points, last_penalty_at, hit_timestamps
+         FROM rate_limit_cooldowns`
+      ).all() as any[];
+
+      let cooldownCount = 0;
+      let penaltyCount = 0;
+
+      for (const row of rows) {
+        const key = `${row.provider_id}:${row.model_id}`;
+        if (row.cooldown_expiry > now) {
+          this.cooldowns.set(`${key}:cooldown`, row.cooldown_expiry);
+          cooldownCount++;
+        }
+        if (row.penalty_points > 0) {
+          this.penalties.set(key, {
+            points: row.penalty_points,
+            lastPenalty: row.last_penalty_at || now,
+          });
+          penaltyCount++;
+        }
+        if (row.hit_timestamps) {
+          try {
+            const timestamps = JSON.parse(row.hit_timestamps) as number[];
+            const recentHits = timestamps.filter(t => t > now - 24 * 60 * 60_000);
+            if (recentHits.length > 0) {
+              this.rateLimitHits.set(key, { timestamps: recentHits });
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      const capRows = db.prepare(
+        `SELECT provider_id, request_count, window_start FROM rate_limit_daily_caps`
+      ).all() as any[];
+
+      let capCount = 0;
+      for (const row of capRows) {
+        if (now - row.window_start < 86_400_000) {
+          this.providerDailyRequests.set(`provider:${row.provider_id}:daily`, {
+            count: row.request_count,
+            windowStart: row.window_start,
+          });
+          capCount++;
+        }
+      }
+
+      if (cooldownCount > 0 || penaltyCount > 0 || capCount > 0) {
+        logger.info(
+          { cooldowns: cooldownCount, penalties: penaltyCount, dailyCaps: capCount },
+          'Recovered rate-limit state from database'
+        );
+      }
+    } catch (error) {
+      logger.debug({ err: error }, 'Could not recover rate-limit state (DB may not be ready)');
+    }
+  }
+
+  /**
+   * Persist current cooldown and penalty state to SQLite.
+   */
+  persistState(): void {
+    try {
+      const db = getDb();
+
+      const upsert = db.prepare(`
+        INSERT INTO rate_limit_cooldowns (provider_id, model_id, cooldown_expiry, penalty_points, last_penalty_at, hit_timestamps, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(provider_id, model_id) DO UPDATE SET
+          cooldown_expiry = excluded.cooldown_expiry,
+          penalty_points = excluded.penalty_points,
+          last_penalty_at = excluded.last_penalty_at,
+          hit_timestamps = excluded.hit_timestamps,
+          updated_at = datetime('now')
+      `);
+
+      const persistMany = db.transaction(() => {
+        const allKeys = new Set<string>();
+        for (const [key] of this.cooldowns) {
+          if (key.endsWith(':cooldown')) {
+            allKeys.add(key.replace(':cooldown', ''));
+          }
+        }
+        for (const [key] of this.penalties) {
+          allKeys.add(key);
+        }
+
+        for (const key of allKeys) {
+          const parts = key.split(':');
+          const providerId = parts[0];
+          const modelId = parts.slice(1).join(':');
+          const cooldownExpiry = this.cooldowns.get(`${key}:cooldown`) || 0;
+          const penalty = this.penalties.get(key);
+          const hitData = this.rateLimitHits.get(key);
+
+          upsert.run(
+            providerId, modelId, cooldownExpiry,
+            penalty?.points || 0, penalty?.lastPenalty || null,
+            hitData ? JSON.stringify(hitData.timestamps) : '[]',
+          );
+        }
+
+        const capUpsert = db.prepare(`
+          INSERT INTO rate_limit_daily_caps (provider_id, request_count, window_start)
+          VALUES (?, ?, ?)
+          ON CONFLICT(provider_id) DO UPDATE SET
+            request_count = excluded.request_count,
+            window_start = excluded.window_start
+        `);
+
+        for (const [key, data] of this.providerDailyRequests) {
+          const match = key.match(/^provider:(.+):daily$/);
+          if (match) {
+            capUpsert.run(match[1], data.count, data.windowStart);
+          }
+        }
+      });
+
+      persistMany();
+    } catch (error) {
+      logger.debug({ err: error }, 'Failed to persist rate-limit state');
+    }
+  }
 
   /**
    * Register rate limit config for a provider/model.
@@ -172,6 +311,8 @@ export class RateLimitService {
     const newPoints = Math.min(10, existing.points + 3);
     this.penalties.set(key, { points: newPoints, lastPenalty: Date.now() });
     logger.warn({ providerId, modelId, penaltyPoints: newPoints }, 'Added rate limit penalty');
+    // Persist immediately on penalty addition
+    this.persistState();
     return newPoints;
   }
 
@@ -206,12 +347,16 @@ export class RateLimitService {
   }
 
   /**
-   * Stop the penalty decay interval.
+   * Stop the penalty decay and persist intervals.
    */
   stopDecay(): void {
     if (this.decayInterval) {
       clearInterval(this.decayInterval);
       this.decayInterval = null;
+    }
+    if (this.persistTimer) {
+      clearInterval(this.persistTimer);
+      this.persistTimer = null;
     }
   }
 
@@ -237,6 +382,8 @@ export class RateLimitService {
 
     this.setCooldown(providerId, modelId, duration);
     logger.warn({ providerId, modelId, hitCount: hit.timestamps.length, cooldownMs: duration }, 'Escalating cooldown applied');
+    // setCooldown already persists for long cooldowns; persist here for all durations
+    this.persistState();
     return duration;
   }
 
@@ -246,6 +393,10 @@ export class RateLimitService {
   setCooldown(providerId: string, modelId: string, durationMs: number): void {
     const key = `${providerId}:${modelId}:cooldown`;
     this.cooldowns.set(key, Date.now() + durationMs);
+    // Persist immediately for critical cooldowns (>= 1 hour)
+    if (durationMs >= 60 * 60_000) {
+      this.persistState();
+    }
   }
 
   /**

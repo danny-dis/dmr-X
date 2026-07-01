@@ -15,3 +15,10 @@ export {
   type UsageAggregate,
   type UsageQuery,
 } from './usage-tracker.js';
+
+export {
+  CreditService,
+  creditService,
+  type CreditBalance,
+  type CreditTransaction,
+} from './credit.service.js';

@@ -1,4 +1,5 @@
-import { PROVIDER_CATALOG, type ModelTemplate } from './provider-catalog.js';
+import { PROVIDER_CATALOG, type ModelTemplate, type PricingTier } from './provider-catalog.js';
+import { classifyPricingTier } from './model-classification.js';
 
 /**
  * Model tier classification based on capability, cost, and context window.
@@ -77,8 +78,8 @@ export function lookupCatalogModel(providerId: string, modelId: string): ModelTe
 /**
  * Get all models from the catalog that support a given modality.
  */
-export function getCatalogModelsByModality(modality: string): Array<{ providerId: string; model: ModelTemplate; tier: ModelTier }> {
-  const results: Array<{ providerId: string; model: ModelTemplate; tier: ModelTier }> = [];
+export function getCatalogModelsByModality(modality: string): Array<{ providerId: string; model: ModelTemplate; tier: ModelTier; pricingTier: PricingTier }> {
+  const results: Array<{ providerId: string; model: ModelTemplate; tier: ModelTier; pricingTier: PricingTier }> = [];
 
   for (const template of PROVIDER_CATALOG) {
     for (const model of template.models) {
@@ -87,6 +88,7 @@ export function getCatalogModelsByModality(modality: string): Array<{ providerId
           providerId: template.id,
           model,
           tier: classifyModelTier(model),
+          pricingTier: model.pricingTier ?? classifyPricingTier(model),
         });
       }
     }

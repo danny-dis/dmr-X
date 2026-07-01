@@ -16,7 +16,7 @@ import fastifyMultipart from '@fastify/multipart';
 import { getTelemetryService, tracer, contentCaptureService } from '@dmr-x/telemetry';
 import { trace, SpanStatusCode, SpanKind, propagation, context, type Span } from '@opentelemetry/api';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { quotaService, rateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
@@ -1296,6 +1296,13 @@ void (async () => {
         }
       } catch (err) {
         logger.warn({ err }, 'Failed to auto-register providers');
+      }
+
+      // 1.5) Sync model classifications (pricing tiers)
+      try {
+        syncClassifications();
+      } catch (err) {
+        logger.warn({ err }, 'Failed to sync model classifications');
       }
 
       // 2) Backfill model profiles for any OpenAI-compatible provider whose

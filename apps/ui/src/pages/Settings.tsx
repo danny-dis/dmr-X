@@ -338,30 +338,31 @@ export function SettingsPage() {
         ) : (
           <Tabs defaultValue="routing" orientation="vertical">
             <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-3">
-              <TabsList variant="pills" className="flex-col items-stretch h-fit">
-                <TabsTrigger value="routing" variant="pills" className="justify-start">
-                  <Brain className="size-3" /> Routing
+              {/* Mobile: horizontal scrollable tabs. Desktop: vertical pills */}
+              <TabsList variant="pills" className="flex-col items-stretch h-fit lg:flex-col overflow-x-auto flex-row flex-nowrap lg:overflow-x-visible">
+                <TabsTrigger value="routing" variant="pills" className="justify-start whitespace-nowrap">
+                  <Brain className="size-3" /> <span className="hidden sm:inline">Routing</span>
                 </TabsTrigger>
-                <TabsTrigger value="defaults" variant="pills" className="justify-start">
-                  <Cpu className="size-3" /> Defaults
+                <TabsTrigger value="defaults" variant="pills" className="justify-start whitespace-nowrap">
+                  <Cpu className="size-3" /> <span className="hidden sm:inline">Defaults</span>
                 </TabsTrigger>
-                <TabsTrigger value="security" variant="pills" className="justify-start">
-                  <Shield className="size-3" /> Security
+                <TabsTrigger value="security" variant="pills" className="justify-start whitespace-nowrap">
+                  <Shield className="size-3" /> <span className="hidden sm:inline">Security</span>
                 </TabsTrigger>
-                <TabsTrigger value="performance" variant="pills" className="justify-start">
-                  <Server className="size-3" /> Performance
+                <TabsTrigger value="performance" variant="pills" className="justify-start whitespace-nowrap">
+                  <Server className="size-3" /> <span className="hidden sm:inline">Performance</span>
                 </TabsTrigger>
-                <TabsTrigger value="alerts" variant="pills" className="justify-start">
-                  <Bell className="size-3" /> Alerts
+                <TabsTrigger value="alerts" variant="pills" className="justify-start whitespace-nowrap">
+                  <Bell className="size-3" /> <span className="hidden sm:inline">Alerts</span>
                 </TabsTrigger>
-                <TabsTrigger value="webhooks" variant="pills" className="justify-start">
-                  <Webhook className="size-3" /> Webhooks
+                <TabsTrigger value="webhooks" variant="pills" className="justify-start whitespace-nowrap">
+                  <Webhook className="size-3" /> <span className="hidden sm:inline">Webhooks</span>
                 </TabsTrigger>
-                <TabsTrigger value="benchmarks" variant="pills" className="justify-start">
-                  <Trophy className="size-3" /> Benchmarks
+                <TabsTrigger value="benchmarks" variant="pills" className="justify-start whitespace-nowrap">
+                  <Trophy className="size-3" /> <span className="hidden sm:inline">Benchmarks</span>
                 </TabsTrigger>
-                <TabsTrigger value="retention" variant="pills" className="justify-start">
-                  <Clock className="size-3" /> Data Retention
+                <TabsTrigger value="retention" variant="pills" className="justify-start whitespace-nowrap">
+                  <Clock className="size-3" /> <span className="hidden sm:inline">Data Retention</span>
                 </TabsTrigger>
               </TabsList>
 

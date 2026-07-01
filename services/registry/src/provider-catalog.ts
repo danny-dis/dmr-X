@@ -52,7 +52,19 @@ export interface ModelTemplate {
   freeTier?: FreeTierInfo;
   /** If true, this model is only available via OAuth subscription auth (not API key) */
   subscriptionOnly?: boolean;
+  /** Unified pricing classification for routing decisions */
+  pricingTier?: PricingTier;
 }
+
+/**
+ * Pricing tier classification for routing decisions.
+ * - 'free': $0 cost, no rate limits or generous limits
+ * - 'free_with_limits': $0 cost but strict rate limits (RPM/TPM caps)
+ * - 'paid': Standard per-token or per-request pricing
+ * - 'subscription_only': Free but requires OAuth subscription (not API key)
+ * - 'unknown': Cannot determine from catalog data
+ */
+export type PricingTier = 'free' | 'free_with_limits' | 'paid' | 'subscription_only' | 'unknown';
 
 export interface FreeTierInfo {
   rateLimits: {

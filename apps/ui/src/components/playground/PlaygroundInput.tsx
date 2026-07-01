@@ -1,9 +1,8 @@
-import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins } from 'lucide-react';
+import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins, Search, Clock, ChevronDown, Check } from 'lucide-react';
 import * as React from 'react';
 
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
@@ -154,6 +153,100 @@ export function PlaygroundInput() {
     }
     return groups;
   }, [filteredModels]);
+
+  // Model selector search + recent models
+  const [modelSearch, setModelSearch] = React.useState('');
+  const [showModelDropdown, setShowModelDropdown] = React.useState(false);
+  const modelDropdownRef = React.useRef<HTMLDivElement>(null);
+  const modelSearchRef = React.useRef<HTMLInputElement>(null);
+
+  // Track recent model selections (persisted to localStorage)
+  const [recentModels, setRecentModels] = React.useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('dmrx-recent-models') ?? '[]'); } catch { return []; }
+  });
+
+  const addRecentModel = React.useCallback((modelId: string) => {
+    setRecentModels(prev => {
+      const next = [modelId, ...prev.filter(m => m !== modelId)].slice(0, 5);
+      try { localStorage.setItem('dmrx-recent-models', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  // Filter models by search query
+  const modelSearchLower = modelSearch.toLowerCase();
+  const searchFilteredModels = React.useMemo(() => {
+    if (!modelSearchLower) return filteredModels;
+    return filteredModels.filter(m =>
+      (m.name || m.model_id || '').toLowerCase().includes(modelSearchLower) ||
+      (m.provider || m.provider_name || '').toLowerCase().includes(modelSearchLower) ||
+      (m.display_name || '').toLowerCase().includes(modelSearchLower)
+    );
+  }, [filteredModels, modelSearchLower]);
+
+  const searchGroupedModels = React.useMemo(() => {
+    const groups = new Map<string, ApiModel[]>();
+    for (const m of searchFilteredModels) {
+      const provider = m.provider || m.provider_name || 'unknown';
+      if (!groups.has(provider)) groups.set(provider, []);
+      groups.get(provider)!.push(m);
+    }
+    return groups;
+  }, [searchFilteredModels]);
+
+  // Recent model objects
+  const recentModelObjects = React.useMemo(() => {
+    return recentModels
+      .map(id => filteredModels.find(m => (m.model_id || m.id) === id))
+      .filter(Boolean) as ApiModel[];
+  }, [recentModels, filteredModels]);
+
+  // Close dropdown on outside click
+  React.useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setShowModelDropdown(false);
+      }
+    };
+    if (showModelDropdown) document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showModelDropdown]);
+
+  // Focus search input when dropdown opens
+  React.useEffect(() => {
+    if (showModelDropdown) {
+      requestAnimationFrame(() => modelSearchRef.current?.focus());
+    }
+  }, [showModelDropdown]);
+
+  const selectModel = (modelId: string) => {
+    setModel(modelId);
+    addRecentModel(modelId);
+    setShowModelDropdown(false);
+    setModelSearch('');
+  };
+
+  // Meta model labels
+  const META_MODELS = [
+    { id: 'auto', label: 'Auto (best model)' },
+    { id: 'auto-fast', label: 'Auto-Fast' },
+    { id: 'auto-smart', label: 'Auto-Smart' },
+    { id: 'auto-agentic', label: 'Auto-Agentic' },
+    { id: 'auto-coding', label: 'Auto-Coding' },
+  ];
+
+  const filteredMetaModels = META_MODELS.filter(m =>
+    !modelSearchLower || m.label.toLowerCase().includes(modelSearchLower)
+  );
+
+  // Current model display name
+  const currentModelLabel = React.useMemo(() => {
+    if (model.startsWith('auto')) {
+      return META_MODELS.find(m => m.id === model)?.label ?? model;
+    }
+    const found = filteredModels.find(m => (m.model_id || m.id) === model);
+    return found ? (found.display_name || found.name || found.model_id) : model;
+  }, [model, filteredModels]);
   
   const handleSend = async () => {
     if (!prompt.trim() || isStreaming) return;
@@ -196,40 +289,116 @@ export function PlaygroundInput() {
         {/* Config Row */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            {/* Model Selector */}
-            <Select value={model} onValueChange={setModel}>
-              <SelectTrigger className="w-[240px]">
-                <SelectValue placeholder="Select model" />
-              </SelectTrigger>
-              <SelectContent>
-                {/* Meta models always available */}
-                <SelectItem value="auto">Auto (best model)</SelectItem>
-                <SelectItem value="auto-fast">Auto-Fast</SelectItem>
-                <SelectItem value="auto-smart">Auto-Smart</SelectItem>
-                <SelectItem value="auto-agentic">Auto-Agentic</SelectItem>
-                <SelectItem value="auto-coding">Auto-Coding</SelectItem>
-                
-                {/* Available models grouped by provider */}
-                {Array.from(groupedModels.entries()).map(([provider, providerModels]) => (
-                  <React.Fragment key={provider}>
-                    <div className="px-2 py-1 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider bg-surface-2">
-                      {provider}
+            {/* Model Selector Combobox */}
+            <div className="relative" ref={modelDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setShowModelDropdown(!showModelDropdown)}
+                className="flex h-9 w-[260px] items-center justify-between gap-2 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none transition-colors hover:border-border-strong focus:border-primary/40 focus:ring-2 focus:ring-primary/20"
+              >
+                <span className="truncate">{currentModelLabel}</span>
+                <ChevronDown className={cn("size-3.5 text-fg-muted shrink-0 transition-transform", showModelDropdown && "rotate-180")} />
+              </button>
+
+              {showModelDropdown && (
+                <div className="absolute top-full left-0 z-50 mt-1 w-[320px] max-h-[400px] rounded-lg border border-border bg-surface-1 shadow-2xl overflow-hidden">
+                  {/* Search input */}
+                  <div className="p-2 border-b border-border">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-fg-muted" />
+                      <input
+                        ref={modelSearchRef}
+                        type="text"
+                        value={modelSearch}
+                        onChange={(e) => setModelSearch(e.target.value)}
+                        placeholder="Search models…"
+                        className="w-full h-8 pl-8 pr-3 rounded-md border border-border bg-surface-2 text-xs text-fg outline-none focus:border-primary/40"
+                      />
                     </div>
-                    {providerModels.map((m) => (
-                      <SelectItem key={m.id} value={m.model_id || m.id}>
-                        {m.display_name || m.name || m.model_id}
-                      </SelectItem>
-                    ))}
-                  </React.Fragment>
-                ))}
-                
-                {filteredModels.length === 0 && (
-                  <div className="px-2 py-3 text-center text-xs text-fg-subtle">
-                    No models available. Add a provider key to get started.
                   </div>
-                )}
-              </SelectContent>
-            </Select>
+
+                  {/* Scrollable list */}
+                  <div className="max-h-[340px] overflow-y-auto p-1">
+                    {/* Meta models */}
+                    {filteredMetaModels.length > 0 && (
+                      <div className="mb-1">
+                        <div className="px-2 py-1 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">
+                          Routing
+                        </div>
+                        {filteredMetaModels.map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => selectModel(m.id)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-left transition-colors',
+                              model === m.id ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+                            )}
+                          >
+                            <span className="truncate">{m.label}</span>
+                            {model === m.id && <Check className="size-3 ml-auto shrink-0 text-primary" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Recent models */}
+                    {!modelSearch && recentModelObjects.length > 0 && (
+                      <div className="mb-1">
+                        <div className="px-2 py-1 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider flex items-center gap-1">
+                          <Clock className="size-3" />
+                          Recent
+                        </div>
+                        {recentModelObjects.map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => selectModel(m.model_id || m.id)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-left transition-colors',
+                              model === (m.model_id || m.id) ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+                            )}
+                          >
+                            <span className="truncate font-mono">{m.display_name || m.name || m.model_id}</span>
+                            <span className="text-[10px] text-fg-subtle ml-auto shrink-0">{m.provider}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Provider groups */}
+                    {Array.from(searchGroupedModels.entries()).map(([provider, providerModels]) => (
+                      <div key={provider} className="mb-1">
+                        <div className="px-2 py-1 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">
+                          {provider}
+                        </div>
+                        {providerModels.map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => selectModel(m.model_id || m.id)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-left transition-colors',
+                              model === (m.model_id || m.id) ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+                            )}
+                          >
+                            <span className="truncate font-mono">{m.display_name || m.name || m.model_id}</span>
+                            {model === (m.model_id || m.id) && <Check className="size-3 ml-auto shrink-0 text-primary" />}
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+
+                    {/* Empty state */}
+                    {searchGroupedModels.size === 0 && filteredMetaModels.length === 0 && (
+                      <div className="px-2 py-4 text-center text-xs text-fg-subtle">
+                        {modelSearch ? 'No models match your search' : 'No models available. Add a provider key to get started.'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             
             {/* Config Toggle */}
             <Button
@@ -346,6 +515,43 @@ export function PlaygroundInput() {
 
               {showTools && (
                 <div className="space-y-1.5">
+                  {/* Preset tool templates */}
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    <span className="text-[10px] text-fg-subtle self-center mr-1">Presets:</span>
+                    {[
+                      {
+                        label: 'Web Search',
+                        tool: { type: 'function', function: { name: 'web_search', description: 'Search the web for information', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search query' } }, required: ['query'] } } },
+                      },
+                      {
+                        label: 'Calculator',
+                        tool: { type: 'function', function: { name: 'calculate', description: 'Perform a mathematical calculation', parameters: { type: 'object', properties: { expression: { type: 'string', description: 'Math expression to evaluate' } }, required: ['expression'] } } },
+                      },
+                      {
+                        label: 'Get Weather',
+                        tool: { type: 'function', function: { name: 'get_weather', description: 'Get current weather for a location', parameters: { type: 'object', properties: { location: { type: 'string', description: 'City name' }, units: { type: 'string', enum: ['celsius', 'fahrenheit'], description: 'Temperature units' } }, required: ['location'] } } },
+                      },
+                      {
+                        label: 'Run Code',
+                        tool: { type: 'function', function: { name: 'run_code', description: 'Execute code in a sandbox', parameters: { type: 'object', properties: { language: { type: 'string', enum: ['python', 'javascript', 'typescript'], description: 'Programming language' }, code: { type: 'string', description: 'Code to execute' } }, required: ['language', 'code'] } } },
+                      },
+                    ].map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          const current = toolsText.trim() ? JSON.parse(toolsText) : [];
+                          if (!Array.isArray(current)) return;
+                          const updated = [...current, preset.tool];
+                          setToolsText(JSON.stringify(updated, null, 2));
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2 py-1 text-[10px] font-medium text-fg-muted hover:border-primary/30 hover:text-primary transition-colors"
+                      >
+                        <Wrench className="size-2.5" />
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
                   <Textarea
                     value={toolsText}
                     onChange={(e) => setToolsText(e.target.value)}

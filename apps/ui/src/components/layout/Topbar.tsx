@@ -1,4 +1,4 @@
-import { Search, Bell, Sun, Moon, Activity, Menu } from 'lucide-react';
+import { Search, Sun, Moon, Activity, Menu, WifiOff } from 'lucide-react';
 import * as React from 'react';
 import { useLocation } from 'react-router';
 
@@ -21,21 +21,51 @@ export function Topbar() {
   const setMobileMenuOpen = useUIStore((s) => s.setMobileMenuOpen);
   const location = useLocation();
   const page = findNavItem(location.pathname);
-  const { data: health } = useApiData<ApiHealthResponse>(
+  const { data: health, isError: healthError } = useApiData<ApiHealthResponse>(
     () => Admin.health(),
     [],
     { refetchInterval: 10_000 }
   );
 
-  const statusColor =
-    health?.status === 'ok' || health?.status === 'operational'
+  // Track browser online/offline status
+  const [isOnline, setIsOnline] = React.useState(navigator.onLine);
+  React.useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const isDisconnected = !isOnline || healthError;
+  const statusColor = isDisconnected
+    ? '#F87171'
+    : health?.status === 'ok' || health?.status === 'operational'
       ? '#34D399'
       : health?.status === 'degraded'
         ? '#FBBF24'
         : '#F87171';
+  const statusLabel = isDisconnected
+    ? 'offline'
+    : health?.status ?? '—';
 
   return (
     <header className="flex h-14 items-center gap-2 border-b border-border bg-surface-1/40 px-3 backdrop-blur sm:gap-3 sm:px-5">
+      {/* Offline banner */}
+      {isDisconnected && (
+        <div className="absolute top-14 left-0 right-0 z-40 flex items-center justify-center gap-2 bg-danger/10 border-b border-danger/20 px-3 py-1.5 text-xs text-danger">
+          <WifiOff className="size-3.5 shrink-0" />
+          <span>
+            {!isOnline
+              ? 'You are offline — changes may not save'
+              : 'Gateway unreachable — retrying…'}
+          </span>
+        </div>
+      )}
+
       {/* Mobile hamburger menu */}
       <Button
         size="icon-sm"
@@ -91,7 +121,7 @@ export function Topbar() {
 
         <div className="hidden h-7 items-center gap-1.5 rounded-md border border-border bg-surface-2/60 px-2 sm:flex">
           <HealthDot size={6} color={statusColor} />
-          <span className="text-[11px] font-mono text-fg-muted">{health?.status ?? '—'}</span>
+          <span className="text-[11px] font-mono text-fg-muted">{statusLabel}</span>
         </div>
 
         <Button
@@ -101,10 +131,6 @@ export function Topbar() {
           aria-label="Toggle theme"
         >
           {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
-        </Button>
-
-        <Button size="icon-sm" variant="ghost" aria-label="Notifications">
-          <Bell className="size-3.5" />
         </Button>
 
         <div className="size-7 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center text-[10px] font-semibold text-white">

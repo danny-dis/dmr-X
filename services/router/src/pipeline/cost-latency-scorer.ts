@@ -147,6 +147,27 @@ export function costLatencyScorer(
       if (rateLimitService) {
         const penaltyPoints = rateLimitService.getPenaltyPoints(model.providerId, model.modelId);
         compositeScore -= penaltyPoints * 0.05;
+
+        // Quota headroom bonus: models with more remaining capacity get a boost
+        // Bonus range: 0 (exhausted) to +0.15 (full quota)
+        const state = rateLimitService.getState(model.providerId, model.modelId);
+        const headroomDimensions: number[] = [];
+        if (state.config.rpm && state.config.rpm > 0) {
+          headroomDimensions.push(Math.max(0, (state.config.rpm - state.currentRPM) / state.config.rpm));
+        }
+        if (state.config.tpm && state.config.tpm > 0) {
+          headroomDimensions.push(Math.max(0, (state.config.tpm - state.currentTPM) / state.config.tpm));
+        }
+        if (state.config.rpd && state.config.rpd > 0) {
+          headroomDimensions.push(Math.max(0, (state.config.rpd - state.currentRPD) / state.config.rpd));
+        }
+        if (state.config.tpd && state.config.tpd > 0) {
+          headroomDimensions.push(Math.max(0, (state.config.tpd - state.currentTPD) / state.config.tpd));
+        }
+        if (headroomDimensions.length > 0) {
+          const avgHeadroom = headroomDimensions.reduce((s, h) => s + h, 0) / headroomDimensions.length;
+          compositeScore += avgHeadroom * 0.15; // Up to +0.15 for full quota
+        }
       }
 
       return { ...model, compositeScore };

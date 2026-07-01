@@ -8,6 +8,7 @@ import {
   fetchModelsDevData,
   type ModelsDevApiResponse,
 } from './cross-provider-pricing.js';
+import { classifyModel, type ModelClassification } from './model-classification.js';
 
 const cache = createNamespacedCache('registry');
 
@@ -96,6 +97,9 @@ export class RegistryService {
         }
       }
 
+      // Get unified pricing classification
+      const classification = classifyModel(row.providerId, row.modelId);
+
       return {
         providerId: row.providerId,
         providerName: row.providerName,
@@ -113,6 +117,7 @@ export class RegistryService {
         contextLength: row.contextWindow || undefined,
         isHealthy: row.isHealthy === 1 || row.isHealthy === true,
         subscriptionOnly: row.subscriptionOnly === 1 || row.subscriptionOnly === true,
+        pricingTier: classification?.pricingTier ?? 'unknown',
         freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
           intelligenceRank: row.intelligenceRank ?? 0,
           speedRank: row.speedRank ?? 0,

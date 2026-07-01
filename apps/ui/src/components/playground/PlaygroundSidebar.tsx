@@ -76,6 +76,12 @@ export function PlaygroundSidebar() {
           <div className="flex flex-col items-center justify-center h-32 text-fg-muted">
             <MessageSquare className="size-8 mb-2 opacity-50" />
             <p className="text-sm">No conversations yet</p>
+            <button
+              onClick={() => createConversation()}
+              className="mt-2 text-xs text-primary hover:underline"
+            >
+              Start your first conversation
+            </button>
           </div>
         ) : (
           <div className="space-y-1">

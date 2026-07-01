@@ -130,6 +130,73 @@ const PROVIDER_HEADER_CONFIGS: Record<string, ProviderHeaderConfig> = {
     tokensRemaining: ['x-ratelimit-remaining-tokens'],
     tokensReset: ['x-ratelimit-reset-tokens'],
   },
+  // Providers using standard x-ratelimit-* headers
+  sambanova: {
+    requestsLimit: ['x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens'],
+  },
+  nvidia: {
+    requestsLimit: ['x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens'],
+  },
+  openrouter: {
+    requestsLimit: ['x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens'],
+  },
+  google: {
+    requestsLimit: ['x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens'],
+  },
+  huggingface: {
+    requestsLimit: ['x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens'],
+  },
+  cohere: {
+    requestsLimit: ['x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens'],
+  },
+  moonshot: {
+    requestsLimit: ['x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens'],
+  },
+};
+
+// Generic fallback config for unknown providers (tries standard x-ratelimit-* headers)
+const GENERIC_HEADER_CONFIG: ProviderHeaderConfig = {
+  requestsLimit: ['x-ratelimit-limit-requests', 'ratelimit-limit-requests'],
+  requestsRemaining: ['x-ratelimit-remaining-requests', 'ratelimit-remaining-requests'],
+  requestsReset: ['x-ratelimit-reset-requests', 'ratelimit-reset-requests'],
+  tokensLimit: ['x-ratelimit-limit-tokens', 'ratelimit-limit-tokens'],
+  tokensRemaining: ['x-ratelimit-remaining-tokens', 'ratelimit-remaining-tokens'],
+  tokensReset: ['x-ratelimit-reset-tokens', 'ratelimit-reset-tokens'],
 };
 
 // ---------------------------------------------------------------------------
@@ -137,16 +204,14 @@ const PROVIDER_HEADER_CONFIGS: Record<string, ProviderHeaderConfig> = {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse rate limit headers from a provider response
+ * Parse rate limit headers from a provider response.
+ * Falls back to generic x-ratelimit-* patterns for unknown providers.
  */
 export function parseRateLimitHeaders(
   headers: Headers | Record<string, string>,
   provider: string
 ): RateLimitHeaders {
-  const config = PROVIDER_HEADER_CONFIGS[provider];
-  if (!config) {
-    return {};
-  }
+  const config = PROVIDER_HEADER_CONFIGS[provider] ?? GENERIC_HEADER_CONFIG;
 
   const getHeader = (name: string): string | null => {
     if (headers instanceof Headers) {
@@ -204,10 +269,11 @@ export function parseRateLimitHeaders(
 }
 
 /**
- * Check if a provider supports rate limit headers
+ * Check if a provider has a known header config (all providers are supported via generic fallback)
  */
 export function supportsRateLimitHeaders(provider: string): boolean {
-  return provider in PROVIDER_HEADER_CONFIGS;
+  // All providers are now supported via the generic x-ratelimit-* fallback
+  return true;
 }
 
 // ---------------------------------------------------------------------------

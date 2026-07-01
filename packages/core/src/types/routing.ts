@@ -79,6 +79,8 @@ export interface ProviderModel {
   };
   /** If true, this model is only available via OAuth subscription auth (not API key) */
   subscriptionOnly?: boolean;
+  /** Unified pricing classification: 'free' | 'free_with_limits' | 'paid' | 'subscription_only' | 'unknown' */
+  pricingTier?: string;
 }
 
 export type CandidateSet = ProviderModel[];

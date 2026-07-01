@@ -1,9 +1,15 @@
 import type { CandidateSet } from '@dmr-x/core';
 
 /**
- * Helper function to filter free candidates
+ * Helper function to filter free candidates.
+ * Uses unified pricing tier if available, falls back to cost-based check.
  */
-const isFree = (c: any) => (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0;
+const isFree = (c: any) => {
+  if (c.pricingTier) {
+    return c.pricingTier === 'free' || c.pricingTier === 'free_with_limits';
+  }
+  return (c.costPerInputToken ?? 0) <= 0 && (c.costPerOutputToken ?? 0) <= 0;
+};
 
 /**
  * Meta-model aliases for dynamic routing.

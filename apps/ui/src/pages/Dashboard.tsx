@@ -12,6 +12,11 @@ import {
   Loader2,
   KeyRound,
   Server,
+  X,
+  Boxes,
+  Key,
+  FlaskConical,
+  Bell,
 } from 'lucide-react';
 import * as React from 'react';
 import { Link } from 'react-router';
@@ -26,6 +31,10 @@ import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
+
+// Lazy-load Observability tab content
+const ObservabilityTab = React.lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
 import { useApiData } from '@/hooks/useApiData';
 import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
 import { Admin } from '@/lib/admin';
@@ -134,6 +143,19 @@ export function DashboardPage() {
     color: MODALITY_COLOR[k] ?? TONE_COLORS.primary,
   }));
 
+  // Onboarding: show getting-started banner when no providers are configured
+  const DISMISS_KEY = 'dmrx-onboarding-dismissed';
+  const [onboardingDismissed, setOnboardingDismissed] = React.useState(() => {
+    try { return localStorage.getItem(DISMISS_KEY) === 'true'; } catch { return false; }
+  });
+  const hasProviders = (providers.data ?? []).length > 0;
+  const showOnboarding = !onboardingDismissed && !hasProviders && !providers.isLoading;
+
+  const dismissOnboarding = () => {
+    setOnboardingDismissed(true);
+    try { localStorage.setItem(DISMISS_KEY, 'true'); } catch {}
+  };
+
   return (
     <PageContainer size="wide">
       <PageHeader
@@ -154,6 +176,82 @@ export function DashboardPage() {
           </div>
         }
       />
+
+      <div className="mt-5">
+        <Tabs defaultValue="overview">
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="observability">
+              <Bell className="size-3" />
+              Observability
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="overview">
+
+      {/* Getting Started onboarding banner */}
+      {showOnboarding && (
+        <div className="mt-5 rounded-xl border border-primary/20 bg-primary/5 p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-fg">Get started with DMR-X</h3>
+              <p className="text-xs text-fg-muted mt-1">
+                Connect a provider, generate an API key, and send your first request.
+              </p>
+            </div>
+            <button
+              onClick={dismissOnboarding}
+              className="text-fg-subtle hover:text-fg-muted transition-colors shrink-0"
+              aria-label="Dismiss"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[
+              {
+                step: 1,
+                icon: Boxes,
+                title: 'Add a provider',
+                description: 'Connect OpenAI, Anthropic, Ollama, or any compatible provider.',
+                href: '/providers',
+              },
+              {
+                step: 2,
+                icon: Key,
+                title: 'Create an API key',
+                description: 'Set up a tenant and generate a key to authenticate requests.',
+                href: '/tenants',
+              },
+              {
+                step: 3,
+                icon: FlaskConical,
+                title: 'Test in Playground',
+                description: 'Send a message through the gateway and see routing in action.',
+                href: '/playground',
+              },
+            ].map((item) => (
+              <Link
+                key={item.step}
+                to={item.href}
+                className="group flex items-start gap-3 rounded-lg border border-border bg-surface-1 p-3 hover:border-primary/30 hover:bg-primary/5 transition-colors"
+              >
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <item.icon className="size-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-primary">STEP {item.step}</span>
+                    <h4 className="text-xs font-semibold text-fg">{item.title}</h4>
+                  </div>
+                  <p className="text-[11px] text-fg-muted mt-0.5 leading-relaxed">{item.description}</p>
+                </div>
+                <ChevronRight className="size-3.5 text-fg-subtle group-hover:text-primary transition-colors shrink-0 mt-1" />
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatTile
@@ -245,7 +343,7 @@ export function DashboardPage() {
           <CardContent className="px-0">
             {usage.isLoading ? (
               <Skeleton className="h-[220px] w-full" />
-            ) : (
+            ) : usageSeries.length > 0 ? (
               <TimeSeriesChart
                 data={usageSeries}
                 xKey="t"
@@ -258,6 +356,10 @@ export function DashboardPage() {
                   new Date(v as number).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
                 }
               />
+            ) : (
+              <div className="h-[220px] flex items-center justify-center text-fg-subtle text-xs">
+                No request data yet. Send a request to see volume trends.
+              </div>
             )}
           </CardContent>
         </Card>
@@ -268,7 +370,7 @@ export function DashboardPage() {
             <p className="text-[10px] text-fg-muted">By provider capability</p>
           </CardHeader>
           <CardContent className="px-0 pb-0">
-            {modalityPie.length > 0 ? (
+            {!providers.isLoading && modalityPie.length > 0 ? (
               <DonutChart
                 data={modalityPie}
                 size={140}
@@ -276,9 +378,13 @@ export function DashboardPage() {
                 showLegend
                 showLabels
               />
-            ) : (
+            ) : providers.isLoading ? (
               <div className="h-[140px] flex items-center justify-center text-fg-subtle text-xs">
                 <Skeleton className="size-32 rounded-full" />
+              </div>
+            ) : (
+              <div className="h-[140px] flex items-center justify-center text-fg-subtle text-xs">
+                No provider capabilities detected.
               </div>
             )}
           </CardContent>
@@ -371,10 +477,14 @@ export function DashboardPage() {
             <p className="text-[10px] text-fg-muted mt-0.5">End-to-end request latency</p>
           </CardHeader>
           <CardContent className="px-0 pb-0">
-            {latencyData.length > 0 ? (
+            {!usage.isLoading && latencyData.length > 0 ? (
               <LatencyChart data={latencyData} height={200} />
-            ) : (
+            ) : usage.isLoading ? (
               <Skeleton className="h-[200px] w-full" />
+            ) : (
+              <div className="h-[200px] flex items-center justify-center text-fg-subtle text-xs">
+                No latency data yet. Send a request to see metrics.
+              </div>
             )}
           </CardContent>
         </Card>
@@ -396,6 +506,16 @@ export function DashboardPage() {
             </p>
           </CardContent>
         </Card>
+      </div>
+
+          </TabsContent>
+
+          <TabsContent value="observability">
+            <React.Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
+              <ObservabilityTab />
+            </React.Suspense>
+          </TabsContent>
+        </Tabs>
       </div>
     </PageContainer>
   );
