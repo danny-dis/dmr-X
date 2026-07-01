@@ -2,12 +2,9 @@ import {
   Star,
   StarOff,
   MoreHorizontal,
-  Zap,
   Cpu,
   Server,
   KeyRound,
-  Brain,
-  Timer,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -42,10 +39,8 @@ export function FreeProviderCard({
   const healthStatus = health?.status ?? provider.enabled ? 'online' : 'offline';
   const latency = health?.latencyMs;
   const config = provider.config as Record<string, unknown> | undefined;
-  const hasSignupUrl = (config?.signupUrl as string | undefined) != null;
+  const signupUrl = (provider as Record<string, unknown>).signupUrl as string | undefined;
   const monthlyBudget = (config?.monthlyTokenBudget as number | undefined) ?? 1000000;
-  const intelligenceRank = (config?.intelligenceRank as number | undefined) ?? 0;
-  const speedRank = (config?.speedRank as number | undefined) ?? 0;
 
   return (
     <Card
@@ -105,14 +100,12 @@ export function FreeProviderCard({
           <span>Monthly budget</span>
           <span className="tabular-nums">{formatTokens(monthlyBudget)}</span>
         </div>
-        {monthlyBudget > 0 && (
-          <Progress
-            value={Math.min(Math.round(Math.random() * 0.3 * 100), 95)}
-            tone="primary"
-            size="sm"
-            className="mt-1"
-          />
-        )}
+        <Progress
+          value={0}
+          tone="primary"
+          size="sm"
+          className="mt-1"
+        />
       </div>
 
       <div className="px-4 pb-3 flex items-center gap-2 text-[11px] flex-wrap">
@@ -137,37 +130,19 @@ export function FreeProviderCard({
         ) : null}
       </div>
 
-      {/* Intelligence & Speed Badges */}
-      {(intelligenceRank > 0 || speedRank > 0) && (
-        <div className="px-4 pb-2 flex items-center gap-2">
-          {intelligenceRank > 0 && (
-            <Badge tone="primary" size="sm" icon={<Brain className="size-2.5" />}>
-              IQ {intelligenceRank}/10
-            </Badge>
-          )}
-          {speedRank > 0 && (
-            <Badge tone="accent" size="sm" icon={<Timer className="size-2.5" />}>
-              SPD {speedRank}/10
-            </Badge>
-          )}
-        </div>
-      )}
-
       <div className="px-4 pb-4 flex items-center justify-between gap-2 border-t border-border pt-3">
         <div className="flex items-center gap-2 text-[11px] text-fg-subtle">
           <Cpu className="size-3" />
           <span>{provider.modelCount ?? provider.models?.length ?? 0} models</span>
         </div>
         <div className="flex items-center gap-2">
-          {hasSignupUrl && (
+          {signupUrl && (
             <Button
               size="sm"
               variant="secondary"
               onClick={(e) => {
                 e.stopPropagation();
-                if (config?.signupUrl) {
-                  window.open(config.signupUrl as string, '_blank', 'noopener,noreferrer');
-                }
+                window.open(signupUrl, '_blank', 'noopener,noreferrer');
               }}
             >
               <KeyRound className="size-3" />

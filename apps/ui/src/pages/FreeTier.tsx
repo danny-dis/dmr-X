@@ -1,4 +1,4 @@
-import { Gift, Plus, Search, ExternalLink, Server, Zap, Globe, RefreshCw, KeyRound, Shield, Clock, ArrowRight, ChevronDown, ChevronUp, Lock, Sparkles, Brain, Timer } from 'lucide-react';
+import { Gift, Plus, Search, ExternalLink, Server, Zap, Globe, RefreshCw, KeyRound, Shield, Clock, ArrowRight, ChevronDown, ChevronUp, Lock, Sparkles, Brain } from 'lucide-react';
 import * as React from 'react';
 
 import { AddProviderDialog } from '@/components/domain/AddProviderDialog';
@@ -10,7 +10,6 @@ import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
-import { Progress } from '@/components/primitives/Progress';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
@@ -307,8 +306,6 @@ export function FreeTierPage() {
                 {connectedFree.map((p) => {
                   const config = p.config as Record<string, unknown> | undefined;
                   const monthlyBudget = (config?.monthlyTokenBudget as number | undefined) ?? 1000000;
-                  const tokensUsed = p.tokens_used ?? 0;
-                  const usedPercent = monthlyBudget > 0 ? Math.min(Math.round((tokensUsed / monthlyBudget) * 100), 100) : 0;
                   return (
                     <div key={p.id} className="flex items-center gap-3 p-2 rounded-lg bg-surface-2/50">
                       <div className="flex size-7 shrink-0 items-center justify-center rounded border border-border bg-surface-2 text-fg-muted font-mono text-[9px] font-semibold uppercase">
@@ -317,10 +314,13 @@ export function FreeTierPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-medium text-fg truncate">{p.name}</span>
-                          <span className="text-[10px] text-fg-muted tabular-nums">{formatNumber(tokensUsed)} / {formatNumber(monthlyBudget)} ({usedPercent}%)</span>
+                          <span className="text-[10px] text-fg-muted tabular-nums">Budget: {formatNumber(monthlyBudget)} tokens/mo</span>
                         </div>
-                        <Progress value={usedPercent} tone={usedPercent > 80 ? 'warning' : 'primary'} size="sm" className="mt-1" />
-                        <p className="text-[10px] text-fg-subtle mt-1">Budget: {formatNumber(monthlyBudget)} tokens/mo</p>
+                        <div className="flex items-center gap-3 mt-1 text-[10px] text-fg-subtle">
+                          <span>{p.modelCount ?? 0} models</span>
+                          <span>{p.keys?.length ?? 0} keys</span>
+                          {p.health?.latencyMs != null && <span>{Math.round(p.health.latencyMs)}ms</span>}
+                        </div>
                       </div>
                     </div>
                   );
