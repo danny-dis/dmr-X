@@ -113,7 +113,7 @@ const BatchAddMessagesSchema = z.object({
 const ListConversationsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0),
-  mode: z.enum(['chat', 'image', 'embed', 'tts', 'rerank', 'moderate']).optional(),
+  mode: z.enum(['chat', 'image', 'embed', 'tts', 'rerank', 'moderate', 'agentic', 'tool-loop']).optional(),
   search: z.string().min(1).max(200).optional(),
   temporary: z.union([z.literal('true'), z.literal('false')]).optional(),
 });

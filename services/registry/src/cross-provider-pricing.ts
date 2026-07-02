@@ -371,7 +371,7 @@ export async function fetchModelsDevData(): Promise<ModelsDevApiResponse> {
       throw new Error(`Failed to fetch models.dev data: ${response.status}`);
     }
 
-    cachedModelsDevData = await response.json();
+    cachedModelsDevData = await response.json() as ModelsDevApiResponse;
     cacheExpiry = Date.now() + CACHE_TTL_MS;
 
     logger.info('Fetched models.dev pricing data');

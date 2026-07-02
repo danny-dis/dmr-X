@@ -166,9 +166,10 @@ describe('UsageTracker', () => {
         });
         // The RT key is `rt:<tenant>:<provider>:<model>`. Read the underlying
         // hash TTL via the same backing MemoryCache the tracker uses.
-        // MemoryCache stores hashTTLs in a private map — we cast to access.
-        const internalTtl = (underlyingCache as unknown as { hashTTLs: Map<string, number> })
-          .hashTTLs.get('usage:rt:tenant-test-1:openai:gpt-4');
+        // MemoryCache stores hash entries in a private hashMap with expires field.
+        const hashMap = (underlyingCache as unknown as { hashMap: Map<string, { expires: number }> })
+          .hashMap;
+        const internalTtl = hashMap.get('usage:rt:tenant-test-1:openai:gpt-4')?.expires;
         expect(internalTtl).toBeDefined();
         const elapsedMs = internalTtl! - before;
         // Allow a 1-minute jitter for the time it took to execute record()
@@ -197,8 +198,9 @@ describe('UsageTracker', () => {
         });
         const day = new Date();
         const dayStr = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-        const internalTtl = (underlyingCache as unknown as { hashTTLs: Map<string, number> })
-          .hashTTLs.get(`usage:daily:tenant-test-1:${dayStr}`);
+        const hashMap = (underlyingCache as unknown as { hashMap: Map<string, { expires: number }> })
+          .hashMap;
+        const internalTtl = hashMap.get(`usage:daily:tenant-test-1:${dayStr}`)?.expires;
         expect(internalTtl).toBeDefined();
         const elapsedMs = internalTtl! - before;
         // Allow a 1-minute jitter
@@ -225,8 +227,9 @@ describe('UsageTracker', () => {
         });
         const month = new Date();
         const monthStr = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}`;
-        const internalTtl = (underlyingCache as unknown as { hashTTLs: Map<string, number> })
-          .hashTTLs.get(`usage:monthly:tenant-test-1:${monthStr}`);
+        const hashMap = (underlyingCache as unknown as { hashMap: Map<string, { expires: number }> })
+          .hashMap;
+        const internalTtl = hashMap.get(`usage:monthly:tenant-test-1:${monthStr}`)?.expires;
         expect(internalTtl).toBeDefined();
         const elapsedMs = internalTtl! - before;
         expect(elapsedMs).toBeGreaterThanOrEqual(THREE_SIXTY_FIVE_DAYS_MS - 60_000);

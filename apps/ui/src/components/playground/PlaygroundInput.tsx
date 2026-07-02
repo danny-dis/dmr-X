@@ -270,12 +270,12 @@ export function PlaygroundInput() {
   };
   
   return (
-    <div className="border-t border-border bg-surface-1 p-4">
+    <div className="shrink-0 border-t border-border bg-surface-1 p-4">
       <div className="max-w-[800px] mx-auto">
         {/* Mode Tabs */}
         <div className="flex justify-center mb-3">
           <Tabs value={mode} onValueChange={(v) => setMode(v as PlaygroundMode)}>
-            <TabsList variant="pills">
+            <TabsList variant="pills" className="flex-wrap justify-center">
               {modeOptions.map((option) => (
                 <TabsTrigger key={option.value} value={option.value}>
                   <option.icon className="size-3" />

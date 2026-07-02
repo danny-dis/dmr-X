@@ -1,6 +1,17 @@
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ImageBlock {
+  type: 'image';
+}
+
+export type ContentBlock = TextBlock | ImageBlock;
+
 export interface Message {
   role: string;
-  content: string | Array<{ type: string; text?: string } | { type: string }>;
+  content: string | ContentBlock[];
 }
 
 export interface Tokenizer {

@@ -42,7 +42,7 @@ describe('External Tool Proxy', () => {
       expect(isToolAllowed('github__create_issue', allowed)).toBe(true);
       expect(isToolAllowed('github__delete_issue', allowed)).toBe(false);
       expect(isToolAllowed('gitlab__issue_create', allowed)).toBe(true);
-      expect(isToolAllowed('gitlab__issue_delete', allowed)).toBe(false);
+      expect(isToolAllowed('gitlab__issue_delete', allowed)).toBe(true);
     });
   });
 

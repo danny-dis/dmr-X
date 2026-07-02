@@ -24,7 +24,7 @@ export class TiktokenTokenizer implements Tokenizer {
       try {
         const { encoding_for_model } = await import('tiktoken');
         try {
-          this.encoding = encoding_for_model(this.encodingName);
+          this.encoding = encoding_for_model(this.encodingName as any);
         } catch {
           const tiktoken = await import('tiktoken');
           this.encoding = (tiktoken as any)[this.encodingName]?.();
@@ -57,7 +57,7 @@ export class TiktokenTokenizer implements Tokenizer {
         tokens += this.countTokens(msg.content);
       } else if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
-          if (block.type === 'text' && typeof block.text === 'string') {
+          if (block.type === 'text') {
             tokens += this.countTokens(block.text);
           } else if (block.type === 'image') {
             tokens += 1000;

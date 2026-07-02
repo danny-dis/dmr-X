@@ -398,7 +398,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // Also store in semantic cache
       if (semanticCacheService.isEnabled()) {
         const tokens = response.usage?.total_tokens ?? 0;
-        await semanticCacheService.store('chat', tenantId, body as Record<string, unknown>, response, tokens, 0);
+        await semanticCacheService.store('chat', tenantId, body as Record<string, unknown>, response, tokens);
       }
 
       reply.header('X-Cache', 'MISS');

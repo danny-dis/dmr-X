@@ -48,6 +48,8 @@ export type QualityTarget = 'frontier' | 'balanced' | 'economy';
 // Maps API paths to modalities
 export const MODALITY_ENDPOINTS: Record<string, Modality> = {
   '/v1/chat/completions': 'llm',
+  '/v1/agentic/chat': 'llm',
+  '/v1/tools/loop': 'llm',
   '/v1/messages': 'llm',
   '/v1/gemini/generateContent': 'llm',
   '/v1/completions': 'llm',

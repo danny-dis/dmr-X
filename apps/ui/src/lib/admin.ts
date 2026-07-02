@@ -674,4 +674,51 @@ function normalizeProviderTestResult(r: any): ApiProviderTestResult {
   } as ApiProviderTestResult;
 }
 
+// ─── Fusion Panel ──────────────────────────────────────────────────────────
+
+export interface ApiFusionSlot {
+  id: string;
+  panel_id: string;
+  provider_id: string;
+  model_id: string;
+  display_name: string;
+  slot_order: number;
+  is_enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiFusionPanel {
+  id: string;
+  name: string;
+  description: string | null;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+  slots: ApiFusionSlot[];
+}
+
+export const FusionPanel = {
+  list: () => apiGet<ApiFusionPanel[]>('/admin/fusion-panels'),
+
+  get: (id: string) => apiGet<ApiFusionPanel>(`/admin/fusion-panels/${id}`),
+
+  create: (data: { name: string; description?: string; slots?: Array<{ provider_id: string; model_id: string; display_name: string; slot_order?: number; is_enabled?: number }> }) =>
+    apiPost<ApiFusionPanel>('/admin/fusion-panels', data),
+
+  update: (id: string, data: { name?: string; description?: string; is_active?: number; slots?: Array<{ id?: string; provider_id: string; model_id: string; display_name: string; slot_order?: number; is_enabled?: number }> }) =>
+    apiPut<ApiFusionPanel>(`/admin/fusion-panels/${id}`, data),
+
+  delete: (id: string) => apiDelete(`/admin/fusion-panels/${id}`),
+
+  addSlot: (panelId: string, data: { provider_id: string; model_id: string; display_name: string; slot_order?: number; is_enabled?: number }) =>
+    apiPost<ApiFusionSlot>(`/admin/fusion-panels/${panelId}/slots`, data),
+
+  removeSlot: (panelId: string, slotId: string) =>
+    apiDelete(`/admin/fusion-panels/${panelId}/slots/${slotId}`),
+
+  reorderSlots: (panelId: string, slotIds: string[]) =>
+    apiPut<{ slots: ApiFusionSlot[] }>(`/admin/fusion-panels/${panelId}/slots/reorder`, { slot_ids: slotIds }),
+};
+
 export { api, apiGet, apiPost, apiPut, apiDelete };

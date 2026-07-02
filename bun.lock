@@ -29,7 +29,7 @@
     },
     "apps/gateway": {
       "name": "@dmr-x/gateway",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/benchmark": "*",
@@ -45,6 +45,7 @@
         "@dmr-x/router": "*",
         "@dmr-x/sandbox": "*",
         "@dmr-x/telemetry": "*",
+        "@dmr-x/tokenizers": "*",
         "@dmr-x/utils": "*",
         "@dmr-x/workers": "*",
         "@fastify/compress": "^9.0.0",
@@ -64,7 +65,7 @@
     },
     "apps/ui": {
       "name": "@dmr-x/ui",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@hookform/resolvers": "5.2.2",
         "@radix-ui/react-accordion": "1.2.12",
@@ -122,7 +123,7 @@
     },
     "packages/cli": {
       "name": "@dmr-x/cli",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "bin": {
         "dmrx": "./dist/index.js",
       },
@@ -140,7 +141,7 @@
     },
     "packages/core": {
       "name": "@dmr-x/core",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "zod": "3.23.0",
       },
@@ -150,7 +151,7 @@
     },
     "packages/db": {
       "name": "@dmr-x/db",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/utils": "*",
         "sql.js": "1.14.1",
@@ -162,7 +163,7 @@
     },
     "packages/plugin-loader": {
       "name": "@dmr-x/plugin-loader",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "devDependencies": {
         "typescript": "5.9.3",
       },
@@ -182,6 +183,7 @@
       "name": "@dmr-x/tokenizers",
       "version": "0.1.0",
       "dependencies": {
+        "@dmr-x/utils": "*",
         "tiktoken": "^1.0.18",
       },
       "devDependencies": {
@@ -190,7 +192,7 @@
     },
     "packages/utils": {
       "name": "@dmr-x/utils",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "pino": "9.0.0",
       },
@@ -200,7 +202,7 @@
     },
     "services/adapters": {
       "name": "@dmr-x/adapters",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/quota": "*",
@@ -211,9 +213,36 @@
         "typescript": "5.9.3",
       },
     },
+    "services/agent-registry": {
+      "name": "@dmr-x/agent-registry",
+      "version": "0.5.2",
+      "dependencies": {
+        "@dmr-x/core": "*",
+        "@dmr-x/db": "*",
+        "@dmr-x/utils": "*",
+        "zod": "^3.23.0",
+      },
+      "devDependencies": {
+        "typescript": "5.9.3",
+      },
+    },
+    "services/agent-runtime": {
+      "name": "@dmr-x/agent-runtime",
+      "version": "0.5.2",
+      "dependencies": {
+        "@dmr-x/agent-registry": "*",
+        "@dmr-x/billing": "*",
+        "@dmr-x/core": "*",
+        "@dmr-x/db": "*",
+        "@dmr-x/utils": "*",
+      },
+      "devDependencies": {
+        "typescript": "5.9.3",
+      },
+    },
     "services/benchmark": {
       "name": "@dmr-x/benchmark",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/core": "*",
@@ -227,7 +256,7 @@
     },
     "services/billing": {
       "name": "@dmr-x/billing",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -239,7 +268,7 @@
     },
     "services/cache": {
       "name": "@dmr-x/cache",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -252,7 +281,7 @@
     },
     "services/federation": {
       "name": "@dmr-x/federation",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -264,7 +293,7 @@
     },
     "services/mcp-client": {
       "name": "@dmr-x/mcp-client",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/core": "*",
@@ -277,7 +306,7 @@
     },
     "services/mcp-server": {
       "name": "@dmr-x/mcp-server",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "bin": {
         "dmrx-mcp": "./dist/index.js",
       },
@@ -298,7 +327,7 @@
     },
     "services/memory": {
       "name": "@dmr-x/memory",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -310,7 +339,7 @@
     },
     "services/oauth": {
       "name": "@dmr-x/oauth",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/db": "*",
         "@dmr-x/registry": "*",
@@ -322,7 +351,7 @@
     },
     "services/operator": {
       "name": "@dmr-x/operator",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -336,7 +365,7 @@
     },
     "services/plugin-loader-bootstrap": {
       "name": "@dmr-x/plugin-loader-bootstrap",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/gateway": "workspace:*",
         "@dmr-x/mcp-server": "workspace:*",
@@ -348,7 +377,7 @@
     },
     "services/policy": {
       "name": "@dmr-x/policy",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -361,7 +390,7 @@
     },
     "services/quota": {
       "name": "@dmr-x/quota",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/billing": "*",
         "@dmr-x/core": "*",
@@ -375,7 +404,7 @@
     },
     "services/registry": {
       "name": "@dmr-x/registry",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/core": "*",
@@ -388,7 +417,7 @@
     },
     "services/router": {
       "name": "@dmr-x/router",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -404,7 +433,7 @@
     },
     "services/sandbox": {
       "name": "@dmr-x/sandbox",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -416,7 +445,7 @@
     },
     "services/telemetry": {
       "name": "@dmr-x/telemetry",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -435,7 +464,7 @@
     },
     "services/tool-search": {
       "name": "@dmr-x/tool-search",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/utils": "*",
       },
@@ -445,7 +474,7 @@
     },
     "services/workers": {
       "name": "@dmr-x/workers",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -507,6 +536,10 @@
     "@babel/types": ["@babel/types@7.29.7", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA=="],
 
     "@dmr-x/adapters": ["@dmr-x/adapters@workspace:services/adapters"],
+
+    "@dmr-x/agent-registry": ["@dmr-x/agent-registry@workspace:services/agent-registry"],
+
+    "@dmr-x/agent-runtime": ["@dmr-x/agent-runtime@workspace:services/agent-runtime"],
 
     "@dmr-x/benchmark": ["@dmr-x/benchmark@workspace:services/benchmark"],
 

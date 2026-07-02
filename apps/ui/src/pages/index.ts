@@ -11,3 +11,6 @@ export { BillingPage } from './Billing';
 export { InfrastructurePage } from './Infrastructure';
 export { SettingsTabsPage } from './SettingsTabs';
 export { NotFoundPage } from './NotFound';
+export { AgentsPage } from './Agents';
+export { MarketplacePage } from './Marketplace';
+export { AgentAnalyticsPage } from './AgentAnalytics';

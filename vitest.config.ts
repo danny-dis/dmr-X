@@ -9,12 +9,12 @@ export default defineConfig({
       '@dmr-x/core': resolve(__dirname, 'packages/core/src'),
       '@dmr-x/utils': resolve(__dirname, 'packages/utils/src'),
       '@dmr-x/db': resolve(__dirname, 'packages/db/src'),
-      '@dmr-x/cache': resolve(__dirname, 'packages/cache/src'),
-      '@dmr-x/federation': resolve(__dirname, 'packages/federation/src'),
-      '@dmr-x/memory': resolve(__dirname, 'packages/memory/src'),
-      '@dmr-x/oauth': resolve(__dirname, 'packages/oauth/src'),
-      '@dmr-x/policy': resolve(__dirname, 'packages/policy/src'),
-      '@dmr-x/billing': resolve(__dirname, 'packages/billing/src'),
+      '@dmr-x/cache': resolve(__dirname, 'services/cache/src'),
+      '@dmr-x/federation': resolve(__dirname, 'services/federation/src'),
+      '@dmr-x/memory': resolve(__dirname, 'services/memory/src'),
+      '@dmr-x/oauth': resolve(__dirname, 'services/oauth/src'),
+      '@dmr-x/policy': resolve(__dirname, 'services/policy/src'),
+      '@dmr-x/billing': resolve(__dirname, 'services/billing/src'),
       '@dmr-x/tokenizers': resolve(__dirname, 'packages/tokenizers/src'),
       '@dmr-x/registry': resolve(__dirname, 'services/registry/src'),
       // fastify — only in apps/gateway, not hoisted to root
@@ -27,6 +27,13 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        singleFork: true,
+        execArgv: ['--max-old-space-size=8192'],
+      },
+    },
     coverage: {
       provider: 'v8',
       thresholds: {

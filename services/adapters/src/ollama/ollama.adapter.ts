@@ -55,9 +55,26 @@ export class OllamaAdapter extends BaseAdapter {
   readonly providerId = 'ollama';
   readonly supportedModalities: Modality[] = ['llm', 'embedding'];
 
+  private apiKey = '';
+
+  async initialize(config: ProviderConfig): Promise<void> {
+    await super.initialize(config);
+    this.apiKey = (config.accessToken as string) || (config.apiKey as string) || '';
+  }
+
+  /** Build request headers, including Authorization when an API key is set. */
+  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extra };
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
+    return headers;
+  }
+
   protected async checkHealth(): Promise<void> {
     const baseUrl = this.config.baseUrl || 'http://localhost:11434';
     const response = await this.fetchWithTimeout(`${baseUrl}/api/tags`, {
+      headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : undefined,
       timeoutMs: 5000,
     });
     if (!response.ok) {
@@ -97,7 +114,7 @@ export class OllamaAdapter extends BaseAdapter {
     const start = Date.now();
     const response = await this.fetchWithTimeout(`${baseUrl}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.buildHeaders(),
       body: JSON.stringify({
         model: request.model || 'llama3',
         messages: (request.messages || []).map((msg) => ({
@@ -151,7 +168,7 @@ export class OllamaAdapter extends BaseAdapter {
     const start = Date.now();
     const response = await this.fetchWithTimeout(`${baseUrl}/api/embeddings`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.buildHeaders(),
       body: JSON.stringify({
         model: request.model || 'nomic-embed-text',
         prompt: Array.isArray(request.input) ? request.input[0] : request.input,
@@ -185,7 +202,7 @@ export class OllamaAdapter extends BaseAdapter {
     const baseUrl = this.config.baseUrl || 'http://localhost:11434';
     const response = await this.fetchWithTimeout(`${baseUrl}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.buildHeaders(),
       body: JSON.stringify({
         model: request.model || 'llama3',
         messages: (request.messages || []).map((msg) => ({
@@ -244,7 +261,9 @@ export class OllamaAdapter extends BaseAdapter {
   async listModels(): Promise<ModelInfo[]> {
     this.assertInitialized();
     const baseUrl = this.config.baseUrl || 'http://localhost:11434';
-    const response = await this.fetchWithTimeout(`${baseUrl}/api/tags`);
+    const response = await this.fetchWithTimeout(`${baseUrl}/api/tags`, {
+      headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : undefined,
+    });
 
     if (!response.ok) {
       return [];

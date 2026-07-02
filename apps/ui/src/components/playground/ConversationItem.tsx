@@ -1,6 +1,7 @@
 import { formatDistanceToNow } from 'date-fns';
 import { MoreHorizontal, Trash2, Edit, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert } from 'lucide-react';
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
@@ -26,6 +27,8 @@ const modeIcons = {
 function ConversationItemComponent({ conversation, isActive, onClick }: ConversationItemProps) {
   const { deleteConversation, renameConversation } = usePlaygroundStore();
   const [showMenu, setShowMenu] = React.useState(false);
+  const [menuPos, setMenuPos] = React.useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const triggerRef = React.useRef<HTMLDivElement>(null);
   // Inline-edit state for Rename. When `isEditing` is true the title text
   // is replaced with an input that commits on Enter/blur and cancels on
   // Escape. Keeps the existing click-to-open-conversation flow working
@@ -117,12 +120,16 @@ function ConversationItemComponent({ conversation, isActive, onClick }: Conversa
 
       {/* Actions */}
       {!isEditing && (
-        <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+        <div ref={triggerRef} className="opacity-0 group-hover:opacity-100 transition-opacity">
           <Button
             variant="ghost"
             size="icon-sm"
             onClick={(e) => {
               e.stopPropagation();
+              if (!showMenu && triggerRef.current) {
+                const rect = triggerRef.current.getBoundingClientRect();
+                setMenuPos({ top: rect.bottom + 4, left: rect.right - 128 });
+              }
               setShowMenu(!showMenu);
             }}
           >
@@ -131,35 +138,42 @@ function ConversationItemComponent({ conversation, isActive, onClick }: Conversa
         </div>
       )}
 
-      {/* Dropdown Menu */}
-      {showMenu && !isEditing && (
-        <div className="absolute right-0 top-full mt-1 w-32 bg-surface-1 border border-border rounded-lg shadow-lg z-50">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start"
-            onClick={(e) => {
-              e.stopPropagation();
-              startRename();
-            }}
+      {/* Dropdown Menu — rendered via portal to avoid overflow clipping */}
+      {showMenu && !isEditing && createPortal(
+        <>
+          <div className="fixed inset-0 z-[60]" onClick={() => setShowMenu(false)} />
+          <div
+            className="fixed z-[61] w-32 bg-surface-1 border border-border rounded-lg shadow-lg"
+            style={{ top: menuPos.top, left: menuPos.left }}
           >
-            <Edit className="size-3 mr-2" />
-            Rename
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start text-destructive"
-            onClick={(e) => {
-              e.stopPropagation();
-              deleteConversation(conversation.id);
-              setShowMenu(false);
-            }}
-          >
-            <Trash2 className="size-3 mr-2" />
-            Delete
-          </Button>
-        </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start"
+              onClick={(e) => {
+                e.stopPropagation();
+                startRename();
+              }}
+            >
+              <Edit className="size-3 mr-2" />
+              Rename
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start text-destructive"
+              onClick={(e) => {
+                e.stopPropagation();
+                deleteConversation(conversation.id);
+                setShowMenu(false);
+              }}
+            >
+              <Trash2 className="size-3 mr-2" />
+              Delete
+            </Button>
+          </div>
+        </>,
+        document.body
       )}
     </div>
   );

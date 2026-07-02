@@ -48,7 +48,7 @@ export class AnthropicTokenizer implements Tokenizer {
         tokens += this.countTokens(msg.content);
       } else if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
-          if (block.type === 'text' && typeof block.text === 'string') {
+          if (block.type === 'text') {
             tokens += this.countTokens(block.text);
           } else if (block.type === 'image') {
             tokens += 1000;

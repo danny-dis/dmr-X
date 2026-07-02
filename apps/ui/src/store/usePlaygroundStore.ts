@@ -514,6 +514,10 @@ export const usePlaygroundStore = create<PlaygroundState>()(
             // be incomplete so we keep it in the buffer for the next read.
             get().clearStreamingEvents();
 
+            // Pass the conversation ID so the backend can maintain
+            // in-memory state across multi-turn agentic/tool-loop requests.
+            body.conversationId = conversationId;
+
             const response = await fetchAuthenticated(endpoint, {
               method: 'POST',
               body: JSON.stringify(body),
@@ -678,7 +682,10 @@ export const usePlaygroundStore = create<PlaygroundState>()(
                 try {
                   const data = JSON.parse(line.slice(6));
                   lastChunk = data;
-                  if (data.choices?.[0]?.delta?.content) {
+                  if (data.error?.message) {
+                    // Gateway error (no provider, routing failure, etc.)
+                    lastChunk = { error: data.error };
+                  } else if (data.choices?.[0]?.delta?.content) {
                     fullContent += data.choices[0].delta.content;
                     get().updateStreamingMessage(fullContent);
                   }
@@ -691,7 +698,10 @@ export const usePlaygroundStore = create<PlaygroundState>()(
             }
 
             const latency = performance.now() - start;
-            const finalContent = fullContent || lastChunk?.choices?.[0]?.message?.content || '';
+            const finalContent = fullContent
+              || (lastChunk?.error?.message ? `Error: ${lastChunk.error.message}` : '')
+              || lastChunk?.choices?.[0]?.message?.content
+              || '';
 
             // Update final message
             set(state => ({

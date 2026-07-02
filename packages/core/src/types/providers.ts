@@ -70,6 +70,7 @@ export const PROVIDER_SLUGS = {
 
   // Local / self-hosted
   ollama: 'ollama',
+  ollamaCloud: 'ollama-cloud',
   lmstudio: 'lmstudio',
   vllm: 'vllm',
   textgen: 'textgen',

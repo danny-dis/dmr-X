@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 
 import { ValidationError } from '@dmr-x/core';
@@ -21,6 +23,100 @@ import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 const HTML_ESCAPE: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escapeHtml(str: string): string {
   return str.replace(/[&<>"']/g, c => HTML_ESCAPE[c]!);
+}
+
+// ─── Hybrid .env Sync ─────────────────────────────────────────────────────
+//
+// When an API key is set via the admin UI, also persist it to the .env
+// file so the key survives database corruption or migration resets.
+// The env var acts as a fallback: loadActiveProviderCredential() checks
+// provider_keys → config.apiKey → process.env[api_key_ref] in order, so
+// the DB-stored key always takes precedence when available.
+//
+// The .env file is located by walking up from DMRX_DATA_DIR to the project
+// root, looking for the file that contains DMRX_DATA_DIR or PORT entries.
+// If no .env is found, we skip silently (container/K8s deployments may
+// not use .env files).
+
+/** Locate the primary .env file for the running instance. */
+function findEnvFile(): string | null {
+  // Candidate directories: project root (where turbo.json lives), CWD, data dir
+  const candidates = [
+    process.cwd(),
+    path.resolve(process.cwd(), '..'),
+    path.resolve(process.cwd(), '..', '..'),
+    process.env.DMRX_DATA_DIR ? path.dirname(process.env.DMRX_DATA_DIR) : '',
+  ].filter(Boolean);
+
+  for (const dir of candidates) {
+    const envPath = path.join(dir, '.env');
+    if (fs.existsSync(envPath)) {
+      return envPath;
+    }
+  }
+  return null;
+}
+
+/**
+ * Upsert an environment variable in a .env file.
+ * - If `KEY=...` exists, replaces the value (preserves comments/blank lines)
+ * - If not found, appends `KEY=value` at the end
+ * - Also updates process.env so the running process picks it up immediately
+ */
+function upsertEnvVar(envPath: string, key: string, value: string): void {
+  try {
+    let content = fs.readFileSync(envPath, 'utf-8');
+    const regex = new RegExp(`^${key}=.*$`, 'm');
+
+    if (regex.test(content)) {
+      content = content.replace(regex, `${key}=${value}`);
+    } else {
+      // Ensure trailing newline before appending
+      if (content.length > 0 && !content.endsWith('\n')) {
+        content += '\n';
+      }
+      content += `${key}=${value}\n`;
+    }
+
+    fs.writeFileSync(envPath, content, 'utf-8');
+    // Update the running process so the new key takes effect without restart
+    process.env[key] = value;
+  } catch (err) {
+    logger.warn({ err, envPath, key }, 'Failed to sync API key to .env file (non-fatal)');
+  }
+}
+
+/**
+ * Sync an API key to the .env file for the given provider.
+ * Looks up the provider's catalog entry to find the correct env-var name.
+ */
+function syncApiKeyToEnvFile(providerName: string, apiKey: string | undefined): void {
+  if (!apiKey) return; // Don't write empty keys — only sync actual secrets
+
+  // Find the catalog entry to get the envKey
+  const template = PROVIDER_CATALOG.find(t => t.id === providerName);
+  if (!template?.envKey) return; // No env-var mapping for this provider
+
+  const envPath = findEnvFile();
+  if (!envPath) return; // No .env file found — skip silently
+
+  upsertEnvVar(envPath, template.envKey, apiKey);
+  logger.info({ provider: providerName, envKey: template.envKey, envPath }, 'Synced API key to .env file');
+}
+
+/**
+ * Remove an API key from the .env file (set to empty) for the given provider.
+ * Called when a key is deleted or deactivated.
+ */
+function removeApiKeyFromEnvFile(providerName: string): void {
+  const template = PROVIDER_CATALOG.find(t => t.id === providerName);
+  if (!template?.envKey) return;
+
+  const envPath = findEnvFile();
+  if (!envPath) return;
+
+  upsertEnvVar(envPath, template.envKey, '');
+  logger.info({ provider: providerName, envKey: template.envKey }, 'Cleared API key from .env file');
 }
 
 /**
@@ -1143,6 +1239,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       void autoDiscoverModelsOnKeyAdd(db, provider.id, providerName, template.baseUrl);
     }
 
+    // Hybrid: also persist the key to .env so it survives DB corruption
+    if (api_key) {
+      syncApiKeyToEnvFile(providerName, api_key);
+    }
+
     reply.status(200);
     const providerConfig = JSON.parse(provider.config || '{}');
     const refreshed = db.prepare('SELECT * FROM providers WHERE id = ?').get(provider.id) as any;
@@ -1338,6 +1439,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     // Auto-discover models if a new key was provided
     if (api_key) {
       void autoDiscoverModelsOnKeyAdd(db, id, provider.name, provider.base_url ?? undefined);
+    }
+
+    // Hybrid: also persist the key to .env so it survives DB corruption
+    if (api_key) {
+      syncApiKeyToEnvFile(provider.name, api_key);
     }
 
     const updatedRow = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
@@ -2323,6 +2429,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       });
     }
     recomputeProviderTier(db, id);
+
+    // Hybrid: also persist the key to .env so it survives DB corruption
+    if (body.api_key_ref) {
+      syncApiKeyToEnvFile(body.name, body.api_key_ref);
+    }
 
     reply.status(201);
     const created = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
@@ -3818,6 +3929,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     db.prepare('DELETE FROM providers WHERE id = ?').run(id);
 
+    // Hybrid: clear the API key from .env when provider is deleted
+    if (provider?.name) {
+      removeApiKeyFromEnvFile(provider.name);
+    }
+
     // Audit log for provider deletion
     logAdminAction(request, 'delete', 'provider', id, { name: provider?.name });
 
@@ -5010,5 +5126,180 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     (config.aggregation as Record<string, unknown>).servers = filtered;
     writeMcpConfig(config);
     return { success: true };
+  });
+
+  // ─── Fusion Panel ────────────────────────────────────────────────────────
+
+  // GET /admin/fusion-panels — list all panels with their slots
+  server.get('/admin/fusion-panels', async () => {
+    const db = getDb();
+    const panels = db.prepare('SELECT * FROM fusion_panels ORDER BY created_at DESC').all() as any[];
+    const slots = db.prepare('SELECT * FROM fusion_panel_slots ORDER BY slot_order').all() as any[];
+    const slotsByPanel = new Map<string, any[]>();
+    for (const slot of slots) {
+      const list = slotsByPanel.get(slot.panel_id) ?? [];
+      list.push(slot);
+      slotsByPanel.set(slot.panel_id, list);
+    }
+    return panels.map(p => ({ ...p, slots: slotsByPanel.get(p.id) ?? [] }));
+  });
+
+  // GET /admin/fusion-panels/:id — get single panel with slots
+  server.get('/admin/fusion-panels/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const panel = db.prepare('SELECT * FROM fusion_panels WHERE id = ?').get(id) as any;
+    if (!panel) return reply.code(404).send({ error: 'Fusion panel not found' });
+    const slots = db.prepare('SELECT * FROM fusion_panel_slots WHERE panel_id = ? ORDER BY slot_order').all(id);
+    return { ...panel, slots };
+  });
+
+  // POST /admin/fusion-panels — create a new panel with slots
+  server.post('/admin/fusion-panels', async (request, reply) => {
+    const body = request.body as {
+      name: string;
+      description?: string;
+      slots?: Array<{ provider_id: string; model_id: string; display_name: string; slot_order?: number; is_enabled?: number }>;
+    };
+    if (!body.name) return reply.code(400).send({ error: 'name is required' });
+
+    const db = getDb();
+    const id = crypto.randomUUID();
+
+    db.prepare(
+      'INSERT INTO fusion_panels (id, name, description) VALUES (?, ?, ?)'
+    ).run(id, body.name, body.description ?? null);
+
+    // Insert slots if provided
+    if (body.slots && body.slots.length > 0) {
+      const slotStmt = db.prepare(
+        'INSERT INTO fusion_panel_slots (id, panel_id, provider_id, model_id, display_name, slot_order, is_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+      for (let i = 0; i < body.slots.length; i++) {
+        const s = body.slots[i]!;
+        slotStmt.run(
+          crypto.randomUUID(), id, s.provider_id, s.model_id, s.display_name,
+          s.slot_order ?? i, s.is_enabled ?? 1
+        );
+      }
+    }
+
+    const panel = db.prepare('SELECT * FROM fusion_panels WHERE id = ?').get(id) as any;
+    const slots = db.prepare('SELECT * FROM fusion_panel_slots WHERE panel_id = ? ORDER BY slot_order').all(id);
+    return reply.code(201).send({ ...panel, slots });
+  });
+
+  // PUT /admin/fusion-panels/:id — update panel metadata and/or replace slots
+  server.put('/admin/fusion-panels/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as {
+      name?: string;
+      description?: string;
+      is_active?: number;
+      slots?: Array<{ id?: string; provider_id: string; model_id: string; display_name: string; slot_order?: number; is_enabled?: number }>;
+    };
+    const db = getDb();
+    const panel = db.prepare('SELECT * FROM fusion_panels WHERE id = ?').get(id) as any;
+    if (!panel) return reply.code(404).send({ error: 'Fusion panel not found' });
+
+    // Update panel metadata if provided
+    if (body.name !== undefined || body.description !== undefined || body.is_active !== undefined) {
+      db.prepare(
+        `UPDATE fusion_panels SET name = ?, description = ?, is_active = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(
+        body.name ?? panel.name,
+        body.description ?? panel.description,
+        body.is_active ?? panel.is_active,
+        id
+      );
+    }
+
+    // Replace slots if provided (full replacement)
+    if (body.slots !== undefined) {
+      db.prepare('DELETE FROM fusion_panel_slots WHERE panel_id = ?').run(id);
+      if (body.slots.length > 0) {
+        const slotStmt = db.prepare(
+          'INSERT INTO fusion_panel_slots (id, panel_id, provider_id, model_id, display_name, slot_order, is_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        );
+        for (let i = 0; i < body.slots.length; i++) {
+          const s = body.slots[i]!;
+          slotStmt.run(
+            s.id ?? crypto.randomUUID(), id, s.provider_id, s.model_id, s.display_name,
+            s.slot_order ?? i, s.is_enabled ?? 1
+          );
+        }
+      }
+    }
+
+    const updated = db.prepare('SELECT * FROM fusion_panels WHERE id = ?').get(id) as any;
+    const slots = db.prepare('SELECT * FROM fusion_panel_slots WHERE panel_id = ? ORDER BY slot_order').all(id);
+    return { ...updated, slots };
+  });
+
+  // DELETE /admin/fusion-panels/:id — delete panel and its slots (cascade)
+  server.delete('/admin/fusion-panels/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const panel = db.prepare('SELECT * FROM fusion_panels WHERE id = ?').get(id) as any;
+    if (!panel) return reply.code(404).send({ error: 'Fusion panel not found' });
+    db.prepare('DELETE FROM fusion_panel_slots WHERE panel_id = ?').run(id);
+    db.prepare('DELETE FROM fusion_panels WHERE id = ?').run(id);
+    return { success: true };
+  });
+
+  // POST /admin/fusion-panels/:id/slots — add a slot to an existing panel
+  server.post('/admin/fusion-panels/:id/slots', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { provider_id: string; model_id: string; display_name: string; slot_order?: number; is_enabled?: number };
+    const db = getDb();
+    const panel = db.prepare('SELECT * FROM fusion_panels WHERE id = ?').get(id) as any;
+    if (!panel) return reply.code(404).send({ error: 'Fusion panel not found' });
+    if (!body.provider_id || !body.model_id || !body.display_name) {
+      return reply.code(400).send({ error: 'provider_id, model_id, and display_name are required' });
+    }
+
+    // Get next slot_order
+    const maxOrder = db.prepare('SELECT MAX(slot_order) as max_order FROM fusion_panel_slots WHERE panel_id = ?').get(id) as { max_order: number | null };
+    const nextOrder = (maxOrder.max_order ?? -1) + 1;
+
+    const slotId = crypto.randomUUID();
+    db.prepare(
+      'INSERT INTO fusion_panel_slots (id, panel_id, provider_id, model_id, display_name, slot_order, is_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(slotId, id, body.provider_id, body.model_id, body.display_name, body.slot_order ?? nextOrder, body.is_enabled ?? 1);
+
+    const slot = db.prepare('SELECT * FROM fusion_panel_slots WHERE id = ?').get(slotId);
+    return reply.code(201).send(slot);
+  });
+
+  // DELETE /admin/fusion-panels/:panelId/slots/:slotId — remove a slot
+  server.delete('/admin/fusion-panels/:panelId/slots/:slotId', async (request, reply) => {
+    const { panelId, slotId } = request.params as { panelId: string; slotId: string };
+    const db = getDb();
+    const slot = db.prepare('SELECT * FROM fusion_panel_slots WHERE id = ? AND panel_id = ?').get(slotId, panelId) as any;
+    if (!slot) return reply.code(404).send({ error: 'Slot not found' });
+    db.prepare('DELETE FROM fusion_panel_slots WHERE id = ?').run(slotId);
+    return { success: true };
+  });
+
+  // PUT /admin/fusion-panels/:panelId/slots/reorder — reorder all slots
+  server.put('/admin/fusion-panels/:panelId/slots/reorder', async (request, reply) => {
+    const { panelId } = request.params as { panelId: string };
+    const body = request.body as { slot_ids: string[] };
+    const db = getDb();
+    const panel = db.prepare('SELECT * FROM fusion_panels WHERE id = ?').get(panelId) as any;
+    if (!panel) return reply.code(404).send({ error: 'Fusion panel not found' });
+    if (!body.slot_ids || !Array.isArray(body.slot_ids)) {
+      return reply.code(400).send({ error: 'slot_ids array is required' });
+    }
+
+    const stmt = db.prepare("UPDATE fusion_panel_slots SET slot_order = ?, updated_at = datetime('now') WHERE id = ? AND panel_id = ?");
+    db.transaction(() => {
+      for (let i = 0; i < body.slot_ids.length; i++) {
+        stmt.run(i, body.slot_ids[i], panelId);
+      }
+    });
+
+    const slots = db.prepare('SELECT * FROM fusion_panel_slots WHERE panel_id = ? ORDER BY slot_order').all(panelId);
+    return { slots };
   });
 }

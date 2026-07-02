@@ -20,6 +20,7 @@ export default defineWorkspace([
     test: {
       name: 'unit',
       include: ['tests/unit/**/*.test.ts'],
+      exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude', 'tests/e2e/**'],
     },
   },
   {

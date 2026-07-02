@@ -1,0 +1,61 @@
+#!/usr/bin/env bun
+/**
+ * Auto-generates migrations-data.ts from the SQL migration files.
+ *
+ * This ensures the embedded migrations (used by compiled binaries) stay in sync
+ * with the on-disk SQL files. Run after adding or modifying any migration:
+ *
+ *   bun run packages/db/scripts/generate-migrations-data.ts
+ *
+ * Or add to your workflow:
+ *   bun run db:generate-migrations
+ */
+
+import { readdirSync, readFileSync, writeFileSync } from 'fs';
+import { join, basename } from 'path';
+
+const MIGRATIONS_DIR = join(import.meta.dir, '..', 'src', 'migrations');
+const OUTPUT_FILE = join(import.meta.dir, '..', 'src', 'migrations-data.ts');
+
+// Read all .sql files and parse version numbers
+const files = readdirSync(MIGRATIONS_DIR)
+  .filter(f => f.endsWith('.sql'))
+  .sort();
+
+const migrations: Array<{ version: number; filename: string; sql: string }> = [];
+
+for (const file of files) {
+  const match = basename(file).match(/^(\d+)_/);
+  if (!match) continue;
+
+  const version = parseInt(match[1], 10);
+  const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf-8');
+  migrations.push({ version, filename: file, sql });
+}
+
+// Sort by version
+migrations.sort((a, b) => a.version - b.version);
+
+// Generate TypeScript output
+const lines: string[] = [
+  `// Auto-generated from packages/db/src/migrations/*.sql`,
+  `// DO NOT EDIT MANUALLY — run: bun run packages/db/scripts/generate-migrations-data.ts`,
+  ``,
+  `export const MIGRATIONS: Record<number, { filename: string; sql: string }> = {`,
+];
+
+for (const mig of migrations) {
+  // Escape backticks in SQL by replacing ` with \`
+  const escapedSql = mig.sql.replace(/`/g, '\\`');
+  lines.push(`  ${mig.version}: {`);
+  lines.push(`    filename: '${mig.filename}',`);
+  lines.push(`    sql: \`${escapedSql}\`,`);
+  lines.push(`  },`);
+}
+
+lines.push(`};`);
+lines.push(``);
+
+writeFileSync(OUTPUT_FILE, lines.join('\n'), 'utf-8');
+
+console.log(`Generated ${OUTPUT_FILE} with ${migrations.length} migrations (versions ${migrations[0]?.version}–${migrations[migrations.length - 1]?.version})`);

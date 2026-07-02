@@ -26,6 +26,16 @@ describe('OllamaAdapter', () => {
       expect(adapter.supportedModalities).toContain('llm');
       expect(adapter.supportedModalities).toContain('embedding');
     });
+
+    it('should store API key from config for cloud mode', async () => {
+      const cloudConfig: ProviderConfig = {
+        ...mockConfig,
+        baseUrl: 'https://ollama.com',
+        apiKey: 'test-api-key-123',
+      };
+      await adapter.initialize(cloudConfig);
+      expect(adapter.providerId).toBe('ollama');
+    });
   });
 
   describe('execute', () => {
@@ -72,6 +82,69 @@ describe('OllamaAdapter', () => {
       const response = await adapter.execute(request);
       expect(response.modality).toBe('llm');
       expect(response.message).toBeDefined();
+      expect(response.message?.content).toBe('Hello!');
+    });
+
+    it('should send Authorization header when API key is configured', async () => {
+      const cloudConfig: ProviderConfig = {
+        ...mockConfig,
+        baseUrl: 'https://ollama.com',
+        apiKey: 'test-api-key-xyz',
+      };
+      await adapter.initialize(cloudConfig);
+
+      const mockResponse = {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model: 'gpt-oss:120b',
+          message: { role: 'assistant', content: 'Hi!' },
+          done: true,
+          eval_count: 2,
+        }),
+      };
+
+      globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+      const request: UnifiedRequest = {
+        modality: 'llm',
+        model: 'gpt-oss:120b',
+        messages: [{ role: 'user', content: 'Hi' }],
+        stream: false,
+        metadata: {},
+      };
+
+      const response = await adapter.execute(request);
+      expect(response.modality).toBe('llm');
+      expect(response.message?.content).toBe('Hi!');
+    });
+
+    it('should not send Authorization header in local mode (no key)', async () => {
+      await adapter.initialize(mockConfig);
+
+      const mockResponse = {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model: 'llama3.2',
+          message: { role: 'assistant', content: 'Hello!' },
+          done: true,
+          eval_count: 5,
+        }),
+      };
+
+      globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+      const request: UnifiedRequest = {
+        modality: 'llm',
+        model: 'llama3.2',
+        messages: [{ role: 'user', content: 'Hello' }],
+        stream: false,
+        metadata: {},
+      };
+
+      const response = await adapter.execute(request);
+      expect(response.modality).toBe('llm');
       expect(response.message?.content).toBe('Hello!');
     });
 

@@ -1,0 +1,28 @@
+{
+  "name": "@dmr-x/agent-registry",
+  "version": "0.5.2",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dmr-x/core": "*",
+    "@dmr-x/db": "*",
+    "@dmr-x/utils": "*",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

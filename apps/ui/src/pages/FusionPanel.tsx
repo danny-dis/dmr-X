@@ -1,4 +1,4 @@
-import { Layers, Plus, Trash2, GripVertical, Zap, Server, Brain, Timer, ArrowUpDown } from 'lucide-react';
+import { Layers, Plus, Trash2, GripVertical, Zap, Server, Brain, Timer, ArrowUpDown, Save, RefreshCw } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -11,22 +11,19 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
+import { Admin, FusionPanel as FusionPanelApi } from '@/lib/admin';
+import type { ApiFusionPanel, ApiFusionSlot } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiProvider, ApiCatalogEntry } from '@/types/api';
 
-interface FusionSlot {
-  id: string;
-  providerId: string;
-  modelId: string;
-  displayName: string;
-}
-
 export function FusionPanelPage() {
-  const [slots, setSlots] = React.useState<FusionSlot[]>([]);
+  const [panels, setPanels] = React.useState<ApiFusionPanel[]>([]);
+  const [activePanelId, setActivePanelId] = React.useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = React.useState<string>('');
   const [selectedModel, setSelectedModel] = React.useState<string>('');
+  const [isLoading, setIsLoading] = React.useState(true);
+  const [isSaving, setIsSaving] = React.useState(false);
 
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
   const catalog = useApiData<{ entries: ApiCatalogEntry[] }>(
@@ -45,8 +42,57 @@ export function FusionPanelPage() {
     return provider.models ?? [];
   }, [selectedProvider, enabledProviders]);
 
-  const addSlot = () => {
-    if (!selectedProvider || !selectedModel) {
+  // Load panels on mount
+  const loadPanels = React.useCallback(async () => {
+    try {
+      setIsLoading(true);
+      const data = await FusionPanelApi.list();
+      setPanels(data);
+      // Auto-select first panel if none selected
+      if (!activePanelId && data.length > 0) {
+        setActivePanelId(data[0]!.id);
+      }
+    } catch (err) {
+      toast.error('Failed to load fusion panels');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [activePanelId]);
+
+  React.useEffect(() => {
+    loadPanels();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activePanel = panels.find(p => p.id === activePanelId) ?? null;
+  const slots = activePanel?.slots ?? [];
+
+  const createPanel = async () => {
+    const name = `Fusion Panel ${panels.length + 1}`;
+    try {
+      const newPanel = await FusionPanelApi.create({ name });
+      setPanels(prev => [newPanel, ...prev]);
+      setActivePanelId(newPanel.id);
+      toast.success(`Created "${name}"`);
+    } catch (err) {
+      toast.error('Failed to create panel');
+    }
+  };
+
+  const deletePanel = async (id: string) => {
+    try {
+      await FusionPanelApi.delete(id);
+      setPanels(prev => prev.filter(p => p.id !== id));
+      if (activePanelId === id) {
+        setActivePanelId(panels.find(p => p.id !== id)?.id ?? null);
+      }
+      toast.success('Panel deleted');
+    } catch (err) {
+      toast.error('Failed to delete panel');
+    }
+  };
+
+  const addSlot = async () => {
+    if (!activePanelId || !selectedProvider || !selectedModel) {
       toast.error('Select a provider and model');
       return;
     }
@@ -54,32 +100,90 @@ export function FusionPanelPage() {
     const model = provider?.models?.find(m => m.id === selectedModel);
     if (!provider || !model) return;
 
-    const newSlot: FusionSlot = {
-      id: `${Date.now()}`,
-      providerId: provider.name,
-      modelId: model.id,
-      displayName: `${provider.name} / ${model.id}`,
-    };
-    setSlots(prev => [...prev, newSlot]);
-    setSelectedProvider('');
-    setSelectedModel('');
-    toast.success(`Added ${newSlot.displayName}`);
+    try {
+      const newSlot = await FusionPanelApi.addSlot(activePanelId, {
+        provider_id: provider.name,
+        model_id: model.id,
+        display_name: `${provider.name} / ${model.id}`,
+      });
+
+      setPanels(prev => prev.map(p => {
+        if (p.id !== activePanelId) return p;
+        return { ...p, slots: [...p.slots, newSlot] };
+      }));
+
+      setSelectedProvider('');
+      setSelectedModel('');
+      toast.success(`Added ${newSlot.display_name}`);
+    } catch (err) {
+      toast.error('Failed to add slot');
+    }
   };
 
-  const removeSlot = (id: string) => {
-    setSlots(prev => prev.filter(s => s.id !== id));
+  const removeSlot = async (slotId: string) => {
+    if (!activePanelId) return;
+    try {
+      await FusionPanelApi.removeSlot(activePanelId, slotId);
+      setPanels(prev => prev.map(p => {
+        if (p.id !== activePanelId) return p;
+        return { ...p, slots: p.slots.filter(s => s.id !== slotId) };
+      }));
+      toast.success('Slot removed');
+    } catch (err) {
+      toast.error('Failed to remove slot');
+    }
   };
 
-  const moveSlot = (id: string, direction: 'up' | 'down') => {
-    setSlots(prev => {
-      const idx = prev.findIndex(s => s.id === id);
-      if (idx < 0) return prev;
-      const newIdx = direction === 'up' ? idx - 1 : idx + 1;
-      if (newIdx < 0 || newIdx >= prev.length) return prev;
-      const arr = [...prev];
-      [arr[idx], arr[newIdx]] = [arr[newIdx]!, arr[idx]!];
-      return arr;
-    });
+  const moveSlot = async (slotId: string, direction: 'up' | 'down') => {
+    if (!activePanelId) return;
+    const currentSlots = [...slots];
+    const idx = currentSlots.findIndex(s => s.id === slotId);
+    if (idx < 0) return;
+    const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (newIdx < 0 || newIdx >= currentSlots.length) return;
+
+    // Swap
+    [currentSlots[idx], currentSlots[newIdx]] = [currentSlots[newIdx]!, currentSlots[idx]!];
+
+    try {
+      await FusionPanelApi.reorderSlots(activePanelId, currentSlots.map(s => s.id));
+      setPanels(prev => prev.map(p => {
+        if (p.id !== activePanelId) return p;
+        return { ...p, slots: currentSlots };
+      }));
+    } catch (err) {
+      toast.error('Failed to reorder slots');
+    }
+  };
+
+  const toggleSlot = async (slotId: string) => {
+    if (!activePanelId) return;
+    const slot = slots.find(s => s.id === slotId);
+    if (!slot) return;
+    try {
+      // Use update to toggle is_enabled
+      const updatedSlots = slots.map(s =>
+        s.id === slotId ? { ...s, is_enabled: s.is_enabled ? 0 : 1 } : s
+      );
+      await FusionPanelApi.update(activePanelId, { slots: updatedSlots });
+      setPanels(prev => prev.map(p => {
+        if (p.id !== activePanelId) return p;
+        return { ...p, slots: updatedSlots };
+      }));
+    } catch (err) {
+      toast.error('Failed to toggle slot');
+    }
+  };
+
+  const togglePanel = async (panelId: string) => {
+    const panel = panels.find(p => p.id === panelId);
+    if (!panel) return;
+    try {
+      const updated = await FusionPanelApi.update(panelId, { is_active: panel.is_active ? 0 : 1 });
+      setPanels(prev => prev.map(p => p.id === panelId ? updated : p));
+    } catch (err) {
+      toast.error('Failed to toggle panel');
+    }
   };
 
   return (
@@ -89,147 +193,227 @@ export function FusionPanelPage() {
         description="Pick multiple models for parallel execution with diversity"
         icon={<Layers className="size-5" />}
         actions={
-          <Badge tone="primary" size="md">
-            {slots.length} slots configured
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" onClick={loadPanels} disabled={isLoading}>
+              <RefreshCw className={cn("size-3", isLoading && "animate-spin")} />
+            </Button>
+            <Button size="sm" onClick={createPanel}>
+              <Plus className="size-3" />
+              New Panel
+            </Button>
+          </div>
         }
       />
 
-      <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatTile
-          label="Slots"
-          value={slots.length}
-          icon={<Layers className="size-3.5" />}
-          hint="models in fusion panel"
-        />
-        <StatTile
-          label="Providers"
-          value={new Set(slots.map(s => s.providerId)).size}
-          icon={<Server className="size-3.5" />}
-          tone="success"
-          hint="unique providers"
-        />
-        <StatTile
-          label="Available"
-          value={enabledProviders.length}
-          icon={<Zap className="size-3.5" />}
-          tone="primary"
-          hint="enabled providers"
-        />
-        <StatTile
-          label="Mode"
-          value="Parallel"
-          icon={<ArrowUpDown className="size-3.5" />}
-          tone="accent"
-          hint="execution strategy"
-        />
-      </div>
-
-      {/* Add Model Slot */}
-      <div className="mt-4">
-        <Card padding="md">
-          <h3 className="text-sm font-semibold text-fg mb-3">Add Model Slot</h3>
-          <div className="flex items-center gap-3">
-            <Select value={selectedProvider} onValueChange={(v) => { setSelectedProvider(v); setSelectedModel(''); }}>
-              <SelectTrigger className="w-48 h-9">
-                <SelectValue placeholder="Select provider…" />
-              </SelectTrigger>
-              <SelectContent>
-                {enabledProviders.map(p => (
-                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={selectedModel} onValueChange={setSelectedModel} disabled={!selectedProvider}>
-              <SelectTrigger className="w-60 h-9" disabled={!selectedProvider}>
-                <SelectValue placeholder="Select model…" />
-              </SelectTrigger>
-              <SelectContent>
-                {availableModels.map(m => (
-                  <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button size="sm" onClick={addSlot} disabled={!selectedProvider || !selectedModel}>
-              <Plus className="size-3" />
-              Add Slot
-            </Button>
-          </div>
-        </Card>
-      </div>
-
-      {/* Configured Slots */}
-      <div className="mt-4">
-        <Card padding="md">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-fg">Configured Slots</h3>
-            <Badge tone="muted" size="sm">{slots.length} slots</Badge>
-          </div>
-          {slots.length === 0 ? (
-            <EmptyState
-              title="No slots configured"
-              description="Add models above to create a fusion panel for diverse parallel execution."
-            />
-          ) : (
-            <div className="space-y-2">
-              {slots.map((slot, idx) => (
-                <div
-                  key={slot.id}
-                  className="flex items-center gap-3 p-3 rounded-lg border border-border bg-surface-2/50"
-                >
-                  <GripVertical className="size-4 text-fg-subtle cursor-move" />
-                  <div className="flex size-7 shrink-0 items-center justify-center rounded bg-primary/10 text-primary font-mono text-[10px] font-bold">
-                    {idx + 1}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-fg truncate">{slot.displayName}</p>
-                    <p className="text-[10px] text-fg-muted">{slot.providerId} · {slot.modelId}</p>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      onClick={() => moveSlot(slot.id, 'up')}
-                      disabled={idx === 0}
-                    >
-                      ↑
-                    </Button>
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      onClick={() => moveSlot(slot.id, 'down')}
-                      disabled={idx === slots.length - 1}
-                    >
-                      ↓
-                    </Button>
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      onClick={() => removeSlot(slot.id)}
-                    >
-                      <Trash2 className="size-3 text-danger" />
-                    </Button>
-                  </div>
-                </div>
+      {/* Panel selector */}
+      {panels.length > 0 && (
+        <div className="mt-4 flex items-center gap-3">
+          <Select value={activePanelId ?? ''} onValueChange={setActivePanelId}>
+            <SelectTrigger className="w-64 h-9">
+              <SelectValue placeholder="Select panel…" />
+            </SelectTrigger>
+            <SelectContent>
+              {panels.map(p => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name} {!p.is_active && '(inactive)'}
+                </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+          {activePanel && (
+            <Button
+              size="sm"
+              variant={activePanel.is_active ? "danger" : "primary"}
+              onClick={() => togglePanel(activePanel.id)}
+            >
+              {activePanel.is_active ? 'Deactivate' : 'Activate'}
+            </Button>
+          )}
+          {activePanel && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => deletePanel(activePanel.id)}
+              className="text-danger"
+            >
+              <Trash2 className="size-3" />
+            </Button>
+          )}
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="mt-4 space-y-4">
+          <Skeleton className="h-24" />
+          <Skeleton className="h-48" />
+        </div>
+      ) : panels.length === 0 ? (
+        <div className="mt-8">
+          <EmptyState
+            title="No fusion panels"
+            description="Create a panel to configure multi-model parallel execution."
+            action={
+              <Button onClick={createPanel}>
+                <Plus className="size-3" />
+                Create Panel
+              </Button>
+            }
+          />
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <StatTile
+              label="Slots"
+              value={slots.length}
+              icon={<Layers className="size-3.5" />}
+              hint="models in fusion panel"
+            />
+            <StatTile
+              label="Providers"
+              value={new Set(slots.map(s => s.provider_id)).size}
+              icon={<Server className="size-3.5" />}
+              tone="success"
+              hint="unique providers"
+            />
+            <StatTile
+              label="Available"
+              value={enabledProviders.length}
+              icon={<Zap className="size-3.5" />}
+              tone="primary"
+              hint="enabled providers"
+            />
+            <StatTile
+              label="Mode"
+              value="Parallel"
+              icon={<ArrowUpDown className="size-3.5" />}
+              tone="accent"
+              hint="execution strategy"
+            />
+          </div>
+
+          {/* Add Model Slot */}
+          {activePanel && (
+            <div className="mt-4">
+              <Card padding="md">
+                <h3 className="text-sm font-semibold text-fg mb-3">Add Model Slot</h3>
+                <div className="flex items-center gap-3">
+                  <Select value={selectedProvider} onValueChange={(v) => { setSelectedProvider(v); setSelectedModel(''); }}>
+                    <SelectTrigger className="w-48 h-9">
+                      <SelectValue placeholder="Select provider…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {enabledProviders.map(p => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={selectedModel} onValueChange={setSelectedModel} disabled={!selectedProvider}>
+                    <SelectTrigger className="w-60 h-9" disabled={!selectedProvider}>
+                      <SelectValue placeholder="Select model…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableModels.map(m => (
+                        <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" onClick={addSlot} disabled={!selectedProvider || !selectedModel}>
+                    <Plus className="size-3" />
+                    Add Slot
+                  </Button>
+                </div>
+              </Card>
             </div>
           )}
-        </Card>
-      </div>
 
-      {/* How It Works */}
-      <div className="mt-4">
-        <Card padding="md">
-          <h3 className="text-sm font-semibold text-fg mb-2">How Fusion Panel Works</h3>
-          <ul className="text-xs text-fg-muted space-y-1.5">
-            <li>• Each slot is hard-pinned to one model — no silent substitution</li>
-            <li>• Requests are distributed across slots for diversity</li>
-            <li>• If a slot's model is rate-limited, it's skipped (not collapsed onto another)</li>
-            <li>• Useful for A/B testing, redundancy, or ensuring model diversity</li>
-            <li>• Combine with routing profiles for different fusion configurations</li>
-          </ul>
-        </Card>
-      </div>
+          {/* Configured Slots */}
+          {activePanel && (
+            <div className="mt-4">
+              <Card padding="md">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-fg">Configured Slots</h3>
+                  <Badge tone="muted" size="sm">{slots.length} slots</Badge>
+                </div>
+                {slots.length === 0 ? (
+                  <EmptyState
+                    title="No slots configured"
+                    description="Add models above to create a fusion panel for diverse parallel execution."
+                  />
+                ) : (
+                  <div className="space-y-2">
+                    {slots.map((slot, idx) => (
+                      <div
+                        key={slot.id}
+                        className={cn(
+                          "flex items-center gap-3 p-3 rounded-lg border bg-surface-2/50",
+                          slot.is_enabled ? "border-border" : "border-border opacity-50"
+                        )}
+                      >
+                        <GripVertical className="size-4 text-fg-subtle cursor-move" />
+                        <div className="flex size-7 shrink-0 items-center justify-center rounded bg-primary/10 text-primary font-mono text-[10px] font-bold">
+                          {idx + 1}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-fg truncate">{slot.display_name}</p>
+                          <p className="text-[10px] text-fg-muted">{slot.provider_id} · {slot.model_id}</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => toggleSlot(slot.id)}
+                            title={slot.is_enabled ? 'Disable slot' : 'Enable slot'}
+                          >
+                            {slot.is_enabled ? '✓' : '○'}
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => moveSlot(slot.id, 'up')}
+                            disabled={idx === 0}
+                          >
+                            ↑
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => moveSlot(slot.id, 'down')}
+                            disabled={idx === slots.length - 1}
+                          >
+                            ↓
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => removeSlot(slot.id)}
+                          >
+                            <Trash2 className="size-3 text-danger" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </div>
+          )}
+
+          {/* How It Works */}
+          <div className="mt-4">
+            <Card padding="md">
+              <h3 className="text-sm font-semibold text-fg mb-2">How Fusion Panel Works</h3>
+              <ul className="text-xs text-fg-muted space-y-1.5">
+                <li>• Each slot is hard-pinned to one model — no silent substitution</li>
+                <li>• Requests are distributed across slots for diversity</li>
+                <li>• If a slot's model is rate-limited, it's skipped (not collapsed onto another)</li>
+                <li>• Useful for A/B testing, redundancy, or ensuring model diversity</li>
+                <li>• Combine with routing profiles for different fusion configurations</li>
+              </ul>
+            </Card>
+          </div>
+        </>
+      )}
     </PageContainer>
   );
 }

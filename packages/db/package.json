@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/db",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -14,7 +14,8 @@
   "scripts": {
     "build": "tsc -b",
     "dev": "tsc --watch",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "generate-migrations": "bun run scripts/generate-migrations-data.ts"
   },
   "dependencies": {
     "@dmr-x/utils": "*",

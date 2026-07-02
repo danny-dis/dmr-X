@@ -738,18 +738,43 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
 }
 
 /**
+ * Convert a simple glob pattern to a RegExp.
+ * Supports: `*` (zero or more characters), `?` (exactly one character).
+ * All other regex-special characters are escaped.
+ */
+function globToRegex(glob: string): RegExp {
+  let regexStr = '';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === '*') {
+      regexStr += '.*';
+    } else if (ch === '?') {
+      regexStr += '.';
+    } else {
+      // Escape regex-special characters
+      regexStr += ch.replace(/[-[\]{}()+.\\^$|]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${regexStr}$`);
+}
+
+/**
  * Helper to check if a tool is allowed based on configured pattern filters.
- * Supports exact match or wildcard suffix (e.g. "dmrx_*" or "*").
+ * Supports exact match, wildcard `*` (zero or more characters), and
+ * single-character wildcard `?`. Patterns are matched as full globs
+ * (anchored at both ends).
+ *
+ * Examples: "dmrx_*", "github__create_*", "gitlab__?ssue_*", "*"
  */
 export function isToolAllowed(toolName: string, allowedTools?: string[]): boolean {
   if (!allowedTools) return true; // Default: allow all
   return allowedTools.some((pattern) => {
     if (pattern === '*') return true;
-    if (pattern.endsWith('*')) {
-      const prefix = pattern.slice(0, -1);
-      return toolName.startsWith(prefix);
+    // Fast path: no wildcards — exact match
+    if (!pattern.includes('*') && !pattern.includes('?')) {
+      return toolName === pattern;
     }
-    return toolName === pattern;
+    return globToRegex(pattern).test(toolName);
   });
 }
 

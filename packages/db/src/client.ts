@@ -576,11 +576,50 @@ async function doInitDb(): Promise<DatabaseWrapper> {
     try {
       const buffer = fs.readFileSync(dbPath);
       db = new SQL.Database(buffer);
-    } catch {
+    } catch (openErr) {
+      // Log the exact error so operators can diagnose sql.js version
+      // mismatches, file truncation, or actual corruption.
+      log.error(`Failed to open database: ${openErr instanceof Error ? openErr.message : String(openErr)}`);
+
+      // Move the broken file out of the way
       const backupPath = `${dbPath}.corrupt.${Date.now()}.bak`;
-      fs.renameSync(dbPath, backupPath);
-      log.warn(`Corrupted database backed up to ${backupPath}, creating fresh database`);
-      db = new SQL.Database();
+      try { fs.renameSync(dbPath, backupPath); } catch { /* best-effort */ }
+
+      // ── Auto-restore from the most recent backup ──────────────────
+      // Look for any .bak files produced by previous corruption events,
+      // pre-migration snapshots, or manual backups.  Try each from
+      // newest to oldest until one opens successfully.
+      const dataDir = path.dirname(dbPath);
+      const basename = path.basename(dbPath); // e.g. "data.db"
+      let restored = false;
+      try {
+        const candidates = fs.readdirSync(dataDir)
+          .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
+          .map(f => ({
+            name: f,
+            mtime: fs.statSync(path.join(dataDir, f)).mtimeMs,
+          }))
+          .sort((a, b) => b.mtime - a.mtime); // newest first
+
+        for (const cand of candidates) {
+          try {
+            const candBuf = fs.readFileSync(path.join(dataDir, cand.name));
+            db = new SQL.Database(candBuf);
+            // Restore the good file back to the primary path
+            fs.copyFileSync(path.join(dataDir, cand.name), dbPath);
+            log.warn(`Restored database from backup: ${cand.name}`);
+            restored = true;
+            break;
+          } catch {
+            // This backup is also corrupt or incompatible — skip it
+          }
+        }
+      } catch { /* readdir failed — ignore */ }
+
+      if (!restored) {
+        log.warn('No valid backup found — creating fresh database');
+        db = new SQL.Database();
+      }
     }
   } else {
     db = new SQL.Database();
@@ -599,9 +638,25 @@ async function doInitDb(): Promise<DatabaseWrapper> {
 
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
-  const migrationsDir = path.join(__dirname, 'migrations');
 
-  if (fs.existsSync(migrationsDir)) {
+  // Try multiple candidate directories for the migrations SQL files.
+  // When running from compiled dist/, the src/migrations/ directory may
+  // be the only one present (dist/migrations/ is not copied by tsc).
+  const candidateDirs = [
+    path.join(__dirname, 'migrations'),                                    // dist/migrations or src/migrations
+    path.join(__dirname, '..', 'src', 'migrations'),                       // ../src/migrations (from dist/)
+    path.join(__dirname, '..', '..', 'packages', 'db', 'src', 'migrations'), // monorepo fallback
+  ];
+
+  let migrationsDir: string | null = null;
+  for (const candidate of candidateDirs) {
+    if (fs.existsSync(candidate)) {
+      migrationsDir = candidate;
+      break;
+    }
+  }
+
+  if (migrationsDir) {
     const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
     for (const file of files) {
       const versionMatch = file.match(/^(\d+)_/);
@@ -626,6 +681,30 @@ async function doInitDb(): Promise<DatabaseWrapper> {
         sql: mig.sql,
       });
     }
+  }
+
+  // ── Pre-migration backup ────────────────────────────────────────
+  // Snapshot the database before applying any pending migrations so we
+  // can recover if a migration corrupts the file or the user needs to
+  // roll back.  Keep at most 5 pre-migration snapshots to avoid
+  // filling the data directory.
+  try {
+    const preMigrationPath = `${dbPath}.pre-migration.${Date.now()}.bak`;
+    fs.copyFileSync(dbPath, preMigrationPath);
+    log.info(`Pre-migration backup: ${preMigrationPath}`);
+
+    // Prune old pre-migration backups (keep newest 5)
+    const dataDir = path.dirname(dbPath);
+    const basename = path.basename(dbPath);
+    const preMigrationBackups = fs.readdirSync(dataDir)
+      .filter(f => f.startsWith(`${basename}.pre-migration.`) && f.endsWith('.bak'))
+      .map(f => ({ name: f, mtime: fs.statSync(path.join(dataDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const old of preMigrationBackups.slice(5)) {
+      try { fs.unlinkSync(path.join(dataDir, old.name)); } catch { /* best-effort */ }
+    }
+  } catch (backupErr) {
+    log.warn(`Pre-migration backup failed (non-fatal): ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`);
   }
 
   // Apply pending migrations and verify checksums of already-applied ones.

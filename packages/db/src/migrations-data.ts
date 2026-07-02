@@ -1,6 +1,5 @@
 // Auto-generated from packages/db/src/migrations/*.sql
-// Used when running as a compiled binary (bun build --compile) where
-// the .sql files are not available on the filesystem.
+// DO NOT EDIT MANUALLY — run: bun run packages/db/scripts/generate-migrations-data.ts
 
 export const MIGRATIONS: Record<number, { filename: string; sql: string }> = {
   1: {
@@ -393,51 +392,51 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_capability_tier
 ON model_profiles(capability_tier)
 WHERE is_active = 1;
 `,
-},
-11: {
-filename: '011_elo_and_playground_feedback.sql',
-sql: `-- Phase 1: Add Elo Rating to Model Profiles
+  },
+  11: {
+    filename: '011_elo_and_playground_feedback.sql',
+    sql: `-- Phase 1: Add Elo Rating to Model Profiles
 ALTER TABLE model_profiles ADD COLUMN elo_rating REAL NOT NULL DEFAULT 1200;
 
 -- Phase 5: Playground Feedback table
 CREATE TABLE IF NOT EXISTS playground_feedback (
-id TEXT PRIMARY KEY,
-request_id TEXT NOT NULL,
-model_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
-user_id TEXT, -- Optional, for tracking specific users
-
--- Explicit feedback
-rating INTEGER, -- 1 for thumbs up, -1 for thumbs down
-feedback_text TEXT,
-
--- Implicit feedback (JSON flags)
-implicit_signals TEXT DEFAULT '{}', -- e.g. {"copied": true, "regenerated": true}
-
--- Battle outcome (if comparison was used)
-is_winner INTEGER, -- 1 if this model won the comparison
-competitor_model_id TEXT REFERENCES model_profiles(id),
-
-created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL,
+  model_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
+  user_id TEXT, -- Optional, for tracking specific users
+  
+  -- Explicit feedback
+  rating INTEGER, -- 1 for thumbs up, -1 for thumbs down
+  feedback_text TEXT,
+  
+  -- Implicit feedback (JSON flags)
+  implicit_signals TEXT DEFAULT '{}', -- e.g. {"copied": true, "regenerated": true}
+  
+  -- Battle outcome (if comparison was used)
+  is_winner INTEGER, -- 1 if this model won the comparison
+  competitor_model_id TEXT REFERENCES model_profiles(id),
+  
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_playground_feedback_model ON playground_feedback(model_id);
 CREATE INDEX IF NOT EXISTS idx_playground_feedback_request ON playground_feedback(request_id);
 `,
-},
-12: {
-filename: '012_conversations.sql',
-sql: `-- Conversations table (persistent history)
+  },
+  12: {
+    filename: '012_conversations.sql',
+    sql: `-- Conversations table (persistent history)
 CREATE TABLE IF NOT EXISTS conversations (
-id TEXT PRIMARY KEY,
-tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
-user_id TEXT,
-title TEXT,
-mode TEXT DEFAULT 'chat',          -- chat, image, embed, tts, rerank, moderate
-model TEXT,
-is_temporary INTEGER DEFAULT 0,    -- 1 = don't persist to DB
-created_at TEXT DEFAULT (datetime('now')),
-updated_at TEXT DEFAULT (datetime('now')),
-metadata TEXT DEFAULT '{}'
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id TEXT,
+  title TEXT,
+  mode TEXT DEFAULT 'chat',          -- chat, image, embed, tts, rerank, moderate
+  model TEXT,
+  is_temporary INTEGER DEFAULT 0,    -- 1 = don't persist to DB
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  metadata TEXT DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_tenant ON conversations(tenant_id);
@@ -446,22 +445,22 @@ CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at
 
 -- Messages table (conversation turns)
 CREATE TABLE IF NOT EXISTS messages (
-id TEXT PRIMARY KEY,
-conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
-role TEXT NOT NULL,                -- 'user', 'assistant', 'system'
-content TEXT,
-audio_url TEXT,                    -- For TTS responses
-image_url TEXT,                    -- For image responses
-embedding_data TEXT,               -- For embed responses (JSON)
-model TEXT,
-provider TEXT,
-tokens_input INTEGER DEFAULT 0,
-tokens_output INTEGER DEFAULT 0,
-cost REAL DEFAULT 0,
-latency_ms INTEGER DEFAULT 0,
-routing_decision TEXT,
-metadata TEXT DEFAULT '{}',
-created_at TEXT DEFAULT (datetime('now'))
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,                -- 'user', 'assistant', 'system'
+  content TEXT,
+  audio_url TEXT,                    -- For TTS responses
+  image_url TEXT,                    -- For image responses
+  embedding_data TEXT,               -- For embed responses (JSON)
+  model TEXT,
+  provider TEXT,
+  tokens_input INTEGER DEFAULT 0,
+  tokens_output INTEGER DEFAULT 0,
+  cost REAL DEFAULT 0,
+  latency_ms INTEGER DEFAULT 0,
+  routing_decision TEXT,
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -469,34 +468,33 @@ CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC);
 
 -- Full-text search for conversations
 CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
-title,
-content='conversations',
-content_rowid='rowid'
+  title,
+  content='conversations',
+  content_rowid='rowid'
 );
 
 -- Triggers to keep FTS in sync
 CREATE TRIGGER IF NOT EXISTS conversations_ai AFTER INSERT ON conversations BEGIN
-INSERT INTO conversations_fts(rowid, title) VALUES (new.rowid, new.title);
+  INSERT INTO conversations_fts(rowid, title) VALUES (new.rowid, new.title);
 END;
 
 CREATE TRIGGER IF NOT EXISTS conversations_ad AFTER DELETE ON conversations BEGIN
-INSERT INTO conversations_fts(conversations_fts, rowid, title) VALUES('delete', old.rowid, old.title);
+  INSERT INTO conversations_fts(conversations_fts, rowid, title) VALUES('delete', old.rowid, old.title);
 END;
 
 CREATE TRIGGER IF NOT EXISTS conversations_au AFTER UPDATE OF title ON conversations BEGIN
-INSERT INTO conversations_fts(conversations_fts, rowid, title) VALUES('delete', old.rowid, old.title);
-INSERT INTO conversations_fts(rowid, title) VALUES (new.rowid, new.title);
-END;
-`,
-},
-13: {
-filename: '013_message_events.sql',
-sql: `-- Persist SSE event traces (agentic, tool-loop, etc.) on each message.
+  INSERT INTO conversations_fts(conversations_fts, rowid, title) VALUES('delete', old.rowid, old.title);
+  INSERT INTO conversations_fts(rowid, title) VALUES (new.rowid, new.title);
+END;`,
+  },
+  13: {
+    filename: '013_message_events.sql',
+    sql: `-- Persist SSE event traces (agentic, tool-loop, etc.) on each message.
 -- JSON-encoded array of { name, data } events. NULL means no events
 -- were captured (regular chat messages).
 ALTER TABLE messages ADD COLUMN events TEXT;
 `,
-},
+  },
   14: {
     filename: '014_api_key_scopes.sql',
     sql: `-- Persist per-key OAuth-style scopes. Stored as a JSON-encoded array
@@ -509,24 +507,24 @@ ALTER TABLE api_keys ADD COLUMN scopes TEXT;
     filename: '015_provider_keys_and_tier.sql',
     sql: `-- Multi-key providers + tier field
 --
--- The providers table used to carry a single API key in config.apiKey
--- (encrypted) and a single api_key_ref (an env-var name). That made it
+-- The providers table used to carry a single API key in \`config.apiKey\`
+-- (encrypted) and a single \`api_key_ref\` (an env-var name). That made it
 -- impossible to attach a second key to the same provider, so operators
 -- who wanted to mix free and paid keys for the same upstream (e.g.
 -- Google's free tier + a paid Workspace key) had to create a second
--- provider row -- but name is UNIQUE, so the activate flow silently
+-- provider row — but \`name\` is UNIQUE, so the activate flow silently
 -- clobbered the first one.
 --
 -- This migration adds:
---   * providers.tier       -- denormalised cache; recomputed by the admin
+--   * providers.tier       — denormalised cache; recomputed by the admin
 --                             routes on every key mutation.
---   * provider_keys        -- one row per credential. The highest-priority
+--   * provider_keys        — one row per credential. The highest-priority
 --                             active row is the one the adapter uses; the
 --                             rest are available for future round-robin
 --                             / per-model overrides.
 --
 -- The backfill at the bottom preserves existing credentials (the
--- ciphertext is moved unchanged -- no re-encrypt pass needed) and uses a
+-- ciphertext is moved unchanged — no re-encrypt pass needed) and uses a
 -- simple model-level heuristic to seed the tier column for legacy rows.
 
 ALTER TABLE providers ADD COLUMN tier TEXT NOT NULL DEFAULT 'paid';
@@ -556,7 +554,10 @@ CREATE INDEX IF NOT EXISTS idx_provider_keys_active
 -- stored, create a default provider_keys row. The tier is derived from
 -- the seeded model_profiles: if any model has a free-tier marker
 -- (rate_limit_rpm set, or a monthly budget), we label the connection
--- 'free'. Otherwise 'paid'.
+-- "free". Otherwise "paid".
+--
+-- The \`<provider_id>-default\` ID convention matches the gateway's lookup
+-- in admin.routes.ts (\`label = 'Default'\` for the primary key).
 INSERT OR IGNORE INTO provider_keys (
   id, provider_id, label, tier,
   api_key_encrypted, oauth_access_token_encrypted,
@@ -577,6 +578,9 @@ SELECT
     ) THEN 'free'
     ELSE 'paid'
   END AS tier,
+  -- The legacy key is stored encrypted in \`config.apiKey\` (see
+  -- encryptConfigApiKey in packages/utils/src/crypto.ts). Move it
+  -- unchanged so the gateway's decrypt path keeps working.
   CASE WHEN json_type(p.config, '$.apiKey') = 'text'
        THEN json_extract(p.config, '$.apiKey')
        ELSE NULL END AS api_key_encrypted,
@@ -590,6 +594,10 @@ FROM providers p
 WHERE (json_type(p.config, '$.apiKey') = 'text' AND length(json_extract(p.config, '$.apiKey')) > 0)
    OR p.oauth_access_token IS NOT NULL;
 
+-- Recompute the denormalised tier for every provider based on the keys
+-- it now has. The expression is small enough to inline: if there are no
+-- active keys, mark inactive; otherwise the set of distinct tiers among
+-- the active keys collapses to free / paid / mixed.
 UPDATE providers
 SET tier = CASE
   WHEN NOT EXISTS (
@@ -619,9 +627,9 @@ END;
 -- The column is added with no FK reference to tenants(id) on purpose:
 -- messages are CASCADE-deleted with their parent conversation, and a
 -- second FK on the same parent would create ambiguity. We do not backfill
--- existing rows -- pre-migration messages retain NULL tenant_id and are
+-- existing rows — pre-migration messages retain NULL tenant_id and are
 -- treated as "unowned" by the new tenant-scoped queries (a NULL
--- tenant_id = ? comparison never matches, so they're invisible to
+-- \`tenant_id = ?\` comparison never matches, so they're invisible to
 -- any tenant after the route is patched, which is the safe direction).
 
 ALTER TABLE messages ADD COLUMN tenant_id TEXT;
@@ -637,7 +645,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(tenant_id);
 -- content and stores it here. On startup, the runner re-hashes the
 -- migration source (whether it came from disk or the embedded
 -- MIGRATIONS constant) and compares. A mismatch means someone edited
--- a migration file after it was applied -- the schema is no longer
+-- a migration file after it was applied — the schema is no longer
 -- what the runner thinks it is, so we refuse to start (in production)
 -- or warn loudly (in development).
 --
@@ -649,9 +657,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(tenant_id);
 ALTER TABLE schema_version ADD COLUMN checksum TEXT;
 `,
   },
-18: {
-filename: '018_subscription_only_models.sql',
-sql: `-- Add subscription_only column to model_profiles
+  18: {
+    filename: '018_subscription_only_models.sql',
+    sql: `-- Add subscription_only column to model_profiles
 -- This flag indicates a model is only available via OAuth subscription auth (not API key)
 -- Used for Codex (ChatGPT subscription), Claude (Anthropic subscription), and GitHub Copilot models
 
@@ -662,19 +670,18 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_subscription_only
 ON model_profiles(subscription_only)
 WHERE is_active = 1 AND subscription_only = 1;
 `,
-},
-19: {
-filename: '019_api_key_allowed_tools.sql',
-sql: `-- Per-API-key tool restrictions. Stored as a JSON-encoded array
+  },
+  19: {
+    filename: '019_api_key_allowed_tools.sql',
+    sql: `-- Per-API-key tool restrictions. Stored as a JSON-encoded array
 -- of tool patterns (e.g. ["dmrx_chat", "dmrx_embed", "dmrx_*"]). NULL means
 -- "no restrictions" (all tools allowed). This enables fine-grained control
 -- over which MCP tools a key can invoke.
-ALTER TABLE api_keys ADD COLUMN allowed_tools TEXT;
-`,
-},
-20: {
-filename: '020_request_logs_mode_tracking.sql',
-sql: `-- Add quality_target and free_tier_strategy columns to request_logs
+ALTER TABLE api_keys ADD COLUMN allowed_tools TEXT;`,
+  },
+  20: {
+    filename: '020_request_logs_mode_tracking.sql',
+    sql: `-- Add quality_target and free_tier_strategy columns to request_logs
 -- Enables per-mode performance analysis (frontier/balanced/economy + free tier strategies)
 
 ALTER TABLE request_logs ADD COLUMN quality_target TEXT;
@@ -684,10 +691,98 @@ ALTER TABLE request_logs ADD COLUMN free_tier_strategy TEXT;
 CREATE INDEX IF NOT EXISTS idx_request_logs_quality_target ON request_logs(quality_target, timestamp);
 CREATE INDEX IF NOT EXISTS idx_request_logs_free_tier_strategy ON request_logs(free_tier_strategy, timestamp);
 `,
-},
-25: {
-  filename: '025_compression_settings.sql',
-  sql: `-- Compression settings migration
+  },
+  21: {
+    filename: '021_conversation_contexts.sql',
+    sql: `-- Conversation contexts table (persistent MCP context storage)
+-- Stores conversation context for dmrx_context_save/load tools
+CREATE TABLE IF NOT EXISTS conversation_contexts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT 'anonymous',
+  messages TEXT NOT NULL DEFAULT '[]',  -- JSON array of ChatMessage objects
+  metadata TEXT DEFAULT '{}',           -- JSON object for additional data
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  expires_at TEXT,                      -- NULL = never expires (permanent)
+  is_permanent INTEGER DEFAULT 0        -- 1 = ignore TTL, never auto-delete
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_ctx_user ON conversation_contexts(user_id);
+CREATE INDEX IF NOT EXISTS idx_conv_ctx_created ON conversation_contexts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conv_ctx_expires ON conversation_contexts(expires_at);
+
+-- Conversation context tags for search/organization
+CREATE TABLE IF NOT EXISTS conversation_context_tags (
+  context_id TEXT REFERENCES conversation_contexts(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (context_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_ctx_tags_tag ON conversation_context_tags(tag);
+`,
+  },
+  22: {
+    filename: '022_api_key_salted_hash.sql',
+    sql: `-- Re-hash existing API keys with salt for improved security
+-- This migration adds a salt column and re-hashes all existing key_hash values
+-- to use the new salted format (salt:hash) instead of plain SHA-256.
+
+-- Add salt column to api_keys table
+ALTER TABLE api_keys ADD COLUMN key_salt TEXT;
+
+-- Note: The actual re-hashing of existing keys will be done by the application
+-- on startup (in migrateApiKeysToSaltedHash function in client.ts).
+-- This is because we need access to the original plaintext keys to re-hash them,
+-- and those are not stored in the database.
+`,
+  },
+  23: {
+    filename: '023_api_key_expiry.sql',
+    sql: `-- Add expires_at column to api_keys for key expiration
+-- Keys with expires_at in the past will be automatically rejected
+-- NULL expires_at means the key never expires (backward compatible)
+
+ALTER TABLE api_keys ADD COLUMN expires_at TEXT;
+
+-- Index for efficient expiry checks
+CREATE INDEX IF NOT EXISTS idx_api_keys_expires
+ON api_keys(expires_at)
+WHERE is_active = 1 AND expires_at IS NOT NULL;
+`,
+  },
+  24: {
+    filename: '024_admin_audit_log.sql',
+    sql: `-- Admin audit log for SOC2/ISO27001 compliance
+-- Records all administrative actions for security auditing
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id TEXT PRIMARY KEY,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  admin_key_hash TEXT NOT NULL,
+  action TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id TEXT,
+  details TEXT,
+  ip_address TEXT,
+  user_agent TEXT
+);
+
+-- Index for querying by timestamp (most common query pattern)
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_timestamp
+ON admin_audit_log(timestamp DESC);
+
+-- Index for querying by action type
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action
+ON admin_audit_log(action, timestamp DESC);
+
+-- Index for querying by resource
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_resource
+ON admin_audit_log(resource_type, resource_id);
+`,
+  },
+  25: {
+    filename: '025_compression_settings.sql',
+    sql: `-- Compression settings migration
 
 -- Add compression columns to tenants table
 ALTER TABLE tenants ADD COLUMN compression_enabled INTEGER;
@@ -711,12 +806,11 @@ CREATE TABLE IF NOT EXISTS compression_cache (
   expires_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_compression_cache_expires ON compression_cache(expires_at);
-`,
-},
-26: {
-  filename: '026_semantic_cache.sql',
-  sql: `-- Semantic Response Cache
+CREATE INDEX IF NOT EXISTS idx_compression_cache_expires ON compression_cache(expires_at);`,
+  },
+  26: {
+    filename: '026_semantic_cache.sql',
+    sql: `-- Semantic Response Cache
 -- Inspired by workweave/router's semantic cache that uses cosine similarity
 -- on prompt embeddings to find near-duplicate requests and short-circuit
 -- before hitting upstream providers.
@@ -752,10 +846,191 @@ ON semantic_cache_entries(expires_at);
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_eviction
 ON semantic_cache_entries(hit_count ASC, created_at ASC);
 `,
-},
-29: {
-  filename: '029_secret_versions.sql',
-  sql: `-- Secret Versions: Encrypted secret storage with versioning and rotation
+  },
+  27: {
+    filename: '027_tool_invocation_policies.sql',
+    sql: `-- Tool invocation policies for controlling which tools can be called
+-- Supports per-tenant, per-tool policies with approval workflows
+
+CREATE TABLE IF NOT EXISTS tool_invocation_policies (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  -- Policy action: 'allow', 'deny', 'require_approval'
+  action TEXT NOT NULL DEFAULT 'allow',
+  -- Optional conditions (JSON): tool input patterns, user roles, etc.
+  conditions TEXT,
+  -- Priority for rule ordering (higher = evaluated first)
+  priority INTEGER NOT NULL DEFAULT 0,
+  -- Description for audit logging
+  description TEXT,
+  -- Who created this policy
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Soft delete
+  is_active INTEGER NOT NULL DEFAULT 1,
+  -- Unique constraint: one policy per tool per tenant
+  UNIQUE(tenant_id, tool_name)
+);
+
+-- Index for querying by tenant (most common query pattern)
+CREATE INDEX IF NOT EXISTS idx_tool_invocation_policies_tenant
+ON tool_invocation_policies(tenant_id, is_active);
+
+-- Index for querying by tool name
+CREATE INDEX IF NOT EXISTS idx_tool_invocation_policies_tool
+ON tool_invocation_policies(tool_name, is_active);
+
+-- Global policies (tenant_id = '*' applies to all tenants)
+-- These are evaluated after tenant-specific policies
+
+-- Policy evaluation cache for performance
+CREATE TABLE IF NOT EXISTS tool_policy_evaluation_cache (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  tool_input_hash TEXT NOT NULL,
+  -- Cached evaluation result: 'allow', 'deny', 'require_approval'
+  result TEXT NOT NULL,
+  -- Cache expiry (ISO timestamp)
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Index for cache lookups
+CREATE INDEX IF NOT EXISTS idx_tool_policy_cache_lookup
+ON tool_policy_evaluation_cache(tenant_id, tool_name, tool_input_hash, expires_at);
+
+-- Policy audit log for tracking all policy evaluations
+CREATE TABLE IF NOT EXISTS tool_policy_audit_log (
+  id TEXT PRIMARY KEY,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  tenant_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  tool_input_hash TEXT,
+  -- Evaluation result
+  result TEXT NOT NULL,
+  -- Policy ID that matched (if any)
+  policy_id TEXT,
+  -- Reason for denial/approval requirement
+  reason TEXT,
+  -- Request context
+  request_id TEXT,
+  user_id TEXT,
+  ip_address TEXT
+);
+
+-- Index for audit log queries
+CREATE INDEX IF NOT EXISTS idx_tool_policy_audit_timestamp
+ON tool_policy_audit_log(timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tool_policy_audit_tenant
+ON tool_policy_audit_log(tenant_id, timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tool_policy_audit_tool
+ON tool_policy_audit_log(tool_name, timestamp DESC);
+`,
+  },
+  28: {
+    filename: '028_tool_templates.sql',
+    sql: `-- Tool Templates: Pre-configured tool call patterns
+-- Users can save and reuse common tool call sequences
+
+CREATE TABLE IF NOT EXISTS tool_templates (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  -- JSON array of template steps
+  steps TEXT NOT NULL,
+  -- Tags for discovery
+  tags TEXT,
+  -- Version (semantic versioning)
+  version TEXT NOT NULL DEFAULT '1.0.0',
+  -- Who created this
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Soft delete
+  is_active INTEGER NOT NULL DEFAULT 1,
+  -- Unique constraint: one template name per tenant
+  UNIQUE(tenant_id, name)
+);
+
+-- Index for querying by tenant
+CREATE INDEX IF NOT EXISTS idx_tool_templates_tenant
+ON tool_templates(tenant_id, is_active);
+
+-- Index for searching by name
+CREATE INDEX IF NOT EXISTS idx_tool_templates_name
+ON tool_templates(name, is_active);
+
+-- Tool Presets: Default parameters per tenant/tool
+CREATE TABLE IF NOT EXISTS tool_presets (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  -- Default parameter values (JSON)
+  defaults TEXT NOT NULL,
+  -- Forced parameter values that cannot be overridden (JSON)
+  overrides TEXT,
+  -- Priority for rule ordering (higher = evaluated first)
+  priority INTEGER NOT NULL DEFAULT 0,
+  -- Description for audit
+  description TEXT,
+  -- Who created this
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Soft delete
+  is_active INTEGER NOT NULL DEFAULT 1,
+  -- Unique constraint: one preset per tool per tenant
+  UNIQUE(tenant_id, tool_name)
+);
+
+-- Index for querying presets by tenant
+CREATE INDEX IF NOT EXISTS idx_tool_presets_tenant
+ON tool_presets(tenant_id, is_active);
+
+-- Index for querying presets by tool
+CREATE INDEX IF NOT EXISTS idx_tool_presets_tool
+ON tool_presets(tool_name, is_active);
+
+-- Template execution log for tracking usage
+CREATE TABLE IF NOT EXISTS tool_template_executions (
+  id TEXT PRIMARY KEY,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  template_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  -- Execution details
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed
+  steps_completed INTEGER NOT NULL DEFAULT 0,
+  steps_total INTEGER NOT NULL DEFAULT 0,
+  -- Results
+  output TEXT,
+  error TEXT,
+  -- Metrics
+  duration_ms INTEGER,
+  cost_usd REAL,
+  -- Request context
+  request_id TEXT,
+  user_id TEXT,
+  FOREIGN KEY (template_id) REFERENCES tool_templates(id)
+);
+
+-- Index for querying executions by template
+CREATE INDEX IF NOT EXISTS idx_template_executions_template
+ON tool_template_executions(template_id, timestamp DESC);
+
+-- Index for querying executions by tenant
+CREATE INDEX IF NOT EXISTS idx_template_executions_tenant
+ON tool_template_executions(tenant_id, timestamp DESC);
+`,
+  },
+  29: {
+    filename: '029_secret_versions.sql',
+    sql: `-- Secret Versions: Encrypted secret storage with versioning and rotation
 -- Supports secure storage of API keys, tokens, and other sensitive values
 -- with automatic version management and rotation tracking.
 
@@ -775,10 +1050,10 @@ CREATE TABLE IF NOT EXISTS secret_versions (
 CREATE INDEX IF NOT EXISTS idx_secret_versions_lookup
   ON secret_versions(secret_id, status, version DESC);
 `,
-},
-30: {
-  filename: '030_dynamic_rate_limits.sql',
-  sql: `-- Dynamic Rate Limit Detection
+  },
+  30: {
+    filename: '030_dynamic_rate_limits.sql',
+    sql: `-- Dynamic Rate Limit Detection
 -- Tracks real-time rate limit state per API key from provider responses
 
 -- Per-key rate limit state (populated from X-RateLimit-* headers)
@@ -790,7 +1065,7 @@ CREATE TABLE IF NOT EXISTS provider_key_rate_limits (
   -- Request limits
   requests_limit INTEGER,
   requests_remaining INTEGER,
-  requests_reset_at TEXT,
+  requests_reset_at TEXT,  -- ISO timestamp when window resets
   -- Token limits
   tokens_limit INTEGER,
   tokens_remaining INTEGER,
@@ -827,29 +1102,48 @@ CREATE TABLE IF NOT EXISTS rate_limit_discovery_log (
   key_id TEXT NOT NULL,
   provider_id TEXT NOT NULL,
   model_id TEXT,
-  discovery_method TEXT NOT NULL,
+  discovery_method TEXT NOT NULL,  -- 'header', 'error_message', 'test_request'
   old_limit INTEGER,
   new_limit INTEGER,
-  limit_type TEXT NOT NULL,
+  limit_type TEXT NOT NULL,  -- 'rpm', 'tpm', 'rpd', 'tpd'
   discovered_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Index for discovery log queries
 CREATE INDEX IF NOT EXISTS idx_discovery_log_key
 ON rate_limit_discovery_log(key_id, discovered_at DESC);
+
+-- Provider-level rate limit defaults (fallback when no per-key data)
+CREATE TABLE IF NOT EXISTS provider_rate_limits (
+  provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  -- Defaults from catalog
+  default_rpm INTEGER,
+  default_tpm INTEGER,
+  default_rpd INTEGER,
+  default_tpd INTEGER,
+  -- Learned overrides
+  learned_rpm INTEGER,
+  learned_tpm INTEGER,
+  learned_rpd INTEGER,
+  learned_tpd INTEGER,
+  last_learned_at TEXT,
+  PRIMARY KEY (provider_id, model_id)
+);
 `,
-},
-31: {
-  filename: '031_rate_limit_state_persistence.sql',
-  sql: `-- Persist rate-limit cooldowns, penalties, and hit tracking across restarts
+  },
+  31: {
+    filename: '031_rate_limit_state_persistence.sql',
+    sql: `-- Persist rate-limit cooldowns, penalties, and hit tracking across restarts
+-- Previously this state was in-memory only and lost on gateway restart
 
 CREATE TABLE IF NOT EXISTS rate_limit_cooldowns (
   provider_id TEXT NOT NULL,
   model_id TEXT NOT NULL,
-  cooldown_expiry INTEGER NOT NULL,
+  cooldown_expiry INTEGER NOT NULL,       -- epoch ms when cooldown expires
   penalty_points INTEGER NOT NULL DEFAULT 0,
-  last_penalty_at INTEGER,
-  hit_timestamps TEXT DEFAULT '[]',
+  last_penalty_at INTEGER,                -- epoch ms of last penalty
+  hit_timestamps TEXT DEFAULT '[]',       -- JSON array of epoch ms (24h window)
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (provider_id, model_id)
 );
@@ -858,16 +1152,18 @@ CREATE INDEX IF NOT EXISTS idx_rl_cooldowns_active
 ON rate_limit_cooldowns(cooldown_expiry)
 WHERE cooldown_expiry > 0;
 
+-- Provider-wide daily request caps (persisted across restarts)
 CREATE TABLE IF NOT EXISTS rate_limit_daily_caps (
   provider_id TEXT NOT NULL PRIMARY KEY,
   request_count INTEGER NOT NULL DEFAULT 0,
-  window_start INTEGER NOT NULL
+  window_start INTEGER NOT NULL           -- epoch ms of current 24h window
 );
 `,
-},
-32: {
-  filename: '032_credit_balance_system.sql',
-  sql: `-- Credit/Balance system for prepaid spending limits
+  },
+  32: {
+    filename: '032_credit_balance_system.sql',
+    sql: `-- Credit/Balance system for prepaid spending limits
+-- Enables top-ups, balance tracking, and hard spending limits
 
 CREATE TABLE IF NOT EXISTS credits (
   tenant_id TEXT PRIMARY KEY,
@@ -881,12 +1177,12 @@ CREATE TABLE IF NOT EXISTS credits (
 CREATE TABLE IF NOT EXISTS credit_transactions (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
-  type TEXT NOT NULL,
-  amount_cents INTEGER NOT NULL,
+  type TEXT NOT NULL,            -- 'topup', 'usage', 'refund', 'adjustment'
+  amount_cents INTEGER NOT NULL, -- positive for topup/refund, negative for usage
   balance_after_cents INTEGER NOT NULL,
   description TEXT,
-  request_id TEXT,
-  admin_key_hash TEXT,
+  request_id TEXT,               -- links to usage_records for usage transactions
+  admin_key_hash TEXT,           -- who performed the action
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -896,15 +1192,16 @@ ON credit_transactions(tenant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_credit_tx_type
 ON credit_transactions(tenant_id, type, created_at DESC);
 `,
-},
-33: {
-  filename: '033_model_classifications.sql',
-  sql: `-- Unified Model Classification
+  },
+  33: {
+    filename: '033_model_classifications.sql',
+    sql: `-- Unified Model Classification
+-- Tracks pricing tier, free/paid status, and verification state for all models
 
 CREATE TABLE IF NOT EXISTS model_classifications (
   provider_id TEXT NOT NULL,
   model_id TEXT NOT NULL,
-  pricingTier TEXT NOT NULL DEFAULT 'unknown',
+  pricingTier TEXT NOT NULL DEFAULT 'unknown',  -- 'free' | 'free_with_limits' | 'paid' | 'subscription_only' | 'unknown'
   input_cost_per_1m REAL NOT NULL DEFAULT 0,
   output_cost_per_1m REAL NOT NULL DEFAULT 0,
   has_free_tier INTEGER NOT NULL DEFAULT 0,
@@ -913,9 +1210,9 @@ CREATE TABLE IF NOT EXISTS model_classifications (
   rate_limit_tpm INTEGER,
   rate_limit_tpd INTEGER,
   monthly_budget INTEGER NOT NULL DEFAULT 0,
-  verified_free INTEGER NOT NULL DEFAULT 0,
-  last_verification TEXT,
-  source TEXT NOT NULL DEFAULT 'catalog',
+  verified_free INTEGER NOT NULL DEFAULT 0,     -- 1 = runtime-verified free
+  last_verification TEXT,                        -- ISO timestamp of last probe
+  source TEXT NOT NULL DEFAULT 'catalog',        -- 'catalog' | 'runtime' | 'verified'
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (provider_id, model_id)
 );
@@ -930,10 +1227,10 @@ WHERE pricingTier IN ('free', 'free_with_limits');
 CREATE INDEX IF NOT EXISTS idx_model_class_cost
 ON model_classifications(input_cost_per_1m, output_cost_per_1m);
 `,
-},
-34: {
-  filename: '034_task_queue.sql',
-  sql: `-- Add retry/backoff/priority columns to worker_jobs
+  },
+  34: {
+    filename: '034_task_queue.sql',
+    sql: `-- Add retry/backoff/priority columns to worker_jobs
 ALTER TABLE worker_jobs ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal';
 ALTER TABLE worker_jobs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3;
 ALTER TABLE worker_jobs ADD COLUMN retries INTEGER NOT NULL DEFAULT 0;
@@ -955,6 +1252,216 @@ SET status = 'retryable',
     next_retry_at = datetime('now')
 WHERE status = 'running';
 `,
-},
-};
+  },
+  35: {
+    filename: '035_fusion_panel.sql',
+    sql: `-- Fusion Panel persistence
+-- Stores multi-model parallel execution configurations
 
+CREATE TABLE IF NOT EXISTS fusion_panels (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS fusion_panel_slots (
+  id TEXT PRIMARY KEY,
+  panel_id TEXT NOT NULL REFERENCES fusion_panels(id) ON DELETE CASCADE,
+  provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  slot_order INTEGER NOT NULL DEFAULT 0,
+  is_enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fusion_panel_slots_panel
+ON fusion_panel_slots(panel_id, slot_order);
+
+CREATE INDEX IF NOT EXISTS idx_fusion_panels_active
+ON fusion_panels(is_active)
+WHERE is_active = 1;
+`,
+  },
+  36: {
+    filename: '036_agent_platform.sql',
+    sql: `-- Agent Platform
+-- Agent definitions, instances, executions, and marketplace listings
+
+-- Agent definitions: the blueprint for an agent
+CREATE TABLE IF NOT EXISTS agent_definitions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  version TEXT NOT NULL DEFAULT '1.0.0',
+  system_prompt TEXT,
+  personality TEXT,
+  preferred_model TEXT,
+  model_tier TEXT NOT NULL DEFAULT 'auto',
+  allowed_tools TEXT NOT NULL DEFAULT '[]',
+  custom_tools TEXT NOT NULL DEFAULT '[]',
+  workflow TEXT,
+  triggers TEXT NOT NULL DEFAULT '[]',
+  visibility TEXT NOT NULL DEFAULT 'private',
+  tags TEXT NOT NULL DEFAULT '[]',
+  category TEXT,
+  icon TEXT,
+  published_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_definitions_tenant
+ON agent_definitions(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_definitions_visibility
+ON agent_definitions(visibility)
+WHERE visibility IN ('team', 'public');
+
+CREATE INDEX IF NOT EXISTS idx_agent_definitions_category
+ON agent_definitions(category)
+WHERE category IS NOT NULL;
+
+-- Agent instances: a deployed agent (definition + tenant-specific config)
+CREATE TABLE IF NOT EXISTS agent_instances (
+  id TEXT PRIMARY KEY,
+  agent_definition_id TEXT NOT NULL REFERENCES agent_definitions(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'active',
+  config_override TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_instances_tenant
+ON agent_instances(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_instances_definition
+ON agent_instances(agent_definition_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_instances_status
+ON agent_instances(tenant_id, status)
+WHERE status = 'active';
+
+-- Agent execution logs
+CREATE TABLE IF NOT EXISTS agent_executions (
+  id TEXT PRIMARY KEY,
+  agent_instance_id TEXT NOT NULL REFERENCES agent_instances(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  input TEXT,
+  output TEXT,
+  tools_used TEXT NOT NULL DEFAULT '[]',
+  model_used TEXT,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_cents INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'success',
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_executions_instance
+ON agent_executions(agent_instance_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_executions_tenant
+ON agent_executions(tenant_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_executions_status
+ON agent_executions(tenant_id, status);
+
+-- Agent marketplace listings
+CREATE TABLE IF NOT EXISTS agent_listings (
+  id TEXT PRIMARY KEY,
+  agent_definition_id TEXT NOT NULL REFERENCES agent_definitions(id) ON DELETE CASCADE,
+  publisher_tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  long_description TEXT,
+  category TEXT,
+  tags TEXT NOT NULL DEFAULT '[]',
+  icon TEXT,
+  screenshots TEXT NOT NULL DEFAULT '[]',
+  rating REAL NOT NULL DEFAULT 0,
+  rating_count INTEGER NOT NULL DEFAULT 0,
+  install_count INTEGER NOT NULL DEFAULT 0,
+  price_cents INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_listings_status
+ON agent_listings(status)
+WHERE status = 'published';
+
+CREATE INDEX IF NOT EXISTS idx_agent_listings_category
+ON agent_listings(category, status)
+WHERE status = 'published';
+
+CREATE INDEX IF NOT EXISTS idx_agent_listings_publisher
+ON agent_listings(publisher_tenant_id);
+
+-- Agent marketplace installs (track which tenants installed which agents)
+CREATE TABLE IF NOT EXISTS agent_installs (
+  id TEXT PRIMARY KEY,
+  listing_id TEXT NOT NULL REFERENCES agent_listings(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_instance_id TEXT NOT NULL REFERENCES agent_instances(id) ON DELETE CASCADE,
+  installed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(listing_id, tenant_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_installs_tenant
+ON agent_installs(tenant_id);
+
+-- Agent marketplace ratings
+CREATE TABLE IF NOT EXISTS agent_ratings (
+  id TEXT PRIMARY KEY,
+  listing_id TEXT NOT NULL REFERENCES agent_listings(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+  review TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(listing_id, tenant_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_ratings_listing
+ON agent_ratings(listing_id);
+`,
+  },
+  37: {
+    filename: '037_agent_scheduled_jobs.sql',
+    sql: `-- Agent Scheduled Jobs
+-- Persists cron/event trigger jobs across gateway restarts
+
+CREATE TABLE IF NOT EXISTS agent_scheduled_jobs (
+  id TEXT PRIMARY KEY,
+  agent_definition_id TEXT NOT NULL REFERENCES agent_definitions(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  trigger_type TEXT NOT NULL,
+  trigger_config TEXT NOT NULL,
+  next_run_at TEXT NOT NULL,
+  last_run_at TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_scheduled_jobs_next_run
+ON agent_scheduled_jobs(next_run_at, enabled)
+WHERE enabled = 1;
+
+CREATE INDEX IF NOT EXISTS idx_agent_scheduled_jobs_tenant
+ON agent_scheduled_jobs(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_scheduled_jobs_definition
+ON agent_scheduled_jobs(agent_definition_id);
+`,
+  },
+};

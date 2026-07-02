@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/gateway",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "main": "./dist/main.js",
@@ -31,6 +31,7 @@
     "@dmr-x/router": "*",
     "@dmr-x/sandbox": "*",
     "@dmr-x/telemetry": "*",
+    "@dmr-x/tokenizers": "*",
     "@dmr-x/utils": "*",
     "@dmr-x/workers": "*",
     "@fastify/compress": "^9.0.0",

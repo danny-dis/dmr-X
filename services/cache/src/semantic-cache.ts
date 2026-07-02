@@ -28,15 +28,31 @@ import { EmbeddingsService } from '@dmr-x/memory';
  * - DMRX_SEMANTIC_CACHE_TTL_SECONDS=600  (default: 600 = 10 minutes)
  */
 
+/** How often to run cleanup and eviction (ms) */
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const EVICTION_INTERVAL_MS = 60 * 1000; // 60 seconds
+
 export interface SemanticCacheEntry {
   id: string;
   tenantId: string | null;
   requestType: string;
   promptText: string;
-  embedding: number[];
+  embedding: Float32Array;
   response: unknown;
   tokens: number;
-  cost: number;
+  hitCount: number;
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** Lightweight candidate for phase 1 lookup (no response payload) */
+interface SemanticCacheCandidate {
+  id: string;
+  tenantId: string | null;
+  requestType: string;
+  promptText: string;
+  embedding: Float32Array;
+  tokens: number;
   hitCount: number;
   createdAt: string;
   expiresAt: string;
@@ -53,6 +69,9 @@ export class SemanticCacheService {
   private threshold: number;
   private maxEntries: number;
   private ttlSeconds: number;
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private evictionTimer: ReturnType<typeof setInterval> | null = null;
+  private usingRealEmbeddings: boolean;
 
   constructor() {
     this.embeddings = new EmbeddingsService();
@@ -60,6 +79,21 @@ export class SemanticCacheService {
     this.threshold = parseFloat(process.env.DMRX_SEMANTIC_CACHE_THRESHOLD || '0.95');
     this.maxEntries = parseInt(process.env.DMRX_SEMANTIC_CACHE_MAX_ENTRIES || '10000', 10);
     this.ttlSeconds = parseInt(process.env.DMRX_SEMANTIC_CACHE_TTL_SECONDS || '600', 10);
+
+    // Detect if real embeddings are available (not hash fallback)
+    this.usingRealEmbeddings = !!(process.env.OPENAI_API_KEY || process.env.OLLAMA_BASE_URL);
+    if (this.enabled && !this.usingRealEmbeddings) {
+      logger.warn(
+        'Semantic cache enabled but no embedding provider available (OPENAI_API_KEY or OLLAMA_BASE_URL). ' +
+        'Cache will be disabled until a provider is configured.'
+      );
+      this.enabled = false;
+    }
+
+    if (this.enabled) {
+      this.startCleanupTimer();
+      this.startEvictionTimer();
+    }
   }
 
   /**
@@ -71,6 +105,9 @@ export class SemanticCacheService {
 
   /**
    * Look up a semantically similar cached response.
+   *
+   * Uses two-phase query: first fetch lightweight candidates (no response),
+   * then fetch the full response only for the best match.
    *
    * @param requestType - The request type (chat, embedding, image, etc.)
    * @param tenantId - Optional tenant ID for isolation
@@ -89,35 +126,42 @@ export class SemanticCacheService {
 
     try {
       const queryEmbedding = await this.embeddings.embed(promptText);
-      const candidates = this.getCacheEntries(requestType, tenantId);
+      const queryVec = new Float32Array(queryEmbedding);
+      this.normalizeInPlace(queryVec);
 
+      // Phase 1: fetch lightweight candidates (no response payload)
+      const candidates = this.getCandidates(requestType, tenantId);
       if (candidates.length === 0) return null;
 
-      let bestMatch: SemanticCacheEntry | null = null;
+      let bestCandidate: SemanticCacheCandidate | null = null;
       let bestSimilarity = 0;
 
       for (const candidate of candidates) {
-        const similarity = this.cosineSimilarity(queryEmbedding, candidate.embedding);
+        const similarity = this.dotProduct(queryVec, candidate.embedding);
         if (similarity > bestSimilarity) {
           bestSimilarity = similarity;
-          bestMatch = candidate;
+          bestCandidate = candidate;
         }
       }
 
-      if (bestMatch && bestSimilarity >= this.threshold) {
-        // Bump hit count
-        this.incrementHitCount(bestMatch.id);
+      if (bestCandidate && bestSimilarity >= this.threshold) {
+        // Phase 2: fetch full response for the winning entry only
+        const fullEntry = this.getEntryById(bestCandidate.id);
+        if (!fullEntry) return null;
+
+        // Bump hit count (with error handling)
+        this.incrementHitCount(bestCandidate.id);
 
         logger.debug(
           {
-            requestId: bestMatch.id,
+            requestId: bestCandidate.id,
             similarity: bestSimilarity,
-            hitCount: bestMatch.hitCount + 1,
+            hitCount: bestCandidate.hitCount + 1,
           },
           'Semantic cache hit',
         );
 
-        return { entry: bestMatch, similarity: bestSimilarity };
+        return { entry: fullEntry, similarity: bestSimilarity };
       }
 
       return null;
@@ -134,8 +178,7 @@ export class SemanticCacheService {
    * @param tenantId - Optional tenant ID
    * @param requestBody - The full request body
    * @param response - The response to cache
-   * @param tokens - Token count for cost-based TTL
-   * @param cost - Cost in cents for cost-based TTL
+   * @param tokens - Token count
    */
   async store(
     requestType: string,
@@ -143,56 +186,76 @@ export class SemanticCacheService {
     requestBody: Record<string, unknown>,
     response: unknown,
     tokens: number = 0,
-    cost: number = 0,
   ): Promise<void> {
     if (!this.enabled) return;
 
     // Don't cache streaming responses
     if (requestBody.stream) return;
 
-    // Don't cache responses with tool calls (stateful)
-    if (response && typeof response === 'object') {
-      const resp = response as Record<string, unknown>;
-      if (resp.choices && Array.isArray(resp.choices)) {
-        const hasToolCalls = resp.choices.some(
-          (c: any) => c.message?.tool_calls && c.message.tool_calls.length > 0,
-        );
-        if (hasToolCalls) return;
-      }
-    }
+    // Don't cache responses with tool calls (stateful) — multi-provider detection
+    if (this.hasToolCalls(response)) return;
 
     const promptText = this.extractPromptText(requestBody);
     if (!promptText || promptText.length < 10) return;
 
     try {
       const embedding = await this.embeddings.embed(promptText);
-      const id = crypto.randomUUID();
+      const normalized = new Float32Array(embedding);
+      this.normalizeInPlace(normalized);
+
       const now = new Date();
-      const ttl = this.getCostBasedTTL(cost, this.ttlSeconds);
-      const expiresAt = new Date(now.getTime() + ttl * 1000);
+      const expiresAt = new Date(now.getTime() + this.ttlSeconds * 1000);
 
       const db = getDb();
-      db.prepare(`
-        INSERT OR REPLACE INTO semantic_cache_entries
-          (id, tenant_id, request_type, prompt_text, embedding, response, tokens, cost, hit_count, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-      `).run(
-        id,
-        tenantId || null,
+
+      // Deduplication: check if entry with same (tenant, type, prompt) exists
+      const existing = db.prepare(`
+        SELECT id FROM semantic_cache_entries
+        WHERE request_type = ? AND prompt_text = ? AND
+              (tenant_id = ? OR (tenant_id IS NULL AND ? IS NULL))
+      `).get(
         requestType,
-        promptText.slice(0, 2048), // Truncate for storage
-        Buffer.from(new Float32Array(embedding).buffer),
-        JSON.stringify(response),
-        tokens,
-        cost,
-        now.toISOString(),
-        expiresAt.toISOString(),
-      );
+        promptText.slice(0, 2048),
+        tenantId || null,
+        tenantId || null,
+      ) as any;
 
-      // Evict old entries if over limit
-      this.evictIfNeeded();
-
-      logger.debug({ id, requestType, ttl }, 'Semantic cache stored');
+      if (existing) {
+        // Update existing entry instead of creating duplicate
+        db.prepare(`
+          UPDATE semantic_cache_entries
+          SET embedding = ?, response = ?, tokens = ?, hit_count = 0,
+              created_at = ?, expires_at = ?
+          WHERE id = ?
+        `).run(
+          Buffer.from(normalized.buffer),
+          JSON.stringify(response),
+          tokens,
+          now.toISOString(),
+          expiresAt.toISOString(),
+          existing.id,
+        );
+        logger.debug({ id: existing.id, requestType }, 'Semantic cache entry updated (dedup)');
+      } else {
+        // Insert new entry
+        const id = crypto.randomUUID();
+        db.prepare(`
+          INSERT INTO semantic_cache_entries
+            (id, tenant_id, request_type, prompt_text, embedding, response, tokens, hit_count, created_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        `).run(
+          id,
+          tenantId || null,
+          requestType,
+          promptText.slice(0, 2048),
+          Buffer.from(normalized.buffer),
+          JSON.stringify(response),
+          tokens,
+          now.toISOString(),
+          expiresAt.toISOString(),
+        );
+        logger.debug({ id, requestType }, 'Semantic cache stored');
+      }
     } catch (err) {
       logger.warn({ error: String(err) }, 'Semantic cache store failed');
     }
@@ -224,12 +287,30 @@ export class SemanticCacheService {
    * Clean up expired entries.
    */
   cleanup(): void {
-    const db = getDb();
-    const result = db.prepare(
-      "DELETE FROM semantic_cache_entries WHERE expires_at < datetime('now')",
-    ).run();
-    if (result.changes > 0) {
-      logger.info({ deleted: result.changes }, 'Semantic cache cleanup');
+    try {
+      const db = getDb();
+      const result = db.prepare(
+        "DELETE FROM semantic_cache_entries WHERE expires_at < datetime('now')",
+      ).run();
+      if (result.changes > 0) {
+        logger.info({ deleted: result.changes }, 'Semantic cache cleanup');
+      }
+    } catch (err) {
+      logger.warn({ error: String(err) }, 'Semantic cache cleanup failed');
+    }
+  }
+
+  /**
+   * Destroy timers (for testing or shutdown).
+   */
+  destroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    if (this.evictionTimer) {
+      clearInterval(this.evictionTimer);
+      this.evictionTimer = null;
     }
   }
 
@@ -237,21 +318,19 @@ export class SemanticCacheService {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Extract prompt text from request body.
+   * Handles OpenAI, Anthropic, and simple prompt/input formats.
+   */
   private extractPromptText(body: Record<string, unknown>): string {
-    // OpenAI format: messages array
-    if (body.messages && Array.isArray(body.messages)) {
-      return (body.messages as any[])
-        .filter((m: any) => m.role === 'user')
-        .map((m: any) => (typeof m.content === 'string' ? m.content : ''))
-        .join('\n');
-    }
-
-    // Anthropic format: messages array
+    // Messages array (OpenAI and Anthropic formats)
     if (body.messages && Array.isArray(body.messages)) {
       return (body.messages as any[])
         .filter((m: any) => m.role === 'user')
         .map((m: any) => {
+          // Simple string content (OpenAI format)
           if (typeof m.content === 'string') return m.content;
+          // Array content blocks (Anthropic format)
           if (Array.isArray(m.content)) {
             return m.content
               .filter((c: any) => c.type === 'text')
@@ -275,27 +354,65 @@ export class SemanticCacheService {
     return '';
   }
 
-  private cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length || a.length === 0) return 0;
+  /**
+   * Detect if a response contains tool calls in any provider format.
+   */
+  private hasToolCalls(response: unknown): boolean {
+    if (!response || typeof response !== 'object') return false;
+    const resp = response as Record<string, unknown>;
 
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
+    // OpenAI format: choices[].message.tool_calls
+    if (resp.choices && Array.isArray(resp.choices)) {
+      const has = resp.choices.some(
+        (c: any) => c.message?.tool_calls && c.message.tool_calls.length > 0,
+      );
+      if (has) return true;
     }
 
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
+    // Anthropic/Bedrock format: stop_reason === 'tool_use'
+    if (resp.stop_reason === 'tool_use') return true;
+
+    // Normalized format: finishReason === 'tool_calls'
+    if (resp.finishReason === 'tool_calls') return true;
+
+    return false;
   }
 
-  private getCacheEntries(
+  /**
+   * Normalize vector in place to unit length.
+   */
+  private normalizeInPlace(vec: Float32Array): void {
+    let norm = 0;
+    for (let i = 0; i < vec.length; i++) {
+      norm += vec[i] * vec[i];
+    }
+    norm = Math.sqrt(norm);
+    if (norm > 0) {
+      for (let i = 0; i < vec.length; i++) {
+        vec[i] /= norm;
+      }
+    }
+  }
+
+  /**
+   * Dot product of two vectors. Both should be pre-normalized for cosine similarity.
+   */
+  private dotProduct(a: Float32Array, b: Float32Array): number {
+    if (a.length !== b.length || a.length === 0) return 0;
+    let dot = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i];
+    }
+    return dot;
+  }
+
+  /**
+   * Phase 1: Fetch lightweight candidates (no response payload).
+   */
+  private getCandidates(
     requestType: string,
     tenantId: string | undefined,
-  ): SemanticCacheEntry[] {
+  ): SemanticCacheCandidate[] {
     const db = getDb();
     const whereClauses = [
       "request_type = ?",
@@ -311,7 +428,7 @@ export class SemanticCacheService {
     }
 
     const rows = db.prepare(`
-      SELECT id, tenant_id, request_type, prompt_text, embedding, response, tokens, cost, hit_count, created_at, expires_at
+      SELECT id, tenant_id, request_type, prompt_text, embedding, tokens, hit_count, created_at, expires_at
       FROM semantic_cache_entries
       WHERE ${whereClauses.join(' AND ')}
       ORDER BY created_at DESC
@@ -323,44 +440,98 @@ export class SemanticCacheService {
       tenantId: row.tenant_id,
       requestType: row.request_type,
       promptText: row.prompt_text,
-      embedding: Array.from(new Float32Array(row.embedding.buffer)),
-      response: JSON.parse(row.response),
+      embedding: new Float32Array(row.embedding.buffer),
       tokens: row.tokens,
-      cost: row.cost,
       hitCount: row.hit_count,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
     }));
   }
 
+  /**
+   * Phase 2: Fetch full entry by ID (includes response payload).
+   */
+  private getEntryById(id: string): SemanticCacheEntry | null {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT id, tenant_id, request_type, prompt_text, embedding, response, tokens, hit_count, created_at, expires_at
+      FROM semantic_cache_entries
+      WHERE id = ?
+    `).get(id) as any;
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      requestType: row.request_type,
+      promptText: row.prompt_text,
+      embedding: new Float32Array(row.embedding.buffer),
+      response: JSON.parse(row.response),
+      tokens: row.tokens,
+      hitCount: row.hit_count,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+    };
+  }
+
+  /**
+   * Increment hit count with error handling.
+   */
   private incrementHitCount(id: string): void {
-    const db = getDb();
-    db.prepare('UPDATE semantic_cache_entries SET hit_count = hit_count + 1 WHERE id = ?').run(id);
+    try {
+      const db = getDb();
+      db.prepare('UPDATE semantic_cache_entries SET hit_count = hit_count + 1 WHERE id = ?').run(id);
+    } catch (err) {
+      logger.warn({ error: String(err), id }, 'Failed to increment semantic cache hit count');
+    }
   }
 
-  private getCostBasedTTL(costCents: number, baseTTL: number): number {
-    if (costCents <= 0) return baseTTL;
-    const multiplier = Math.min(1 + costCents * 0.5, 10);
-    return Math.round(baseTTL * multiplier);
+  /**
+   * Periodic cleanup of expired entries.
+   */
+  private startCleanupTimer(): void {
+    this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
+    if (this.cleanupTimer && typeof this.cleanupTimer === 'object' && 'unref' in this.cleanupTimer) {
+      (this.cleanupTimer as NodeJS.Timeout).unref();
+    }
   }
 
+  /**
+   * Periodic eviction when over capacity.
+   */
+  private startEvictionTimer(): void {
+    this.evictionTimer = setInterval(() => this.evictIfNeeded(), EVICTION_INTERVAL_MS);
+    if (this.evictionTimer && typeof this.evictionTimer === 'object' && 'unref' in this.evictionTimer) {
+      (this.evictionTimer as NodeJS.Timeout).unref();
+    }
+  }
+
+  /**
+   * Evict oldest entries when over capacity.
+   * Runs on a timer, not per-write.
+   */
   private evictIfNeeded(): void {
-    const db = getDb();
-    const count = (db.prepare('SELECT COUNT(*) as count FROM semantic_cache_entries').get() as any)?.count || 0;
+    try {
+      const db = getDb();
+      const count = (db.prepare('SELECT COUNT(*) as count FROM semantic_cache_entries').get() as any)?.count || 0;
 
-    if (count > this.maxEntries) {
-      // Delete oldest 10% of entries
-      const toDelete = Math.ceil(this.maxEntries * 0.1);
-      db.prepare(`
-        DELETE FROM semantic_cache_entries
-        WHERE id IN (
-          SELECT id FROM semantic_cache_entries
-          ORDER BY hit_count ASC, created_at ASC
-          LIMIT ?
-        )
-      `).run(toDelete);
+      if (count > this.maxEntries) {
+        // Delete oldest 10% of entries (by hit count, then creation time)
+        const toDelete = Math.ceil(this.maxEntries * 0.1);
+        db.prepare(`
+          DELETE FROM semantic_cache_entries
+          WHERE id IN (
+            SELECT id FROM semantic_cache_entries
+            ORDER BY hit_count ASC, created_at ASC
+            LIMIT ?
+          )
+        `).run(toDelete);
 
-      logger.info({ evicted: toDelete, remaining: count - toDelete }, 'Semantic cache eviction');
+        logger.info({ evicted: toDelete, remaining: count - toDelete }, 'Semantic cache eviction');
+      }
+    } catch (err) {
+      logger.warn({ error: String(err) }, 'Semantic cache eviction failed');
     }
   }
 }

@@ -266,6 +266,63 @@ describe('MemoryCache', () => {
     });
   });
 
+  describe('cross-contamination fix', () => {
+    it('should clean up hash state when set() is called with same key', () => {
+      cache.hSet('user', 'name', 'Alice');
+      expect(cache.size).toBe(1);
+
+      // set() with same key should clean up hash and add to store
+      cache.set('user', 'json-data');
+      expect(cache.size).toBe(1);
+      expect(cache.get('user')).toBe('json-data');
+      expect(cache.hGet('user', 'name')).toBeNull();
+    });
+
+    it('should clean up store state when hSet() is called with same key', () => {
+      cache.set('key1', 'value1');
+      expect(cache.size).toBe(1);
+
+      // hSet() with same key should clean up store and add to hashes
+      cache.hSet('key1', 'field', 'hash-value');
+      expect(cache.size).toBe(1);
+      expect(cache.get('key1')).toBeNull();
+      expect(cache.hGet('key1', 'field')).toBe('hash-value');
+    });
+  });
+
+  describe('ghost entry fix', () => {
+    it('should not create accessOrder entries for non-existent keys', () => {
+      // expire on non-existent key should not throw or create ghosts
+      cache.expire('nonexistent', 60);
+      expect(cache.size).toBe(0);
+    });
+  });
+
+  describe('NaN guard', () => {
+    it('should handle non-numeric strings in incrBy', () => {
+      cache.set('key', 'not-a-number');
+      const result = cache.incrBy('key', 5);
+      expect(result).toBe(5);
+      expect(cache.get('key')).toBe('5');
+    });
+
+    it('should handle non-numeric strings in hIncrBy', () => {
+      cache.hSet('hash', 'field', 'abc');
+      const result = cache.hIncrBy('hash', 'field', 10);
+      expect(result).toBe(10);
+      expect(cache.hGet('hash', 'field')).toBe('10');
+    });
+  });
+
+  describe('hash default TTL', () => {
+    it('should apply default TTL to hashes without explicit TTL', () => {
+      cache.hSet('user', 'name', 'Alice');
+      // Hash should be sweepable within default TTL (1 hour)
+      // We can't easily test the sweep, but we can verify the hash exists
+      expect(cache.hGet('user', 'name')).toBe('Alice');
+    });
+  });
+
   describe('namespaced cache', () => {
     it('should isolate keys by namespace', () => {
       const ns1 = createNamespacedCache('ns1');

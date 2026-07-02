@@ -17,6 +17,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@dmr-x/utils": "*",
     "tiktoken": "^1.0.18"
   },
   "devDependencies": {
