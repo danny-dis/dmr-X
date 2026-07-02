@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter, AntigravityAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { Router } from '@dmr-x/router';
@@ -44,6 +44,9 @@ import { compressionRoutes } from './routes/compression.routes.js';
 import { routeDecisionRoutes } from './routes/route.routes.js';
 import { validateRoutes } from './routes/validate.routes.js';
 import { countTokensRoutes } from './routes/count-tokens.routes.js';
+import { agentRoutes } from './routes/agent.routes.js';
+import { agentChatRoutes } from './routes/agent-chat.routes.js';
+import { cloudcodeRoutes } from './routes/cloudcode.routes.js';
 
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 declare const Bun: unknown | undefined;
@@ -172,6 +175,7 @@ export async function createServer() {
   adapterRegistry.register(new LMStudioAdapter());
   adapterRegistry.register(new VolcengineAdapter());
   adapterRegistry.register(new DashscopeAdapter());
+  adapterRegistry.register(new AntigravityAdapter());
 
   // Audio Separation adapters
   adapterRegistry.register(createAudioSeparationAdapter('demucs'));
@@ -198,6 +202,14 @@ export async function createServer() {
   if (process.env.OLLAMA_BASE_URL) {
     await adapterRegistry.initialize('ollama', {
       baseUrl: process.env.OLLAMA_BASE_URL,
+    });
+  }
+  if (process.env.OLLAMA_CLOUD_API_KEY) {
+    const ollamaCloudAdapter = new GenericOpenAIAdapter('ollama-cloud');
+    adapterRegistry.register(ollamaCloudAdapter);
+    await adapterRegistry.initialize('ollama-cloud', {
+      baseUrl: process.env.OLLAMA_CLOUD_BASE_URL || 'https://ollama.com/v1',
+      apiKey: process.env.OLLAMA_CLOUD_API_KEY,
     });
   }
   if (process.env.REPLICATE_API_TOKEN) {
@@ -387,6 +399,12 @@ export async function createServer() {
   if (process.env.DASHSCOPE_API_KEY) {
     await adapterRegistry.initialize('dashscope', {
       apiKey: process.env.DASHSCOPE_API_KEY,
+    });
+  }
+  if (process.env.ANTIGRAVITY_API_KEY || process.env.ANTIGRAVITY_OAUTH_TOKEN) {
+    await adapterRegistry.initialize('antigravity', {
+      apiKey: process.env.ANTIGRAVITY_API_KEY || process.env.ANTIGRAVITY_OAUTH_TOKEN,
+      projectId: process.env.ANTIGRAVITY_PROJECT_ID,
     });
   }
 
@@ -826,7 +844,7 @@ void (async () => {
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     reply.header(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: *; connect-src 'self'"
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: *; connect-src 'self'"
     );
     if (process.env.NODE_ENV === 'production') {
       reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
@@ -1267,6 +1285,9 @@ void (async () => {
    await server.register(routeDecisionRoutes, { prefix: '/v1' });
    await server.register(validateRoutes);
    await server.register(countTokensRoutes, { prefix: '/v1' });
+   await server.register(agentRoutes, { prefix: '/v1' });
+   await server.register(agentChatRoutes, { prefix: '/v1' });
+   await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
 
   // SPA fallback: serve index.html for non-API GET requests.
   // Pre-read index.html at startup so we catch missing UI builds early

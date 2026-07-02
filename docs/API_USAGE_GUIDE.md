@@ -248,6 +248,75 @@ export OPENAI_API_KEY=dmrx_your_api_key_here
 
 For Anthropic models in Cursor, use the Anthropic API key settings with the same base URL pattern.
 
+### OpenAI Codex CLI
+
+#### Option A: Custom model provider (recommended)
+
+Create or edit `~/.codex/config.toml`:
+
+```toml
+model = "auto-coding"
+model_provider = "dmrx"
+
+[model_providers.dmrx]
+name = "DMR-X Gateway"
+base_url = "http://localhost:3000/v1"
+env_key = "DMRX_API_KEY"
+wire_api = "chat"
+requires_openai_auth = false
+```
+
+Then set your DMR-X API key and run Codex:
+
+```bash
+export DMRX_API_KEY=dmrx_your_api_key_here
+codex "Explain this codebase"
+```
+
+#### Option B: Environment variables
+
+```bash
+export OPENAI_BASE_URL=http://localhost:3000/v1
+export OPENAI_API_KEY=dmrx_your_api_key_here
+codex --model auto-coding "Explain this codebase"
+```
+
+> **Note:** Codex validates that API keys start with `sk-`. Since DMR-X keys start with `dmr-sk-`, you must use `requires_openai_auth = false` in the config file approach, or use the env var approach which skips this validation.
+
+### Antigravity (agy)
+
+Antigravity uses Google's Cloud Code protocol (`cloudcode-pa.googleapis.com`). DMR-X translates this protocol to OpenAI/Anthropic format and routes to your configured providers.
+
+#### Setup
+
+1. Start the DMR-X gateway:
+   ```bash
+   bun run dev:gateway
+   ```
+
+2. Point agy at DMR-X:
+   ```bash
+   export GOOGLE_GEMINI_BASE_URL=http://localhost:3000
+   agy "Explain this function"
+   ```
+
+3. agy will authenticate with Google OAuth as usual. DMR-X intercepts the request, converts from Cloud Code format, routes through your configured providers, and translates the response back.
+
+#### Available Models
+
+When connected to DMR-X, agy can access models from any configured provider:
+
+| Model | Provider | Description |
+|-------|----------|-------------|
+| `gemini-2.5-pro` | Google | Best reasoning and coding |
+| `gemini-2.5-flash` | Google | Fast and cheap |
+| `gemini-3-flash` | Google | Latest Gemini |
+| `claude-opus-4-6-thinking` | Anthropic | Deep reasoning with thinking |
+| `claude-sonnet-4-5` | Anthropic | Balanced performance |
+| `gpt-oss-120b-medium` | OpenAI | Open-source GPT |
+
+> **Note:** DMR-X uses its own stored provider keys for routing. The Google OAuth token from agy is accepted but not required for routing. Configure your providers (OpenAI, Anthropic, Google) in the DMR-X admin UI with their respective API keys.
+
 ### Continue (VS Code / JetBrains)
 
 In your `~/.continue/config.json`:

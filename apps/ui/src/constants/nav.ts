@@ -9,6 +9,7 @@ import {
   Cpu,
   Settings,
   Layers,
+  Terminal,
   type LucideIcon,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
@@ -89,6 +90,17 @@ export const NAV_GROUPS: NavGroup[] = [
         path: '/tenants',
         icon: Users,
         description: 'Tenants & API keys',
+      },
+    ],
+  },
+  {
+    label: 'Agents',
+    items: [
+      {
+        label: 'Agent Integrations',
+        path: '/integrations',
+        icon: Terminal,
+        description: 'Claude Code, Codex & Antigravity',
       },
     ],
   },

@@ -44,6 +44,9 @@ export { LMStudioAdapter } from './lmstudio/lmstudio.adapter.js';
 export { VolcengineAdapter } from './volcengine/volcengine.adapter.js';
 export { DashscopeAdapter } from './dashscope/dashscope.adapter.js';
 
+// Cloud Code Adapter (Antigravity/Google Cloud Code)
+export { AntigravityAdapter } from './antigravity/antigravity.adapter.js';
+
 // Diffusion Adapters
 export { ReplicateAdapter } from './replicate/replicate.adapter.js';
 export { StabilityAdapter } from './stability/stability.adapter.js';

@@ -34,9 +34,12 @@ const SandboxPage = lazy(() => import('@/pages/Sandbox').then(m => ({ default: m
 const SettingsPage = lazy(() => import('@/pages/Settings').then(m => ({ default: m.SettingsPage })));
 const CompressionPage = lazy(() => import('@/pages/Compression').then(m => ({ default: m.CompressionPage })));
 const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
-const ClaudeCodePage = lazy(() => import('@/pages/ClaudeCode').then(m => ({ default: m.ClaudeCodePage })));
+const AgentIntegrationsPage = lazy(() => import('@/pages/AgentIntegrations').then(m => ({ default: m.AgentIntegrationsPage })));
 const FreeTierPage = lazy(() => import('@/pages/FreeTier').then(m => ({ default: m.FreeTierPage })));
 const ObservabilityPage = lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
+const AgentsPage = lazy(() => import('@/pages/Agents').then(m => ({ default: m.AgentsPage })));
+const MarketplacePage = lazy(() => import('@/pages/Marketplace').then(m => ({ default: m.MarketplacePage })));
+const AgentAnalyticsPage = lazy(() => import('@/pages/AgentAnalytics').then(m => ({ default: m.AgentAnalyticsPage })));
 
 function PageLoader() {
   return (
@@ -66,6 +69,9 @@ export default function App() {
               <Route path="/billing" element={<BillingPage />} />
               <Route path="/infrastructure" element={<InfrastructurePage />} />
               <Route path="/settings" element={<SettingsTabsPage />} />
+              <Route path="/agents" element={<AgentsPage />} />
+              <Route path="/marketplace" element={<MarketplacePage />} />
+              <Route path="/agent-analytics" element={<AgentAnalyticsPage />} />
 
               {/* Sub-pages (hidden routes — lazy-imported by tabbed containers) */}
               <Route path="/usage" element={<UsagePage />} />
@@ -80,7 +86,7 @@ export default function App() {
               <Route path="/sandbox" element={<SandboxPage />} />
               <Route path="/compression" element={<CompressionPage />} />
               <Route path="/connect" element={<ConnectPage />} />
-              <Route path="/claude-code" element={<ClaudeCodePage />} />
+              <Route path="/integrations" element={<AgentIntegrationsPage />} />
               <Route path="/free-tier" element={<FreeTierPage />} />
               <Route path="/observability" element={<ObservabilityPage />} />
 
