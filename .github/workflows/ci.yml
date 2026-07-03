@@ -172,8 +172,10 @@ jobs:
           DMRX_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
           PORT: '3000'
         run: |
-          bun apps/gateway/dist/main.js &
-          echo $! > gateway.pid
+          bun apps/gateway/dist/main.js > /tmp/gateway.log 2>&1 &
+          GATEWAY_PID=$!
+          echo $GATEWAY_PID > gateway.pid
+          echo "Gateway PID: $GATEWAY_PID"
           # Wait for gateway to respond (200=healthy, 503=degraded but running)
           healthy=false
           for i in $(seq 1 90); do
@@ -183,12 +185,20 @@ jobs:
               healthy=true
               break
             fi
+            # Check if gateway process is still alive
+            if ! kill -0 $GATEWAY_PID 2>/dev/null; then
+              echo "::error::Gateway process exited unexpectedly"
+              tail -20 /tmp/gateway.log || true
+              exit 1
+            fi
             sleep 1
           done
           if [ "$healthy" != "true" ]; then
             echo "::error::Gateway failed to become healthy within 90s"
-            # Dump gateway logs for debugging
-            curl -s http://127.0.0.1:3000/healthz 2>&1 || echo "Could not connect"
+            echo "=== Gateway logs ==="
+            tail -50 /tmp/gateway.log || echo "No logs found"
+            echo "=== Listening ports ==="
+            ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo "Could not check ports"
             exit 1
           fi
       - name: Smoke tests
