@@ -1,0 +1,181 @@
+﻿Lint	Set up job	﻿2026-07-03T21:05:12.0772149Z Current runner version: '2.335.1'
+Lint	Set up job	2026-07-03T21:05:12.0798705Z ##[group]Runner Image Provisioner
+Lint	Set up job	2026-07-03T21:05:12.0799674Z Hosted Compute Agent
+Lint	Set up job	2026-07-03T21:05:12.0800256Z Version: 20260624.560
+Lint	Set up job	2026-07-03T21:05:12.0801019Z Commit: 925d229a51159bc391ae97e54a2dd1fe20af789d
+Lint	Set up job	2026-07-03T21:05:12.0802182Z Build Date: 2026-06-24T18:26:47Z
+Lint	Set up job	2026-07-03T21:05:12.0803033Z Worker ID: {3f24a6b4-7368-4f33-a39a-362f2bae4bc2}
+Lint	Set up job	2026-07-03T21:05:12.0803783Z Azure Region: eastus
+Lint	Set up job	2026-07-03T21:05:12.0804321Z ##[endgroup]
+Lint	Set up job	2026-07-03T21:05:12.0806063Z ##[group]Operating System
+Lint	Set up job	2026-07-03T21:05:12.0806799Z Ubuntu
+Lint	Set up job	2026-07-03T21:05:12.0807330Z 24.04.4
+Lint	Set up job	2026-07-03T21:05:12.0807900Z LTS
+Lint	Set up job	2026-07-03T21:05:12.0808431Z ##[endgroup]
+Lint	Set up job	2026-07-03T21:05:12.0808994Z ##[group]Runner Image
+Lint	Set up job	2026-07-03T21:05:12.0809711Z Image: ubuntu-24.04
+Lint	Set up job	2026-07-03T21:05:12.0810283Z Version: 20260628.225.1
+Lint	Set up job	2026-07-03T21:05:12.0811375Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260628.225/images/ubuntu/Ubuntu2404-Readme.md
+Lint	Set up job	2026-07-03T21:05:12.0813565Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260628.225
+Lint	Set up job	2026-07-03T21:05:12.0814674Z ##[endgroup]
+Lint	Set up job	2026-07-03T21:05:12.0815872Z ##[group]GITHUB_TOKEN Permissions
+Lint	Set up job	2026-07-03T21:05:12.0818297Z Contents: read
+Lint	Set up job	2026-07-03T21:05:12.0818949Z Metadata: read
+Lint	Set up job	2026-07-03T21:05:12.0819636Z PullRequests: read
+Lint	Set up job	2026-07-03T21:05:12.0820253Z ##[endgroup]
+Lint	Set up job	2026-07-03T21:05:12.0823114Z Secret source: Actions
+Lint	Set up job	2026-07-03T21:05:12.0824253Z Prepare workflow directory
+Lint	Set up job	2026-07-03T21:05:12.1156799Z Prepare all required actions
+Lint	Set up job	2026-07-03T21:05:12.1195345Z Getting action download info
+Lint	Set up job	2026-07-03T21:05:12.3588200Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+Lint	Set up job	2026-07-03T21:05:12.5947909Z Download action repository 'oven-sh/setup-bun@v2' (SHA:0c5077e51419868618aeaa5fe8019c62421857d6)
+Lint	Set up job	2026-07-03T21:05:12.9217166Z Complete job name: Lint
+Lint	Run actions/checkout@v4	﻿2026-07-03T21:05:12.9963187Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9972358Z ##[group]Run actions/checkout@v4
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9973114Z with:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9973562Z   repository: danny-dis/dmr-X
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9977546Z   token: ***
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9977983Z   ssh-strict: true
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9978424Z   ssh-user: git
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9978880Z   persist-credentials: true
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9979372Z   clean: true
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9979819Z   sparse-checkout-cone-mode: true
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9980352Z   fetch-depth: 1
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9980791Z   fetch-tags: false
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9981244Z   show-progress: true
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9981948Z   lfs: false
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9982395Z   submodules: false
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9982896Z   set-safe-directory: true
+Lint	Run actions/checkout@v4	2026-07-03T21:05:12.9983695Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1053604Z Syncing repository: danny-dis/dmr-X
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1056226Z ##[group]Getting Git version info
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1057270Z Working directory is '/home/runner/work/dmr-X/dmr-X'
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1058767Z [command]/usr/bin/git version
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1133605Z git version 2.54.0
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1192043Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1212246Z Temporarily overriding HOME='/home/runner/work/_temp/f7a81286-0328-4a58-9077-bc0723e786cf' before making global git config changes
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1215411Z Adding repository directory to the temporary git global config as a safe directory
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1221945Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dmr-X/dmr-X
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1283587Z Deleting the contents of '/home/runner/work/dmr-X/dmr-X'
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1289022Z ##[group]Initializing the repository
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1295451Z [command]/usr/bin/git init /home/runner/work/dmr-X/dmr-X
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1453306Z hint: Using 'master' as the name for the initial branch. This default branch name
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1455314Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1457118Z hint: to use in all of your new repositories, which will suppress this warning,
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1458486Z hint: call:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1459331Z hint:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1460401Z hint: 	git config --global init.defaultBranch <name>
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1461895Z hint:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1463142Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1464926Z hint: 'development'. The just-created branch can be renamed via this command:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1466359Z hint:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1467183Z hint: 	git branch -m <name>
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1468202Z hint:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1469560Z hint: Disable this message with "git config set advice.defaultBranchName false"
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1472069Z Initialized empty Git repository in /home/runner/work/dmr-X/dmr-X/.git/
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1483121Z [command]/usr/bin/git remote add origin https://github.com/danny-dis/dmr-X
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1555958Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1557524Z ##[group]Disabling automatic garbage collection
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1559008Z [command]/usr/bin/git config --local gc.auto 0
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1604086Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1605352Z ##[group]Setting up auth
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1606520Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.1639612Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2010328Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2047718Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2297093Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2334043Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2560846Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2600691Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2602289Z ##[group]Fetching the repository
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.2610857Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +b1d966c1f782a2641d1a636db86e95cec3b218ad:refs/remotes/origin/main
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7097658Z From https://github.com/danny-dis/dmr-X
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7099804Z  * [new ref]         b1d966c1f782a2641d1a636db86e95cec3b218ad -> origin/main
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7143951Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7145482Z ##[group]Determining the checkout info
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7146988Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7148089Z [command]/usr/bin/git sparse-checkout disable
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7202123Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7239366Z ##[group]Checking out the ref
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7245527Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7817946Z Switched to a new branch 'main'
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7821814Z branch 'main' set up to track 'origin/main'.
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7827484Z ##[endgroup]
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7877814Z [command]/usr/bin/git log -1 --format=%H
+Lint	Run actions/checkout@v4	2026-07-03T21:05:13.7906054Z b1d966c1f782a2641d1a636db86e95cec3b218ad
+Lint	Run oven-sh/setup-bun@v2	﻿2026-07-03T21:05:13.8248323Z ##[group]Run oven-sh/setup-bun@v2
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:13.8249585Z with:
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:13.8250489Z   bun-version: 1.3.14
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:13.8251494Z   no-cache: false
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:13.8261135Z   token: ***
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:13.8262453Z ##[endgroup]
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.0674548Z Cache hit for: bun-fR4r1tsFeXfPQkusQwkKD2kGnsE=
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.4184934Z Received 33843768 of 33843768 (100.0%), 110.5 MBs/sec
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.4185862Z Cache Size: ~32 MB (33843768 B)
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.4221187Z [command]/usr/bin/tar -xf /home/runner/work/_temp/27cc3690-4961-4db8-9143-073190e0ab4d/cache.tzst -P -C /home/runner/work/dmr-X/dmr-X --use-compress-program unzstd
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.5816006Z Cache restored successfully
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.5838223Z [command]/home/runner/.bun/bin/bun --revision
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.5886811Z 1.3.14+0d9b296af
+Lint	Run oven-sh/setup-bun@v2	2026-07-03T21:05:14.5900499Z Using a cached version of Bun: 1.3.14+0d9b296af
+Lint	Install dependencies	﻿2026-07-03T21:05:14.6042939Z ##[group]Run bun install --frozen-lockfile
+Lint	Install dependencies	2026-07-03T21:05:14.6043466Z ^[[36;1mbun install --frozen-lockfile^[[0m
+Lint	Install dependencies	2026-07-03T21:05:14.6249482Z shell: /usr/bin/bash -e {0}
+Lint	Install dependencies	2026-07-03T21:05:14.6249868Z ##[endgroup]
+Lint	Install dependencies	2026-07-03T21:05:14.6350794Z bun install v1.3.14 (0d9b296a)
+Lint	Install dependencies	2026-07-03T21:05:16.7357616Z 
+Lint	Install dependencies	2026-07-03T21:05:16.7358528Z + @eslint/js@9.39.4
+Lint	Install dependencies	2026-07-03T21:05:16.7359454Z + @modelcontextprotocol/sdk@1.29.0
+Lint	Install dependencies	2026-07-03T21:05:16.7360288Z + @opentelemetry/api@1.9.0
+Lint	Install dependencies	2026-07-03T21:05:16.7361080Z + @opentelemetry/sdk-trace-base@2.7.1
+Lint	Install dependencies	2026-07-03T21:05:16.7362000Z + @types/inquirer@9.0.9
+Lint	Install dependencies	2026-07-03T21:05:16.7362514Z + @types/node@22.20.0
+Lint	Install dependencies	2026-07-03T21:05:16.7362988Z + eslint@9.39.4
+Lint	Install dependencies	2026-07-03T21:05:16.7363417Z + eslint-plugin-react-hooks@5.2.0
+Lint	Install dependencies	2026-07-03T21:05:16.7363876Z + globals@15.15.0
+Lint	Install dependencies	2026-07-03T21:05:16.7364308Z + turbo@2.10.1
+Lint	Install dependencies	2026-07-03T21:05:16.7364737Z + typescript@5.9.3
+Lint	Install dependencies	2026-07-03T21:05:16.7365175Z + typescript-eslint@8.62.1
+Lint	Install dependencies	2026-07-03T21:05:16.7365676Z + vite@6.4.3
+Lint	Install dependencies	2026-07-03T21:05:16.7366079Z + vitest@3.2.6
+Lint	Install dependencies	2026-07-03T21:05:16.7366706Z + @opentelemetry/context-async-hooks@2.7.1
+Lint	Install dependencies	2026-07-03T21:05:16.7367096Z 
+Lint	Install dependencies	2026-07-03T21:05:16.7367319Z 1494 packages installed [2.10s]
+Lint	Run ESLint	﻿2026-07-03T21:05:16.7566972Z ##[group]Run bun run lint
+Lint	Run ESLint	2026-07-03T21:05:16.7567280Z ^[[36;1mbun run lint^[[0m
+Lint	Run ESLint	2026-07-03T21:05:16.7600997Z shell: /usr/bin/bash -e {0}
+Lint	Run ESLint	2026-07-03T21:05:16.7601267Z ##[endgroup]
+Lint	Run ESLint	2026-07-03T21:05:16.7675132Z $ bunx eslint .
+Lint	Run ESLint	2026-07-03T21:05:17.1710528Z 
+Lint	Run ESLint	2026-07-03T21:05:17.1711156Z Oops! Something went wrong! :(
+Lint	Run ESLint	2026-07-03T21:05:17.1711786Z 
+Lint	Run ESLint	2026-07-03T21:05:17.1711949Z ESLint: 9.39.4
+Lint	Run ESLint	2026-07-03T21:05:17.1712193Z 
+Lint	Run ESLint	2026-07-03T21:05:17.1712481Z ESLint couldn't find an eslint.config.(js|mjs|cjs) file.
+Lint	Run ESLint	2026-07-03T21:05:17.1713023Z 
+Lint	Run ESLint	2026-07-03T21:05:17.1713446Z From ESLint v9.0.0, the default configuration file is now eslint.config.js.
+Lint	Run ESLint	2026-07-03T21:05:17.1714375Z If you are using a .eslintrc.* file, please follow the migration guide
+Lint	Run ESLint	2026-07-03T21:05:17.1715185Z to update your configuration file to the new format:
+Lint	Run ESLint	2026-07-03T21:05:17.1715661Z 
+Lint	Run ESLint	2026-07-03T21:05:17.1716075Z https://eslint.org/docs/latest/use/configure/migration-guide
+Lint	Run ESLint	2026-07-03T21:05:17.1716659Z 
+Lint	Run ESLint	2026-07-03T21:05:17.1717090Z If you still have problems after following the migration guide, please stop by
+Lint	Run ESLint	2026-07-03T21:05:17.1718081Z https://eslint.org/chat/help to chat with the team.
+Lint	Run ESLint	2026-07-03T21:05:17.1718585Z 
+Lint	Run ESLint	2026-07-03T21:05:17.1917290Z ##[error]Process completed with exit code 2.
+Lint	Post Run actions/checkout@v4	﻿2026-07-03T21:05:17.2060216Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.2061494Z Post job cleanup.
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.2881447Z [command]/usr/bin/git version
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.2923713Z git version 2.54.0
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.2996690Z Temporarily overriding HOME='/home/runner/work/_temp/a89aa96d-4c4e-48b4-a1c1-4cd9d8dcc3f9' before making global git config changes
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.2998443Z Adding repository directory to the temporary git global config as a safe directory
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3003044Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dmr-X/dmr-X
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3051789Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3094113Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3345820Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3374603Z http.https://github.com/.extraheader
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3385887Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3442344Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3696423Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Lint	Post Run actions/checkout@v4	2026-07-03T21:05:17.3736416Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Lint	Complete job	﻿2026-07-03T21:05:17.4127997Z Cleaning up orphan processes
+Lint	Complete job	2026-07-03T21:05:17.4436405Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

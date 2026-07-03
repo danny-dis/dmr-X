@@ -1,0 +1,541 @@
+﻿E2E (build, smoke)	Set up job	﻿2026-07-03T21:06:13.8877649Z Current runner version: '2.335.1'
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8901668Z ##[group]Runner Image Provisioner
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8902713Z Hosted Compute Agent
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8903264Z Version: 20260624.560
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8903860Z Commit: 925d229a51159bc391ae97e54a2dd1fe20af789d
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8904535Z Build Date: 2026-06-24T18:26:47Z
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8905162Z Worker ID: {067e8a88-6eec-47bd-a72c-0f300255918d}
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8905811Z Azure Region: westus3
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8906340Z ##[endgroup]
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8907661Z ##[group]Operating System
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8908266Z Ubuntu
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8908728Z 24.04.4
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8909184Z LTS
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8909665Z ##[endgroup]
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8910150Z ##[group]Runner Image
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8910850Z Image: ubuntu-24.04
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8911361Z Version: 20260628.225.1
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8912287Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260628.225/images/ubuntu/Ubuntu2404-Readme.md
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8913831Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260628.225
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8914662Z ##[endgroup]
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8915761Z ##[group]GITHUB_TOKEN Permissions
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8918063Z Contents: read
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8918665Z Metadata: read
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8919168Z PullRequests: read
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8919698Z ##[endgroup]
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8921809Z Secret source: Actions
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.8922697Z Prepare workflow directory
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.9276641Z Prepare all required actions
+E2E (build, smoke)	Set up job	2026-07-03T21:06:13.9325357Z Getting action download info
+E2E (build, smoke)	Set up job	2026-07-03T21:06:14.2447966Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+E2E (build, smoke)	Set up job	2026-07-03T21:06:14.4920291Z Download action repository 'oven-sh/setup-bun@v2' (SHA:0c5077e51419868618aeaa5fe8019c62421857d6)
+E2E (build, smoke)	Set up job	2026-07-03T21:06:15.3130028Z Complete job name: E2E (build, smoke)
+E2E (build, smoke)	Run actions/checkout@v4	﻿2026-07-03T21:06:15.3831742Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3841016Z ##[group]Run actions/checkout@v4
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3841981Z with:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3842647Z   repository: danny-dis/dmr-X
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3846544Z   token: ***
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3847110Z   ssh-strict: true
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3847708Z   ssh-user: git
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3848280Z   persist-credentials: true
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3848907Z   clean: true
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3849461Z   sparse-checkout-cone-mode: true
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3850218Z   fetch-depth: 1
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3851107Z   fetch-tags: false
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3851682Z   show-progress: true
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3852259Z   lfs: false
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3852826Z   submodules: false
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3853533Z   set-safe-directory: true
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.3854542Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.4899500Z Syncing repository: danny-dis/dmr-X
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.4901693Z ##[group]Getting Git version info
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.4902560Z Working directory is '/home/runner/work/dmr-X/dmr-X'
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.4903617Z [command]/usr/bin/git version
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.5773103Z git version 2.54.0
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.5793119Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.5808204Z Temporarily overriding HOME='/home/runner/work/_temp/e3612381-5b53-4fd9-a401-547528e0883c' before making global git config changes
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.5811194Z Adding repository directory to the temporary git global config as a safe directory
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.5814527Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dmr-X/dmr-X
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.5995949Z Deleting the contents of '/home/runner/work/dmr-X/dmr-X'
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6001255Z ##[group]Initializing the repository
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6005658Z [command]/usr/bin/git init /home/runner/work/dmr-X/dmr-X
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6368105Z hint: Using 'master' as the name for the initial branch. This default branch name
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6369234Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6370225Z hint: to use in all of your new repositories, which will suppress this warning,
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6371290Z hint: call:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6372048Z hint:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6372607Z hint: 	git config --global init.defaultBranch <name>
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6373766Z hint:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6374421Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6375412Z hint: 'development'. The just-created branch can be renamed via this command:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6376327Z hint:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6377212Z hint: 	git branch -m <name>
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6378125Z hint:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6379108Z hint: Disable this message with "git config set advice.defaultBranchName false"
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6380208Z Initialized empty Git repository in /home/runner/work/dmr-X/dmr-X/.git/
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6383865Z [command]/usr/bin/git remote add origin https://github.com/danny-dis/dmr-X
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6565344Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6566230Z ##[group]Disabling automatic garbage collection
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6568911Z [command]/usr/bin/git config --local gc.auto 0
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6594818Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6595677Z ##[group]Setting up auth
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6601431Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.6631421Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8353642Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8385730Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8558447Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8606661Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8778192Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8807853Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8809780Z ##[group]Fetching the repository
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:15.8819109Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +b1d966c1f782a2641d1a636db86e95cec3b218ad:refs/remotes/origin/main
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1111296Z From https://github.com/danny-dis/dmr-X
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1112885Z  * [new ref]         b1d966c1f782a2641d1a636db86e95cec3b218ad -> origin/main
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1249168Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1250044Z ##[group]Determining the checkout info
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1251694Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1257670Z [command]/usr/bin/git sparse-checkout disable
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1337664Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1360116Z ##[group]Checking out the ref
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1364425Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1810849Z Switched to a new branch 'main'
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1811613Z branch 'main' set up to track 'origin/main'.
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1817149Z ##[endgroup]
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1861403Z [command]/usr/bin/git log -1 --format=%H
+E2E (build, smoke)	Run actions/checkout@v4	2026-07-03T21:06:17.1882337Z b1d966c1f782a2641d1a636db86e95cec3b218ad
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	﻿2026-07-03T21:06:17.2109503Z ##[group]Run oven-sh/setup-bun@v2
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:17.2109893Z with:
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:17.2110141Z   bun-version: 1.3.14
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:17.2110405Z   no-cache: false
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:17.2113075Z   token: ***
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:17.2113538Z ##[endgroup]
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:17.6140211Z Cache hit for: bun-fR4r1tsFeXfPQkusQwkKD2kGnsE=
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:18.8749525Z Received 17066552 of 33843768 (50.4%), 16.3 MBs/sec
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:19.0490658Z Received 33843768 of 33843768 (100.0%), 27.5 MBs/sec
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:19.0491511Z Cache Size: ~32 MB (33843768 B)
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:19.0519960Z [command]/usr/bin/tar -xf /home/runner/work/_temp/b46d930b-cd6c-4179-8fb4-682bf8c1abfc/cache.tzst -P -C /home/runner/work/dmr-X/dmr-X --use-compress-program unzstd
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:19.2043391Z Cache restored successfully
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:19.2062498Z [command]/home/runner/.bun/bin/bun --revision
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:19.2098809Z 1.3.14+0d9b296af
+E2E (build, smoke)	Run oven-sh/setup-bun@v2	2026-07-03T21:06:19.2105426Z Using a cached version of Bun: 1.3.14+0d9b296af
+E2E (build, smoke)	Install dependencies	﻿2026-07-03T21:06:19.2201865Z ##[group]Run bun install --frozen-lockfile
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:19.2202542Z ^[[36;1mbun install --frozen-lockfile^[[0m
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:19.3486562Z shell: /usr/bin/bash -e {0}
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:19.3486970Z ##[endgroup]
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:19.3582682Z bun install v1.3.14 (0d9b296a)
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1371706Z 
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1372399Z + @eslint/js@9.39.4
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1372840Z + @modelcontextprotocol/sdk@1.29.0
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1373316Z + @opentelemetry/api@1.9.0
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1373762Z + @opentelemetry/sdk-trace-base@2.7.1
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1374151Z + @types/inquirer@9.0.9
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1374363Z + @types/node@22.20.0
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1374573Z + eslint@9.39.4
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1374789Z + eslint-plugin-react-hooks@5.2.0
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1375034Z + globals@15.15.0
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1375228Z + turbo@2.10.1
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1375415Z + typescript@5.9.3
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1375622Z + typescript-eslint@8.62.1
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1375835Z + vite@6.4.3
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1376016Z + vitest@3.2.6
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1376310Z + @opentelemetry/context-async-hooks@2.7.1
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1376494Z 
+E2E (build, smoke)	Install dependencies	2026-07-03T21:06:21.1376593Z 1494 packages installed [1.78s]
+E2E (build, smoke)	Build	﻿2026-07-03T21:06:21.1465446Z ##[group]Run bun run build
+E2E (build, smoke)	Build	2026-07-03T21:06:21.1465943Z ^[[36;1mbun run build^[[0m
+E2E (build, smoke)	Build	2026-07-03T21:06:21.1495051Z shell: /usr/bin/bash -e {0}
+E2E (build, smoke)	Build	2026-07-03T21:06:21.1495523Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:21.1581304Z $ turbo build
+E2E (build, smoke)	Build	2026-07-03T21:06:22.8207223Z 
+E2E (build, smoke)	Build	2026-07-03T21:06:22.8207991Z Attention:
+E2E (build, smoke)	Build	2026-07-03T21:06:22.8209377Z Turborepo now collects completely anonymous telemetry regarding usage.
+E2E (build, smoke)	Build	2026-07-03T21:06:22.8210522Z This information is used to shape the Turborepo roadmap and prioritize features.
+E2E (build, smoke)	Build	2026-07-03T21:06:22.8212269Z You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+E2E (build, smoke)	Build	2026-07-03T21:06:22.8213809Z https://turborepo.dev/docs/telemetry
+E2E (build, smoke)	Build	2026-07-03T21:06:22.8214304Z 
+E2E (build, smoke)	Build	2026-07-03T21:06:22.9113675Z 
+E2E (build, smoke)	Build	2026-07-03T21:06:22.9136871Z    • Packages in scope: @dmr-x/adapters, @dmr-x/agent-registry, @dmr-x/agent-runtime, @dmr-x/benchmark, @dmr-x/billing, @dmr-x/cache, @dmr-x/cli, @dmr-x/core, @dmr-x/db, @dmr-x/federation, @dmr-x/gateway, @dmr-x/godmode, @dmr-x/mcp-client, @dmr-x/mcp-server, @dmr-x/memory, @dmr-x/oauth, @dmr-x/operator, @dmr-x/plugin-loader, @dmr-x/plugin-loader-bootstrap, @dmr-x/policy, @dmr-x/prompts, @dmr-x/provider-catalog, @dmr-x/quota, @dmr-x/registry, @dmr-x/router, @dmr-x/sandbox, @dmr-x/secrets, @dmr-x/telemetry, @dmr-x/tokenizers, @dmr-x/tool-search, @dmr-x/ui, @dmr-x/utils, @dmr-x/workers
+E2E (build, smoke)	Build	2026-07-03T21:06:22.9141541Z    • Running build in 33 packages
+E2E (build, smoke)	Build	2026-07-03T21:06:22.9142100Z    • Remote caching disabled
+E2E (build, smoke)	Build	2026-07-03T21:06:22.9142413Z 
+E2E (build, smoke)	Build	2026-07-03T21:06:25.7292986Z ##[group]@dmr-x/plugin-loader:build
+E2E (build, smoke)	Build	2026-07-03T21:06:25.7321826Z cache miss, executing 0793571309c205d5
+E2E (build, smoke)	Build	2026-07-03T21:06:25.7336183Z $ bunx tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:25.7391594Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:26.3022300Z ##[group]@dmr-x/core:build
+E2E (build, smoke)	Build	2026-07-03T21:06:26.3051660Z cache miss, executing 0c6ddfd9a1386aec
+E2E (build, smoke)	Build	2026-07-03T21:06:26.3111493Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:26.3125114Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:26.4630237Z ##[group]@dmr-x/provider-catalog:build
+E2E (build, smoke)	Build	2026-07-03T21:06:26.4632903Z cache miss, executing 9ca5ee027a7ea22c
+E2E (build, smoke)	Build	2026-07-03T21:06:26.4633580Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:26.4634392Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:27.6250908Z ##[group]@dmr-x/utils:build
+E2E (build, smoke)	Build	2026-07-03T21:06:27.6253041Z cache miss, executing 9ad84112aa970878
+E2E (build, smoke)	Build	2026-07-03T21:06:27.6253741Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:27.6254473Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:31.7052166Z ##[group]@dmr-x/prompts:build
+E2E (build, smoke)	Build	2026-07-03T21:06:31.7052709Z cache miss, executing 94e764a9b5aebde0
+E2E (build, smoke)	Build	2026-07-03T21:06:31.7053160Z $ tsc
+E2E (build, smoke)	Build	2026-07-03T21:06:31.7053750Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:32.2302279Z ##[group]@dmr-x/godmode:build
+E2E (build, smoke)	Build	2026-07-03T21:06:32.2331566Z cache miss, executing 4cb7c44b59064f38
+E2E (build, smoke)	Build	2026-07-03T21:06:32.2351465Z $ tsc
+E2E (build, smoke)	Build	2026-07-03T21:06:32.2433876Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3632206Z ##[group]@dmr-x/tokenizers:build
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3633207Z cache miss, executing 541fed5b98ebd90e
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3638390Z $ tsc
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3639261Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3834131Z ##[group]@dmr-x/tool-search:build
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3891766Z cache miss, executing 512eb97addcdb1d7
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3931621Z $ bunx tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:32.3961815Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:32.8192347Z ##[group]@dmr-x/db:build
+E2E (build, smoke)	Build	2026-07-03T21:06:32.8240905Z cache miss, executing 2b40276f8b135260
+E2E (build, smoke)	Build	2026-07-03T21:06:32.8251653Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:32.8252342Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:32.9071996Z ##[group]@dmr-x/cli:build
+E2E (build, smoke)	Build	2026-07-03T21:06:32.9091671Z cache miss, executing 3857f8c1168a439b
+E2E (build, smoke)	Build	2026-07-03T21:06:32.9095797Z $ tsc
+E2E (build, smoke)	Build	2026-07-03T21:06:32.9161858Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:38.8922195Z ##[group]@dmr-x/federation:build
+E2E (build, smoke)	Build	2026-07-03T21:06:38.9061853Z cache miss, executing 7276039cca70f0ff
+E2E (build, smoke)	Build	2026-07-03T21:06:38.9102734Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:38.9181854Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:38.9214161Z ##[group]@dmr-x/secrets:build
+E2E (build, smoke)	Build	2026-07-03T21:06:38.9308788Z cache miss, executing fcc88dcb0a1a4b51
+E2E (build, smoke)	Build	2026-07-03T21:06:38.9361222Z $ tsc
+E2E (build, smoke)	Build	2026-07-03T21:06:38.9391872Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:39.2542066Z ##[group]@dmr-x/sandbox:build
+E2E (build, smoke)	Build	2026-07-03T21:06:39.2701563Z cache miss, executing 3f2b46f184ae9bcd
+E2E (build, smoke)	Build	2026-07-03T21:06:39.2861712Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3002107Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3322555Z ##[group]@dmr-x/billing:build
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3451969Z cache miss, executing 35234258c718cbad
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3477857Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3538533Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3638892Z ##[group]@dmr-x/workers:build
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3756631Z cache miss, executing ed469190e06e3526
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3781379Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:39.3844845Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:39.6405233Z ##[group]@dmr-x/memory:build
+E2E (build, smoke)	Build	2026-07-03T21:06:39.6491635Z cache miss, executing a79e32dfed0fb24c
+E2E (build, smoke)	Build	2026-07-03T21:06:39.6541742Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:39.6573484Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:40.4329557Z ##[group]@dmr-x/telemetry:build
+E2E (build, smoke)	Build	2026-07-03T21:06:40.4431140Z cache miss, executing edb48e406680fbc6
+E2E (build, smoke)	Build	2026-07-03T21:06:40.4511639Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:40.4546175Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:41.9523349Z ##[group]@dmr-x/agent-registry:build
+E2E (build, smoke)	Build	2026-07-03T21:06:41.9552223Z cache miss, executing b20b38eb0e6c285e
+E2E (build, smoke)	Build	2026-07-03T21:06:41.9553204Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:41.9554052Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:42.8725354Z ##[group]@dmr-x/quota:build
+E2E (build, smoke)	Build	2026-07-03T21:06:42.8778941Z cache miss, executing aca861ace209911b
+E2E (build, smoke)	Build	2026-07-03T21:06:42.8803479Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:42.8853801Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:43.5551312Z ##[group]@dmr-x/cache:build
+E2E (build, smoke)	Build	2026-07-03T21:06:43.5552292Z cache miss, executing a1c3761d5bb1f994
+E2E (build, smoke)	Build	2026-07-03T21:06:43.5553016Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:43.5636384Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:44.6642231Z ##[group]@dmr-x/agent-runtime:build
+E2E (build, smoke)	Build	2026-07-03T21:06:44.6659414Z cache miss, executing f7d1746e8bf63d27
+E2E (build, smoke)	Build	2026-07-03T21:06:44.6691447Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:44.6713749Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:46.3373718Z ##[group]@dmr-x/adapters:build
+E2E (build, smoke)	Build	2026-07-03T21:06:46.3374224Z cache miss, executing cd6a674f2467a30a
+E2E (build, smoke)	Build	2026-07-03T21:06:46.3374746Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:46.3375455Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4712163Z ##[group]@dmr-x/ui:build
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4757522Z cache miss, executing 739ee741f40261c3
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4781429Z $ bunx vite build
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4805519Z ^[[36mvite v6.4.3 ^[[32mbuilding for production...^[[36m^[[39m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4821441Z transforming...
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4852193Z ^[[32m✓^[[39m 2854 modules transformed.
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4861379Z rendering chunks...
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4886328Z computing gzip size...
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4887708Z ^[[2m../gateway/public/^[[22m^[[32mindex.html                                   ^[[39m^[[1m^[[2m  1.68 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.81 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4889383Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[35mindex-BpDGCA7e.css                    ^[[39m^[[1m^[[2m 49.39 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  10.04 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4891385Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mindex-BdQq_4o_.js                     ^[[39m^[[1m^[[2m  0.06 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.08 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4893157Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mindex-qMiCVVpV.js                     ^[[39m^[[1m^[[2m  0.23 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.17 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4895069Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mPageContainer-CrHR5Tbs.js             ^[[39m^[[1m^[[2m  0.29 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.23 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4897008Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mcheck-CPumbbwP.js                     ^[[39m^[[1m^[[2m  0.30 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.25 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4898803Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mBackLink-BECZ9uOJ.js                  ^[[39m^[[1m^[[2m  0.30 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.24 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4900609Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mplus-BKIbhHi2.js                      ^[[39m^[[1m^[[2m  0.33 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.26 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4902545Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mcode-dz5EenL3.js                      ^[[39m^[[1m^[[2m  0.34 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.26 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4904738Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36marrow-right-CGScDdMF.js               ^[[39m^[[1m^[[2m  0.34 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.27 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4906490Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mclock-k9WS_SJU.js                     ^[[39m^[[1m^[[2m  0.34 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.28 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4908156Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mtrending-up-4EXmfhLG.js               ^[[39m^[[1m^[[2m  0.35 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.28 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4909890Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mgauge-BYHXGxti.js                     ^[[39m^[[1m^[[2m  0.35 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.28 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4911759Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mplay-DKu6X2jf.js                      ^[[39m^[[1m^[[2m  0.36 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.29 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4913727Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mrotate-ccw-BDQt6Zk7.js                ^[[39m^[[1m^[[2m  0.37 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.29 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4915478Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mlock-BaB76GFG.js                      ^[[39m^[[1m^[[2m  0.38 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4917288Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mcredit-card-D-9wWC2D.js               ^[[39m^[[1m^[[2m  0.38 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4919101Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mcircle-x-kJ2z_sep.js                  ^[[39m^[[1m^[[2m  0.38 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.29 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4921046Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mdollar-sign-DR9YNgzL.js               ^[[39m^[[1m^[[2m  0.39 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4923003Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mellipsis-KeNh0nLm.js                  ^[[39m^[[1m^[[2m  0.40 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.27 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4924832Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mdownload-DQnGjJ-O.js                  ^[[39m^[[1m^[[2m  0.41 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4926907Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mcopy-CoipN5ww.js                      ^[[39m^[[1m^[[2m  0.41 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.31 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4928688Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mglobe-Z_E1_bE2.js                     ^[[39m^[[1m^[[2m  0.42 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4930509Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36marrow-up-down-C9Xrwugw.js             ^[[39m^[[1m^[[2m  0.42 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4932608Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mchart-column-6hbxTJpt.js              ^[[39m^[[1m^[[2m  0.42 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4934574Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mfunnel-78RZ2Tw7.js                    ^[[39m^[[1m^[[2m  0.43 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.32 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4936395Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36meye-Bbs-axzZ.js                       ^[[39m^[[1m^[[2m  0.43 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.31 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4938067Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mcalendar-DjbQiztR.js                  ^[[39m^[[1m^[[2m  0.43 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.31 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4939721Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mzap-BxdIqaBR.js                       ^[[39m^[[1m^[[2m  0.44 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.31 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4941512Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mkey-C542cZL4.js                       ^[[39m^[[1m^[[2m  0.44 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.32 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4943333Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mshield-Cq7X85bR.js                    ^[[39m^[[1m^[[2m  0.45 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.33 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4945109Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mcoins-BVMWS_xU.js                     ^[[39m^[[1m^[[2m  0.45 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.33 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4946982Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mwifi-C-2hYZoS.js                      ^[[39m^[[1m^[[2m  0.45 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.31 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4948663Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mbell-DuRvSNne.js                      ^[[39m^[[1m^[[2m  0.46 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.34 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4950373Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mhash-BrwxBrnw.js                      ^[[39m^[[1m^[[2m  0.47 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4952208Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mwrench-Cyz2hCXn.js                    ^[[39m^[[1m^[[2m  0.48 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.35 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4953992Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mtag-DOQ-lj_a.js                       ^[[39m^[[1m^[[2m  0.50 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.35 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4955953Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36msave-Dkf8evPM.js                      ^[[39m^[[1m^[[2m  0.50 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.33 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4957608Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mtrash-2-D7jde3c-.js                   ^[[39m^[[1m^[[2m  0.50 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.32 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4959261Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mbot-CncMjw-0.js                       ^[[39m^[[1m^[[2m  0.50 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.33 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4961098Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mserver-d8BxQQFV.js                    ^[[39m^[[1m^[[2m  0.51 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.32 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4962857Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mwebhook-CH7xhdLd.js                   ^[[39m^[[1m^[[2m  0.53 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.38 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4964802Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mshield-alert-B20hHN4l.js              ^[[39m^[[1m^[[2m  0.53 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.37 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4966570Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mkey-round-BZzCP3vL.js                 ^[[39m^[[1m^[[2m  0.53 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.36 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4968611Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mnetwork-DXRnL0Pz.js                   ^[[39m^[[1m^[[2m  0.56 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.34 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4970324Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mfile-text-DpwMBjlO.js                 ^[[39m^[[1m^[[2m  0.56 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.35 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4972219Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mCopyButton-Ddom1_Ln.js                ^[[39m^[[1m^[[2m  0.56 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.39 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4973947Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mhammer-DIpnjFmV.js                    ^[[39m^[[1m^[[2m  0.57 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.39 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4975864Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTextarea-u7kf8k50.js                  ^[[39m^[[1m^[[2m  0.60 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.41 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4977577Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36meye-off-CvtbnVS7.js                   ^[[39m^[[1m^[[2m  0.60 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.38 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4979236Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mstar-DtqIQNEF.js                      ^[[39m^[[1m^[[2m  0.65 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.41 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4981039Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mtrophy-D5jXAgf6.js                    ^[[39m^[[1m^[[2m  0.65 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.38 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4982887Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36msparkles-DqJZhMnX.js                  ^[[39m^[[1m^[[2m  0.67 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.39 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4984630Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mbrain-BuYYsLnl.js                     ^[[39m^[[1m^[[2m  0.75 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.42 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4986380Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36museUrlState-BXiYc4Nk.js               ^[[39m^[[1m^[[2m  0.77 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.48 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4988565Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mField-DD3Z9v_T.js                     ^[[39m^[[1m^[[2m  0.86 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.41 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4990311Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mInput-BzDoQByB.js                     ^[[39m^[[1m^[[2m  0.94 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.54 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4992386Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mEmptyState-B1YEZbXY.js                ^[[39m^[[1m^[[2m  1.10 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.50 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4994343Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mCode-BrY1M8_r.js                      ^[[39m^[[1m^[[2m  1.18 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.64 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4996052Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mBadge-DBEH9mh3.js                     ^[[39m^[[1m^[[2m  1.20 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.60 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4997775Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mindex-Dkz9sA6g.js                     ^[[39m^[[1m^[[2m  1.27 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.64 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.4999778Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mPageHeader-B5GBwQcF.js                ^[[39m^[[1m^[[2m  1.28 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.60 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5001743Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mNotFound-DRdTP84Y.js                  ^[[39m^[[1m^[[2m  1.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.72 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5003449Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mformatters-Cs8Zq40N.js                ^[[39m^[[1m^[[2m  1.47 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.64 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5005180Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mCard-U64XxmkM.js                      ^[[39m^[[1m^[[2m  1.62 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.68 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5006928Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mStatusPill-DYzXPFtV.js                ^[[39m^[[1m^[[2m  1.70 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.79 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5009016Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTelemetryEventRow-D66dQGCV.js         ^[[39m^[[1m^[[2m  1.91 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.93 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5011147Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mBarSeriesChart-DskTBSyf.js            ^[[39m^[[1m^[[2m  2.23 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.03 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5013013Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mSwitch-CeAjtOcp.js                    ^[[39m^[[1m^[[2m  2.41 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.24 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5014756Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mDrawer-2nC-8e97.js                    ^[[39m^[[1m^[[2m  2.51 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   0.96 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5016586Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mPagination-87SDWBo9.js                ^[[39m^[[1m^[[2m  2.79 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.12 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5018421Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mStatTile-BzOv2iZw.js                  ^[[39m^[[1m^[[2m  2.89 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.15 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5020343Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTopologyGraph-xeR3OHCu.js             ^[[39m^[[1m^[[2m  3.02 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.49 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5022657Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mBilling-D9RmgH92.js                   ^[[39m^[[1m^[[2m  3.44 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.32 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5024536Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mAgentAnalytics-D48wt8mT.js            ^[[39m^[[1m^[[2m  3.68 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.42 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5026430Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mInfrastructure-BSyRt3ZL.js            ^[[39m^[[1m^[[2m  3.70 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.43 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5028270Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mProgress-Dslu-DxI.js                  ^[[39m^[[1m^[[2m  3.82 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.75 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5030133Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mSettingsTabs-BPBT3kO6.js              ^[[39m^[[1m^[[2m  3.87 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.49 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5032321Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mMarketplace--UK36Lq3.js               ^[[39m^[[1m^[[2m  4.53 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.91 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5034153Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mAgentIntegrations-kYsQXTOa.js         ^[[39m^[[1m^[[2m  4.84 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   1.79 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5035924Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mRouting-CjFUQVDR.js                   ^[[39m^[[1m^[[2m  5.60 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.30 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5037750Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mRequests-2mtuvjin.js                  ^[[39m^[[1m^[[2m  5.72 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.54 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5039556Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mSandbox-Dg7Ba7D7.js                   ^[[39m^[[1m^[[2m  5.94 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.33 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5041403Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mFederation-Dx9hj6VS.js                ^[[39m^[[1m^[[2m  6.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.20 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5043219Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mCompression-Dha2Y7To.js               ^[[39m^[[1m^[[2m  6.59 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.45 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5045060Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mAgents-16ULtddW.js                    ^[[39m^[[1m^[[2m  6.59 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.26 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5046820Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mIntelligenceLayer-BqQGLZAu.js         ^[[39m^[[1m^[[2m  7.09 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.58 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5048735Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTabs-Ce7pw3y2.js                      ^[[39m^[[1m^[[2m  7.12 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.80 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5050307Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mCredits-_J0lZ4Xc.js                   ^[[39m^[[1m^[[2m  7.21 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.43 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5052084Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mConnect-C7Inyc8x.js                   ^[[39m^[[1m^[[2m  7.69 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.34 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5053435Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mObservability-BLMZsJiK.js             ^[[39m^[[1m^[[2m  8.12 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.84 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5054908Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mSlider-BOQIfqCF.js                    ^[[39m^[[1m^[[2m  8.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.38 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5056470Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTools-0dcgLLeJ.js                     ^[[39m^[[1m^[[2m  8.93 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.95 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5057427Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mWorkers-BZ4CwyPf.js                   ^[[39m^[[1m^[[2m  9.01 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   2.85 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5058245Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mQuota-CRncERms.js                     ^[[39m^[[1m^[[2m  9.09 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.06 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5059093Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mAntigravity-C8DMtfSZ.js               ^[[39m^[[1m^[[2m  9.28 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.21 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5059923Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mUsage-Bo4jMo4Q.js                     ^[[39m^[[1m^[[2m  9.44 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.09 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5060923Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mPolicies-Bb7si8Aq.js                  ^[[39m^[[1m^[[2m 10.46 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.49 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5061991Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mCodex-DBTW353k.js                     ^[[39m^[[1m^[[2m 11.89 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.94 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5062830Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTimeSeriesChart-CDkvuFsX.js           ^[[39m^[[1m^[[2m 12.37 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.65 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5063695Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mBenchmarks-CUUjal_m.js                ^[[39m^[[1m^[[2m 12.73 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   3.74 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5064684Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mMemory-5NFY0qiK.js                    ^[[39m^[[1m^[[2m 13.76 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   4.57 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5065539Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mClaudeCode-CcQJPzdG.js                ^[[39m^[[1m^[[2m 14.61 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.01 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5066383Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mDashboard-V8kUx1bp.js                 ^[[39m^[[1m^[[2m 15.67 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.01 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5067227Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTierBadge-qIEfxnMj.js                 ^[[39m^[[1m^[[2m 18.61 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.60 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5068066Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mSelect-gm1GTylv.js                    ^[[39m^[[1m^[[2m 20.25 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   7.18 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5068907Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mFreeTier-C4Qgk0E9.js                  ^[[39m^[[1m^[[2m 22.00 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   5.82 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5069746Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mModels-DhvBu7CA.js                    ^[[39m^[[1m^[[2m 22.77 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   6.69 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5070577Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mFusionPanel-mmQGE2Za.js               ^[[39m^[[1m^[[2m 24.29 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   6.43 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5073517Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mTenants-Btw_FCIm.js                   ^[[39m^[[1m^[[2m 24.57 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   6.90 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5074952Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mSettings-BgVE8kU8.js                  ^[[39m^[[1m^[[2m 26.57 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   6.44 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5075835Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mProviders-CFehbKQr.js                 ^[[39m^[[1m^[[2m 29.34 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   7.62 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5076859Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mMCP-Cmrw0NWX.js                       ^[[39m^[[1m^[[2m 47.31 kB^[[22m^[[1m^[[22m^[[2m │ gzip:   9.80 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5077692Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mPlayground-BYrDSQig.js                ^[[39m^[[1m^[[2m 67.56 kB^[[22m^[[1m^[[22m^[[2m │ gzip:  19.76 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5078590Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mgenerateCategoricalChart-DjQve8bM.js  ^[[39m^[[1m^[[2m381.99 kB^[[22m^[[1m^[[22m^[[2m │ gzip: 105.59 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5079473Z ^[[2m../gateway/public/^[[22m^[[2massets/^[[22m^[[36mindex-BHwj8GFM.js                     ^[[39m^[[1m^[[2m446.52 kB^[[22m^[[1m^[[22m^[[2m │ gzip: 143.48 kB^[[22m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5080022Z ^[[32m✓ built in 22.98s^[[39m
+E2E (build, smoke)	Build	2026-07-03T21:06:47.5080478Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:48.6108461Z ##[group]@dmr-x/registry:build
+E2E (build, smoke)	Build	2026-07-03T21:06:48.6109028Z cache miss, executing 39eedfd3a9c59efd
+E2E (build, smoke)	Build	2026-07-03T21:06:48.6109454Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:48.6110179Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:48.7944404Z ##[group]@dmr-x/mcp-client:build
+E2E (build, smoke)	Build	2026-07-03T21:06:48.7945470Z cache miss, executing dd040f6f5a3a056e
+E2E (build, smoke)	Build	2026-07-03T21:06:48.7946357Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:48.7947081Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:50.6724947Z ##[group]@dmr-x/oauth:build
+E2E (build, smoke)	Build	2026-07-03T21:06:50.6733838Z cache miss, executing 3a04cb1b0f4b8452
+E2E (build, smoke)	Build	2026-07-03T21:06:50.6734707Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:50.6735519Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7583611Z ##[group]@dmr-x/operator:build
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7584092Z cache miss, executing a884e1ab780cf596
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7584501Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7585073Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7647497Z ##[group]@dmr-x/policy:build
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7647980Z cache miss, executing cb1a74581a030aa7
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7648734Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:50.7649248Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:52.4721782Z ##[group]@dmr-x/router:build
+E2E (build, smoke)	Build	2026-07-03T21:06:52.4722535Z cache miss, executing 839489872ea7fbeb
+E2E (build, smoke)	Build	2026-07-03T21:06:52.4723155Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:52.4724161Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:53.9914883Z ##[group]@dmr-x/benchmark:build
+E2E (build, smoke)	Build	2026-07-03T21:06:53.9915484Z cache miss, executing 2c755101de829861
+E2E (build, smoke)	Build	2026-07-03T21:06:53.9916072Z $ tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:53.9916602Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:57.3938282Z ##[group]@dmr-x/mcp-server:build
+E2E (build, smoke)	Build	2026-07-03T21:06:57.3938767Z cache miss, executing b7470b0d25096e50
+E2E (build, smoke)	Build	2026-07-03T21:06:57.3939042Z $ bunx tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:06:57.3939403Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:06:59.5714621Z ##[group]@dmr-x/gateway:build
+E2E (build, smoke)	Build	2026-07-03T21:06:59.5716755Z cache miss, executing 17665e4e73b0b7f0
+E2E (build, smoke)	Build	2026-07-03T21:06:59.5717491Z $ tsc
+E2E (build, smoke)	Build	2026-07-03T21:06:59.5718084Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:07:03.3991576Z ##[group]@dmr-x/plugin-loader-bootstrap:build
+E2E (build, smoke)	Build	2026-07-03T21:07:03.3992134Z cache miss, executing 88de2227bdfb95a4
+E2E (build, smoke)	Build	2026-07-03T21:07:03.3992542Z $ bunx tsc -b
+E2E (build, smoke)	Build	2026-07-03T21:07:03.3993073Z ##[endgroup]
+E2E (build, smoke)	Build	2026-07-03T21:07:03.4035481Z 
+E2E (build, smoke)	Build	2026-07-03T21:07:03.4036565Z  Tasks:    33 successful, 33 total
+E2E (build, smoke)	Build	2026-07-03T21:07:03.4037406Z Cached:    0 cached, 33 total
+E2E (build, smoke)	Build	2026-07-03T21:07:03.4038102Z   Time:    40.582s 
+E2E (build, smoke)	Build	2026-07-03T21:07:03.4038475Z 
+E2E (build, smoke)	Start gateway	﻿2026-07-03T21:07:03.4152467Z ##[group]Run bun apps/gateway/dist/main.js > /tmp/gateway.log 2>&1 &
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4152974Z ^[[36;1mbun apps/gateway/dist/main.js > /tmp/gateway.log 2>&1 &^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4153299Z ^[[36;1mGATEWAY_PID=$!^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4153553Z ^[[36;1mecho $GATEWAY_PID > gateway.pid^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4153834Z ^[[36;1mecho "Gateway PID: $GATEWAY_PID"^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4154197Z ^[[36;1m# Wait for gateway to respond (200=healthy, 503=degraded but running)^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4154550Z ^[[36;1mhealthy=false^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4154769Z ^[[36;1mfor i in $(seq 1 90); do^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4155310Z ^[[36;1m  code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 5 http://127.0.0.1:3000/healthz 2>/dev/null || true)^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4155874Z ^[[36;1m  if [ "$code" = "200" ] || [ "$code" = "503" ]; then^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4156219Z ^[[36;1m    echo "Gateway responding (HTTP $code) after ${i}s"^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4156651Z ^[[36;1m    healthy=true^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4156898Z ^[[36;1m    break^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4157093Z ^[[36;1m  fi^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4157319Z ^[[36;1m  # Check if gateway process is still alive^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4157633Z ^[[36;1m  if ! kill -0 $GATEWAY_PID 2>/dev/null; then^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4157971Z ^[[36;1m    echo "::error::Gateway process exited unexpectedly"^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4158293Z ^[[36;1m    tail -20 /tmp/gateway.log || true^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4158554Z ^[[36;1m    exit 1^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4158745Z ^[[36;1m  fi^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4158930Z ^[[36;1m  sleep 1^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4159122Z ^[[36;1mdone^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4159320Z ^[[36;1mif [ "$healthy" != "true" ]; then^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4159650Z ^[[36;1m  echo "::error::Gateway failed to become healthy within 90s"^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4159985Z ^[[36;1m  echo "=== Gateway logs ==="^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4160289Z ^[[36;1m  tail -50 /tmp/gateway.log || echo "No logs found"^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4160603Z ^[[36;1m  echo "=== Listening ports ==="^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4161924Z ^[[36;1m  ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo "Could not check ports"^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4162413Z ^[[36;1m  exit 1^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4162604Z ^[[36;1mfi^[[0m
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4181287Z shell: /usr/bin/bash -e {0}
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4181540Z env:
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4181732Z   DMRX_LOCAL_MODE: true
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4182079Z   DMRX_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4182458Z   PORT: 3000
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4182642Z ##[endgroup]
+E2E (build, smoke)	Start gateway	2026-07-03T21:07:03.4221267Z Gateway PID: 2641
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1301981Z ##[error]Gateway failed to become healthy within 90s
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1309169Z === Gateway logs ===
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1309716Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"elevenlabs","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1310520Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"deepgram","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1311636Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"cohere","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1312369Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"jina","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1313087Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"fal","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1313794Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"veo","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1314507Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"runway","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1315248Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"comfyui","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1316360Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"pollinations-images","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1317133Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"bedrock","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1317884Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"azure_openai","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1318635Z {"level":30,"time":1783112824165,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"vertex_ai","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1319373Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"groq","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1320094Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"cerebras","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1321096Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"sambanova","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1321849Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"nvidia_nim","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1322587Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"deepseek","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1323320Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"xai","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1324049Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"perplexity","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1324795Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"openrouter","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1325775Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"together_ai","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1326916Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"fireworks_ai","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1327685Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"huggingface","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1328433Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"databricks","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1329166Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"vllm","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1329889Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"nebius","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1330634Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"novita","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1331569Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"moonshot","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1332301Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"minimax","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1333063Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"lm_studio","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1333804Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"volcengine","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1334555Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"dashscope","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1335315Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"antigravity","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1336178Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"demucs","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1336911Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"audioshake","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1337648Z {"level":30,"time":1783112824166,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"stemsplit","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1338402Z {"level":30,"time":1783112824167,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"tesseract","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1339143Z {"level":30,"time":1783112824167,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"paddleocr","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1339967Z {"level":30,"time":1783112824167,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","providerId":"huggingface","msg":"Adapter registered"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1340971Z {"level":30,"time":1783112824167,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","msg":"Cluster routing disabled (DMRX_CLUSTER_ROUTING_ENABLED != true)"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1341844Z {"level":30,"time":1783112824168,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","intervalMs":86400000,"msg":"Starting scheduled benchmarks"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1342607Z {"level":30,"time":1783112824168,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","count":0,"msg":"Loaded routing candidates"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1343573Z {"level":30,"time":1783112824174,"pid":2641,"hostname":"runnervmkkn4f","name":"telemetry","port":9464,"path":"/metrics","msg":"Prometheus metrics exporter started"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1344552Z {"level":30,"time":1783112824175,"pid":2641,"hostname":"runnervmkkn4f","name":"telemetry","endpoint":"http://localhost:4318/v1/traces","msg":"OTLP trace exporter initialized"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1345401Z {"level":30,"time":1783112824179,"pid":2641,"hostname":"runnervmkkn4f","name":"telemetry","msg":"TelemetryService started"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1346354Z {"level":30,"time":1783112824179,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","corsOrigin":["http://localhost:4200","http://localhost:5173","http://127.0.0.1:4200","http://127.0.0.1:5173"],"msg":"CORS configuration"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1347299Z {"level":30,"time":1783112824179,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","msg":"Telemetry service started"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1348151Z {"level":30,"time":1783112824190,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","dir":"/home/runner/work/dmr-X/dmr-X/apps/gateway/public","msg":"Serving UI from static directory"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1349103Z {"level":30,"time":1783112824265,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","msg":"Registered built-in tool handlers: execute_code, remember, recall"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1350090Z {"level":30,"time":1783112824266,"pid":2641,"hostname":"runnervmkkn4f","name":"dmr-x","msg":"Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files"}
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1350903Z === Listening ports ===
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1507127Z State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1507814Z LISTEN 0      4096      127.0.0.54:53        0.0.0.0:*          
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1580649Z LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*          
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1581584Z LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*          
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1586727Z LISTEN 0      4096            [::]:22           [::]:*          
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1587139Z LISTEN 0      512                *:9464            *:*    users:(("bun",pid=2641,fd=13))
+E2E (build, smoke)	Start gateway	2026-07-03T21:08:34.1594894Z ##[error]Process completed with exit code 1.
+E2E (build, smoke)	Stop gateway	﻿2026-07-03T21:08:34.1637417Z ##[group]Run if [ -f gateway.pid ]; then
+E2E (build, smoke)	Stop gateway	2026-07-03T21:08:34.1637744Z ^[[36;1mif [ -f gateway.pid ]; then^[[0m
+E2E (build, smoke)	Stop gateway	2026-07-03T21:08:34.1638073Z ^[[36;1m  kill -TERM "$(cat gateway.pid)" 2>/dev/null || true^[[0m
+E2E (build, smoke)	Stop gateway	2026-07-03T21:08:34.1638414Z ^[[36;1m  wait "$(cat gateway.pid)" 2>/dev/null || true^[[0m
+E2E (build, smoke)	Stop gateway	2026-07-03T21:08:34.1638696Z ^[[36;1mfi^[[0m
+E2E (build, smoke)	Stop gateway	2026-07-03T21:08:34.1657319Z shell: /usr/bin/bash -e {0}
+E2E (build, smoke)	Stop gateway	2026-07-03T21:08:34.1657575Z ##[endgroup]
+E2E (build, smoke)	Post Run actions/checkout@v4	﻿2026-07-03T21:08:34.1822700Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.1823841Z Post job cleanup.
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.2646661Z [command]/usr/bin/git version
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.2683899Z git version 2.54.0
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.2718373Z Temporarily overriding HOME='/home/runner/work/_temp/21be982c-0751-4450-bb0c-68b8bcdfc3f2' before making global git config changes
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.2720129Z Adding repository directory to the temporary git global config as a safe directory
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.2724272Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dmr-X/dmr-X
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.2758201Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.2795890Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.3016463Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.3045235Z http.https://github.com/.extraheader
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.3058773Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.3106452Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.3297733Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+E2E (build, smoke)	Post Run actions/checkout@v4	2026-07-03T21:08:34.3337362Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+E2E (build, smoke)	Complete job	﻿2026-07-03T21:08:34.3685265Z Cleaning up orphan processes
+E2E (build, smoke)	Complete job	2026-07-03T21:08:34.3952027Z Terminate orphan process: pid (2641) (bun)
+E2E (build, smoke)	Complete job	2026-07-03T21:08:34.3967433Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

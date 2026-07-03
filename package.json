@@ -21,8 +21,8 @@
     "test:unit": "bun vitest run --project unit",
     "test:e2e": "bun vitest run --project e2e",
     "test:watch": "bun vitest",
-    "lint": "bunx eslint .",
-    "lint:fix": "bunx eslint . --fix",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "clean": "turbo clean"
   },
   "devDependencies": {

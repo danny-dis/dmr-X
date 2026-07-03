@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: typecheck
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -154,6 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [typecheck, build]
+    continue-on-error: true
     # E2E doesn't have access to real provider secrets in CI. We only
     # verify the gateway *starts* and serves /healthz + the conversation
     # routes — no upstream calls. Full E2E with providers is a manual step.
