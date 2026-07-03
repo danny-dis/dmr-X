@@ -46,7 +46,7 @@
   "engines": {
     "bun": ">=1.0.0"
   },
-  "packageManager": "bun@1.2.0",
+  "packageManager": "bun@1.2.15",
   "dependencies": {
     "@opentelemetry/context-async-hooks": "2.7.1"
   },

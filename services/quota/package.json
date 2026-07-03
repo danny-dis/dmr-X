@@ -20,7 +20,7 @@
     "@dmr-x/billing": "*",
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
-    "@dmr-x/registry": "*",
+    "@dmr-x/provider-catalog": "*",
     "@dmr-x/utils": "*"
   },
   "devDependencies": {

@@ -1,5 +1,5 @@
 {
-  "name": "@dmr-x/registry",
+  "name": "@dmr-x/provider-catalog",
   "version": "0.5.3",
   "private": true,
   "type": "module",
@@ -15,13 +15,6 @@
     "build": "tsc -b",
     "dev": "tsc --watch",
     "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@dmr-x/adapters": "*",
-    "@dmr-x/provider-catalog": "*",
-    "@dmr-x/core": "*",
-    "@dmr-x/db": "*",
-    "@dmr-x/utils": "*"
   },
   "devDependencies": {
     "typescript": "5.9.3"

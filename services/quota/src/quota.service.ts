@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { QuotaExhaustedError } from '@dmr-x/core';
 import type { CandidateSet } from '@dmr-x/core';
 import { getDb, createNamespacedCache } from '@dmr-x/db';
-import { PROVIDER_CATALOG } from '@dmr-x/registry';
+import { PROVIDER_CATALOG } from '@dmr-x/provider-catalog';
 import { logger } from '@dmr-x/utils';
 
 import { creditService } from '@dmr-x/billing';
