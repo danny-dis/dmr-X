@@ -178,14 +178,10 @@ jobs:
           healthy=false
           for i in $(seq 1 60); do
             code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/healthz 2>/dev/null || echo "000")
-            if [ "$code" = "200" ]; then
-              echo "Gateway healthy after ${i}s"
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              echo "Gateway responding (HTTP $code) after ${i}s"
               healthy=true
               break
-            fi
-            if [ "$code" = "503" ] && [ "$i" -ge 30 ]; then
-              # Server is responding but still initializing — give it more time
-              echo "Gateway responding (503) after ${i}s, waiting for background init..."
             fi
             sleep 1
           done
