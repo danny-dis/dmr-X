@@ -1281,17 +1281,29 @@ void (async () => {
    await server.register(toolsRoutes, { prefix: '/v1' });
    registerBuiltinToolHandlers();
    registerCodingToolHandlers();
-   await server.register(agenticRoutes, { prefix: '/v1' });
-   await server.register(conversationRoutes, { prefix: '/v1' });
-   await server.register(compressionRoutes, { prefix: '/v1' });
-   await server.register(routeDecisionRoutes, { prefix: '/v1' });
-   await server.register(validateRoutes);
-   await server.register(countTokensRoutes, { prefix: '/v1' });
-   await server.register(agentRoutes, { prefix: '/v1' });
-   await server.register(agentChatRoutes, { prefix: '/v1' });
-   await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
-   await server.register(godmodeRoutes, { prefix: '/v1' }); // G0DM0D3 integration
-   await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
+    logger.info('Registering route: agenticRoutes');
+    await server.register(agenticRoutes, { prefix: '/v1' });
+    logger.info('Registering route: conversationRoutes');
+    await server.register(conversationRoutes, { prefix: '/v1' });
+    logger.info('Registering route: compressionRoutes');
+    await server.register(compressionRoutes, { prefix: '/v1' });
+    logger.info('Registering route: routeDecisionRoutes');
+    await server.register(routeDecisionRoutes, { prefix: '/v1' });
+    logger.info('Registering route: validateRoutes');
+    await server.register(validateRoutes);
+    logger.info('Registering route: countTokensRoutes');
+    await server.register(countTokensRoutes, { prefix: '/v1' });
+    logger.info('Registering route: agentRoutes');
+    await server.register(agentRoutes, { prefix: '/v1' });
+    logger.info('Registering route: agentChatRoutes');
+    await server.register(agentChatRoutes, { prefix: '/v1' });
+    logger.info('Registering route: cloudcodeRoutes');
+    await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
+    logger.info('Registering route: godmodeRoutes');
+    await server.register(godmodeRoutes, { prefix: '/v1' }); // G0DM0D3 integration
+    logger.info('Registering route: promptRoutes');
+    await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
+    logger.info('All routes registered');
 
   // SPA fallback: serve index.html for non-API GET requests.
   // Pre-read index.html at startup so we catch missing UI builds early
