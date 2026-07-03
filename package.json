@@ -21,8 +21,8 @@
     "test:unit": "bun vitest run --project unit",
     "test:e2e": "bun vitest run --project e2e",
     "test:watch": "bun vitest",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
+    "lint": "node ./node_modules/eslint/bin/eslint.js .",
+    "lint:fix": "node ./node_modules/eslint/bin/eslint.js . --fix",
     "clean": "turbo clean"
   },
   "devDependencies": {
