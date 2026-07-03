@@ -250,8 +250,8 @@ export class MemoryCache {
   keys(): string[] {
     const result: string[] = [];
     // KV keys in LRU order (most recent first)
-    for (let node = this.head.next; node !== this.tail; node = node.next) {
-      result.push(node.key);
+    for (let node = this.head!.next; node !== this.tail; node = node!.next) {
+      result.push(node!.key);
     }
     // Hash keys (not in LRU order, but that's fine for hash entries)
     for (const key of this.hashMap.keys()) {
@@ -265,9 +265,9 @@ export class MemoryCache {
   keysByPrefix(prefix: string): string[] {
     const result: string[] = [];
     // KV keys in LRU order
-    for (let node = this.head.next; node !== this.tail; node = node.next) {
-      if (node.key.startsWith(prefix)) {
-        result.push(node.key);
+    for (let node = this.head!.next; node !== this.tail; node = node!.next) {
+      if (node!.key.startsWith(prefix)) {
+        result.push(node!.key);
       }
     }
     // Hash keys

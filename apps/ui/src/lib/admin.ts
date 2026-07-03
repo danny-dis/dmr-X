@@ -500,6 +500,28 @@ export const Admin = {
   updateSettings: (body: Record<string, unknown>) =>
     apiPut<Record<string, unknown>>('/admin/settings', body),
 
+  // Agent Integrations
+  getAgentIntegrationConfig: () =>
+    apiGet<Record<string, unknown>>('/admin/settings').then((s) => ({
+      claudeCode: (s.agentIntegrationClaudeCode as Record<string, unknown>) ?? null,
+      codex: (s.agentIntegrationCodex as Record<string, unknown>) ?? null,
+      antigravity: (s.agentIntegrationAntigravity as Record<string, unknown>) ?? null,
+    })),
+  updateAgentIntegrationConfig: (
+    tool: 'claudeCode' | 'codex' | 'antigravity',
+    config: Record<string, unknown>,
+  ) => {
+    const key =
+      tool === 'claudeCode'
+        ? 'agentIntegrationClaudeCode'
+        : tool === 'codex'
+          ? 'agentIntegrationCodex'
+          : 'agentIntegrationAntigravity';
+    return apiPut('/admin/settings', { [key]: config });
+  },
+  testIntegration: (tool: 'claude-code' | 'codex' | 'antigravity') =>
+    apiPost<{ success: boolean; latencyMs: number; error?: string }>('/admin/integrations/test', { tool }),
+
   // Security
   // Rotate the admin API key at runtime. Returns the new key (one-time display).
   rotateAdminKey: () =>

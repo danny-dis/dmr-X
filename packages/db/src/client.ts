@@ -58,6 +58,7 @@ function splitFt5(sql: string): string[] {
 
 async function saveDatabase(): Promise<void> {
   if (!db || !dbPath) return;
+  await fs.promises.mkdir(path.dirname(dbPath), { recursive: true });
   const tmpPath = `${dbPath}.tmp`;
   try {
     const data = db.export();
@@ -251,12 +252,13 @@ class DatabaseWrapper {
     };
   }
 
-  transaction(fn: () => void) {
+  transaction<T>(fn: () => T): T {
     this.raw.exec('BEGIN TRANSACTION');
     try {
-      fn();
+      const result = fn();
       this.raw.exec('COMMIT');
       scheduleSave();
+      return result;
     } catch (err) {
       try {
         this.raw.exec('ROLLBACK');
@@ -626,10 +628,10 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   }
 
   // Enable foreign key enforcement (SQLite has it off by default)
-  db.exec('PRAGMA foreign_keys = ON;');
+  db!.exec('PRAGMA foreign_keys = ON;');
 
   // Enable Write-Ahead Logging for concurrent reads without blocking on writes
-  db.exec('PRAGMA journal_mode = WAL;');
+  db!.exec('PRAGMA journal_mode = WAL;');
 
   // Load migrations from disk when present, then backfill any missing versions
   // from embedded SQL. Some dev/dist layouts can have a partial migrations
@@ -710,7 +712,7 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   // Apply pending migrations and verify checksums of already-applied ones.
   // Strict mode (production) refuses to start on mismatch; dev mode logs only.
   const isProduction = process.env.NODE_ENV === 'production';
-  const migrationResult = runMigrations(db, migrations, { strict: isProduction });
+  const migrationResult = runMigrations(db!, migrations, { strict: isProduction });
   if (migrationResult.applied.length > 0) {
     log.info(
       `Applied ${migrationResult.applied.length} migration(s): ${migrationResult.applied.join(', ')}`,
@@ -726,9 +728,9 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   log.info(`SQLite database ready at ${dbPath}`);
 
   // Migrate plaintext API keys to encrypted (one-time pass)
-  await migratePlaintextApiKeys(db);
+  await migratePlaintextApiKeys(db!);
 
-  return new DatabaseWrapper(db);
+  return new DatabaseWrapper(db!);
 }
 
 export function getDb(): DatabaseWrapper {

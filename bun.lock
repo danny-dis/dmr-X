@@ -32,7 +32,10 @@
       "version": "0.5.2",
       "dependencies": {
         "@dmr-x/adapters": "*",
+        "@dmr-x/agent-registry": "*",
+        "@dmr-x/agent-runtime": "*",
         "@dmr-x/benchmark": "*",
+        "@dmr-x/billing": "*",
         "@dmr-x/cache": "*",
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",

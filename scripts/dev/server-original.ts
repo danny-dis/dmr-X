@@ -13,7 +13,7 @@ import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, Replic
 import type { UnifiedRequest } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
-import { quotaService, rateLimitService } from '@dmr-x/quota';
+import { quotaService, getRateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import { chatRoutes } from './routes/chat.routes.js';
@@ -347,7 +347,7 @@ export async function createServer() {
     epsilon: 0.05,
     quotaService,
     policyService,
-    rateLimitService,
+    rateLimitService: getRateLimitService(),
     freeTierStrategy,
     onProviderSuccess: (providerId: string) => adapterRegistry.recordSuccess(providerId),
     onProviderFailure: (providerId: string) => adapterRegistry.recordFailure(providerId),
@@ -357,7 +357,7 @@ export async function createServer() {
   server.decorate('router', router);
   server.decorate('adapterRegistry', adapterRegistry);
   server.decorate('registerToolHandler', registerToolHandler);
-  server.decorate('rateLimitService', rateLimitService);
+  server.decorate('rateLimitService', getRateLimitService());
   server.decorate('quotaService', quotaService);
 
   // Initialize Benchmark services

@@ -81,7 +81,7 @@ export class CreditService {
     const balance = this.getOrCreateBalance(tenantId);
     const newBalance = balance.balanceCents + amountCents;
 
-    const transaction = db.transaction(() => {
+    db.transaction(() => {
       // Update balance
       db.prepare(
         `UPDATE credits SET
@@ -98,8 +98,6 @@ export class CreditService {
          VALUES (?, ?, 'topup', ?, ?, ?, ?)`
       ).run(txId, tenantId, amountCents, newBalance, description || `Top-up $${(amountCents / 100).toFixed(2)}`, adminKeyHash || null);
     });
-
-    transaction();
 
     logger.info(
       { tenantId, amountCents, newBalance },
@@ -137,7 +135,7 @@ export class CreditService {
 
     const newBalance = balance.balanceCents - amountCents;
 
-    const transaction = db.transaction(() => {
+    db.transaction(() => {
       db.prepare(
         `UPDATE credits SET
           balance_cents = ?,
@@ -153,7 +151,6 @@ export class CreditService {
       ).run(txId, tenantId, -amountCents, newBalance, requestId || null);
     });
 
-    transaction();
     return true;
   }
 
@@ -172,7 +169,7 @@ export class CreditService {
     const balance = this.getOrCreateBalance(tenantId);
     const newBalance = balance.balanceCents + amountCents;
 
-    const transaction = db.transaction(() => {
+    db.transaction(() => {
       db.prepare(
         `UPDATE credits SET
           balance_cents = ?,
@@ -186,8 +183,6 @@ export class CreditService {
          VALUES (?, ?, 'refund', ?, ?, ?, ?)`
       ).run(txId, tenantId, amountCents, newBalance, description, requestId || null);
     });
-
-    transaction();
 
     return { tenantId, balanceCents: newBalance, totalTopupCents: balance.totalTopupCents, totalUsedCents: balance.totalUsedCents };
   }

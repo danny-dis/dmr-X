@@ -6,6 +6,9 @@ import {
   Check,
   AlertTriangle,
   ChevronDown,
+  Download,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -27,6 +30,12 @@ interface ModelOption {
   provider: ApiProvider;
   model: ApiModel;
   label: string;
+}
+
+interface TestResult {
+  success: boolean;
+  latencyMs: number;
+  error?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -232,12 +241,30 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
 export function CodexPage() {
   const [providers, setProviders] = React.useState<ApiProvider[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [testResult, setTestResult] = React.useState<TestResult | null>(null);
   const [selected, setSelected] = React.useState<{ providerId: string; modelId: string } | null>(null);
   const [configFormat, setConfigFormat] = React.useState<'toml' | 'env'>('toml');
 
+  // Load saved config from backend
   React.useEffect(() => {
-    Admin.listProviders()
-      .then(setProviders)
+    Promise.all([
+      Admin.listProviders(),
+      Admin.getAgentIntegrationConfig(),
+    ])
+      .then(([providerList, config]) => {
+        setProviders(providerList);
+        if (config.codex) {
+          const cx = config.codex;
+          if (cx.modelId && cx.providerId) {
+            setSelected({ providerId: cx.providerId as string, modelId: cx.modelId as string });
+          }
+          if (cx.configFormat === 'toml' || cx.configFormat === 'env') {
+            setConfigFormat(cx.configFormat);
+          }
+        }
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -247,14 +274,17 @@ export function CodexPage() {
       ? providers.find((p) => p.id === selected.providerId)?.models?.find((m) => m.id === selected.modelId)
       : null;
     const modelId = model?.modelId ?? model?.id ?? 'auto-coding';
+    const gatewayUrl = window.location.origin;
 
-    return `# Add this to ~/.codex/config.toml
+    return `# DMR-X Codex Configuration
+# Generated: ${new Date().toISOString().split('T')[0]}
+
 model = "${modelId}"
 model_provider = "dmrx"
 
 [model_providers.dmrx]
 name = "DMR-X Gateway"
-base_url = "http://localhost:3000/v1"
+base_url = "${gatewayUrl}/v1"
 env_key = "DMRX_API_KEY"
 wire_api = "chat"
 requires_openai_auth = false`;
@@ -265,17 +295,93 @@ requires_openai_auth = false`;
       ? providers.find((p) => p.id === selected.providerId)?.models?.find((m) => m.id === selected.modelId)
       : null;
     const modelId = model?.modelId ?? model?.id ?? 'auto-coding';
+    const gatewayUrl = window.location.origin;
 
-    return `# Set these environment variables before running Codex
-export OPENAI_BASE_URL=http://localhost:3000/v1
-export OPENAI_API_KEY=dmrx_your_api_key_here
+    return `# DMR-X Codex Environment Configuration
+# Generated: ${new Date().toISOString().split('T')[0]}
+
+# Set these environment variables before running Codex
+export OPENAI_BASE_URL="${gatewayUrl}/v1"
+export OPENAI_API_KEY="dmrx_your_api_key_here"
 
 # Then run:
 codex --model ${modelId} "your prompt here"`;
   }, [selected, providers]);
 
+  // Save config to backend
+  const handleSave = async () => {
+    if (!selected) {
+      toast.error('No model selected', { description: 'Select a model before saving.' });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await Admin.updateAgentIntegrationConfig('codex', {
+        modelId: selected.modelId,
+        providerId: selected.providerId,
+        configFormat,
+      });
+      toast.success('Configuration saved', {
+        description: 'Your Codex integration settings have been saved.',
+      });
+    } catch (err) {
+      toast.error('Failed to save', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Test connection
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await Admin.testIntegration('codex');
+      setTestResult(result);
+      if (result.success) {
+        toast.success('Connection successful', {
+          description: `Gateway responded in ${result.latencyMs}ms`,
+        });
+      } else {
+        toast.error('Connection failed', {
+          description: result.error ?? 'Unknown error',
+        });
+      }
+    } catch (err) {
+      setTestResult({ success: false, latencyMs: 0, error: err instanceof Error ? err.message : String(err) });
+      toast.error('Test failed', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // Download config file
+  const handleDownloadConfig = () => {
+    const content = configFormat === 'toml' ? tomlConfig : envConfig;
+    const filename = configFormat === 'toml' ? 'config.toml' : 'codex-env.sh';
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    toast.success('Config downloaded', {
+      description: configFormat === 'toml'
+        ? 'Copy to ~/.codex/config.toml'
+        : 'Source this file or copy the exports to your shell profile',
+    });
+  };
+
   const handleReset = () => {
     setSelected(null);
+    setTestResult(null);
     toast.show('Reset', { description: 'Model selection cleared.' });
   };
 
@@ -303,10 +409,25 @@ codex --model ${modelId} "your prompt here"`;
         description="Configure DMR-X as a model provider for OpenAI Codex CLI"
         icon={<Terminal className="size-5" />}
         actions={
-          <Button variant="ghost" size="sm" onClick={handleReset}>
-            <RotateCcw className="size-3" />
-            Reset
-          </Button>
+          <>
+            <Button variant="ghost" size="sm" onClick={handleReset}>
+              <RotateCcw className="size-3" />
+              Reset
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleTestConnection}
+              loading={testing}
+              leftIcon={testResult?.success ? <Wifi className="size-3" /> : testResult ? <WifiOff className="size-3" /> : undefined}
+            >
+              Test Connection
+            </Button>
+            <Button size="sm" onClick={handleSave} loading={saving}>
+              <Save className="size-3" />
+              Save
+            </Button>
+          </>
         }
       />
 
@@ -327,6 +448,36 @@ codex --model ${modelId} "your prompt here"`;
             />
           </CardContent>
         </Card>
+
+        {/* Test Result */}
+        {testResult && (
+          <div
+            className={cn(
+              'rounded-lg border px-4 py-3',
+              testResult.success
+                ? 'border-success/30 bg-success/5'
+                : 'border-danger/30 bg-danger/5',
+            )}
+          >
+            <div className="flex items-start gap-2">
+              {testResult.success ? (
+                <Wifi className="size-4 text-success shrink-0 mt-0.5" />
+              ) : (
+                <WifiOff className="size-4 text-danger shrink-0 mt-0.5" />
+              )}
+              <div className="text-xs text-fg leading-relaxed">
+                <p className="font-medium">
+                  {testResult.success ? 'Connection successful' : 'Connection failed'}
+                </p>
+                <p className="text-fg-muted">
+                  {testResult.success
+                    ? `Gateway responded in ${testResult.latencyMs}ms`
+                    : testResult.error}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Config Format Toggle */}
         <div className="flex gap-2">
@@ -349,14 +500,26 @@ codex --model ${modelId} "your prompt here"`;
         {/* Generated Config */}
         <Card padding="md">
           <CardHeader className="px-0 pt-0">
-            <CardTitle>
-              {configFormat === 'toml' ? 'Configuration File' : 'Environment Variables'}
-            </CardTitle>
-            <p className="text-[10px] text-fg-muted mt-0.5">
-              {configFormat === 'toml'
-                ? 'Add this to ~/.codex/config.toml'
-                : 'Set these environment variables before launching Codex'}
-            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>
+                  {configFormat === 'toml' ? 'Configuration File' : 'Environment Variables'}
+                </CardTitle>
+                <p className="text-[10px] text-fg-muted mt-0.5">
+                  {configFormat === 'toml'
+                    ? 'Add this to ~/.codex/config.toml'
+                    : 'Set these environment variables before launching Codex'}
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleDownloadConfig}
+                leftIcon={<Download className="size-3" />}
+              >
+                Download
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="px-0">
             <CodeBlock

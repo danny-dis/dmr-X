@@ -3,6 +3,10 @@ import {
   AlertTriangle,
   Check,
   ExternalLink,
+  Save,
+  Download,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -14,6 +18,16 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Admin } from '@/lib/admin';
 import { cn } from '@/lib/utils';
 import type { ApiProvider } from '@/types/api';
+
+/* -------------------------------------------------------------------------- */
+/*  Types                                                                      */
+/* -------------------------------------------------------------------------- */
+
+interface TestResult {
+  success: boolean;
+  latencyMs: number;
+  error?: string;
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Model Status Indicator                                                     */
@@ -48,10 +62,27 @@ function ModelStatus({
 export function AntigravityPage() {
   const [providers, setProviders] = React.useState<ApiProvider[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [testResult, setTestResult] = React.useState<TestResult | null>(null);
 
+  const [isEnabled, setIsEnabled] = React.useState(false);
+  const [preferredProviderId, setPreferredProviderId] = React.useState<string | null>(null);
+
+  // Load saved config from backend
   React.useEffect(() => {
-    Admin.listProviders()
-      .then(setProviders)
+    Promise.all([
+      Admin.listProviders(),
+      Admin.getAgentIntegrationConfig(),
+    ])
+      .then(([providerList, config]) => {
+        setProviders(providerList);
+        if (config.antigravity) {
+          const ag = config.antigravity;
+          setIsEnabled((ag.isEnabled as boolean) ?? false);
+          setPreferredProviderId((ag.preferredProviderId as string) ?? null);
+        }
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -85,6 +116,92 @@ export function AntigravityPage() {
     'gpt-oss-120b-medium',
   ];
 
+  // Save config to backend
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await Admin.updateAgentIntegrationConfig('antigravity', {
+        isEnabled,
+        preferredProviderId,
+      });
+      toast.success('Configuration saved', {
+        description: 'Your Antigravity integration settings have been saved.',
+      });
+    } catch (err) {
+      toast.error('Failed to save', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Test connection
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await Admin.testIntegration('antigravity');
+      setTestResult(result);
+      if (result.success) {
+        toast.success('Connection successful', {
+          description: `Gateway responded in ${result.latencyMs}ms`,
+        });
+      } else {
+        toast.error('Connection failed', {
+          description: result.error ?? 'Unknown error',
+        });
+      }
+    } catch (err) {
+      setTestResult({ success: false, latencyMs: 0, error: err instanceof Error ? err.message : String(err) });
+      toast.error('Test failed', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // Download wrapper script
+  const handleDownloadScript = () => {
+    const gatewayUrl = window.location.origin;
+
+    const script = `#!/bin/bash
+# DMR-X Antigravity (agy) Wrapper
+# Generated: ${new Date().toISOString().split('T')[0]}
+
+set -e
+
+# Configuration
+DMRX_GATEWAY="${gatewayUrl}"
+GOOGLE_GEMINI_BASE_URL="\${DMRX_GATEWAY}"
+
+# Validate gateway connectivity
+echo "Testing DMR-X gateway connectivity..."
+if ! curl -s --fail "\${DMRX_GATEWAY}/health" > /dev/null 2>&1; then
+  echo "ERROR: Cannot reach DMR-X gateway at \${DMRX_GATEWAY}"
+  echo "Please ensure the gateway is running: bun run dev:gateway"
+  exit 1
+fi
+echo "Gateway is reachable."
+
+# Launch agy
+exec agy "$@"
+`;
+
+    const blob = new Blob([script], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'agy-dmrx.sh';
+    a.click();
+    URL.revokeObjectURL(url);
+
+    toast.success('Script downloaded', {
+      description: 'Run: chmod +x agy-dmrx.sh && ./agy-dmrx.sh',
+    });
+  };
+
   if (loading) {
     return (
       <PageContainer>
@@ -109,27 +226,116 @@ export function AntigravityPage() {
         description="Configure DMR-X as a backend for Google Antigravity CLI (agy)"
         icon={<Terminal className="size-5" />}
         actions={
-          <a
-            href="https://github.com/google-antigravity/antigravity-cli"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Button variant="ghost" size="sm">
-              <ExternalLink className="size-3" />
-              Docs
+          <>
+            <a
+              href="https://github.com/google-antigravity/antigravity-cli"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Button variant="ghost" size="sm">
+                <ExternalLink className="size-3" />
+                Docs
+              </Button>
+            </a>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleTestConnection}
+              loading={testing}
+              leftIcon={testResult?.success ? <Wifi className="size-3" /> : testResult ? <WifiOff className="size-3" /> : undefined}
+            >
+              Test Connection
             </Button>
-          </a>
+            <Button size="sm" onClick={handleSave} loading={saving}>
+              <Save className="size-3" />
+              Save
+            </Button>
+          </>
         }
       />
 
       <div className="mt-5 space-y-4">
+        {/* Enable/Disable Toggle */}
+        <Card padding="md">
+          <CardHeader className="px-0 pt-0">
+            <CardTitle>Integration Status</CardTitle>
+            <p className="text-[10px] text-fg-muted mt-0.5">
+              Enable or disable the Antigravity integration.
+            </p>
+          </CardHeader>
+          <CardContent className="px-0">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setIsEnabled(!isEnabled)}
+                className={cn(
+                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                  isEnabled ? 'bg-primary' : 'bg-surface-3',
+                )}
+              >
+                <span
+                  className={cn(
+                    'inline-block size-4 transform rounded-full bg-white transition-transform',
+                    isEnabled ? 'translate-x-6' : 'translate-x-1',
+                  )}
+                />
+              </button>
+              <span className="text-sm text-fg">
+                {isEnabled ? 'Enabled' : 'Disabled'}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Test Result */}
+        {testResult && (
+          <div
+            className={cn(
+              'rounded-lg border px-4 py-3',
+              testResult.success
+                ? 'border-success/30 bg-success/5'
+                : 'border-danger/30 bg-danger/5',
+            )}
+          >
+            <div className="flex items-start gap-2">
+              {testResult.success ? (
+                <Wifi className="size-4 text-success shrink-0 mt-0.5" />
+              ) : (
+                <WifiOff className="size-4 text-danger shrink-0 mt-0.5" />
+              )}
+              <div className="text-xs text-fg leading-relaxed">
+                <p className="font-medium">
+                  {testResult.success ? 'Connection successful' : 'Connection failed'}
+                </p>
+                <p className="text-fg-muted">
+                  {testResult.success
+                    ? `Gateway responded in ${testResult.latencyMs}ms`
+                    : testResult.error}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Setup Instructions */}
         <Card padding="md">
           <CardHeader className="px-0 pt-0">
-            <CardTitle>Setup</CardTitle>
-            <p className="text-[10px] text-fg-muted mt-0.5">
-              Point agy at your DMR-X gateway to route requests through your configured providers.
-            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Setup</CardTitle>
+                <p className="text-[10px] text-fg-muted mt-0.5">
+                  Point agy at your DMR-X gateway to route requests through your configured providers.
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleDownloadScript}
+                leftIcon={<Download className="size-3" />}
+              >
+                Download Script
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="px-0 space-y-3">
             <div className="text-xs text-fg-muted">
@@ -142,7 +348,7 @@ export function AntigravityPage() {
             <div className="text-xs text-fg-muted">
               <p className="mb-2 font-medium text-fg">2. Set environment variables and run agy:</p>
               <pre className="px-3 py-2 bg-surface-2 rounded-lg border border-border font-mono text-[11px] whitespace-pre-wrap">{`# Point agy at DMR-X
-export GOOGLE_GEMINI_BASE_URL=http://localhost:3000
+export GOOGLE_GEMINI_BASE_URL="${window.location.origin}"
 
 # Run agy as usual (uses Google OAuth)
 agy "Explain this codebase"`}</pre>
@@ -151,7 +357,7 @@ agy "Explain this codebase"`}</pre>
             <div className="text-xs text-fg-muted">
               <p className="mb-2 font-medium text-fg">3. Alternatively, configure via the agy config file:</p>
               <pre className="px-3 py-2 bg-surface-2 rounded-lg border border-border font-mono text-[11px] whitespace-pre-wrap">{`# ~/.antigravity/settings.json or ~/.gemini/.env
-GOOGLE_GEMINI_BASE_URL=http://localhost:3000`}</pre>
+GOOGLE_GEMINI_BASE_URL=${window.location.origin}`}</pre>
             </div>
           </CardContent>
         </Card>

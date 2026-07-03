@@ -72,7 +72,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     const tenant = (request as any).tenant;
 
     const { id } = request.params as { id: string };
-    const parsed = AgentInstanceCreateSchema.safeParse({ ...request.body, agentDefinitionId: id });
+    const parsed = AgentInstanceCreateSchema.safeParse({ ...(request.body as Record<string, unknown>), agentDefinitionId: id });
     if (!parsed.success) {
       return reply.code(400).send({ error: { message: 'Invalid request', details: parsed.error.issues } });
     }
@@ -184,6 +184,8 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
         category: definition.category ?? undefined,
         tags: definition.tags,
         icon: definition.icon ?? undefined,
+        screenshots: [],
+        priceCents: 0,
       });
       if (listing) {
         listing = await agentRegistryService.publishListing(listing.id, tenant.id);

@@ -18,7 +18,7 @@ import { trace, SpanStatusCode, SpanKind, propagation, context, type Span } from
 import { ProviderUnavailableError } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
-import { quotaService, rateLimitService } from '@dmr-x/quota';
+import { quotaService, getRateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import Fastify from 'fastify';
 
@@ -463,7 +463,7 @@ export async function createServer() {
     epsilon: 0.05,
     quotaService,
     policyService,
-    rateLimitService,
+    rateLimitService: getRateLimitService(),
     freeTierStrategy,
     onProviderSuccess: (providerId: string) => adapterRegistry.recordSuccess(providerId),
     onProviderFailure: (providerId: string) => adapterRegistry.recordFailure(providerId),
@@ -532,7 +532,7 @@ export async function createServer() {
   server.decorate('router', router);
   server.decorate('adapterRegistry', adapterRegistry);
   server.decorate('registerToolHandler', registerToolHandler);
-  server.decorate('rateLimitService', rateLimitService);
+  server.decorate('rateLimitService', getRateLimitService());
   server.decorate('quotaService', quotaService);
   // Telemetry reference (must exist before the background start below) —
   // the onResponse hook reads it. Recording is a no-op if the underlying
@@ -606,7 +606,7 @@ export async function createServer() {
         (candidate.freeTierMetadata?.rateLimits?.tpd ?? 0) > 0;
 
       if (hasRateLimits) {
-        rateLimitService.setConfig(candidate.providerId, candidate.modelId, {
+        getRateLimitService().setConfig(candidate.providerId, candidate.modelId, {
           rpm: candidate.freeTierMetadata!.rateLimits.rpm || undefined,
           rpd: candidate.freeTierMetadata!.rateLimits.rpd || undefined,
           tpm: candidate.freeTierMetadata!.rateLimits.tpm || undefined,
@@ -637,7 +637,7 @@ export async function createServer() {
           (candidate.freeTierMetadata?.rateLimits?.tpd ?? 0) > 0;
 
         if (hasRateLimits) {
-          rateLimitService.setConfig(candidate.providerId, candidate.modelId, {
+          getRateLimitService().setConfig(candidate.providerId, candidate.modelId, {
             rpm: candidate.freeTierMetadata!.rateLimits.rpm || undefined,
             rpd: candidate.freeTierMetadata!.rateLimits.rpd || undefined,
             tpm: candidate.freeTierMetadata!.rateLimits.tpm || undefined,

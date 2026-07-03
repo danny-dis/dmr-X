@@ -142,7 +142,7 @@ export class RateLimitService {
           updated_at = datetime('now')
       `);
 
-      const persistMany = db.transaction(() => {
+      db.transaction(() => {
         const allKeys = new Set<string>();
         for (const [key] of this.cooldowns) {
           if (key.endsWith(':cooldown')) {
@@ -183,8 +183,6 @@ export class RateLimitService {
           }
         }
       });
-
-      persistMany();
     } catch (error) {
       logger.debug({ err: error }, 'Failed to persist rate-limit state');
     }
@@ -700,4 +698,11 @@ export class RateLimitService {
   }
 }
 
-export const rateLimitService = new RateLimitService();
+let _rateLimitService: RateLimitService | null = null;
+
+export function getRateLimitService(): RateLimitService {
+  if (!_rateLimitService) {
+    _rateLimitService = new RateLimitService();
+  }
+  return _rateLimitService;
+}

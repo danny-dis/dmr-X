@@ -477,6 +477,26 @@ const UpdateSettingsSchema = z.object({
   memoryRetentionDays: z.union([z.string(), z.number()]).optional(),
   benchmarkHistoryDays: z.union([z.string(), z.number()]).optional(),
   logRetention: z.union([z.string(), z.number()]).optional(),
+
+  // Agent Integration Config
+  agentIntegrationClaudeCode: z.object({
+    bigModelId: z.string().nullable().optional(),
+    bigProviderId: z.string().nullable().optional(),
+    mediumModelId: z.string().nullable().optional(),
+    mediumProviderId: z.string().nullable().optional(),
+    smallModelId: z.string().nullable().optional(),
+    smallProviderId: z.string().nullable().optional(),
+    customEnvVars: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
+  }).strict().optional(),
+  agentIntegrationCodex: z.object({
+    modelId: z.string().nullable().optional(),
+    providerId: z.string().nullable().optional(),
+    configFormat: z.enum(['toml', 'env']).optional(),
+  }).strict().optional(),
+  agentIntegrationAntigravity: z.object({
+    isEnabled: z.boolean().optional(),
+    preferredProviderId: z.string().nullable().optional(),
+  }).strict().optional(),
 }).refine(
   (obj) => !Object.keys(obj).some((k) => BLOCKED_SETTINGS_KEYS.has(k)),
   { message: 'Blocked key detected' }
@@ -4282,7 +4302,70 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return { success: true };
   });
 
-  // --- Benchmarks 2.0 ---
+  // Test agent integration connectivity
+  server.post('/admin/integrations/test', async (request) => {
+    const { tool } = request.body as { tool: string };
+    if (!tool || !['claude-code', 'codex', 'antigravity'].includes(tool)) {
+      throw new ValidationError('Invalid tool', { errors: [{ message: 'tool must be one of: claude-code, codex, antigravity' }] });
+    }
+
+    const port = process.env.PORT || 3000;
+    const gatewayUrl = `http://localhost:${port}`;
+    const startTime = Date.now();
+
+    try {
+      let testUrl: string;
+      let testBody: Record<string, unknown>;
+      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+      if (tool === 'claude-code') {
+        testUrl = `${gatewayUrl}/v1/messages`;
+        testBody = {
+          model: 'auto',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'ping' }],
+        };
+        headers['anthropic-version'] = '2023-06-01';
+      } else if (tool === 'codex') {
+        testUrl = `${gatewayUrl}/v1/chat/completions`;
+        testBody = {
+          model: 'auto-coding',
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+        };
+      } else {
+        testUrl = `${gatewayUrl}/v1internal:generateContent`;
+        testBody = {
+          contents: [{ parts: [{ text: 'ping' }] }],
+        };
+      }
+
+      const response = await fetch(testUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(testBody),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      const latencyMs = Date.now() - startTime;
+
+      if (response.ok) {
+        return { success: true, latencyMs };
+      } else {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        return { success: false, latencyMs, error: `HTTP ${response.status}: ${errorText.slice(0, 200)}` };
+      }
+    } catch (err) {
+      const latencyMs = Date.now() - startTime;
+      return {
+        success: false,
+        latencyMs,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+// --- Benchmarks 2.0 ---
 
   // Get leaderboard
   server.get('/admin/benchmarks/leaderboard', async () => {

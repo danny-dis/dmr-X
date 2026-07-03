@@ -11,6 +11,9 @@ import {
   X,
   Search,
   Check,
+  Download,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import * as React from 'react';
 import { createPortal } from 'react-dom';
@@ -50,6 +53,12 @@ interface ClaudeCodeModelRole {
 interface EnvVar {
   key: string;
   value: string;
+}
+
+interface TestResult {
+  success: boolean;
+  latencyMs: number;
+  error?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -351,6 +360,8 @@ export function ClaudeCodePage() {
   const [providers, setProviders] = React.useState<ApiProvider[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [testResult, setTestResult] = React.useState<TestResult | null>(null);
 
   const [roles, setRoles] = React.useState<ClaudeCodeModelRole[]>([
     { key: 'big', label: 'Large Model', description: 'Select Big Model (Opus)', modelId: null, providerId: null },
@@ -361,9 +372,28 @@ export function ClaudeCodePage() {
   const [envVars, setEnvVars] = React.useState<EnvVar[]>([]);
   const [envDialogOpen, setEnvDialogOpen] = React.useState(false);
 
+  // Load saved config from backend
   React.useEffect(() => {
-    Admin.listProviders()
-      .then(setProviders)
+    Promise.all([
+      Admin.listProviders(),
+      Admin.getAgentIntegrationConfig(),
+    ])
+      .then(([providerList, config]) => {
+        setProviders(providerList);
+        if (config.claudeCode) {
+          const cc = config.claudeCode;
+          setRoles((prev) =>
+            prev.map((r) => ({
+              ...r,
+              modelId: (cc[`${r.key}ModelId`] as string | null) ?? null,
+              providerId: (cc[`${r.key}ProviderId`] as string | null) ?? null,
+            })),
+          );
+          if (cc.customEnvVars && Array.isArray(cc.customEnvVars)) {
+            setEnvVars(cc.customEnvVars as EnvVar[]);
+          }
+        }
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -374,6 +404,7 @@ export function ClaudeCodePage() {
     );
   };
 
+  // Save config to backend
   const handleSaveAndEnable = async () => {
     const configured = roles.filter((r) => r.modelId && r.providerId);
     if (configured.length === 0) {
@@ -383,44 +414,16 @@ export function ClaudeCodePage() {
 
     setSaving(true);
     try {
-      const apiUrl = window.location.origin;
-
-      const claudeEnvVars: Record<string, string> = {
-        ANTHROPIC_BASE_URL: `${apiUrl}/v1`,
-      };
-
-      const anthropicProvider = providers.find((p) => p.name.toLowerCase().includes('anthropic'));
-      if (anthropicProvider?.apiKeyRef) {
-        claudeEnvVars.ANTHROPIC_API_KEY = anthropicProvider.apiKeyRef;
+      const config: Record<string, unknown> = {};
+      for (const role of roles) {
+        config[`${role.key}ModelId`] = role.modelId;
+        config[`${role.key}ProviderId`] = role.providerId;
       }
+      config.customEnvVars = envVars.filter((v) => v.key.trim());
 
-      for (const role of configured) {
-        const provider = providers.find((p) => p.id === role.providerId);
-        const model = provider?.models?.find((m) => m.id === role.modelId);
-        if (model) {
-          const envKey =
-            role.key === 'big'
-              ? 'CLAUDE_CODE_BIG_MODEL'
-              : role.key === 'medium'
-                ? 'CLAUDE_CODE_MEDIUM_MODEL'
-                : 'CLAUDE_CODE_SMALL_MODEL';
-          claudeEnvVars[envKey] = model.modelId ?? model.id;
-        }
-      }
-
-      for (const ev of envVars) {
-        if (ev.key.trim()) {
-          claudeEnvVars[ev.key.trim()] = ev.value;
-        }
-      }
-
-      const envStr = Object.entries(claudeEnvVars)
-        .map(([k, v]) => `${k}=${k.includes('KEY') ? '***' : v}`)
-        .join('\n');
-
+      await Admin.updateAgentIntegrationConfig('claudeCode', config);
       toast.success('Configuration saved', {
-        description: `Set these environment variables before launching Claude Code:\n\n${envStr}`,
-        duration: 10000,
+        description: 'Your Claude Code integration settings have been saved.',
       });
     } catch (err) {
       toast.error('Failed to save', {
@@ -431,10 +434,112 @@ export function ClaudeCodePage() {
     }
   };
 
+  // Test connection
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await Admin.testIntegration('claude-code');
+      setTestResult(result);
+      if (result.success) {
+        toast.success('Connection successful', {
+          description: `Gateway responded in ${result.latencyMs}ms`,
+        });
+      } else {
+        toast.error('Connection failed', {
+          description: result.error ?? 'Unknown error',
+        });
+      }
+    } catch (err) {
+      setTestResult({ success: false, latencyMs: 0, error: err instanceof Error ? err.message : String(err) });
+      toast.error('Test failed', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // Generate wrapper script
+  const handleDownloadScript = () => {
+    const apiUrl = window.location.origin;
+    const configured = roles.filter((r) => r.modelId && r.providerId);
+
+    const envLines: string[] = [];
+    envLines.push(`# DMR-X Claude Code Wrapper`);
+    envLines.push(`# Generated: ${new Date().toISOString().split('T')[0]}`);
+    envLines.push('');
+    envLines.push(`set -e`);
+    envLines.push('');
+    envLines.push(`# Configuration`);
+    envLines.push(`DMRX_GATEWAY="${apiUrl}"`);
+    envLines.push(`ANTHROPIC_BASE_URL="\${DMRX_GATEWAY}/v1"`);
+    envLines.push('');
+
+    const anthropicProvider = providers.find((p) => p.name.toLowerCase().includes('anthropic'));
+    if (anthropicProvider?.apiKeyRef) {
+      envLines.push(`# Set your DMR-X API key here or export it before running this script`);
+      envLines.push(`export ANTHROPIC_API_KEY="\${DMRX_API_KEY:-your-api-key-here}"`);
+      envLines.push('');
+    }
+
+    envLines.push(`# Model roles`);
+    for (const role of configured) {
+      const provider = providers.find((p) => p.id === role.providerId);
+      const model = provider?.models?.find((m) => m.id === role.modelId);
+      if (model) {
+        const envKey =
+          role.key === 'big'
+            ? 'CLAUDE_CODE_BIG_MODEL'
+            : role.key === 'medium'
+              ? 'CLAUDE_CODE_MEDIUM_MODEL'
+              : 'CLAUDE_CODE_SMALL_MODEL';
+        envLines.push(`export ${envKey}="${model.modelId ?? model.id}"`);
+      }
+    }
+    envLines.push('');
+
+    if (envVars.length > 0) {
+      envLines.push(`# Custom environment variables`);
+      for (const ev of envVars) {
+        if (ev.key.trim()) {
+          envLines.push(`export ${ev.key}="${ev.value}"`);
+        }
+      }
+      envLines.push('');
+    }
+
+    envLines.push(`# Validate gateway connectivity`);
+    envLines.push(`echo "Testing DMR-X gateway connectivity..."`);
+    envLines.push(`if ! curl -s --fail "\${DMRX_GATEWAY}/health" > /dev/null 2>&1; then`);
+    envLines.push(`  echo "ERROR: Cannot reach DMR-X gateway at \${DMRX_GATEWAY}"`);
+    envLines.push(`  echo "Please ensure the gateway is running: bun run dev:gateway"`);
+    envLines.push(`  exit 1`);
+    envLines.push(`fi`);
+    envLines.push(`echo "Gateway is reachable."`);
+    envLines.push('');
+    envLines.push(`# Launch Claude Code`);
+    envLines.push(`exec claude "$@"`);
+
+    const script = envLines.join('\n');
+    const blob = new Blob([script], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'claude-code-dmrx.sh';
+    a.click();
+    URL.revokeObjectURL(url);
+
+    toast.success('Script downloaded', {
+      description: 'Run: chmod +x claude-code-dmrx.sh && ./claude-code-dmrx.sh',
+    });
+  };
+
   const handleReset = () => {
     setRoles((prev) => prev.map((r) => ({ ...r, modelId: null, providerId: null })));
     setEnvVars([]);
-    toast.show('Reset to defaults', { description: 'Click Save & Enable to apply.' });
+    setTestResult(null);
+    toast.show('Reset to defaults', { description: 'Click Save to apply.' });
   };
 
   if (loading) {
@@ -466,9 +571,18 @@ export function ClaudeCodePage() {
               <RotateCcw className="size-3" />
               Reset
             </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleTestConnection}
+              loading={testing}
+              leftIcon={testResult?.success ? <Wifi className="size-3" /> : testResult ? <WifiOff className="size-3" /> : undefined}
+            >
+              Test Connection
+            </Button>
             <Button size="sm" onClick={handleSaveAndEnable} loading={saving}>
               <Save className="size-3" />
-              Save & Enable
+              Save
             </Button>
           </>
         }
@@ -537,13 +651,76 @@ export function ClaudeCodePage() {
           </CardContent>
         </Card>
 
+        {/* Test Result */}
+        {testResult && (
+          <div
+            className={cn(
+              'rounded-lg border px-4 py-3',
+              testResult.success
+                ? 'border-success/30 bg-success/5'
+                : 'border-danger/30 bg-danger/5',
+            )}
+          >
+            <div className="flex items-start gap-2">
+              {testResult.success ? (
+                <Wifi className="size-4 text-success shrink-0 mt-0.5" />
+              ) : (
+                <WifiOff className="size-4 text-danger shrink-0 mt-0.5" />
+              )}
+              <div className="text-xs text-fg leading-relaxed">
+                <p className="font-medium">
+                  {testResult.success ? 'Connection successful' : 'Connection failed'}
+                </p>
+                <p className="text-fg-muted">
+                  {testResult.success
+                    ? `Gateway responded in ${testResult.latencyMs}ms`
+                    : testResult.error}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Quick Setup */}
+        <Card padding="md">
+          <CardHeader className="px-0 pt-0">
+            <CardTitle>Quick Setup</CardTitle>
+          </CardHeader>
+          <CardContent className="px-0 space-y-3">
+            <div className="text-xs text-fg-muted">
+              <p className="mb-2 font-medium text-fg">Option 1: Download wrapper script</p>
+              <p className="mb-2">
+                Download a shell script that configures all environment variables and launches Claude Code.
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleDownloadScript}
+                leftIcon={<Download className="size-3" />}
+              >
+                Download Script
+              </Button>
+            </div>
+            <div className="text-xs text-fg-muted">
+              <p className="mb-2 font-medium text-fg">Option 2: Set environment variables manually</p>
+              <pre className="px-3 py-2 bg-surface-2 rounded-lg border border-border font-mono text-[11px] whitespace-pre-wrap">{`export ANTHROPIC_BASE_URL="${window.location.origin}/v1"
+export ANTHROPIC_API_KEY="dmr-sk-your-key-here"
+export CLAUDE_CODE_BIG_MODEL="claude-opus-4-20250514"
+export CLAUDE_CODE_MEDIUM_MODEL="claude-sonnet-4-20250514"
+export CLAUDE_CODE_SMALL_MODEL="claude-haiku-3-20250307"
+
+claude "your prompt here"`}</pre>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
           <div className="flex items-start gap-2">
             <AlertTriangle className="size-4 text-primary shrink-0 mt-0.5" />
             <div className="text-xs text-fg leading-relaxed">
               <p className="font-medium mb-1">How it works</p>
               <p className="text-fg-muted">
-                DMR-X acts as an OpenAI-compatible proxy for Claude Code. Set{' '}
+                DMR-X acts as an Anthropic-compatible proxy for Claude Code. Set{' '}
                 <code className="font-mono bg-surface-2 px-1 rounded">ANTHROPIC_BASE_URL</code> to
                 your gateway URL, and Claude Code will route requests through your configured
                 providers with automatic fallback, rate limiting, and cost tracking.
