@@ -3813,7 +3813,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   server.get('/admin/sandbox/jobs', async (request) => {
-    const { limit } = request.query as { limit?: number };
+    const { limit: rawLimit } = request.query as { limit?: number };
+    const limit = Math.min(Math.max(Number(rawLimit) || 50, 1), 200);
     const jobs = sandboxService.list(limit);
     return { jobs };
   });

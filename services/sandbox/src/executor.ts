@@ -1,9 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import os from 'node:os';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { logger } from '@dmr-x/utils';
+
+import { SUPPORTED_LANGUAGES } from './languages.js';
 
 export interface ExecuteInput {
   language: string;
@@ -119,7 +122,6 @@ function attachToCgroup(cgroupPath: string, pid: number): void {
  */
 function cleanupCgroup(cgroupPath: string): void {
   try {
-    const { rmSync } = require('node:fs');
     rmSync(cgroupPath, { recursive: true, force: true });
   } catch {
     // Best-effort cleanup
@@ -169,16 +171,9 @@ export class Executor {
         env: { ...SANDBOX_ENV, ...runner.env },
       };
 
-      // On Linux, use unshare for network isolation if available
-      if (isLinux() && process.getuid?.() === 0) {
-        // Network namespace isolation (requires root or CAP_SYS_ADMIN)
-        // This prevents sandboxed code from making network requests
-        try {
-          spawnOptions.detached = true;
-        } catch {
-          // Ignore if not supported
-        }
-      }
+      // NOTE: Network isolation requires running as root with unshare:
+      //   unshare --net -- node -e "..."
+      // The cgroup resource limits + stripped SANDBOX_ENV are the primary isolation.
 
       const proc = spawn(runner.command, runner.args, spawnOptions);
 
@@ -193,17 +188,29 @@ export class Executor {
       let stderr = '';
       let killed = false;
 
+      // Enforce bounded buffers to prevent OOM from runaway output
+      const MAX_STDOUT_BYTES = 100_000;  // 100KB
+      const MAX_STDERR_BYTES = 10_000;   // 10KB
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+
       const timer = setTimeout(() => {
         killed = true;
         proc.kill('SIGKILL');
       }, input.timeoutMs);
 
       proc.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
+        stdoutBytes += data.length;
+        if (stdoutBytes <= MAX_STDOUT_BYTES) {
+          stdout += data.toString();
+        }
       });
 
       proc.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
+        stderrBytes += data.length;
+        if (stderrBytes <= MAX_STDERR_BYTES) {
+          stderr += data.toString();
+        }
       });
 
       proc.on('close', (code) => {
@@ -261,22 +268,24 @@ export class Executor {
   }
 
   private getRunner(language: string): { command: string; args: string[]; env: Record<string, string> } | null {
-    switch (language) {
-      case 'python':
-      case 'python3':
-        return { command: 'python3', args: ['-'], env: {} };
-      case 'node':
-      case 'javascript':
-      case 'js':
-        return { command: 'node', args: ['-e', ''], env: {} };
-      case 'deno':
-        // Deno with minimal permissions — no network, no filesystem write, no env
-        return { command: 'deno', args: ['eval', '--no-prompt', '--allow-read', '--allow-run'], env: {} };
-      case 'bun':
-        return { command: 'bun', args: ['-e', ''], env: {} };
-      // SECURITY: bash/sh removed — they provide unrestricted OS access
-      default:
-        return null;
-    }
+    const lang = SUPPORTED_LANGUAGES[language];
+    if (!lang) return null;
+
+    // Language-specific args (stdin is used for code delivery)
+    const argsByLang: Record<string, string[]> = {
+      python: ['-'],
+      python3: ['-'],
+      node: [],
+      javascript: [],
+      js: [],
+      deno: ['eval', '--no-prompt'],
+      bun: ['-e', ''],
+    };
+
+    return {
+      command: lang.command,
+      args: argsByLang[language] || [],
+      env: {},
+    };
   }
 }

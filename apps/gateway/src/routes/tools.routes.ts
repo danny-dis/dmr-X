@@ -94,8 +94,6 @@ export { executeToolCall };
 // Built-in tool handlers: sandbox code execution + memory RAG
 // ---------------------------------------------------------------------------
 
-/** Poll interval in ms when waiting for a sandbox job to complete. */
-const SANDBOX_POLL_INTERVAL_MS = 200;
 /** Maximum time in ms to wait for a sandbox job. */
 const SANDBOX_MAX_WAIT_MS = 30_000;
 
@@ -124,24 +122,48 @@ export function registerBuiltinToolHandlers(): void {
         tenantId: context.tenant?.id,
       });
 
-      // Poll until the job finishes or we time out
-      const deadline = Date.now() + SANDBOX_MAX_WAIT_MS;
-      let current = job;
-      while (current.status === 'queued' || current.status === 'running') {
-        if (Date.now() >= deadline) {
-          return { error: 'Sandbox execution timed out', jobId: current.id };
-        }
-        await new Promise((r) => setTimeout(r, SANDBOX_POLL_INTERVAL_MS));
-        current = sandboxService.getById(current.id) ?? current;
+      // If the job completed synchronously (e.g. resource check failed), return immediately
+      if (job.status !== 'queued' && job.status !== 'running') {
+        return {
+          jobId: job.id,
+          status: job.status,
+          output: job.output,
+          error: job.error,
+          durationMs: job.durationMs,
+          language: job.language,
+        };
       }
 
+      // Wait for the job to finish via event (no polling)
+      const result = await new Promise<{ status: string; output: string | null; error: string | null; durationMs: number | null }>((resolve) => {
+        const onComplete = ({ id, status }: { id: string; status: string }) => {
+          if (id !== job.id) return;
+          sandboxService.removeListener('jobComplete', onComplete);
+          clearTimeout(timer);
+          const final = sandboxService.getById(id);
+          resolve({
+            status: final?.status ?? status,
+            output: final?.output ?? null,
+            error: final?.error ?? null,
+            durationMs: final?.durationMs ?? null,
+          });
+        };
+
+        sandboxService.on('jobComplete', onComplete);
+
+        const timer = setTimeout(() => {
+          sandboxService.removeListener('jobComplete', onComplete);
+          resolve({ status: 'timeout', output: null, error: 'Sandbox execution timed out', durationMs: null });
+        }, SANDBOX_MAX_WAIT_MS);
+      });
+
       return {
-        jobId: current.id,
-        status: current.status,
-        output: current.output,
-        error: current.error,
-        durationMs: current.durationMs,
-        language: current.language,
+        jobId: job.id,
+        status: result.status,
+        output: result.output,
+        error: result.error,
+        durationMs: result.durationMs,
+        language: job.language,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

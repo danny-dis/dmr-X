@@ -1,15 +1,14 @@
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 
 import { Executor } from './executor.js';
 import { ResourceLimiter } from './resource-limiter.js';
+import { ALLOWED_LANGUAGES } from './languages.js';
 
 const cache = createNamespacedCache('sandbox');
-
-/** Languages allowed for sandbox execution (bash/sh removed for security). */
-const ALLOWED_LANGUAGES = new Set(['python', 'python3', 'node', 'javascript', 'js', 'deno', 'bun']);
 
 /** Maximum code size in characters. */
 const MAX_CODE_SIZE = 100_000;
@@ -51,15 +50,19 @@ export interface SubmitJobInput {
   maxRetries?: number;
 }
 
-export class SandboxService {
+export class SandboxService extends EventEmitter {
   private executor: Executor;
   private limiter: ResourceLimiter;
   private maxConcurrent = 5;
   private runningCount = 0;
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
+    super();
     this.executor = new Executor();
     this.limiter = new ResourceLimiter();
+    // Periodically clean up old completed/failed jobs (every hour)
+    this.cleanupTimer = setInterval(() => this.cleanupOldJobs(), 60 * 60 * 1000);
   }
 
   async submit(input: SubmitJobInput): Promise<SandboxJob> {
@@ -89,12 +92,16 @@ export class SandboxService {
       VALUES (?, ?, ?, ?, 'queued', 'process', ?, ?)
     `).run(id, input.tenantId || null, language, input.code, timeoutMs, maxRetries);
 
+    cache.delete('list');
+
     const job = this.getById(id);
     if (!job) {
       throw new Error('Failed to create sandbox job');
     }
 
     if (this.runningCount < this.maxConcurrent) {
+      // Reserve slot synchronously to prevent race condition
+      this.runningCount++;
       this.runJob(id).catch(err => {
         logger.error({ error: String(err) }, `Sandbox job ${id} failed`);
       });
@@ -132,7 +139,6 @@ export class SandboxService {
 
   private async runJob(id: string): Promise<void> {
     const db = getDb();
-    this.runningCount++;
 
     try {
       db.prepare(`
@@ -147,7 +153,7 @@ export class SandboxService {
         return;
       }
 
-      const resourceCheck = this.limiter.checkLimits();
+      const resourceCheck = this.limiter.checkLimits(this.runningCount);
       if (!resourceCheck.ok) {
         db.prepare(`
           UPDATE sandbox_jobs SET status = 'failed', error = ?, completed_at = datetime('now')
@@ -195,6 +201,11 @@ export class SandboxService {
     } finally {
       this.runningCount--;
       cache.delete('list');
+      // Emit completion event for any listeners (e.g. tools.routes.ts)
+      const finalJob = this.getById(id);
+      if (finalJob) {
+        this.emit('jobComplete', { id, status: finalJob.status });
+      }
       this.processNextQueuedJob();
     }
   }
@@ -206,9 +217,28 @@ export class SandboxService {
       "SELECT id FROM sandbox_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
     ).get() as { id: string } | undefined;
     if (row) {
+      this.runningCount++;
       this.runJob(row.id).catch(err => {
         logger.error({ error: String(err) }, `Sandbox job ${row.id} failed`);
       });
+    }
+  }
+
+  /** Remove completed/failed/cancelled jobs older than 24 hours. */
+  private cleanupOldJobs(): void {
+    try {
+      const db = getDb();
+      const result = db.prepare(`
+        DELETE FROM sandbox_jobs
+        WHERE status IN ('completed', 'failed', 'cancelled')
+        AND completed_at < datetime('now', '-1 day')
+      `).run();
+      if (result.changes > 0) {
+        logger.debug({ deleted: result.changes }, 'Cleaned up old sandbox jobs');
+        cache.delete('list');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to clean up old sandbox jobs');
     }
   }
 
