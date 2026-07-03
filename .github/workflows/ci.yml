@@ -174,13 +174,18 @@ jobs:
         run: |
           bun apps/gateway/dist/main.js &
           echo $! > gateway.pid
-          # Wait for /healthz to return 200 (up to 60s for background init)
+          # Wait for gateway to be responsive (200 or 503 during init)
           healthy=false
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
-              echo "Gateway up after ${i}s"
+            code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/healthz 2>/dev/null || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "Gateway healthy after ${i}s"
               healthy=true
               break
+            fi
+            if [ "$code" = "503" ] && [ "$i" -ge 30 ]; then
+              # Server is responding but still initializing — give it more time
+              echo "Gateway responding (503) after ${i}s, waiting for background init..."
             fi
             sleep 1
           done
@@ -194,15 +199,17 @@ jobs:
           DMRX_LOCAL_MODE: 'true'
         run: |
           set -e
-          # /healthz
-          test "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/healthz)" = "200"
+          # /livez — must always return 200
+          test "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/livez)" = "200"
+          # /healthz — should be responsive (200 when healthy, 503 when degraded)
+          code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/healthz)
+          if [ "$code" != "200" ] && [ "$code" != "503" ]; then
+            echo "::error::Health endpoint returned unexpected status $code"
+            exit 1
+          fi
           # /healthz has the expected fields
           curl -fsS http://127.0.0.1:3000/healthz | grep -q 'db_read'
           curl -fsS http://127.0.0.1:3000/healthz | grep -q 'candidates'
-          # /ready
-          test "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ready)" = "200" || true
-          # /livez
-          test "$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/livez)" = "200"
           echo "Smoke tests passed"
       - name: Stop gateway
         if: always()

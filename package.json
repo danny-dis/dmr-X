@@ -2,6 +2,7 @@
   "name": "dmr-x",
   "version": "0.5.3",
   "private": true,
+  "type": "module",
   "description": "Universal AI routing and orchestration platform",
   "license": "BSL-1.1",
   "workspaces": [
@@ -31,7 +32,7 @@
     "@opentelemetry/sdk-trace-base": "2.7.1",
     "@types/inquirer": "9.0.9",
     "eslint": "^9.17.0",
-    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-import-x": "^4.17.0",
     "globals": "^15.14.0",
     "turbo": "^2.9.18",
     "typescript": "5.9.3",
