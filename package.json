@@ -20,8 +20,8 @@
     "test:unit": "bun vitest run --project unit",
     "test:e2e": "bun vitest run --project e2e",
     "test:watch": "bun vitest",
-    "lint": "eslint . --ext .ts,.tsx,.js,.cjs,.mjs",
-    "lint:fix": "eslint . --ext .ts,.tsx,.js,.cjs,.mjs --fix",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "clean": "turbo clean"
   },
   "devDependencies": {
@@ -30,8 +30,6 @@
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/sdk-trace-base": "2.7.1",
     "@types/inquirer": "9.0.9",
-    "@typescript-eslint/eslint-plugin": "^8.18.0",
-    "@typescript-eslint/parser": "^8.18.0",
     "eslint": "^9.17.0",
     "eslint-plugin-import": "^2.31.0",
     "globals": "^15.14.0",
@@ -46,7 +44,7 @@
   "engines": {
     "bun": ">=1.0.0"
   },
-  "packageManager": "bun@1.2.15",
+  "packageManager": "bun@1.3.14",
   "dependencies": {
     "@opentelemetry/context-async-hooks": "2.7.1"
   },
