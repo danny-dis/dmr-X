@@ -77,14 +77,14 @@ export class ToolInvocationPolicyEngine {
       SELECT * FROM tool_invocation_policies
       WHERE tenant_id = ? AND tool_name = ? AND is_active = 1
       ORDER BY priority DESC
-    `).all(context.tenant_id, context.tool_name) as ToolInvocationPolicy[];
+    `).all(context.tenant_id, context.tool_name) as unknown as ToolInvocationPolicy[];
 
     // Get global policies (tenant_id = '*')
     const globalPolicies = db.prepare(`
       SELECT * FROM tool_invocation_policies
       WHERE tenant_id = '*' AND tool_name = ? AND is_active = 1
       ORDER BY priority DESC
-    `).all(context.tool_name) as ToolInvocationPolicy[];
+    `).all(context.tool_name) as unknown as ToolInvocationPolicy[];
 
     // Evaluate tenant policies first (sorted by priority desc), then global (sorted by priority desc)
     const allPolicies = [

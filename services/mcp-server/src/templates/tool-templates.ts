@@ -32,6 +32,7 @@ export interface ToolTemplateStep {
 }
 
 export interface ToolTemplate {
+  [key: string]: unknown;
   id: string;
   tenant_id: string;
   name: string;
@@ -46,6 +47,7 @@ export interface ToolTemplate {
 }
 
 export interface ToolPreset {
+  [key: string]: unknown;
   id: string;
   tenant_id: string;
   tool_name: string;

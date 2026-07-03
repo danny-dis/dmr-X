@@ -70,7 +70,6 @@ export class PluginLoader {
         try {
           await plugin.stop();
         } catch (error) {
-          // @ts-ignore - manifest is not in scope here, but we can use id
           console.error(`Failed to stop plugin ${id}:`, error);
         }
       }

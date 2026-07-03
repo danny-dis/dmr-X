@@ -901,7 +901,7 @@ function evaluateToolPolicy(
  */
 function logAuditEvent(
   state: ServerState,
-  eventType: 'tool.invocation' | 'tool.result' | 'policy.allow' | 'policy.deny',
+  eventType: 'tool.invocation' | 'tool.result' | 'policy.allow' | 'policy.deny' | 'input_validation.deny' | 'tool.error',
   toolName: string,
   metadata?: Record<string, unknown>
 ): void {
@@ -3144,7 +3144,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             type: 'text' as const,
             text: JSON.stringify(template, null, 2),
           }],
-          structuredContent: template,
+          structuredContent: template ?? undefined,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -3477,7 +3477,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             type: 'text' as const,
             text: JSON.stringify(preset, null, 2),
           }],
-          structuredContent: preset,
+          structuredContent: preset ?? undefined,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';

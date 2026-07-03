@@ -64,7 +64,7 @@ export class ClusterScorer {
 
     try {
       // Dynamically import ONNX runtime to avoid hard dependency
-      // @ts-ignore - onnxruntime-node is an optional dependency
+      // @ts-expect-error - onnxruntime-node is an optional dependency
       const ort = await import('onnxruntime-node').catch(() => null);
       if (!ort) {
         logger.warn('onnxruntime-node not installed — cluster routing unavailable');
@@ -72,7 +72,6 @@ export class ClusterScorer {
       }
 
       const modelPath = `${this.config.assetsDir}/${this.config.modelName}`;
-      // @ts-ignore - ort.InferenceSession exists at runtime
       this.session = await ort.InferenceSession.create(modelPath, {
         executionProviders: ['cpu'],
       });
