@@ -1,4 +1,4 @@
-import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins, Search, Clock, ChevronDown, Check } from 'lucide-react';
+import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins, Search, Clock, ChevronDown, Check, Sparkles } from 'lucide-react';
 import * as React from 'react';
 
 import { Badge } from '@/components/primitives/Badge';
@@ -13,6 +13,8 @@ import { Admin } from '@/lib/admin';
 import { cn } from '@/lib/utils';
 import { usePlaygroundStore, PlaygroundMode } from '@/store/usePlaygroundStore';
 import type { ApiModel } from '@/types/api';
+import { GodmodePanel } from './GodmodePanel';
+import { PromptLibrary } from './PromptLibrary';
 
 const modeOptions = [
   { value: 'chat', label: 'Chat', icon: MessageSquare },
@@ -26,6 +28,8 @@ const modeOptions = [
   // tool-execution loop). Both render an event trace under the response.
   { value: 'agentic', label: 'Agentic', icon: Cpu },
   { value: 'tool-loop', label: 'Tool loop', icon: Workflow },
+  // G0DM0D3 integration — multi-model chat with ULTRAPLINIAN/CONSORTIUM
+  { value: 'godmode', label: 'Godmode', icon: Sparkles },
 ];
 
 export function PlaygroundInput() {
@@ -572,6 +576,23 @@ export function PlaygroundInput() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+        
+        {/* Godmode Settings & Prompt Library — shown when in godmode mode */}
+        {mode === 'godmode' && (
+          <div className="mb-3 space-y-3">
+            <GodmodePanel
+              config={config.godmode ?? {
+                autotune: true,
+                parseltongue: true,
+                parseltongueTechnique: 'leetspeak',
+                parseltongueIntensity: 'medium',
+                stmModules: ['hedge_reducer', 'direct_mode'],
+              }}
+              onChange={(g) => setConfig({ godmode: { ...config.godmode, ...g } as any })}
+            />
+            <PromptLibrary onSelectPrompt={(prompt) => setPrompt(prompt)} />
           </div>
         )}
         

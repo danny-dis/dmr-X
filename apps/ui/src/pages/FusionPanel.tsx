@@ -1,4 +1,4 @@
-import { Layers, Plus, Trash2, GripVertical, Zap, Server, Brain, Timer, ArrowUpDown, Save, RefreshCw } from 'lucide-react';
+import { Layers, Plus, Trash2, GripVertical, Zap, Server, Brain, Timer, ArrowUpDown, Save, RefreshCw, Settings } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -12,10 +12,17 @@ import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin, FusionPanel as FusionPanelApi } from '@/lib/admin';
+import { fetchAuthenticated } from '@/lib/api';
 import type { ApiFusionPanel, ApiFusionSlot } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiProvider, ApiCatalogEntry } from '@/types/api';
+
+// G0DM0D3 components
+import { FusionModeSelector, type FusionMode } from '@/components/fusion/FusionModeSelector';
+import { RaceResults, type RaceRanking } from '@/components/fusion/RaceResults';
+import { SynthesisPanel, type ConsortiumResult } from '@/components/fusion/SynthesisPanel';
+import { GodmodeSettings, type GodmodeConfig } from '@/components/fusion/GodmodeSettings';
 
 export function FusionPanelPage() {
   const [panels, setPanels] = React.useState<ApiFusionPanel[]>([]);
@@ -24,6 +31,27 @@ export function FusionPanelPage() {
   const [selectedModel, setSelectedModel] = React.useState<string>('');
   const [isLoading, setIsLoading] = React.useState(true);
   const [isSaving, setIsSaving] = React.useState(false);
+
+  // G0DM0D3 state
+  const [fusionMode, setFusionMode] = React.useState<FusionMode>('parallel');
+  const [godmodeConfig, setGodmodeConfig] = React.useState<GodmodeConfig>({
+    autotune: true,
+    parseltongue: true,
+    parseltongueTechnique: 'leetspeak',
+    parseltongueIntensity: 'medium',
+    stmModules: ['hedge_reducer', 'direct_mode'],
+  });
+  const [ultraplinianResults, setUltraplinianResults] = React.useState<{
+    rankings: RaceRanking[];
+    winner?: { model: string; score: number; duration_ms: number };
+    tier: string;
+    modelsQueried: number;
+    modelsSucceeded: number;
+    totalDurationMs: number;
+  } | null>(null);
+  const [consortiumResults, setConsortiumResults] = React.useState<ConsortiumResult | null>(null);
+  const [isRunningGodmode, setIsRunningGodmode] = React.useState(false);
+  const [godmodePrompt, setGodmodePrompt] = React.useState('');
 
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
   const catalog = useApiData<{ entries: ApiCatalogEntry[] }>(
@@ -186,6 +214,48 @@ export function FusionPanelPage() {
     }
   };
 
+  // G0DM0D3 run functions
+  const runGodmode = async () => {
+    if (!godmodePrompt.trim() || isRunningGodmode) return;
+    setIsRunningGodmode(true);
+    setUltraplinianResults(null);
+    setConsortiumResults(null);
+
+    try {
+      const messages = [{ role: 'user' as const, content: godmodePrompt }];
+      const body = {
+        messages,
+        godmode: true,
+        autotune: godmodeConfig.autotune,
+        parseltongue: godmodeConfig.parseltongue,
+        parseltongue_technique: godmodeConfig.parseltongueTechnique,
+        parseltongue_intensity: godmodeConfig.parseltongueIntensity,
+        stm_modules: godmodeConfig.stmModules,
+      };
+
+      if (fusionMode === 'ultraplinian') {
+        const res = await fetchAuthenticated('/v1/godmode/ultraplinian', {
+          method: 'POST',
+          body: JSON.stringify({ ...body, tier: 'fast' }),
+        });
+        const data = await res.json();
+        setUltraplinianResults(data);
+      } else if (fusionMode === 'consortium') {
+        const res = await fetchAuthenticated('/v1/godmode/consortium', {
+          method: 'POST',
+          body: JSON.stringify({ ...body, tier: 'fast' }),
+        });
+        const data = await res.json();
+        setConsortiumResults(data);
+      }
+      toast.success(`${fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} completed`);
+    } catch (err) {
+      toast.error(`Failed to run ${fusionMode}`);
+    } finally {
+      setIsRunningGodmode(false);
+    }
+  };
+
   return (
     <PageContainer size="wide">
       <PageHeader
@@ -285,12 +355,87 @@ export function FusionPanelPage() {
             />
             <StatTile
               label="Mode"
-              value="Parallel"
+              value={fusionMode === 'parallel' ? 'Parallel' : fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'}
               icon={<ArrowUpDown className="size-3.5" />}
               tone="accent"
               hint="execution strategy"
             />
           </div>
+
+          {/* G0DM0D3 Tier Info (when not parallel) */}
+          {fusionMode !== 'parallel' && (
+            <div className="mt-4">
+              <Card padding="md">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-fg">G0DM0D3 Tier</h3>
+                    <p className="text-xs text-fg-muted mt-1">
+                      {fusionMode === 'ultraplinian'
+                        ? 'Multi-model racing — models compete, best response wins'
+                        : 'Hive-mind synthesis — all models contribute, consensus reached'}
+                    </p>
+                  </div>
+                  <Badge tone="primary" size="sm">
+                    {fusionMode === 'ultraplinian' ? 'Racing' : 'Synthesis'}
+                  </Badge>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* G0DM0D3 Mode Selector */}
+          <div className="mt-4">
+            <Card padding="md">
+              <h3 className="text-sm font-semibold text-fg mb-3">Execution Mode</h3>
+              <FusionModeSelector
+                value={fusionMode}
+                onChange={setFusionMode}
+                disabled={isRunningGodmode}
+              />
+            </Card>
+          </div>
+
+          {/* G0DM0D3 Settings (visible when not parallel) */}
+          {fusionMode !== 'parallel' && (
+            <div className="mt-4">
+              <Card padding="md">
+                <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
+                  <Settings className="size-4" />
+                  Godmode Settings
+                </h3>
+                <GodmodeSettings
+                  config={godmodeConfig}
+                  onChange={setGodmodeConfig}
+                  disabled={isRunningGodmode}
+                />
+              </Card>
+            </div>
+          )}
+
+          {/* ULTRAPLINIAN Results */}
+          {ultraplinianResults && fusionMode === 'ultraplinian' && (
+            <div className="mt-4">
+              <RaceResults
+                rankings={ultraplinianResults.rankings}
+                winner={ultraplinianResults.winner}
+                tier={ultraplinianResults.tier}
+                modelsQueried={ultraplinianResults.modelsQueried}
+                modelsSucceeded={ultraplinianResults.modelsSucceeded}
+                totalDurationMs={ultraplinianResults.totalDurationMs}
+              />
+            </div>
+          )}
+
+          {/* CONSORTIUM Results */}
+          {consortiumResults && fusionMode === 'consortium' && (
+            <div className="mt-4">
+              <SynthesisPanel
+                synthesis={consortiumResults.synthesis}
+                orchestrator={consortiumResults.orchestrator}
+                collection={consortiumResults.collection}
+              />
+            </div>
+          )}
 
           {/* Add Model Slot */}
           {activePanel && (
@@ -409,9 +554,39 @@ export function FusionPanelPage() {
                 <li>• If a slot's model is rate-limited, it's skipped (not collapsed onto another)</li>
                 <li>• Useful for A/B testing, redundancy, or ensuring model diversity</li>
                 <li>• Combine with routing profiles for different fusion configurations</li>
+                {fusionMode !== 'parallel' && (
+                  <li>• <strong>G0DM0D3 mode:</strong> {fusionMode === 'ultaplinian' ? 'Multi-model racing with rankings' : 'Hive-mind synthesis with consensus'}</li>
+                )}
               </ul>
             </Card>
           </div>
+
+          {/* Godmode Prompt Input (for non-parallel modes) */}
+          {fusionMode !== 'parallel' && (
+            <div className="mt-4">
+              <Card padding="md">
+                <h3 className="text-sm font-semibold text-fg mb-3">
+                  {fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} Prompt
+                </h3>
+                <div className="flex gap-3">
+                  <textarea
+                    value={godmodePrompt}
+                    onChange={(e) => setGodmodePrompt(e.target.value)}
+                    placeholder={`Enter prompt for ${fusionMode === 'ultraplinian' ? 'multi-model racing' : 'hive-mind synthesis'}...`}
+                    className="flex-1 min-h-[80px] p-3 rounded-lg border border-border bg-surface-2 text-sm text-fg resize-none focus:border-primary/40 focus:ring-2 focus:ring-primary/20"
+                    disabled={isRunningGodmode}
+                  />
+                  <Button
+                    onClick={runGodmode}
+                    disabled={!godmodePrompt.trim() || isRunningGodmode}
+                    className="self-end"
+                  >
+                    {isRunningGodmode ? 'Running...' : 'Run'}
+                  </Button>
+                </div>
+              </Card>
+            </div>
+          )}
         </>
       )}
     </PageContainer>

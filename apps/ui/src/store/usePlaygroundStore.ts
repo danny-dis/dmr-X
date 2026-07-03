@@ -13,7 +13,8 @@ export type PlaygroundMode =
   | 'rerank'
   | 'moderate'
   | 'agentic'
-  | 'tool-loop';
+  | 'tool-loop'
+  | 'godmode';  // G0DM0D3 integration
 
 /**
  * A single SSE event parsed from a streaming response.
@@ -41,6 +42,17 @@ export interface PlaygroundConfig {
    * mode on a non-empty array.
    */
   tools: any[];
+  /**
+   * G0DM0D3 pipeline settings (only used when mode = 'godmode')
+   */
+  godmode?: {
+    autotune: boolean;
+    parseltongue: boolean;
+    parseltongueTechnique: string;
+    parseltongueIntensity: 'light' | 'medium' | 'heavy';
+    stmModules: string[];
+    customSystemPrompt?: string;
+  };
 }
 
 export interface Conversation {
@@ -125,6 +137,7 @@ interface PlaygroundState {
   setCostFilter: (filter: 'all' | 'free') => void;
   setConfig: (config: Partial<PlaygroundConfig>) => void;
   setTools: (tools: any[]) => void;
+  setGodmodeConfig: (godmode: Partial<PlaygroundConfig['godmode']>) => void;
   setShowSidebar: (show: boolean) => void;
   clearMessages: () => void;
   /**
@@ -180,6 +193,13 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         temperature: 0.7,
         stream: true,
         tools: [],
+        godmode: {
+          autotune: true,
+          parseltongue: true,
+          parseltongueTechnique: 'leetspeak',
+          parseltongueIntensity: 'medium',
+          stmModules: ['hedge_reducer', 'direct_mode'],
+        },
       },
       costFilter: 'all',
       isTemporary: false,
@@ -316,6 +336,16 @@ export const usePlaygroundStore = create<PlaygroundState>()(
       // for the tools picker so the UI doesn't have to spread a partial.
       setTools: (tools: any[]) => {
         set(state => ({ config: { ...state.config, tools } }));
+      },
+
+      // Set godmode config
+      setGodmodeConfig: (godmode: Partial<PlaygroundConfig['godmode']>) => {
+        set(state => ({
+          config: {
+            ...state.config,
+            godmode: { ...state.config.godmode!, ...godmode },
+          },
+        }));
       },
 
       // Set show sidebar
@@ -468,6 +498,25 @@ export const usePlaygroundStore = create<PlaygroundState>()(
             temperature: config.temperature,
             stream: true,
           };
+          if (config.maxTokens) body.max_tokens = config.maxTokens;
+        } else if (mode === 'godmode') {
+          // G0DM0D3 integration — uses the godmode chat endpoint with
+          // AutoTune, Parseltongue, and STM pipeline settings.
+          endpoint = '/v1/godmode/chat';
+          const hist = history.map(m => ({ role: m.role, content: m.content }));
+          body = {
+            messages: [...hist, { role: 'user', content }],
+            stream: config.stream,
+            godmode: config.godmode?.autotune ?? true,
+            autotune: config.godmode?.autotune ?? true,
+            parseltongue: config.godmode?.parseltongue ?? true,
+            parseltongue_technique: config.godmode?.parseltongueTechnique ?? 'leetspeak',
+            parseltongue_intensity: config.godmode?.parseltongueIntensity ?? 'medium',
+            stm_modules: config.godmode?.stmModules ?? ['hedge_reducer', 'direct_mode'],
+          };
+          if (config.godmode?.customSystemPrompt) {
+            body.custom_system_prompt = config.godmode.customSystemPrompt;
+          }
           if (config.maxTokens) body.max_tokens = config.maxTokens;
         }
 
@@ -736,6 +785,87 @@ export const usePlaygroundStore = create<PlaygroundState>()(
                 cost: lastChunk?.cost,
                 latencyMs: latency,
                 routingDecision: lastChunk?.routing_decision,
+              });
+          } else if (config.stream && mode === 'godmode') {
+            // G0DM0D3 streaming — same OpenAI-style SSE format
+            const response = await fetchAuthenticated(endpoint, {
+              method: 'POST',
+              body: JSON.stringify(body),
+              signal: abortController.signal,
+              headers: extraHeaders,
+            });
+
+            if (!response.ok || !response.body) {
+              const errText = await response.text().catch(() => response.statusText);
+              throw new Error(`Godmode stream failed: ${response.status} ${errText}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullContent = '';
+            let lastChunk: any = null;
+            let sawDone = false;
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              const chunk = decoder.decode(value, { stream: true });
+              const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
+
+              for (const line of lines) {
+                if (line === 'data: [DONE]') {
+                  sawDone = true;
+                  break;
+                }
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  lastChunk = data;
+                  if (data.error?.message) {
+                    lastChunk = { error: data.error };
+                  } else if (data.choices?.[0]?.delta?.content) {
+                    fullContent += data.choices[0].delta.content;
+                    get().updateStreamingMessage(fullContent);
+                  }
+                } catch {
+                  // Skip invalid JSON
+                }
+              }
+              if (sawDone) break;
+            }
+
+            const latency = performance.now() - start;
+            const finalContent = fullContent
+              || (lastChunk?.error?.message ? `Error: ${lastChunk.error.message}` : '')
+              || lastChunk?.choices?.[0]?.message?.content
+              || '';
+
+            set(state => ({
+              messages: state.messages.map(m =>
+                m.id === assistantMessageId
+                  ? {
+                      ...m,
+                      content: finalContent,
+                      isStreaming: false,
+                      latencyMs: latency,
+                      model: lastChunk?.model ?? model,
+                      provider: 'godmode',
+                      tokensInput: lastChunk?.usage?.prompt_tokens,
+                      tokensOutput: lastChunk?.usage?.completion_tokens,
+                    }
+                  : m
+              ),
+              isStreaming: false,
+            }));
+
+            await apiPost(`/v1/conversations/${conversationId}/messages`, {
+                role: 'assistant',
+                content: finalContent,
+                model: lastChunk?.model ?? model,
+                provider: 'godmode',
+                tokensInput: lastChunk?.usage?.prompt_tokens,
+                tokensOutput: lastChunk?.usage?.completion_tokens,
+                latencyMs: latency,
               });
           } else {
             // Non-streaming response

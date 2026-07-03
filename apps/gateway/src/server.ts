@@ -47,6 +47,8 @@ import { countTokensRoutes } from './routes/count-tokens.routes.js';
 import { agentRoutes } from './routes/agent.routes.js';
 import { agentChatRoutes } from './routes/agent-chat.routes.js';
 import { cloudcodeRoutes } from './routes/cloudcode.routes.js';
+import { godmodeRoutes } from './routes/godmode.routes.js';
+import { promptRoutes } from './routes/prompt.routes.js';
 
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 declare const Bun: unknown | undefined;
@@ -1288,6 +1290,8 @@ void (async () => {
    await server.register(agentRoutes, { prefix: '/v1' });
    await server.register(agentChatRoutes, { prefix: '/v1' });
    await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
+   await server.register(godmodeRoutes, { prefix: '/v1' }); // G0DM0D3 integration
+   await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
 
   // SPA fallback: serve index.html for non-API GET requests.
   // Pre-read index.html at startup so we catch missing UI builds early

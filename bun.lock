@@ -40,9 +40,11 @@
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
         "@dmr-x/federation": "*",
+        "@dmr-x/godmode": "*",
         "@dmr-x/memory": "*",
         "@dmr-x/oauth": "*",
         "@dmr-x/policy": "*",
+        "@dmr-x/prompts": "*",
         "@dmr-x/quota": "*",
         "@dmr-x/registry": "*",
         "@dmr-x/router": "*",
@@ -294,6 +296,16 @@
         "typescript": "5.9.3",
       },
     },
+    "services/godmode": {
+      "name": "@dmr-x/godmode",
+      "version": "0.1.0",
+      "dependencies": {
+        "@dmr-x/utils": "workspace:*",
+      },
+      "devDependencies": {
+        "typescript": "^5.4.0",
+      },
+    },
     "services/mcp-client": {
       "name": "@dmr-x/mcp-client",
       "version": "0.5.2",
@@ -389,6 +401,16 @@
       },
       "devDependencies": {
         "typescript": "5.9.3",
+      },
+    },
+    "services/prompts": {
+      "name": "@dmr-x/prompts",
+      "version": "0.1.0",
+      "dependencies": {
+        "@dmr-x/utils": "workspace:*",
+      },
+      "devDependencies": {
+        "typescript": "^5.4.0",
       },
     },
     "services/quota": {
@@ -560,6 +582,8 @@
 
     "@dmr-x/gateway": ["@dmr-x/gateway@workspace:apps/gateway"],
 
+    "@dmr-x/godmode": ["@dmr-x/godmode@workspace:services/godmode"],
+
     "@dmr-x/mcp-client": ["@dmr-x/mcp-client@workspace:services/mcp-client"],
 
     "@dmr-x/mcp-server": ["@dmr-x/mcp-server@workspace:services/mcp-server"],
@@ -575,6 +599,8 @@
     "@dmr-x/plugin-loader-bootstrap": ["@dmr-x/plugin-loader-bootstrap@workspace:services/plugin-loader-bootstrap"],
 
     "@dmr-x/policy": ["@dmr-x/policy@workspace:services/policy"],
+
+    "@dmr-x/prompts": ["@dmr-x/prompts@workspace:services/prompts"],
 
     "@dmr-x/quota": ["@dmr-x/quota@workspace:services/quota"],
 
