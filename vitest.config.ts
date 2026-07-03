@@ -28,11 +28,11 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
-    pool: 'forks',
+    pool: 'threads',
     poolOptions: {
-      forks: {
-        maxForks: 3,
-        execArgv: ['--max-old-space-size=2500'],
+      threads: {
+        singleThread: true,
+        execArgv: ['--max-old-space-size=6144'],
       },
     },
     coverage: {
