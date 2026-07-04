@@ -1,4 +1,5 @@
 export { createLogger, logger } from './logger.js';
+export { parseBodyLimit, parseTrustProxy } from './parse-body.js';
 export { eventBus, SystemEvents } from './events.js';
 export {
   withRetry,

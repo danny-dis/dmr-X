@@ -6,6 +6,7 @@ import type {
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
 import { HttpError, logger } from '@dmr-x/utils';
+import { keyRotationService } from '@dmr-x/quota';
 
 import type {
   ProviderConfig,
@@ -42,6 +43,19 @@ export class GenericOpenAIAdapter extends BaseAdapter {
   async initialize(config: ProviderConfig): Promise<void> {
     await super.initialize(config);
     this.apiKey = (config.accessToken as string) || (config.apiKey as string) || '';
+
+    // Load keys from rotation service
+    const loadedKeys = keyRotationService.loadKeys(this.providerId);
+    if (loadedKeys.length > 0) {
+      this.apiKeys = loadedKeys;
+      this.keyIndex = 0;
+    } else if (this.apiKey) {
+      this.apiKeys = [this.apiKey];
+    }
+
+    // Enable rate limit tracking so response headers feed smart rotation
+    this.enableRateLimitTracking();
+
     // Some free providers (e.g., Pollinations) don't need an API key
   }
 
@@ -57,11 +71,18 @@ export class GenericOpenAIAdapter extends BaseAdapter {
   }
 
   /**
-   * Get the current key for requests
+   * Get the current key for requests — delegates to key rotation service
    */
   private getCurrentKey(): string {
+    // Use smart rotation if multiple keys available
+    const rotated = keyRotationService.getNextKey(this.providerId);
+    if (rotated) {
+      this.apiKey = rotated;
+      return rotated;
+    }
+
+    // Fallback to local round-robin
     if (this.apiKeys.length <= 1) return this.apiKey;
-    // Round-robin: advance after each use
     const key = this.apiKeys[this.keyIndex % this.apiKeys.length];
     this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
     this.apiKey = key;
@@ -69,9 +90,10 @@ export class GenericOpenAIAdapter extends BaseAdapter {
   }
 
   protected async checkHealth(): Promise<void> {
+    const key = this.getCurrentKey();
     const headers: Record<string, string> = {};
-    if (this.apiKey) {
-      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
     }
 
     try {
@@ -285,9 +307,10 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
   async listModels(): Promise<ModelInfo[]> {
     this.assertInitialized();
+    const key = this.getCurrentKey();
     const headers: Record<string, string> = {};
-    if (this.apiKey) {
-      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
     }
 
     let response: Response;

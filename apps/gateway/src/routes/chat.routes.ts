@@ -44,13 +44,17 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     let compressionMetadata = undefined;
     const tenantId = (request as any).tenant?.id;
     const apiKeyId = (request as any).apiKeyId;
+    const compressionHeader = request.headers['x-compression'] as string;
 
-    if (tenantId || apiKeyId) {
+    if (tenantId || apiKeyId || compressionHeader) {
       try {
         const tenantConfig = tenantId ? compressionService.getTenantConfig(tenantId) : undefined;
         const apiKeyConfig = apiKeyId ? compressionService.getApiKeyConfig(apiKeyId) : undefined;
 
-        if (tenantConfig?.enabled || apiKeyConfig?.enabled) {
+        // Allow per-request engine override via header
+        const headerConfig = compressionHeader ? { enabled: true, engine: compressionHeader as any } : undefined;
+
+        if (tenantConfig?.enabled || apiKeyConfig?.enabled || headerConfig) {
           const messagesForCompression = body.messages.map(m => ({
             role: m.role,
             content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
@@ -59,7 +63,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           const { compressed, metadata } = await compressionService.compressPrompt(
             messagesForCompression,
             tenantConfig,
-            apiKeyConfig
+            apiKeyConfig ?? headerConfig
           );
 
           // Convert back to original format
@@ -69,7 +73,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           })) as any;
 
           compressionMetadata = metadata;
-          logger.debug({ requestId, saved: metadata.saved }, 'Applied compression');
+          logger.debug({ requestId, saved: metadata.saved, engine: metadata.algorithmUsed }, 'Applied compression');
         }
       } catch (err) {
         logger.warn({ err, requestId }, 'Compression failed, continuing without');

@@ -86,6 +86,7 @@ export function Sidebar() {
           variant="ghost"
           className={cn('w-full', expanded ? 'justify-start' : 'justify-center')}
           onClick={toggle}
+          aria-label="Toggle sidebar"
         >
           {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronLeft className="size-3.5" />}
           {expanded && <span>Collapse</span>}

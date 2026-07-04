@@ -80,6 +80,10 @@ export abstract class BaseAdapter implements ProviderAdapter {
   async initialize(config: ProviderConfig): Promise<void> {
     this.config = config;
     this.initialized = true;
+    // Auto-enable rate limit tracking for adapters with API keys
+    if (config.apiKey) {
+      this.enableRateLimitTracking();
+    }
     logger.info({ providerId: this.providerId }, 'Adapter initialized');
   }
 

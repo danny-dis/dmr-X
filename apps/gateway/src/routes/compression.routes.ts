@@ -1,3 +1,4 @@
+import { ValidationError } from '@dmr-x/core';
 import { logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -10,6 +11,11 @@ const CompressionConfigSchema = z.object({
   apiKey: z.string().optional(),
   reversible: z.boolean().optional(),
   minTokensToCompress: z.number().positive().optional(),
+  engine: z.enum(['headroom', 'rtk', 'caveman', 'comment-strip', 'auto']).optional(),
+});
+
+const CompressionRetrieveSchema = z.object({
+  compressedId: z.string().min(1),
 });
 
 export async function compressionRoutes(server: FastifyInstance): Promise<void> {
@@ -111,11 +117,11 @@ export async function compressionRoutes(server: FastifyInstance): Promise<void> 
 
   // Retrieve original content (CCR)
   server.post('/compression/retrieve', async (request, reply) => {
-    const { compressedId } = request.body as { compressedId: string };
-    if (!compressedId) {
-      reply.status(400);
-      return { error: 'compressedId is required' };
+    const parsed = CompressionRetrieveSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
+    const { compressedId } = parsed.data;
 
     try {
       const original = await compressionService.retrieveOriginal(compressedId);

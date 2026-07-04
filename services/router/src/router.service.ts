@@ -3,6 +3,7 @@ import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, Pr
 import type { CandidateSet } from '@dmr-x/core';
 import type { PolicyService } from '@dmr-x/policy';
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
+import { keyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 
@@ -16,9 +17,10 @@ import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
-import { planStayOrSwitch, type ModelTier } from './planner/ev-planner.js';
+
 import { runPipeline } from './pipeline/pipeline.js';
-import { hashConversation, getStickyProvider, setStickyProvider, breakStickySession } from './sticky/sticky-session.js';
+import { hashConversation, setStickyProvider } from './sticky/sticky-session.js';
+import { handleStickySession } from './sticky-session-handler.js';
 
 // The router shares the gateway's tracer instance (see services/telemetry/src/tracer.ts).
 // The OTel API resolves this lazily through the global provider, so it is always
@@ -177,172 +179,13 @@ export class Router {
     // An explicit provider pin bypasses sticky sessions: the caller asked for
     // a specific provider, so a previously-stuck different provider must not win.
     if (conversationHash && !modelTarget.providerName) {
-      const sticky = await getStickyProvider(
-        conversationHash,
-        this.config.rateLimitService,
-        freeTierStrategy,
-        (providerId, modelId) => {
-          const candidate = this.candidates.find(c => c.providerId === providerId && c.modelId === modelId);
-          if (!candidate) return false;
-          if (candidate.pricingTier) {
-            return candidate.pricingTier === 'free' || candidate.pricingTier === 'free_with_limits';
-          }
-          return candidate.costPerInputToken === 0 && candidate.costPerOutputToken === 0;
-        }
-      );
-      if (sticky) {
-        // Check if sticky provider is still in candidates and healthy
-        const stickyCandidate = this.candidates.find(
-          (c) => c.providerId === sticky.providerId && c.modelId === sticky.modelId && c.isHealthy
-        );
-
-        if (stickyCandidate) {
-          // Check rate limits before using sticky provider
-          if (this.config.rateLimitService) {
-            const check = this.config.rateLimitService.checkLimit(sticky.providerId, sticky.modelId, this.estimateTokens(request));
-            if (!check.allowed) {
-              // Break sticky session and fall through to normal routing
-              await breakStickySession(conversationHash, `Rate limited: ${check.reason}`);
-            } else {
-              // Planner-aware sticky session decision
-              if (this.enablePlanner) {
-                // Run the routing pipeline to get a fresh decision for comparison
-                const taskProfile = classifyTask(request, options);
-                const pipelineResult = await runPipeline({
-                  taskProfile,
-                  candidates: this.candidates,
-                  epsilon: this.config.epsilon ?? 0.05,
-                  rateLimitService: this.config.rateLimitService,
-                  quotaService: this.config.quotaService,
-                  policyService: this.config.policyService,
-                  tenantId: (request as any).metadata?.tenant?.id,
-                  estimatedTokens: this.estimateTokens(request),
-                  freeTierStrategy: effectiveFreeTierStrategy,
-                  thompsonSampler: this.thompsonSampler,
-                });
-
-                // Get the fresh decision's cost info
-                const freshCandidate = this.candidates.find(
-                  c => c.providerId === pipelineResult.selected.providerId && c.modelId === pipelineResult.selected.modelId
-                );
-
-                if (freshCandidate) {
-                  const plannerResult = planStayOrSwitch({
-                    pinnedModel: {
-                      id: sticky.modelId,
-                      providerId: sticky.providerId,
-                      tier: { level: 'mid', quality: stickyCandidate.qualityScore || 0.5, costPer1K: (stickyCandidate.costPerInputToken || 0) + (stickyCandidate.costPerOutputToken || 0) },
-                      costPer1K: (stickyCandidate.costPerInputToken || 0) + (stickyCandidate.costPerOutputToken || 0),
-                      cacheWarm: true,
-                    },
-                    freshDecision: {
-                      id: pipelineResult.selected.modelId,
-                      providerId: pipelineResult.selected.providerId,
-                      tier: { level: 'mid', quality: freshCandidate.qualityScore || 0.5, costPer1K: (freshCandidate.costPerInputToken || 0) + (freshCandidate.costPerOutputToken || 0) },
-                      costPer1K: (freshCandidate.costPerInputToken || 0) + (freshCandidate.costPerOutputToken || 0),
-                    },
-                    estimatedTokens: this.estimateTokens(request),
-                    remainingTurns: 5, // Estimate remaining turns
-                    summarizationAvailable: !!this.config.summarizationExecutor,
-                    summarizationCost: 0, // Will be computed if summarization is triggered
-                  });
-
-                  logger.info(
-                    {
-                      decision: plannerResult.decision,
-                      reason: plannerResult.reason,
-                      pinnedModel: sticky.modelId,
-                      freshModel: pipelineResult.selected.modelId,
-                    },
-                    'Planner decision'
-                  );
-
-                  // If planner says SWITCH, break sticky and use fresh decision
-                  if (plannerResult.decision === 'SWITCH') {
-                    await breakStickySession(conversationHash, `Planner: ${plannerResult.reason}`);
-                    // Fall through to normal routing below
-                  }
-                }
-              }
-
-              // If we're still in sticky mode (planner said STAY or planner disabled)
-              if (!this.enablePlanner || (await getStickyProvider(conversationHash, this.config.rateLimitService, freeTierStrategy, () => false))) {
-                logger.info(
-                  { providerId: sticky.providerId, modelId: sticky.modelId },
-                  'Using sticky session'
-                );
-
-                if (!this.adapterExecutor) {
-                  throw new Error('No adapter executor configured');
-                }
-
-                const plan: RoutingPlan = {
-                  primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
-                  chain: [],
-                  timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
-                  maxRetries: 1,
-                };
-
-                if (options.planOnly) {
-                  return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
-                }
-
-                try {
-                  const response = await executeWithFallback(plan, request, this.adapterExecutor, {
-                    rateLimitService: this.config.rateLimitService,
-                    quotaService: this.config.quotaService,
-                    tenantId: (request as any).metadata?.tenant?.id,
-                    requestId,
-                    onSuccess: this.config.onProviderSuccess,
-                    onFailure: this.config.onProviderFailure,
-                  });
-                  return { plan, response };
-                } catch (error) {
-                  // Break sticky session on provider failure
-                  await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
-                  throw error;
-                }
-              }
-            }
-          } else {
-            logger.info(
-              { providerId: sticky.providerId, modelId: sticky.modelId },
-              'Using sticky session'
-            );
-
-            if (!this.adapterExecutor) {
-              throw new Error('No adapter executor configured');
-            }
-
-            const plan: RoutingPlan = {
-              primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
-              chain: [],
-              timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
-              maxRetries: 1,
-            };
-
-            if (options.planOnly) {
-              return { plan, response: { modelId: plan.primary.modelId, providerId: plan.primary.providerId, modality: request.modality || 'llm', requestId: '', latencyMs: 0 } };
-            }
-
-            try {
-              const response = await executeWithFallback(plan, request, this.adapterExecutor, {
-                rateLimitService: this.config.rateLimitService,
-                quotaService: this.config.quotaService,
-                tenantId: (request as any).metadata?.tenant?.id,
-                requestId,
-                onSuccess: this.config.onProviderSuccess,
-                onFailure: this.config.onProviderFailure,
-              });
-              return { plan, response };
-            } catch (error) {
-              // Break sticky session on provider failure
-              await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
-              throw error;
-            }
-          }
-        }
-      }
+      const stickyResult = await handleStickySession({
+        request, options, candidates: this.candidates,
+        adapterExecutor: this.adapterExecutor, config: this.config,
+        thompsonSampler: this.thompsonSampler, router: this,
+        conversationHash, modelTarget,
+      });
+      if (stickyResult.used) return stickyResult.result;
     }
 
     // Step 1: Classify the task (router.classify span)
@@ -566,6 +409,7 @@ export class Router {
           requestId,
           onSuccess: this.config.onProviderSuccess,
           onFailure: this.config.onProviderFailure,
+          keyRotationService,
         });
         span.setAttribute('router.used_provider', res.providerId);
         return res;
@@ -628,6 +472,7 @@ export class Router {
           requestId,
           onSuccess: this.config.onProviderSuccess,
           onFailure: this.config.onProviderFailure,
+          keyRotationService,
         });
         span.setAttribute('router.used_provider', res.providerId);
         return res;

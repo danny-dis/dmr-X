@@ -36,6 +36,8 @@ const CompressionPage = lazy(() => import('@/pages/Compression').then(m => ({ de
 const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
 const AgentIntegrationsPage = lazy(() => import('@/pages/AgentIntegrations').then(m => ({ default: m.AgentIntegrationsPage })));
 const FreeTierPage = lazy(() => import('@/pages/FreeTier').then(m => ({ default: m.FreeTierPage })));
+const FreeTierDashboardPage = lazy(() => import('@/pages/FreeTierDashboard').then(m => ({ default: m.FreeTierDashboardPage })));
+const CostDashboardPage = lazy(() => import('@/pages/CostDashboard').then(m => ({ default: m.CostDashboardPage })));
 const ObservabilityPage = lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
 const AgentsPage = lazy(() => import('@/pages/Agents').then(m => ({ default: m.AgentsPage })));
 const MarketplacePage = lazy(() => import('@/pages/Marketplace').then(m => ({ default: m.MarketplacePage })));
@@ -88,6 +90,8 @@ export default function App() {
               <Route path="/connect" element={<ConnectPage />} />
               <Route path="/integrations" element={<AgentIntegrationsPage />} />
               <Route path="/free-tier" element={<FreeTierPage />} />
+              <Route path="/free-tier/dashboard" element={<FreeTierDashboardPage />} />
+              <Route path="/cost" element={<CostDashboardPage />} />
               <Route path="/observability" element={<ObservabilityPage />} />
 
               <Route path="*" element={<NotFoundPage />} />

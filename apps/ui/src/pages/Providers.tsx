@@ -14,6 +14,7 @@ import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
+import { Pagination } from '@/components/primitives/Pagination';
 import { useApiData, useUrlState } from '@/hooks';
 import { Admin } from '@/lib/admin';
 import { useUIStore } from '@/store/useUIStore';
@@ -29,7 +30,9 @@ export function ProvidersPage() {
   const [addDialogOpen, setAddDialogOpen] = React.useState(false);
   const [selectedTemplate, setSelectedTemplate] = React.useState<ApiCatalogEntry | null>(null);
   const [showAllCatalog, setShowAllCatalog] = React.useState(false);
+  const [currentPage, setCurrentPage] = React.useState(1);
   const debounced = React.useDeferredValue(query);
+  const PAGE_SIZE = 20;
 
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
   const catalog = useApiData<{ entries: ApiCatalogEntry[] }>(
@@ -46,6 +49,13 @@ export function ProvidersPage() {
     if (category === 'local' && !p.local) return false;
     return true;
   });
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paginatedData = React.useMemo(
+    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filtered, currentPage]
+  );
+
+  React.useEffect(() => { setCurrentPage(1); }, [debounced, category]);
 
   const onTest = async (id: string) => {
     const promise = Admin.testProvider(id);
@@ -129,7 +139,7 @@ export function ProvidersPage() {
           </div>
         ) : filtered.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {filtered.map((p) => (
+            {paginatedData.map((p) => (
               <ProviderCard
                 key={p.id}
                 provider={p}
@@ -164,6 +174,16 @@ export function ProvidersPage() {
           </Card>
         )}
       </div>
+
+      {totalPages > 1 && (
+        <div className="mt-4">
+          <Pagination
+            page={currentPage}
+            totalPages={totalPages}
+            onPageChange={setCurrentPage}
+          />
+        </div>
+      )}
 
       <div id="new" className="mt-6">
         <Card padding="md">

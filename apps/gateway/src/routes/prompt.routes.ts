@@ -124,7 +124,11 @@ export async function promptRoutes(server: FastifyInstance): Promise<void> {
     await ensureInitialized();
 
     const { id } = request.params as { id: string };
-    const body = request.body as { sample_input?: string };
+    const parsed = PreviewPromptSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const body = parsed.data;
 
     const result = library.preview({
       prompt_id: id,

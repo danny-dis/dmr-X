@@ -9,6 +9,29 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <title>DMR-X Console</title>
+    <style>
+      /* Critical inline CSS to prevent FOUC on initial load */
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: #0A0B10; font-family: system-ui, sans-serif; }
+      .dark body { background: #0A0B10; }
+      :root:not(.dark) body { background: #F7F8FB; }
+      /* Simple loading indicator shown until React hydrates */
+      #root::before {
+        content: '';
+        position: fixed;
+        top: 50%; left: 50%;
+        width: 24px; height: 24px;
+        margin: -12px 0 0 -12px;
+        border: 2px solid rgba(124,92,255,0.2);
+        border-top-color: #7C5CFF;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      /* Avoid double-spinner: hide when React removes it */
+      #root:empty::before { display: block; }
+      #root:not(:empty)::before { display: none; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
     <script>
       // Apply the persisted theme to <html> *before* the first paint so users
       // who chose light mode never see a dark flash. The store's `theme` key

@@ -14,6 +14,7 @@ export { OpenAIAdapter } from './openai/openai.adapter.js';
 export { AnthropicAdapter } from './anthropic/anthropic.adapter.js';
 export { OllamaAdapter } from './ollama/ollama.adapter.js';
 export { GenericOpenAIAdapter } from './generic-openai/generic-openai.adapter.js';
+export { GenericAnthropicAdapter } from './generic-anthropic/generic-anthropic.adapter.js';
 
 // Cloud Provider Adapters
 export { BedrockAdapter } from './bedrock/bedrock.adapter.js';

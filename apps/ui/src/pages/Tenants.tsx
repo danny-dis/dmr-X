@@ -10,6 +10,7 @@ import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
 import { Input } from '@/components/primitives/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
+import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Switch } from '@/components/primitives/Switch';
@@ -25,6 +26,8 @@ export function TenantsPage() {
   const [selectedTenant, setSelectedTenant] = React.useState<string | null>(null);
   const [createTenantOpen, setCreateTenantOpen] = React.useState(false);
   const [createKeyOpen, setCreateKeyOpen] = React.useState(false);
+  const [currentPage, setCurrentPage] = React.useState(1);
+  const PAGE_SIZE = 20;
 
   const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 15000 });
 
@@ -53,6 +56,14 @@ export function TenantsPage() {
   const filtered = (tenants.data ?? []).filter((t) =>
     query ? `${t.name} ${t.email ?? ''}`.toLowerCase().includes(query.toLowerCase()) : true
   );
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paginatedData = React.useMemo(
+    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filtered, currentPage]
+  );
+
+  React.useEffect(() => { setCurrentPage(1); }, [query]);
+
   const selected = (tenants.data ?? []).find((t) => t.id === selectedTenant);
 
   // Keys for the selected tenant, minus any that we've optimistically removed.
@@ -199,7 +210,7 @@ export function TenantsPage() {
                 ))}
               </div>
             ) : filtered.length > 0 ? (
-              filtered.map((t) => (
+              paginatedData.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => setSelectedTenant(t.id)}
@@ -227,6 +238,15 @@ export function TenantsPage() {
               <p className="p-6 text-center text-fg-subtle text-xs">No tenants</p>
             )}
           </div>
+          {totalPages > 1 && (
+            <div className="p-3 border-t border-border">
+              <Pagination
+                page={currentPage}
+                totalPages={totalPages}
+                onPageChange={setCurrentPage}
+              />
+            </div>
+          )}
         </Card>
 
         <div className="lg:col-span-2">

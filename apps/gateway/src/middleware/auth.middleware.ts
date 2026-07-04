@@ -52,6 +52,29 @@ export const DEPLOYMENT_MODE = (process.env.DMRX_DEPLOYMENT_MODE || 'selfhosted'
  */
 export const ANTHROPIC_PASSTHROUGH = !process.env.ANTHROPIC_API_KEY;
 
+export let cachedAdminKey = process.env.DMRX_ADMIN_API_KEY;
+
+export function refreshAdminKey(): void {
+  cachedAdminKey = process.env.DMRX_ADMIN_API_KEY;
+}
+
+// Simple per-key rate limiting (configurable via DMRX_PER_KEY_RATE_LIMIT, default 1000 req/min)
+const PER_KEY_LIMIT = Math.max(1, parseInt(process.env.DMRX_PER_KEY_RATE_LIMIT || '1000', 10));
+const perKeyRateMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkPerKeyRateLimit(apiKeyId: string): void {
+  const now = Date.now();
+  const entry = perKeyRateMap.get(apiKeyId);
+  if (!entry || now > entry.resetAt) {
+    perKeyRateMap.set(apiKeyId, { count: 1, resetAt: now + 60_000 });
+    return;
+  }
+  entry.count++;
+  if (entry.count > PER_KEY_LIMIT) {
+    throw new AuthenticationError('Rate limit exceeded for this API key');
+  }
+}
+
 logger.info({ localMode: LOCAL_MODE, deploymentMode: DEPLOYMENT_MODE, anthropicPassthrough: ANTHROPIC_PASSTHROUGH, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY }, 'Auth middleware status');
 
 function extractApiKey(request: FastifyRequest): string | undefined {
@@ -95,10 +118,9 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       return;
     }
 
-    // Re-read the admin key on every request so a runtime rotation
-    // (see POST /v1/admin/security/rotate-admin-key) takes effect immediately
-    // instead of requiring a gateway restart.
-    const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
+    // Read the cached admin key so runtime rotation (via refreshAdminKey())
+    // takes effect without reading process.env on every request.
+    const adminApiKey = cachedAdminKey;
     // LOCAL_MODE is intentionally frozen at module load (see top of file)
     // so a runtime mutation of process.env cannot flip the auth bypass.
     // Toggling local mode requires a gateway restart.
@@ -203,6 +225,9 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       });
       throw new AuthenticationError('Invalid API key');
     }
+
+    // Per-key rate limit check
+    checkPerKeyRateLimit(matchedKey.id);
 
     // Attach tenant info to request
     (request as any).tenant = {

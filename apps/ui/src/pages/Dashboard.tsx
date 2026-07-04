@@ -64,20 +64,56 @@ const TONE_COLORS = {
 };
 
 export function DashboardPage() {
-  const stats = useApiData<ApiDashboardStats>(() => Admin.dashboard(), [], { refetchInterval: 5000 });
+  const stats = useApiData<ApiDashboardStats>(() => Admin.dashboard(), [], { refetchInterval: 30000 });
   const decisions = useApiData<ApiRouteDecision[]>(
     () => Admin.listRouteDecisions({ limit: 8 }),
     [],
-    { refetchInterval: 4000 }
+    { refetchInterval: 30000 }
   );
   const usage = useApiData<{ points: ApiUsagePoint[]; total: number }>(
     () => Admin.getUsage('hour'),
     [],
-    { refetchInterval: 10000 }
+    { refetchInterval: 30000 }
   );
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
-  const alerts = useApiData<ApiAlert[]>(() => Admin.listAlerts(), [], { refetchInterval: 15000 });
+  const alerts = useApiData<ApiAlert[]>(() => Admin.listAlerts(), [], { refetchInterval: 30000 });
   const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: 'true' }), [], { refetchInterval: 30000 });
+
+  // SSE stream for live dashboard stats — auto-reconnect on disconnect
+  // with exponential backoff (1s → 2s → 4s → … → max 30s).
+  React.useEffect(() => {
+    const ctrl = new AbortController();
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+    let delay = 1000;
+    const MAX_DELAY = 30_000;
+
+    async function connect(): Promise<void> {
+      try {
+        await Admin.streamDashboardStats(ctrl.signal, (incoming) => {
+          // Reset backoff on successful data receipt
+          delay = 1000;
+          stats.setData((prev) => {
+            if (!prev) return incoming as ApiDashboardStats;
+            return { ...prev, ...incoming } as ApiDashboardStats;
+          });
+        });
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return;
+      }
+      // Stream ended or error — schedule reconnect if not aborted
+      if (!ctrl.signal.aborted) {
+        reconnectTimer = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, MAX_DELAY);
+      }
+    }
+
+    connect();
+
+    return () => {
+      ctrl.abort();
+      clearTimeout(reconnectTimer);
+    };
+  }, []);
 
   // Compute provider key status stats
   const providerStats = React.useMemo(() => {

@@ -18,10 +18,10 @@ export interface UseApiDataResult<T> {
 export function useApiData<T>(
   fetcher: () => Promise<T>,
   deps: ReadonlyArray<unknown> = [],
-  options?: { enabled?: boolean; refetchInterval?: number | false },
+  options?: { enabled?: boolean; refetchInterval?: number | false; initialData?: T | null },
 ): UseApiDataResult<T> {
   const enabled = options?.enabled ?? true;
-  const [data, setData] = useState<T | null>(null);
+  const [data, setData] = useState<T | null>(options?.initialData ?? null);
   const [error, setError] = useState<ApiError | null>(null);
   const [status, setStatus] = useState<FetchStatus>('idle');
   const mounted = useRef(true);

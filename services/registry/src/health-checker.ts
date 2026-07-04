@@ -1,205 +1,177 @@
-import type { AdapterRegistry } from '@dmr-x/adapters';
-import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
+import { getDb } from '@dmr-x/db';
 
-import { registryService } from './registry.service.js';
-
-const CONSECUTIVE_FAILURES_TO_DISABLE = 3;
-
-// Track consecutive failures per provider
-const failureCount = new Map<string, number>();
-
-// Distinguish transport errors from auth errors
-function isAuthError(error: string | undefined): boolean {
-  if (!error) return false;
-  const lower = error.toLowerCase();
-  return lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('invalid api key') || lower.includes('authentication');
+export interface HealthCheckResult {
+  providerId: string;
+  isHealthy: boolean;
+  latencyMs: number;
+  lastChecked: Date;
+  error?: string;
 }
 
-function isTransportError(error: string | undefined): boolean {
-  if (!error) return false;
-  const lower = error.toLowerCase();
-  return lower.includes('timeout') || lower.includes('econnrefused') || lower.includes('enotfound') || lower.includes('dns') || lower.includes('network') || lower.includes('fetch') || lower.includes('tls') || lower.includes('ssl');
+export interface HealthCheckConfig {
+  /** Check interval in ms (default: 5 minutes) */
+  intervalMs: number;
+  /** Request timeout in ms (default: 10 seconds) */
+  timeoutMs: number;
+  /** Number of consecutive failures before marking unhealthy (default: 3) */
+  failureThreshold: number;
+  /** Number of consecutive successes before marking healthy again (default: 1) */
+  recoveryThreshold: number;
 }
+
+const DEFAULT_CONFIG: HealthCheckConfig = {
+  intervalMs: 5 * 60 * 1000,  // 5 minutes
+  timeoutMs: 10 * 1000,  // 10 seconds
+  failureThreshold: 3,
+  recoveryThreshold: 1,
+};
 
 export class HealthChecker {
-  private interval: ReturnType<typeof setInterval> | null = null;
-  private providerIdMap = new Map<string, string>(); // adapter ID -> DB UUID
+  private config: HealthCheckConfig;
+  private timers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private failureCounts: Map<string, number> = new Map();
+  private successCounts: Map<string, number> = new Map();
 
-  constructor(
-    private adapterRegistry: AdapterRegistry,
-    private checkIntervalMs: number = 30000
-  ) {}
-
-  start(): void {
-    logger.info({ intervalMs: this.checkIntervalMs }, 'Health checker started');
-
-    // Run immediately
-    this.checkAll();
-
-    // Then run on interval
-    this.interval = setInterval(() => {
-      this.checkAll();
-    }, this.checkIntervalMs);
+  constructor(config?: Partial<HealthCheckConfig>) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  stop(): void {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
+  startProviderCheck(providerId: string, checkFn: () => Promise<boolean>): void {
+    if (this.timers.has(providerId)) {
+      return;  // Already monitoring
     }
-    logger.info('Health checker stopped');
+
+    const timer = setInterval(async () => {
+      await this.checkProvider(providerId, checkFn);
+    }, this.config.intervalMs);
+
+    this.timers.set(providerId, timer);
+
+    // Run initial check
+    this.checkProvider(providerId, checkFn).catch(err => {
+      logger.warn({ err, providerId }, 'Initial health check failed');
+    });
   }
 
-  private loadProviderIdMap(): void {
+  stopProviderCheck(providerId: string): void {
+    const timer = this.timers.get(providerId);
+    if (timer) {
+      clearInterval(timer);
+      this.timers.delete(providerId);
+    }
+    this.failureCounts.delete(providerId);
+    this.successCounts.delete(providerId);
+  }
+
+  stopAll(): void {
+    for (const [providerId] of this.timers) {
+      this.stopProviderCheck(providerId);
+    }
+  }
+
+  getProviderHealth(providerId: string): { isHealthy: boolean; lastChecked: Date | null; failureCount: number } {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT is_healthy, updated_at, consecutive_failures
+      FROM providers
+      WHERE id = ?
+    `).get(providerId) as any;
+
+    return {
+      isHealthy: row?.is_healthy === 1,
+      lastChecked: row?.updated_at ? new Date(row.updated_at) : null,
+      failureCount: row?.consecutive_failures ?? 0,
+    };
+  }
+
+  getAllProviderHealth(): HealthCheckResult[] {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT id as providerId, is_healthy, updated_at, consecutive_failures
+      FROM providers
+    `).all() as any[];
+
+    return rows.map(row => ({
+      providerId: row.providerId,
+      isHealthy: row.is_healthy === 1,
+      latencyMs: 0,
+      lastChecked: row.updated_at ? new Date(row.updated_at) : new Date(),
+      error: row.consecutive_failures > 0 ? `Consecutive failures: ${row.consecutive_failures}` : undefined,
+    }));
+  }
+
+  private async checkProvider(providerId: string, checkFn: () => Promise<boolean>): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      const isHealthy = await Promise.race([
+        checkFn(),
+        new Promise<boolean>((_, reject) =>
+          setTimeout(() => reject(new Error('Health check timeout')), this.config.timeoutMs)
+        ),
+      ]);
+
+      const latencyMs = Date.now() - startTime;
+
+      if (isHealthy) {
+        this.handleSuccess(providerId, latencyMs);
+      } else {
+        this.handleFailure(providerId, 'Health check returned false');
+      }
+    } catch (err) {
+      const latencyMs = Date.now() - startTime;
+      this.handleFailure(providerId, err instanceof Error ? err.message : 'Unknown error');
+    }
+  }
+
+  private handleSuccess(providerId: string, latencyMs: number): void {
+    this.failureCounts.set(providerId, 0);
+    const successCount = (this.successCounts.get(providerId) ?? 0) + 1;
+    this.successCounts.set(providerId, successCount);
+
+    if (successCount >= this.config.recoveryThreshold) {
+      this.updateProviderHealth(providerId, true);
+    }
+
+    logger.debug({ providerId, latencyMs }, 'Health check passed');
+  }
+
+  private handleFailure(providerId: string, error: string): void {
+    this.successCounts.set(providerId, 0);
+    const failureCount = (this.failureCounts.get(providerId) ?? 0) + 1;
+    this.failureCounts.set(providerId, failureCount);
+
+    if (failureCount >= this.config.failureThreshold) {
+      this.updateProviderHealth(providerId, false);
+      logger.warn({ providerId, failureCount, error }, 'Provider marked unhealthy');
+    } else {
+      logger.debug({ providerId, failureCount, error }, 'Health check failed (below threshold)');
+    }
+  }
+
+  private updateProviderHealth(providerId: string, isHealthy: boolean): void {
     try {
       const db = getDb();
-      const rows = db.prepare('SELECT id, name FROM providers').all();
-      for (const row of rows as any[]) {
-        this.providerIdMap.set(row.name.toLowerCase(), row.id);
-      }
-    } catch (error) {
-      logger.error({ err: error }, 'Failed to load provider ID map');
+      db.prepare(`
+        UPDATE providers
+        SET is_healthy = ?,
+            consecutive_failures = ?,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(isHealthy ? 1 : 0, isHealthy ? 0 : (this.failureCounts.get(providerId) ?? 0), providerId);
+    } catch (err) {
+      logger.warn({ err, providerId }, 'Failed to update provider health');
     }
   }
+}
 
-  private getProviderUuid(adapterId: string): string | null {
-    // Try to find by name (case-insensitive)
-    const uuid = this.providerIdMap.get(adapterId.toLowerCase());
-    if (uuid) return uuid;
+// Singleton instance
+let instance: HealthChecker | null = null;
 
-    // If not found, reload the map and try again
-    this.loadProviderIdMap();
-    return this.providerIdMap.get(adapterId.toLowerCase()) || null;
+export function getHealthChecker(): HealthChecker {
+  if (!instance) {
+    instance = new HealthChecker();
   }
-
-  private async checkAll(): Promise<void> {
-    // Ensure we have the provider ID mapping
-    if (this.providerIdMap.size === 0) {
-      this.loadProviderIdMap();
-    }
-
-    const adapters = this.adapterRegistry.list();
-
-    for (const adapterId of adapters) {
-      try {
-        // Bypass the circuit-breaker guard: health checks must run on
-        // providers whose breakers have tripped so we can observe
-        // recovery. Gating them through `get()` would mean a tripped
-        // breaker can never heal, and a single transient failure could
-        // turn into a permanent outage.
-        const adapter = this.adapterRegistry.peek(adapterId);
-        if (!adapter) continue;
-
-        const providerUuid = this.getProviderUuid(adapterId);
-        if (!providerUuid) {
-          logger.warn({ adapterId }, 'Provider not found in database, skipping health check');
-          continue;
-        }
-
-        const status = await adapter.healthCheck();
-
-        // "Adapter not initialized" is an expected, non-failure state — the
-        // user simply hasn't set an API key for this provider yet. Don't
-        // poison the circuit breaker (it would block every request once
-        // failureThreshold is hit) and don't bump `consecutive_failures`
-        // in the DB (it would flip `is_healthy` to 0 and remove the
-        // provider from the candidate set the moment the user *does* add
-        // a key). Just record the timestamp so the admin UI can show
-        // when it was last seen.
-        if (status.error === 'Adapter not initialized') {
-          registryService.touchHealthCheck(providerUuid);
-          continue;
-        }
-
-        registryService.updateHealth(providerUuid, status.healthy, status.latencyMs);
-
-        // Sync circuit breaker state with health check result
-        if (status.healthy) {
-          this.adapterRegistry.recordSuccess(adapterId);
-          // Clear failure count on success
-          failureCount.delete(adapterId);
-        } else {
-          this.adapterRegistry.recordFailure(adapterId);
-
-          // Distinguish transport errors from auth errors
-          if (isTransportError(status.error)) {
-            // Transport errors (DNS/timeout/TLS) — don't increment failure count
-            // These are transient and shouldn't disable the key
-            logger.warn(
-              { adapterId, providerUuid, error: status.error },
-              'Provider transport error (not incrementing failure count)'
-            );
-          } else if (isAuthError(status.error)) {
-            // Auth errors (401/403) — increment failure count
-            const count = (failureCount.get(adapterId) ?? 0) + 1;
-            failureCount.set(adapterId, count);
-            logger.warn(
-              { adapterId, providerUuid, error: status.error, failureCount: count },
-              'Provider auth error'
-            );
-
-            // Auto-disable after consecutive failures
-            if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
-              logger.warn(
-                { adapterId, providerUuid, failureCount: count },
-                'Auto-disabling provider after consecutive auth failures'
-              );
-              this.disableProvider(providerUuid);
-            }
-          } else {
-            // Unknown error type — increment failure count as precaution
-            const count = (failureCount.get(adapterId) ?? 0) + 1;
-            failureCount.set(adapterId, count);
-            logger.warn(
-              { adapterId, providerUuid, error: status.error, failureCount: count },
-              'Provider unhealthy'
-            );
-
-            if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
-              logger.warn(
-                { adapterId, providerUuid, failureCount: count },
-                'Auto-disabling provider after consecutive failures'
-              );
-              this.disableProvider(providerUuid);
-            }
-          }
-        }
-      } catch (error) {
-        logger.error({ err: error, adapterId }, 'Health check failed');
-        // Record circuit breaker failure on exception
-        this.adapterRegistry.recordFailure(adapterId);
-        const providerUuid = this.getProviderUuid(adapterId);
-        if (providerUuid) {
-          registryService.updateHealth(providerUuid, false);
-          // Increment failure count on exception
-          const count = (failureCount.get(adapterId) ?? 0) + 1;
-          failureCount.set(adapterId, count);
-          if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
-            this.disableProvider(providerUuid);
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * Disable a provider in the database.
-   */
-  private disableProvider(providerUuid: string): void {
-    try {
-      const db = getDb();
-      db.prepare('UPDATE providers SET enabled = 0 WHERE id = ?').run(providerUuid);
-      logger.warn({ providerUuid }, 'Provider auto-disabled due to consecutive failures');
-    } catch (error) {
-      logger.error({ err: error, providerUuid }, 'Failed to auto-disable provider');
-    }
-  }
-
-  /**
-   * Re-enable a provider (called when a successful request comes through).
-   */
-  static reEnableProvider(adapterId: string): void {
-    failureCount.delete(adapterId);
-  }
+  return instance;
 }

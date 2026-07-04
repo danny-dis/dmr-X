@@ -22,8 +22,26 @@ import type { RateLimitFilterResult } from './rate-limit-filter.js';
 import { selectLeastBusy } from '../strategies/least-busy.js';
 import { selectUsageBased } from '../strategies/usage-based.js';
 import { selectLowestLatency } from '../strategies/latency-based.js';
+import { selectRoundRobin } from '../strategies/round-robin.js';
+import { selectWeightedRandom } from '../strategies/weighted-random.js';
+import { selectByHeadroom } from '../strategies/headroom.js';
+import { selectByPriority } from '../strategies/priority.js';
+import { selectByContextSize } from '../strategies/context-optimized.js';
+import { selectFusionPanel } from '../strategies/fusion.js';
+import { getProviderCircuitBreaker, getModelCircuitBreaker, getConnectionCircuitBreaker } from '../resilience/circuit-breaker.js';
 
-export type RoutingStrategy = 'thompson' | 'least-busy' | 'usage-based' | 'latency-based' | 'cost-optimized';
+export type RoutingStrategy =
+  | 'thompson'
+  | 'least-busy'
+  | 'usage-based'
+  | 'latency-based'
+  | 'cost-optimized'
+  | 'round-robin'
+  | 'weighted'
+  | 'headroom'
+  | 'priority'
+  | 'context-optimized'
+  | 'fusion';
 
 export interface PipelineInput {
   taskProfile: TaskProfile;
@@ -71,6 +89,16 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
 
   // Stage 2: Availability Filter
   filtered = availabilityFilter(filtered);
+
+  // Stage 2.5: Circuit Breaker Filter — exclude providers/models with open circuits
+  const providerBreaker = getProviderCircuitBreaker();
+  const modelBreaker = getModelCircuitBreaker();
+  const connectionBreaker = getConnectionCircuitBreaker();
+  filtered = filtered.filter(m => {
+    const providerKey = m.providerId;
+    const modelKey = `${m.providerId}:${m.modelId}`;
+    return providerBreaker.isAvailable(providerKey) && modelBreaker.isAvailable(modelKey) && connectionBreaker.isAvailable(providerKey);
+  });
 
   // Save pre-rate-limit candidates for retry logic
   const preRateLimitCandidates = [...filtered];
@@ -186,7 +214,6 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
       break;
     }
     case 'cost-optimized': {
-      // Sort by cost ascending, break ties by quality
       const costSorted = [...scored].sort((a, b) => {
         const aCost = (a.costPerInputToken ?? 0) + (a.costPerOutputToken ?? 0);
         const bCost = (b.costPerInputToken ?? 0) + (b.costPerOutputToken ?? 0);
@@ -201,6 +228,78 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
         score: first.qualityScore,
       };
       remaining = costSorted.slice(1);
+      break;
+    }
+    case 'round-robin': {
+      const rrResult = selectRoundRobin(scored);
+      if (rrResult) {
+        selected = rrResult;
+        remaining = scored.filter(m => !(m.providerId === rrResult.providerId && m.modelId === rrResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'weighted': {
+      const wrResult = selectWeightedRandom(scored);
+      if (wrResult) {
+        selected = wrResult;
+        remaining = scored.filter(m => !(m.providerId === wrResult.providerId && m.modelId === wrResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'headroom': {
+      const hrResult = selectByHeadroom(scored);
+      if (hrResult) {
+        selected = hrResult;
+        remaining = scored.filter(m => !(m.providerId === hrResult.providerId && m.modelId === hrResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'priority': {
+      const prResult = selectByPriority(scored, providerPreferences?.order);
+      if (prResult) {
+        selected = prResult;
+        remaining = scored.filter(m => !(m.providerId === prResult.providerId && m.modelId === prResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'context-optimized': {
+      const coResult = selectByContextSize(scored, taskProfile.sizeEstimate.inputTokens ?? 0);
+      if (coResult) {
+        selected = coResult;
+        remaining = scored.filter(m => !(m.providerId === coResult.providerId && m.modelId === coResult.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
+      break;
+    }
+    case 'fusion': {
+      const fusionResult = selectFusionPanel(scored);
+      if (fusionResult) {
+        selected = fusionResult.selected;
+        remaining = scored.filter(m => !fusionResult.panel.some(p => p.providerId === m.providerId && p.modelId === m.modelId));
+      } else {
+        const fb = finalSelector(scored, epsilon, taskProfile.qualityTarget, thompsonSampler);
+        selected = fb.selected;
+        remaining = fb.remaining;
+      }
       break;
     }
     case 'thompson':

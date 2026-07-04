@@ -1,6 +1,11 @@
 import { HeadroomClient, type CompressResult } from 'headroom-ai';
 import { logger } from '@dmr-x/utils';
 import { getDb } from '@dmr-x/db';
+import { compressRTK, type RTKOptions } from './engines/rtk.js';
+import { compressCaveman, type CavemanOptions } from './engines/caveman.js';
+import { stripComments, type CommentStripOptions, type SupportedLanguage } from './engines/comment-stripper.js';
+
+export type CompressionEngine = 'headroom' | 'rtk' | 'caveman' | 'comment-strip' | 'auto';
 
 export interface CompressionConfig {
   enabled: boolean;
@@ -8,6 +13,14 @@ export interface CompressionConfig {
   apiKey?: string;
   reversible: boolean;
   minTokensToCompress: number;
+  /** Compression engine to use (default: 'auto') */
+  engine?: CompressionEngine;
+  /** RTK-specific options */
+  rtkOptions?: RTKOptions;
+  /** Caveman-specific options */
+  cavemanOptions?: CavemanOptions;
+  /** Comment strip options */
+  commentStripOptions?: CommentStripOptions;
 }
 
 export interface CompressionMetadata {
@@ -23,6 +36,7 @@ const DEFAULT_CONFIG: CompressionConfig = {
   proxyUrl: process.env.HEADROOM_PROXY_URL || 'http://localhost:8787',
   reversible: true,
   minTokensToCompress: 100,
+  engine: 'auto',
 };
 
 export class CompressionService {
@@ -55,7 +69,7 @@ export class CompressionService {
     apiKeyConfig?: Partial<CompressionConfig> | null
   ): Promise<{ compressed: Array<{ role: string; content: string }>; metadata: CompressionMetadata }> {
     const config = this.mergeConfig(tenantConfig, apiKeyConfig);
-    
+
     if (!config.enabled) {
       return { compressed: messages, metadata: { originalTokens: 0, compressedTokens: 0, saved: 0, algorithmUsed: 'none' } };
     }
@@ -65,12 +79,111 @@ export class CompressionService {
       return { compressed: messages, metadata: { originalTokens: estimatedTokens, compressedTokens: estimatedTokens, saved: 0, algorithmUsed: 'none' } };
     }
 
+    const engine = config.engine || 'auto';
+
+    // Auto-detect engine based on content type
+    if (engine === 'auto') {
+      return this.compressWithAutoEngine(messages, config, estimatedTokens);
+    }
+
+    return this.compressWithEngine(messages, config, estimatedTokens, engine);
+  }
+
+  private async compressWithAutoEngine(
+    messages: Array<{ role: string; content: string }>,
+    config: CompressionConfig,
+    estimatedTokens: number
+  ): Promise<{ compressed: Array<{ role: string; content: string }>; metadata: CompressionMetadata }> {
+    // Analyze content to pick best engine
+    const allContent = messages.map(m => m.content).join('\n');
+    const hasCode = /```[\s\S]*?```/.test(allContent) || /^\s*(import|export|const|let|var|function|class|def|fn)\s+/m.test(allContent);
+    const hasJSON = /^\s*[\[{]/.test(allContent) && /[\]}]\s*$/.test(allContent);
+    const isCommandOutput = /^\s*(total|drwx|dr-x|-rw|npm|git|ls|cat|grep)/m.test(allContent);
+
+    // Pick engine based on content characteristics
+    if (isCommandOutput || (hasJSON && estimatedTokens > 200)) {
+      return this.compressWithEngine(messages, config, estimatedTokens, 'rtk');
+    }
+    if (hasCode) {
+      return this.compressWithEngine(messages, config, estimatedTokens, 'comment-strip');
+    }
+    // Default to caveman for prose-heavy content
+    return this.compressWithEngine(messages, config, estimatedTokens, 'caveman');
+  }
+
+  private async compressWithEngine(
+    messages: Array<{ role: string; content: string }>,
+    config: CompressionConfig,
+    estimatedTokens: number,
+    engine: CompressionEngine
+  ): Promise<{ compressed: Array<{ role: string; content: string }>; metadata: CompressionMetadata }> {
+    try {
+      if (engine === 'headroom') {
+        return this.compressWithHeadroom(messages, config, estimatedTokens);
+      }
+
+      // For local engines, compress each message's content
+      let totalSaved = 0;
+      let totalOriginal = 0;
+      let totalCompressed = 0;
+
+      const compressed = messages.map(msg => {
+        let result: { compressed: string; originalTokens: number; compressedTokens: number; saved: number };
+
+        switch (engine) {
+          case 'rtk':
+            result = compressRTK(msg.content, config.rtkOptions);
+            break;
+          case 'caveman':
+            result = compressCaveman(msg.content, config.cavemanOptions);
+            break;
+          case 'comment-strip':
+            result = stripComments(msg.content, config.commentStripOptions);
+            break;
+          default:
+            result = compressRTK(msg.content, config.rtkOptions);
+        }
+
+        totalOriginal += result.originalTokens;
+        totalCompressed += result.compressedTokens;
+        totalSaved += result.saved;
+
+        return { role: msg.role, content: result.compressed };
+      });
+
+      let compressedId: string | undefined;
+      if (config.reversible) {
+        compressedId = crypto.randomUUID();
+        this.storeOriginal(compressedId, messages);
+      }
+
+      return {
+        compressed,
+        metadata: {
+          originalTokens: totalOriginal,
+          compressedTokens: totalCompressed,
+          saved: totalSaved,
+          algorithmUsed: engine,
+          compressedId,
+        },
+      };
+    } catch (err) {
+      logger.warn({ err, engine }, 'Compression failed, returning original messages');
+      return { compressed: messages, metadata: { originalTokens: estimatedTokens, compressedTokens: estimatedTokens, saved: 0, algorithmUsed: 'failed' } };
+    }
+  }
+
+  private async compressWithHeadroom(
+    messages: Array<{ role: string; content: string }>,
+    config: CompressionConfig,
+    estimatedTokens: number
+  ): Promise<{ compressed: Array<{ role: string; content: string }>; metadata: CompressionMetadata }> {
     try {
       const client = this.getClient();
       const result = await client.compress(messages as any);
 
       const compressedTokens = this.estimateTokens(result.messages as any);
-      
+
       let compressedId: string | undefined;
       if (config.reversible) {
         compressedId = crypto.randomUUID();
@@ -88,7 +201,7 @@ export class CompressionService {
         },
       };
     } catch (err) {
-      logger.warn({ err }, 'Compression failed, returning original messages');
+      logger.warn({ err }, 'Headroom compression failed, returning original messages');
       return { compressed: messages, metadata: { originalTokens: estimatedTokens, compressedTokens: estimatedTokens, saved: 0, algorithmUsed: 'failed' } };
     }
   }

@@ -10,7 +10,7 @@ if (typeof BigInt !== 'undefined' && !(BigInt.prototype as any).toJSON) {
 import { initDb, closeDb } from '@dmr-x/db';
 import { federationService } from '@dmr-x/federation';
 import { memoryService } from '@dmr-x/memory';
-import { logger } from '@dmr-x/utils';
+import { logger, parseBodyLimit, parseTrustProxy } from '@dmr-x/utils';
 import { workersService } from '@dmr-x/workers';
 
 import { createServer } from './server.js';
@@ -22,33 +22,6 @@ const DEFAULT_KEEPALIVE_TIMEOUT_MS = 65_000;        // 65 s
 const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;       // 10 s
 const DEFAULT_MAX_PARAM_LENGTH = 200;
 const DEFAULT_MEMORY_LIMIT_BYTES = 1_500 * 1024 * 1024; // 1.5 GB
-
-function parseBodyLimit(raw: string | undefined, fallback: number): number {
-  if (!raw) return fallback;
-  const trimmed = raw.trim();
-  if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
-  // Accept "10mb", "1024kb", "1gb" — case-insensitive
-  const m = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i.exec(trimmed);
-  if (!m) return fallback;
-  const n = parseFloat(m[1]);
-  const unit = m[2].toLowerCase();
-  const mult = unit === 'gb' ? 1024 ** 3
-             : unit === 'mb' ? 1024 ** 2
-             : unit === 'kb' ? 1024
-             : 1;
-  return Math.floor(n * mult);
-}
-
-function parseTrustProxy(raw: string | undefined): boolean | string {
-  if (raw === undefined) return 'loopback';
-  const v = raw.trim().toLowerCase();
-  if (v === 'true' || v === '1' || v === 'yes') return true;
-  if (v === 'false' || v === '0' || v === 'no') return false;
-  // Allow Fastify-prescribed preset strings
-  if (['loopback', 'linklocal', 'uniquelocal'].includes(v)) return v;
-  // Treat anything else as a CIDR / IP / comma-separated list
-  return raw.trim();
-}
 
 function validateStartupConfig(): void {
   const errors: string[] = [];

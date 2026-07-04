@@ -2,3 +2,9 @@ export { selectLeastBusy, incrementInFlight, decrementInFlight } from './least-b
 export { selectUsageBased, recordRequest, getUsageStats } from './usage-based.js';
 export { selectLowestLatency, recordLatency, getLatencyStats } from './latency-based.js';
 export { selectByTags, filterByTags } from './tag-based.js';
+export { selectRoundRobin } from './round-robin.js';
+export { selectWeightedRandom } from './weighted-random.js';
+export { selectByHeadroom } from './headroom.js';
+export { selectByPriority } from './priority.js';
+export { selectByContextSize } from './context-optimized.js';
+export { selectFusionPanel, type FusionPanel } from './fusion.js';

@@ -40,6 +40,7 @@ const ADAPTER_PRESETS: {
 }[] = [
   { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', exploreUrl: 'https://platform.openai.com/docs/models', hint: 'Get your API key at platform.openai.com/api-keys' },
   { id: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com', exploreUrl: 'https://docs.anthropic.com/en/docs/about-claude/models', hint: 'Requires custom headers: anthropic-version: 2023-06-01' },
+  { id: 'generic-anthropic', label: 'Anthropic-compatible', baseUrl: '', hint: 'Works with any Anthropic-compatible API (proxies, self-hosted, third-party)' },
   { id: 'cohere', label: 'Cohere', baseUrl: 'https://api.cohere.ai/v1', exploreUrl: 'https://docs.cohere.com/docs/models' },
   { id: 'google', label: 'Google', baseUrl: 'https://generativelanguage.googleapis.com/v1', exploreUrl: 'https://ai.google.dev/gemini-api/docs/models/gemini' },
   { id: 'mistral', label: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', exploreUrl: 'https://docs.mistral.ai/getting-started/models/models_overview/' },

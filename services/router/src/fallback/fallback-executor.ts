@@ -1,6 +1,6 @@
 import type { RoutingPlan, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, QuotaExhaustedError } from '@dmr-x/core';
-import type { RateLimitService, QuotaService } from '@dmr-x/quota';
+import type { RateLimitService, QuotaService, KeyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
 
 export interface AdapterExecutor {
@@ -30,6 +30,8 @@ export interface FallbackOptions {
   onFailure?: (providerId: string) => void;
   /** Optional configured fallback chain (from config.yaml) */
   configuredFallbacks?: FallbackStepConfig[];
+  /** Key rotation service for same-provider key retry */
+  keyRotationService?: KeyRotationService;
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -194,6 +196,35 @@ export async function executeWithFallback(
         { provider: plan.primary.providerId, modelId: plan.primary.modelId },
         'Model forbidden (403) — applying 24h cooldown'
       );
+    }
+  }
+
+  // Same-provider key retry: if primary failed with rate limit, try next key on same provider
+  if (isRateLimitError(primaryErrorRaw) && options?.keyRotationService) {
+    const nextKey = options.keyRotationService.getNextKey(plan.primary.providerId, plan.primary.modelId);
+    if (nextKey) {
+      try {
+        logger.info({ provider: plan.primary.providerId }, 'Trying next key on same provider');
+        const response = await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
+        try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
+        try {
+          if (rls) {
+            const tokens = response.usage?.total_tokens || 0;
+            await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, tokens);
+          }
+          if (qs && tenantId) {
+            const tokens = response.usage?.total_tokens || 0;
+            await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
+            await qs.recordProviderBudgetUsage(tenantId, plan.primary.providerId, tokens);
+          }
+        } catch (usageErr) {
+          logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record usage for key retry');
+        }
+        return response;
+      } catch (keyRetryError) {
+        logger.warn({ err: keyRetryError, provider: plan.primary.providerId }, 'Key retry also failed, falling through to cross-provider fallback');
+        try { options?.onFailure?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
+      }
     }
   }
 

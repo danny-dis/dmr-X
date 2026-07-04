@@ -18,6 +18,7 @@ import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
+import { refreshAdminKey } from '../middleware/auth.middleware.js';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 
 const HTML_ESCAPE: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -3381,6 +3382,194 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     };
   });
 
+  // Free-tier summary — aggregated free tokens/month across all providers
+  server.get('/admin/free-tier/summary', async () => {
+    const db = getDb();
+
+    // Get all free-tier models from the catalog
+    const freeModels = db.prepare(`
+      SELECT
+        mc.provider_id,
+        mc.model_id,
+        mc.has_free_tier,
+        mc.intelligence_rank,
+        mc.speed_rank,
+        mc.monthly_token_budget,
+        mc.rate_limit_rpm,
+        mc.rate_limit_rpd,
+        mc.rate_limit_tpm,
+        mc.rate_limit_tpd,
+        p.name as provider_name,
+        p.is_healthy
+      FROM model_classifications mc
+      JOIN providers p ON mc.provider_id = p.id
+      WHERE mc.has_free_tier = 1
+      ORDER BY mc.monthly_token_budget DESC
+    `).all() as any[];
+
+    // Aggregate totals
+    let totalMonthlyBudget = 0;
+    let totalModels = freeModels.length;
+    let healthyProviders = new Set<string>();
+
+    const providerBreakdown: Record<string, {
+      provider_name: string;
+      models: any[];
+      total_monthly_budget: number;
+      is_healthy: boolean;
+    }> = {};
+
+    for (const model of freeModels) {
+      totalMonthlyBudget += model.monthly_token_budget || 0;
+
+      if (model.is_healthy) {
+        healthyProviders.add(model.provider_id);
+      }
+
+      if (!providerBreakdown[model.provider_id]) {
+        providerBreakdown[model.provider_id] = {
+          provider_name: model.provider_name,
+          models: [],
+          total_monthly_budget: 0,
+          is_healthy: model.is_healthy === 1,
+        };
+      }
+
+      providerBreakdown[model.provider_id].models.push({
+        model_id: model.model_id,
+        monthly_token_budget: model.monthly_token_budget,
+        intelligence_rank: model.intelligence_rank,
+        speed_rank: model.speed_rank,
+        rate_limits: {
+          rpm: model.rate_limit_rpm,
+          rpd: model.rate_limit_rpd,
+          tpm: model.rate_limit_tpm,
+          tpd: model.rate_limit_tpd,
+        },
+      });
+
+      providerBreakdown[model.provider_id].total_monthly_budget += model.monthly_token_budget || 0;
+    }
+
+    // Get actual usage from request logs
+    const usage = db.prepare(`
+      SELECT
+        selected_provider,
+        selected_model,
+        SUM(tokens_input + tokens_output) as total_tokens,
+        COUNT(*) as total_requests
+      FROM request_logs
+      WHERE timestamp > datetime('now', '-30 days')
+        AND (estimated_cost = 0 OR estimated_cost IS NULL)
+      GROUP BY selected_provider, selected_model
+      ORDER BY total_tokens DESC
+      LIMIT 50
+    `).all() as any[];
+
+    return {
+      summary: {
+        total_monthly_budget: totalMonthlyBudget,
+        total_free_models: totalModels,
+        healthy_free_providers: healthyProviders.size,
+        estimated_tokens_saved: usage.reduce((sum: number, u: any) => sum + (u.total_tokens || 0), 0),
+      },
+      providers: Object.values(providerBreakdown),
+      recent_usage: usage,
+    };
+  });
+
+  // Cost dashboard — aggregated cost data across tenants and providers
+  server.get('/admin/cost/dashboard', async (request) => {
+    const db = getDb();
+    const query = request.query as Record<string, string | undefined>;
+    const days = Math.min(Math.max(parseInt(query.days ?? '30', 10) || 30, 1), 365);
+    const start = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    // Total costs
+    const totals = db.prepare(`
+      SELECT
+        SUM(estimated_cost) as total_cost,
+        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN estimated_cost ELSE 0 END) as free_cost,
+        COUNT(*) as requests,
+        SUM(tokens_input + tokens_output) as tokens
+      FROM request_logs
+      WHERE timestamp > ?
+    `).get(start) as any;
+
+    // Costs by provider
+    const byProvider = db.prepare(`
+      SELECT
+        selected_provider as provider,
+        SUM(estimated_cost) as cost,
+        COUNT(*) as requests,
+        SUM(tokens_input + tokens_output) as tokens,
+        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as free_percent
+      FROM request_logs
+      WHERE timestamp > ?
+      GROUP BY selected_provider
+      ORDER BY cost DESC
+    `).all(start) as any[];
+
+    // Costs by tenant
+    const byTenant = db.prepare(`
+      SELECT
+        tenant_id,
+        SUM(estimated_cost) as total_cost,
+        COUNT(*) as requests,
+        SUM(tokens_input + tokens_output) as tokens
+      FROM request_logs
+      WHERE timestamp > ?
+      GROUP BY tenant_id
+      ORDER BY total_cost DESC
+      LIMIT 20
+    `).all(start) as any[];
+
+    // Enrich tenant data with names
+    const enrichedByTenant = byTenant.map((t: any) => {
+      const tenant = db.prepare('SELECT name FROM tenants WHERE id = ?').get(t.tenant_id) as any;
+      return {
+        tenantId: t.tenant_id,
+        tenantName: tenant?.name ?? 'Unknown',
+        totalCost: t.total_cost,
+        freeTierCost: 0,
+        paidCost: t.total_cost,
+        totalRequests: t.requests,
+        totalInputTokens: 0,
+        totalOutputTokens: t.tokens,
+        byProvider: {},
+      };
+    });
+
+    // Daily costs
+    const dailyCosts = db.prepare(`
+      SELECT
+        DATE(timestamp) as date,
+        SUM(estimated_cost) as cost,
+        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN estimated_cost ELSE 0 END) as free_cost,
+        SUM(CASE WHEN estimated_cost > 0 THEN estimated_cost ELSE 0 END) as paid_cost
+      FROM request_logs
+      WHERE timestamp > ?
+      GROUP BY DATE(timestamp)
+      ORDER BY date ASC
+    `).all(start) as any[];
+
+    return {
+      period: { start: new Date(start), end: new Date() },
+      totalCost: totals?.total_cost ?? 0,
+      freeTierCost: totals?.free_cost ?? 0,
+      paidCost: (totals?.total_cost ?? 0) - (totals?.free_cost ?? 0),
+      costSavings: totals?.free_cost ?? 0,
+      byTenant: enrichedByTenant,
+      byProvider: Object.fromEntries(byProvider.map((p: any) => [p.provider, {
+        cost: p.cost,
+        requests: p.requests,
+        tokens: p.tokens,
+        freePercent: p.free_percent ?? 0,
+      }])),
+      dailyCosts,
+    };
+  });
+
   // Quota states
   server.get('/admin/quota', async (request) => {
     const db = getDb();
@@ -4532,6 +4721,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     // prefix.
     const newKey = `dmrax_${crypto.randomBytes(32).toString('hex')}`;
     process.env.DMRX_ADMIN_API_KEY = newKey;
+    refreshAdminKey();
     logger.warn('Admin API key rotated at runtime. Operator must also update DMRX_ADMIN_API_KEY in deployment for persistence.');
     return {
       new_key: newKey,

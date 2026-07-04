@@ -492,6 +492,12 @@ export const Admin = {
     return { entries: res.entries ?? res.catalog ?? [] };
   },
 
+  // Free-tier summary
+  getFreeTierSummary: () => apiGet('/admin/free-tier/summary'),
+
+  // Cost dashboard
+  getCostDashboard: (days: number = 30) => apiGet('/admin/cost/dashboard', { days }),
+
   // Benchmarks
   listBenchmarks: () => apiGet<{ benchmarks: ApiBenchmarkResult[] }>('/admin/benchmarks').then(r => r.benchmarks ?? []),
 
