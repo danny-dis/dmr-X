@@ -14,6 +14,7 @@
     }
   },
   "scripts": {
+    "prebuild": "bun run ../../scripts/clean-src-artifacts.ts",
     "build": "bunx tsc -b",
     "dev": "bunx tsc -w",
     "clean": "rm -rf dist"
