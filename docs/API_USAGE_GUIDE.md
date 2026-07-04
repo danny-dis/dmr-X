@@ -248,13 +248,15 @@ export OPENAI_API_KEY=dmrx_your_api_key_here
 
 For Anthropic models in Cursor, use the Anthropic API key settings with the same base URL pattern.
 
-### OpenAI Codex CLI
+## Codex Integration
 
-#### Option A: Custom model provider (recommended)
+DMR-X supports [OpenAI Codex CLI](https://github.com/openai/codex) out of the box via the existing OpenAI-compatible `/v1/chat/completions` endpoint.
 
-Create or edit `~/.codex/config.toml`:
+### Quick Setup
 
-```toml
+```bash
+# Method A: Codex config.toml (recommended)
+cat >> ~/.codex/config.toml << 'EOF'
 model = "auto-coding"
 model_provider = "dmrx"
 
@@ -264,58 +266,80 @@ base_url = "http://localhost:3000/v1"
 env_key = "DMRX_API_KEY"
 wire_api = "chat"
 requires_openai_auth = false
-```
+EOF
 
-Then set your DMR-X API key and run Codex:
-
-```bash
-export DMRX_API_KEY=dmrx_your_api_key_here
-codex "Explain this codebase"
-```
-
-#### Option B: Environment variables
-
-```bash
+# Method B: Environment variables
 export OPENAI_BASE_URL=http://localhost:3000/v1
 export OPENAI_API_KEY=dmrx_your_api_key_here
-codex --model auto-coding "Explain this codebase"
+
+# Method C: Using the CLI
+dmrx setup --codex
 ```
 
-> **Note:** Codex validates that API keys start with `sk-`. Since DMR-X keys start with `dmr-sk-`, you must use `requires_openai_auth = false` in the config file approach, or use the env var approach which skips this validation.
+### CLI Setup
 
-### Antigravity (agy)
+```bash
+# Auto-configure all supported agents
+dmrx setup --codex --claude --opencode --cursor
 
-Antigravity uses Google's Cloud Code protocol (`cloudcode-pa.googleapis.com`). DMR-X translates this protocol to OpenAI/Anthropic format and routes to your configured providers.
+# Remove DMR-X configuration from an agent
+dmrx off --codex
+```
 
-#### Setup
+Codex uses the `auto-coding` meta-model alias which routes to the best available model for code generation tasks.
 
-1. Start the DMR-X gateway:
-   ```bash
-   bun run dev:gateway
-   ```
+---
 
-2. Point agy at DMR-X:
-   ```bash
-   export GOOGLE_GEMINI_BASE_URL=http://localhost:3000
-   agy "Explain this function"
-   ```
+## Antigravity Integration
 
-3. agy will authenticate with Google OAuth as usual. DMR-X intercepts the request, converts from Cloud Code format, routes through your configured providers, and translates the response back.
+DMR-X supports [Google Antigravity (agy)](https://cloud.google.com/code) via custom Cloud Code protocol endpoints.
 
-#### Available Models
+### Endpoints
 
-When connected to DMR-X, agy can access models from any configured provider:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `POST /v1internal:streamGenerateContent` | POST | Streaming generation (main endpoint) |
+| `POST /v1internal:generateContent` | POST | Non-streaming generation |
+| `POST /v1internal:loadCodeAssist` | POST | Project/credits initialization |
+| `POST /v1internal:fetchAvailableModels` | POST | List available models |
 
-| Model | Provider | Description |
-|-------|----------|-------------|
-| `gemini-2.5-pro` | Google | Best reasoning and coding |
-| `gemini-2.5-flash` | Google | Fast and cheap |
-| `gemini-3-flash` | Google | Latest Gemini |
-| `claude-opus-4-6-thinking` | Anthropic | Deep reasoning with thinking |
-| `claude-sonnet-4-5` | Anthropic | Balanced performance |
-| `gpt-oss-120b-medium` | OpenAI | Open-source GPT |
+### Quick Setup
 
-> **Note:** DMR-X uses its own stored provider keys for routing. The Google OAuth token from agy is accepted but not required for routing. Configure your providers (OpenAI, Anthropic, Google) in the DMR-X admin UI with their respective API keys.
+```bash
+# Using the CLI
+dmrx setup --antigravity
+
+# Or configure agy to point at your DMR-X gateway
+export AGY_BASE_URL=http://localhost:3000
+export AGY_API_KEY=dmrx_your_api_key_here
+```
+
+### Protocol Format
+
+Antigravity uses a Cloud Code wire format with an envelope around the standard Gemini request:
+
+```json
+{
+  "project": "your-project",
+  "model": "antigravity/gemini-2.5-flash",
+  "request": {
+    "contents": [
+      { "role": "user", "parts": [{ "text": "Hello" }] }
+    ],
+    "systemInstruction": {
+      "role": "user",
+      "parts": [{ "text": "You are a helpful assistant." }]
+    },
+    "tools": [{ "functionDeclarations": [...] }],
+    "generationConfig": { "maxOutputTokens": 8192, "temperature": 0.7 }
+  },
+  "requestType": "agent",
+  "userAgent": "antigravity",
+  "requestId": "agent-1719000000000-abc123"
+}
+```
+
+The gateway converts this to a UnifiedRequest, routes it through the pipeline, and returns responses in Cloud Code SSE format.
 
 ### Continue (VS Code / JetBrains)
 

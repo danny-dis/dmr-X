@@ -21,6 +21,8 @@ import { Command } from 'commander';
 import { createAddProviderCommand } from './commands/add-provider.js';
 import { createInitCommand } from './commands/init.js';
 import { createListProvidersCommand } from './commands/list-providers.js';
+import { createSetupCommand } from './commands/setup.js';
+import { createOffCommand } from './commands/off.js';
 import { createStatusCommand } from './commands/status.js';
 import { createTestCommand } from './commands/test.js';
 
@@ -42,6 +44,8 @@ program.addCommand(providersCmd);
 
 program.addCommand(createStatusCommand());
 program.addCommand(createTestCommand());
+program.addCommand(createSetupCommand());
+program.addCommand(createOffCommand());
 
 // Custom help
 program.addHelpText('after', () => {
@@ -69,6 +73,16 @@ program.addHelpText('after', () => {
     chalk.cyan('      dmrx test openai'),
     chalk.cyan('      dmrx test groq'),
     chalk.cyan('      dmrx test --all'),
+    '',
+    chalk.white('    Configure AI agent tools:'),
+    chalk.cyan('      dmrx setup --claude'),
+    chalk.cyan('      dmrx setup --opencode --codex --cursor'),
+    chalk.cyan('      dmrx setup --all --base-url http://localhost:3000/v1'),
+    chalk.cyan('      dmrx setup --claude --api-key sk-...'),
+    '',
+    chalk.white('    Remove AI agent tool config:'),
+    chalk.cyan('      dmrx off --cursor'),
+    chalk.cyan('      dmrx off --claude --opencode --codex'),
     '',
   ].join('\n');
 });

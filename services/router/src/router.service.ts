@@ -17,6 +17,7 @@ import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
+import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
 import { runPipeline } from './pipeline/pipeline.js';
 import { hashConversation, setStickyProvider } from './sticky/sticky-session.js';
@@ -59,6 +60,7 @@ export class Router {
   private handoverSummarizer: HandoverSummarizer;
   private enablePlanner: boolean;
   private enableHandover: boolean;
+  private guardrailEngine: GuardrailEngine;
 
   constructor(private readonly config: RouterConfig = {}) {
     this.taskDecomposer = new TaskDecomposer();
@@ -66,6 +68,7 @@ export class Router {
     this.thompsonSampler = new ThompsonSampler();
     this.clusterScorer = new ClusterScorer();
     this.handoverSummarizer = new HandoverSummarizer();
+    this.guardrailEngine = getGuardrailEngine();
     this.enablePlanner = config.enablePlanner !== false; // Default enabled
     this.enableHandover = config.enableHandover !== false; // Default enabled
     // Initialize cluster scorer asynchronously
@@ -87,6 +90,20 @@ export class Router {
    */
   getClusterScorer(): ClusterScorer {
     return this.clusterScorer;
+  }
+
+  /**
+   * Return the guardrail engine instance. Allows adding/removing plugins.
+   */
+  getGuardrailEngine(): GuardrailEngine {
+    return this.guardrailEngine;
+  }
+
+  /**
+   * Replace the guardrail engine (e.g., for per-tenant configuration).
+   */
+  setGuardrailEngine(engine: GuardrailEngine): void {
+    this.guardrailEngine = engine;
   }
 
   setCandidates(candidates: CandidateSet): void {
@@ -164,8 +181,49 @@ export class Router {
   ): Promise<{ plan: RoutingPlan; response: UnifiedResponse }> {
     // Resolve requestId from options or from request metadata
     const requestId = options.requestId || (request as any).metadata?.requestId;
-    // Step 0: Check for sticky session
+    const tenantId = (request as any).metadata?.tenant?.id;
+
+    // Step 0: Input guardrail checks
     const messages = request.messages || [];
+    if (messages.length > 0) {
+      const guardrailResult = await tracer.startActiveSpan('guardrail.input', async (span) => {
+        try {
+          span.setAttribute('guardrail.direction', 'input');
+          if (requestId) span.setAttribute('request.id', requestId);
+
+          // Convert messages to format expected by guardrail engine
+          const guardrailMessages = messages.map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          }));
+
+          const result = await this.guardrailEngine.checkMessages(
+            guardrailMessages,
+            { requestId, tenantId },
+          );
+
+          span.setAttribute('guardrail.violations', result.violations.length);
+          span.setAttribute('guardrail.allowed', result.allowed);
+
+          return result;
+        } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+          throw err;
+        } finally {
+          span.end();
+        }
+      });
+
+      if (!guardrailResult.allowed) {
+        throw new ProviderUnavailableError(
+          ['guardrail-blocked'],
+          0,
+        );
+      }
+    }
+
+    // Step 1: Check for sticky session
     const conversationHash = hashConversation(messages);
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
     const effectiveFreeTierStrategy = freeTierStrategy;
@@ -243,7 +301,6 @@ export class Router {
     // Both branches are wrapped in the `router.select_candidates` span so
     // the trace shows "we picked a model" as one logical step regardless
     // of which branch was taken.
-    const tenantId = (request as any).metadata?.tenant?.id;
     const directSelection = tracer.startActiveSpan('router.select_candidates', (span) => {
       try {
         span.setAttribute('router.candidate_pool_size', pipelineCandidates.length);
@@ -475,6 +532,51 @@ export class Router {
           keyRotationService,
         });
         span.setAttribute('router.used_provider', res.providerId);
+
+        // Step 0.5: Output guardrail checks
+        const messageContent = res.message?.content;
+        if (messageContent) {
+          // Convert content to string if it's an array of content parts
+          const contentStr = typeof messageContent === 'string'
+            ? messageContent
+            : JSON.stringify(messageContent);
+
+          const outputGuardrailResult = await tracer.startActiveSpan('guardrail.output', async (outputSpan) => {
+            try {
+              outputSpan.setAttribute('guardrail.direction', 'output');
+              if (requestId) outputSpan.setAttribute('request.id', requestId);
+
+              const result = await this.guardrailEngine.checkOutput(
+                contentStr,
+                { requestId, tenantId, providerId: res.providerId, modelId: res.modelId },
+              );
+
+              outputSpan.setAttribute('guardrail.violations', result.violations.length);
+              outputSpan.setAttribute('guardrail.allowed', result.allowed);
+
+              return result;
+            } catch (err) {
+              outputSpan.recordException(err as Error);
+              outputSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              throw err;
+            } finally {
+              outputSpan.end();
+            }
+          });
+
+          if (!outputGuardrailResult.allowed) {
+            throw new ProviderUnavailableError(
+              [`${res.providerId}/${res.modelId}`],
+              0,
+            );
+          }
+
+          // Apply masked content if provided
+          if (outputGuardrailResult.flaggedContent && res.message) {
+            res.message.content = outputGuardrailResult.flaggedContent;
+          }
+        }
+
         return res;
       } catch (err) {
         span.recordException(err as Error);

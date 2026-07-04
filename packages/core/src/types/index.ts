@@ -10,3 +10,4 @@ export * from './providers.js';
 export * from './provider-preferences.js';
 export * from './model-metadata.js';
 export * from './tool-types.js';
+export * from './model-bindings.js';

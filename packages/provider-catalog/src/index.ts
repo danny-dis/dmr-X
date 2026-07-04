@@ -1297,26 +1297,37 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
 
   {
     id: 'antigravity',
-    name: 'Antigravity (Cloud Code)',
+    name: 'Antigravity (Google Cloud Code)',
     category: 'cloud_llm',
     baseUrl: 'https://cloudcode-pa.googleapis.com',
     authMethod: 'bearer',
-    apiFormat: 'custom',
+    apiFormat: 'custom', // Uses Cloud Code protocol, not standard OpenAI/Anthropic
     modalities: ['llm'],
     models: [
-      { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['reasoning', 'coding'] },
-      { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'cheap'] },
-      { id: 'gemini-3-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast'] },
-      { id: 'claude-opus-4-6-thinking', modalities: ['llm'], contextWindow: 200000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['reasoning', 'coding'] },
-      { id: 'claude-sonnet-4-5', modalities: ['llm'], contextWindow: 200000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
-      { id: 'gpt-oss-120b-medium', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
+      {
+        id: 'antigravity/gemini-2.5-flash',
+        modalities: ['llm'],
+        contextWindow: 1000000,
+        maxOutputTokens: 8192,
+        inputCostPer1M: 0,
+        outputCostPer1M: 0,
+        capabilities: ['streaming', 'tool_use', 'vision'],
+        specializations: ['coding', 'agentic'],
+        pricingTier: 'free',
+        freeTier: {
+          rateLimits: { rpm: 10, rpd: 50, tpm: 100000, tpd: 500000 },
+          monthlyTokenBudget: 10000000,
+          intelligenceRank: 8,
+          speedRank: 7,
+        },
+      },
     ],
     streaming: true,
     toolCalling: true,
-    envKey: 'ANTIGRAVITY_API_KEY',
-    description: 'Google Cloud Code API — used by Antigravity CLI (agy). Supports Gemini, Claude, and GPT-OSS models.',
+    envKey: '',
+    description: 'Google Antigravity (agy) - Free AI coding agent using Cloud Code protocol. Integrates as an agentic coding tool via the Cloud Code wire format. Requires Google OAuth authentication.',
     region: 'global',
-    signupUrl: 'https://antigravity.google/',
+    signupUrl: 'https://cloud.google.com/code',
   },
 
   {

@@ -81,6 +81,8 @@ export interface ProviderModel {
   subscriptionOnly?: boolean;
   /** Unified pricing classification: 'free' | 'free_with_limits' | 'paid' | 'subscription_only' | 'unknown' */
   pricingTier?: string;
+  /** Multi-binding model catalog — alternative provider bindings for cross-binding failover */
+  bindings?: ModelBinding;
 }
 
 export type CandidateSet = ProviderModel[];
@@ -105,4 +107,43 @@ export interface RoutingPlan {
   chain: FallbackStep[];
   timeoutMs: number;
   maxRetries: number;
+}
+
+/**
+ * Multi-Binding Model Catalog
+ *
+ * Each model can list multiple provider bindings with ordering.
+ * Cross-binding failover tries the next binding when all retries on
+ * the current binding are exhausted — not same-binding retry.
+ */
+export interface ModelBinding {
+  /** Primary binding (the default provider for this model) */
+  primary: BindingEntry;
+  /** Ordered fallback bindings (tried when primary fails) */
+  fallbacks: BindingEntry[];
+  /** Cross-binding failover: if true, fallback across bindings (not same-binding retry) */
+  crossBindingFailover: boolean;
+}
+
+export interface BindingEntry {
+  providerId: string;
+  modelId: string;
+  /** Priority (lower = tried first). 0 = primary. */
+  priority: number;
+  /** Optional cost premium for this binding */
+  costPremium?: number;
+  /** Optional latency premium for this binding */
+  latencyPremium?: number;
+  /** Region hint for this binding */
+  region?: string;
+}
+
+/**
+ * Check if a candidate set contains multi-binding models.
+ * Returns true if any model has alternative bindings.
+ */
+export function hasMultiBinding(candidates: CandidateSet): boolean {
+  return candidates.some(c =>
+    c.bindings && c.bindings.fallbacks.length > 0
+  );
 }

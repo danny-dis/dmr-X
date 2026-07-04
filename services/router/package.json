@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./guardrails": {
+      "types": "./dist/guardrails/index.d.ts",
+      "import": "./dist/guardrails/index.js"
     }
   },
   "scripts": {

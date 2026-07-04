@@ -1,4 +1,4 @@
-import type { RoutingPlan, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
+import type { RoutingPlan, UnifiedRequest, UnifiedResponse, ModelBinding } from '@dmr-x/core';
 import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, QuotaExhaustedError } from '@dmr-x/core';
 import type { RateLimitService, QuotaService, KeyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
@@ -343,4 +343,60 @@ export async function executeWithFallback(
     throw new ProviderUnavailableError(tried, 5000);
   }
   throw new AllProvidersFailedError(tried);
+}
+
+/**
+ * Execute a request with cross-binding multi-binding failover support.
+ *
+ * Tries each binding (primary + fallbacks) in order. For each binding,
+ * the standard fallback chain is attempted. When all retries on the
+ * current binding are exhausted and crossBindingFailover is enabled,
+ * the next binding is tried instead of failing immediately.
+ */
+export async function executeWithMultiBindingFallback(
+  plan: RoutingPlan,
+  request: UnifiedRequest,
+  executor: AdapterExecutor,
+  bindings: ModelBinding | undefined,
+  options?: FallbackOptions,
+): Promise<UnifiedResponse> {
+  // No multi-binding config — delegate to standard fallback
+  if (!bindings || !bindings.crossBindingFailover) {
+    return executeWithFallback(plan, request, executor, options);
+  }
+
+  const allBindings = [bindings.primary, ...bindings.fallbacks];
+  const triedProviders: string[] = [];
+
+  for (const entry of allBindings) {
+    const bindingPlan: RoutingPlan = {
+      ...plan,
+      primary: {
+        ...plan.primary,
+        providerId: entry.providerId,
+        modelId: entry.modelId,
+      },
+    };
+
+    try {
+      return await executeWithFallback(bindingPlan, request, executor, {
+        ...options,
+        onFailure: (providerId: string) => {
+          triedProviders.push(providerId);
+          options?.onFailure?.(providerId);
+        },
+      });
+    } catch (error) {
+      logger.warn(
+        { providerId: entry.providerId, modelId: entry.modelId },
+        'Binding exhausted, trying next binding',
+      );
+    }
+  }
+
+  logger.error(
+    { bindingsTried: triedProviders },
+    'All bindings exhausted, no more fallbacks available',
+  );
+  throw new AllProvidersFailedError(triedProviders);
 }

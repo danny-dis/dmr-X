@@ -13,6 +13,9 @@ export { ThompsonSampler, calculateReward } from './bandit/thompson-sampler.js';
 export { RewardUpdater, type RequestRecord } from './bandit/reward-updater.js';
 export { META_MODELS, isMetaModel, resolveMetaModel, type MetaModelDefinition } from './meta-models.js';
 
+// Versioning & A/B Eval
+export { routingVersionRegistry, type VersionedStrategy, type VersionAssignment } from './versions/index.js';
+
 // Routing strategies
 export { selectLeastBusy, incrementInFlight, decrementInFlight } from './strategies/least-busy.js';
 export { selectUsageBased, recordRequest, getUsageStats } from './strategies/usage-based.js';
