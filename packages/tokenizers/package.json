@@ -12,8 +12,7 @@
     }
   },
   "scripts": {
-    "prebuild": "bun run ../../scripts/clean-src-artifacts.ts",
-    "build": "tsc",
+    "build": "bun run ../../scripts/clean-src-artifacts.ts && tsc",
     "dev": "tsc --watch",
     "clean": "rm -rf dist"
   },

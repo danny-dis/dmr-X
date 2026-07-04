@@ -137,23 +137,42 @@ function findProjectRoot(startDir) {
 async function main() {
   // Find the project root by looking for the root package.json with workspaces
   const projectRoot = findProjectRoot(process.cwd());
+  const currentDir = process.cwd();
   
-  console.log(`Project root: ${projectRoot}`);
-  console.log('Cleaning up TypeScript build artifacts from src directories...');
+  // Determine if we should clean only the current package or all packages
+  // If run from a package directory (packages/*/ or apps/*/ or services/*/), clean only that package
+  // Otherwise, clean all src directories
+  const relativePath = currentDir.replace(projectRoot, '').replace(/\\/g, '/');
+  const pathParts = relativePath.split('/').filter(Boolean);
   
-  const srcDirs = await findSrcDirectories(projectRoot);
+  let srcDirsToClean;
+  if (pathParts.length > 0 && ['packages', 'apps', 'services'].includes(pathParts[0])) {
+    // Running from a specific package/app/service - only clean its src directory
+    const packagePath = join(projectRoot, pathParts[0], pathParts.slice(1).join('/'));
+    const srcDir = join(packagePath, 'src');
+    if (require('fs').existsSync(srcDir)) {
+      srcDirsToClean = [srcDir];
+      console.log(`Cleaning src directory for ${relativePath}`);
+    } else {
+      srcDirsToClean = [];
+    }
+  } else {
+    // Running from project root - clean all src directories
+    srcDirsToClean = await findSrcDirectories(projectRoot);
+    console.log('Cleaning up TypeScript build artifacts from all src directories...');
+  }
   
-  if (srcDirs.length === 0) {
-    console.log('No src directories found.');
+  if (srcDirsToClean.length === 0) {
+    console.log('No src directories to clean.');
     return;
   }
   
-  console.log(`Found ${srcDirs.length} src director${srcDirs.length === 1 ? 'y' : 'ies'}:`);
-  for (const dir of srcDirs) {
+  console.log(`Cleaning ${srcDirsToClean.length} src director${srcDirsToClean.length === 1 ? 'y' : 'ies'}:`);
+  for (const dir of srcDirsToClean) {
     console.log(`  - ${dir}`);
   }
   
-  for (const srcDir of srcDirs) {
+  for (const srcDir of srcDirsToClean) {
     await cleanDirectory(srcDir);
   }
   
