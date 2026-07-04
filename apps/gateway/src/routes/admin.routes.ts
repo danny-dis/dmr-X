@@ -2828,6 +2828,188 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return row;
   });
 
+  // ─── Organizations ────────────────────────────────────────────────────────
+
+  const CreateOrganizationSchema = z.object({
+    name: z.string().min(1).max(255),
+    settings: z.record(z.unknown()).optional(),
+  });
+
+  // Create organization
+  server.post('/admin/organizations', async (request, reply) => {
+    const parsed = CreateOrganizationSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+    const { name, settings } = parsed.data;
+
+    const db = getDb();
+    const id = crypto.randomUUID();
+
+    db.prepare('INSERT INTO organizations (id, name, settings) VALUES (?, ?, ?)').run(id, name, JSON.stringify(settings || {}));
+
+    logAdminAction(request, 'create', 'organization', id, { name });
+
+    reply.status(201);
+    return db.prepare('SELECT * FROM organizations WHERE id = ?').get(id);
+  });
+
+  // List organizations
+  server.get('/admin/organizations', async () => {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT o.*,
+        (SELECT COUNT(*) FROM tenants WHERE org_id = o.id) as tenant_count
+      FROM organizations o ORDER BY name
+    `).all();
+    return { organizations: rows };
+  });
+
+  // Get single organization
+  server.get('/admin/organizations/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT o.*,
+        (SELECT COUNT(*) FROM tenants WHERE org_id = o.id) as tenant_count
+      FROM organizations o
+      WHERE o.id = ?
+    `).get(id);
+    if (!row) {
+      reply.status(404);
+      return { error: { message: 'Organization not found', type: 'not_found', code: 'org_not_found' } };
+    }
+    return row;
+  });
+
+  // Update organization
+  server.put('/admin/organizations/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const parsed = CreateOrganizationSchema.partial().safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const db = getDb();
+    const org = db.prepare('SELECT id FROM organizations WHERE id = ?').get(id);
+    if (!org) {
+      throw new ValidationError('Organization not found');
+    }
+
+    const updates: string[] = [];
+    const params: unknown[] = [];
+
+    if (parsed.data.name !== undefined) {
+      updates.push('name = ?');
+      params.push(parsed.data.name);
+    }
+    if (parsed.data.settings !== undefined) {
+      updates.push('settings = ?');
+      params.push(JSON.stringify(parsed.data.settings));
+    }
+
+    if (updates.length > 0) {
+      updates.push("updated_at = datetime('now')");
+      params.push(id);
+      db.prepare(`UPDATE organizations SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    }
+
+    logAdminAction(request, 'update', 'organization', id, parsed.data);
+
+    return db.prepare('SELECT * FROM organizations WHERE id = ?').get(id);
+  });
+
+  // Delete organization
+  server.delete('/admin/organizations/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const org = db.prepare('SELECT id FROM organizations WHERE id = ?').get(id);
+    if (!org) {
+      throw new ValidationError('Organization not found');
+    }
+
+    // Unlink tenants from this org
+    db.prepare('UPDATE tenants SET org_id = NULL WHERE org_id = ?').run(id);
+    db.prepare('DELETE FROM organizations WHERE id = ?').run(id);
+
+    logAdminAction(request, 'delete', 'organization', id);
+
+    return { deleted: true };
+  });
+
+  // List organization members
+  server.get('/admin/organizations/:id/members', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+    const org = db.prepare('SELECT id FROM organizations WHERE id = ?').get(id);
+    if (!org) {
+      reply.status(404);
+      return { error: { message: 'Organization not found', type: 'not_found', code: 'org_not_found' } };
+    }
+
+    const members = db.prepare('SELECT * FROM organization_members WHERE organization_id = ?').all(id);
+    return { members };
+  });
+
+  // Add organization member
+  server.post('/admin/organizations/:id/members', async (request) => {
+    const { id } = request.params as { id: string };
+    const { user_id, role } = request.body as { user_id: string; role?: string };
+
+    if (!user_id) {
+      throw new ValidationError('user_id is required');
+    }
+
+    const db = getDb();
+    const org = db.prepare('SELECT id FROM organizations WHERE id = ?').get(id);
+    if (!org) {
+      throw new ValidationError('Organization not found');
+    }
+
+    db.prepare('INSERT OR REPLACE INTO organization_members (organization_id, user_id, role) VALUES (?, ?, ?)').run(id, user_id, role || 'member');
+
+    logAdminAction(request, 'create', 'organization_member', id, { user_id, role });
+
+    return { added: true };
+  });
+
+  // Remove organization member
+  server.delete('/admin/organizations/:id/members/:userId', async (request) => {
+    const { id, userId } = request.params as { id: string; userId: string };
+    const db = getDb();
+
+    const result = db.prepare('DELETE FROM organization_members WHERE organization_id = ? AND user_id = ?').run(id, userId);
+
+    logAdminAction(request, 'delete', 'organization_member', id, { user_id: userId });
+
+    return { deleted: result.changes > 0 };
+  });
+
+  // Link tenant to organization
+  server.put('/admin/tenants/:id/organization', async (request) => {
+    const { id } = request.params as { id: string };
+    const { org_id } = request.body as { org_id: string | null };
+
+    const db = getDb();
+    const tenant = db.prepare('SELECT id FROM tenants WHERE id = ?').get(id);
+    if (!tenant) {
+      throw new ValidationError('Tenant not found');
+    }
+
+    if (org_id) {
+      const org = db.prepare('SELECT id FROM organizations WHERE id = ?').get(org_id);
+      if (!org) {
+        throw new ValidationError('Organization not found');
+      }
+    }
+
+    db.prepare('UPDATE tenants SET org_id = ? WHERE id = ?').run(org_id, id);
+
+    logAdminAction(request, 'update', 'tenant', id, { org_id });
+
+    return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
+  });
+
   // List API keys
   server.get('/admin/api-keys', async () => {
     const db = getDb();
