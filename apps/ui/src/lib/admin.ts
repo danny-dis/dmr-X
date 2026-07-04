@@ -137,6 +137,7 @@ export const Admin = {
   activateProvider: (body: {
     template_id: string;
     api_key?: string;
+    key_label?: string;
     oauth_access_token?: string;
     oauth_refresh_token?: string;
     oauth_token_expires_at?: string;
@@ -219,6 +220,18 @@ export const Admin = {
 
   deleteProvider: (id: string) => apiDelete<{ ok: true }>(`/admin/providers/${id}`),
   testProvider: (id: string) => apiPost<ApiProviderTestResult>('/admin/providers/test', { provider_id: id }).then(normalizeProviderTestResult),
+  /** Test a specific provider key by its ID. Each key on a provider
+   * can be tested independently so the operator knows exactly which
+   * credential is working and which needs rotation. */
+  testProviderKey: (providerId: string, keyId: string) =>
+    apiPost<{ ok: boolean; latencyMs: number; key_id: string; error?: string }>(
+      `/admin/providers/${providerId}/keys/${keyId}/test`,
+    ).then((r) => ({
+      ok: r.ok,
+      latencyMs: r.latencyMs ?? r.latency_ms ?? 0,
+      keyId: r.key_id,
+      error: r.error,
+    })),
   startProviderOAuth: (id: string) =>
     apiPost<ApiProviderOAuthStart>(`/admin/providers/${id}/oauth/authorize`),
   completeProviderOAuth: (id: string, code: string, state: string) =>

@@ -1,4 +1,4 @@
-import { Plus, KeyRound, Loader2, AlertCircle, CreditCard, Zap } from 'lucide-react';
+import { Plus, KeyRound, Loader2, AlertCircle, CreditCard, Zap, Activity, CheckCircle2 } from 'lucide-react';
 import * as React from 'react';
 
 import { Button } from '@/components/primitives/Button';
@@ -14,7 +14,7 @@ import {
 import { Field, FieldLabel, FieldDescription } from '@/components/primitives/Field';
 import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
-import { Admin } from '@/lib/admin';
+import { Admin, apiPost } from '@/lib/admin';
 import { cn } from '@/lib/utils';
 
 export interface AddKeyDialogProps {
@@ -70,6 +70,8 @@ export function AddKeyDialog({
   const [form, setForm] = React.useState<FormState>(EMPTY);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [testing, setTesting] = React.useState(false);
+  const [testResult, setTestResult] = React.useState<{ ok: boolean; latencyMs: number; error?: string } | null>(null);
 
   React.useEffect(() => {
     if (open) {
@@ -78,12 +80,41 @@ export function AddKeyDialog({
         label: existingKeyCount === 0 ? 'Default' : `Key ${existingKeyCount + 1}`,
       });
       setError(null);
+      setTestResult(null);
+      setTesting(false);
     }
   }, [open, existingKeyCount]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
     if (error) setError(null);
+  };
+
+  const handleTestKey = async () => {
+    const key = form.apiKey.trim();
+    if (!key) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await apiPost<{ status?: string; latency_ms?: number; message?: string }>(
+        '/admin/providers/test',
+        { provider_id: providerId, api_key: key },
+      );
+      const ok = result.status === 'passed';
+      setTestResult({
+        ok,
+        latencyMs: result.latency_ms ?? 0,
+        error: ok ? undefined : result.message ?? 'Test failed',
+      });
+    } catch (err: unknown) {
+      setTestResult({
+        ok: false,
+        latencyMs: 0,
+        error: err instanceof Error ? err.message : 'Connection failed',
+      });
+    } finally {
+      setTesting(false);
+    }
   };
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -199,6 +230,35 @@ export function AddKeyDialog({
               <FieldDescription>
                 Encrypted at rest; never returned in list responses.
               </FieldDescription>
+              {form.apiKey.trim() && (
+                <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTestKey}
+                    loading={testing}
+                    disabled={testing}
+                    leftIcon={<Activity className="size-3" />}
+                  >
+                    Test connection
+                  </Button>
+                  {testResult && (
+                    <span className={`text-[11px] flex items-center gap-1 ${
+                      testResult.ok ? 'text-success' : 'text-danger'
+                    }`}>
+                      {testResult.ok ? (
+                        <CheckCircle2 className="size-3" />
+                      ) : (
+                        <AlertCircle className="size-3" />
+                      )}
+                      {testResult.ok
+                        ? `Connected · ${testResult.latencyMs}ms`
+                        : testResult.error ?? 'Test failed'}
+                    </span>
+                  )}
+                </div>
+              )}
             </Field>
 
             <Field>

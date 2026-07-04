@@ -46,7 +46,7 @@ import { Input } from '@/components/primitives/Input';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
-import { Admin } from '@/lib/admin';
+import { Admin, apiPost } from '@/lib/admin';
 import { formatDateTime, formatDuration } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiProvider, ApiProviderKey, ApiModel } from '@/types/api';
@@ -132,6 +132,15 @@ export function ProviderDetailDrawer({
     Record<string, { ok: boolean; latencyMs: number; error?: string }>
   >({});
 
+  // Quick-add key inline form
+  const [showQuickAdd, setShowQuickAdd] = React.useState(false);
+  const [quickAddLabel, setQuickAddLabel] = React.useState('');
+  const [quickAddKey, setQuickAddKey] = React.useState('');
+  const [quickAddTier, setQuickAddTier] = React.useState<'free' | 'paid'>('paid');
+  const [quickAddSubmitting, setQuickAddSubmitting] = React.useState(false);
+  const [quickAddTesting, setQuickAddTesting] = React.useState(false);
+  const [quickAddTestResult, setQuickAddTestResult] = React.useState<{ ok: boolean; latencyMs: number; error?: string } | null>(null);
+
   // API key visibility toggle
   const [visibleKeyIds, setVisibleKeyIds] = React.useState<Set<string>>(new Set());
 
@@ -159,6 +168,10 @@ export function ProviderDetailDrawer({
       setVisibleKeyIds(new Set());
       setDiscoveredModels([]);
       setDiscovering(false);
+      setShowQuickAdd(false);
+      setQuickAddLabel('');
+      setQuickAddKey('');
+      setQuickAddTestResult(null);
     }
   }, [open]);
 
@@ -333,7 +346,7 @@ export function ProviderDetailDrawer({
     if (!provider) return;
     setTestingKeyId(key.id);
     try {
-      const result = await Admin.testProvider(provider.id);
+      const result = await Admin.testProviderKey(provider.id, key.id);
       setKeyTestResults((prev) => ({
         ...prev,
         [key.id]: { ok: result.ok, latencyMs: result.latencyMs, error: result.error },
@@ -352,25 +365,25 @@ export function ProviderDetailDrawer({
     if (!provider?.keys) return;
     setTesting(true);
     setKeyTestResults({});
-    try {
-      const result = await Admin.testProvider(provider.id);
-      const newResults: typeof keyTestResults = {};
-      for (const key of provider.keys) {
+    const newResults: typeof keyTestResults = {};
+    let allOk = true;
+    for (const key of provider.keys) {
+      try {
+        const result = await Admin.testProviderKey(provider.id, key.id);
         newResults[key.id] = { ok: result.ok, latencyMs: result.latencyMs, error: result.error };
+        if (!result.ok) allOk = false;
+      } catch (err) {
+        newResults[key.id] = { ok: false, latencyMs: 0, error: err instanceof Error ? err.message : 'Unknown error' };
+        allOk = false;
       }
-      setKeyTestResults(newResults);
-      if (result.ok) {
-        toast.success(`All keys tested · ${formatDuration(result.latencyMs)}`);
-      } else {
-        toast.error('Key test failed', { description: result.error });
-      }
-    } catch (err) {
-      toast.error('Test failed', {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setTesting(false);
     }
+    setKeyTestResults(newResults);
+    if (allOk) {
+      toast.success('All keys tested successfully');
+    } else {
+      toast.error('Some keys failed — see individual results below');
+    }
+    setTesting(false);
   };
 
   const handleDiscoverModels = async () => {
@@ -400,6 +413,58 @@ export function ProviderDetailDrawer({
       else next.add(keyId);
       return next;
     });
+  };
+
+  const handleQuickAddTest = async () => {
+    if (!provider || !quickAddKey.trim()) return;
+    setQuickAddTesting(true);
+    setQuickAddTestResult(null);
+    try {
+      const result = await apiPost<{ status?: string; latency_ms?: number; message?: string }>(
+        '/admin/providers/test',
+        { provider_id: provider.id, api_key: quickAddKey.trim() },
+      );
+      const ok = result.status === 'passed';
+      setQuickAddTestResult({
+        ok,
+        latencyMs: result.latency_ms ?? 0,
+        error: ok ? undefined : result.message ?? 'Test failed',
+      });
+    } catch (err: unknown) {
+      setQuickAddTestResult({
+        ok: false,
+        latencyMs: 0,
+        error: err instanceof Error ? err.message : 'Connection failed',
+      });
+    } finally {
+      setQuickAddTesting(false);
+    }
+  };
+
+  const handleQuickAddSubmit = async () => {
+    if (!provider || !quickAddKey.trim()) return;
+    setQuickAddSubmitting(true);
+    try {
+      const label = quickAddLabel.trim() || `Key ${(provider.keys?.length ?? 0) + 1}`;
+      await Admin.addProviderKey(provider.id, {
+        label,
+        tier: quickAddTier,
+        api_key: quickAddKey.trim(),
+        priority: 0,
+      });
+      toast.success('Key added', { description: `${label} on ${provider.name}` });
+      setShowQuickAdd(false);
+      setQuickAddLabel('');
+      setQuickAddKey('');
+      setQuickAddTestResult(null);
+      onChanged?.();
+    } catch (err) {
+      toast.error('Failed to add key', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setQuickAddSubmitting(false);
+    }
   };
 
   if (!provider) {
@@ -810,6 +875,128 @@ export function ProviderDetailDrawer({
                   );
                 })}
               </div>
+
+              {/* Quick-add key inline form */}
+              {showQuickAdd ? (
+                <div className="mt-3 rounded-lg border border-border bg-surface-2/40 p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">
+                      Quick-add key
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setShowQuickAdd(false);
+                        setQuickAddLabel('');
+                        setQuickAddKey('');
+                        setQuickAddTestResult(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      value={quickAddLabel}
+                      onChange={(e) => setQuickAddLabel(e.target.value)}
+                      placeholder={`Key ${(provider.keys?.length ?? 0) + 1}`}
+                    />
+                    <div className="flex rounded-lg border border-border overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setQuickAddTier('free')}
+                        className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition-colors ${
+                          quickAddTier === 'free'
+                            ? 'bg-success/10 text-success'
+                            : 'bg-surface-2 text-fg-muted hover:text-fg'
+                        }`}
+                      >
+                        Free
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setQuickAddTier('paid')}
+                        className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition-colors ${
+                          quickAddTier === 'paid'
+                            ? 'bg-warning/10 text-warning'
+                            : 'bg-surface-2 text-fg-muted hover:text-fg'
+                        }`}
+                      >
+                        Paid
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="password"
+                      value={quickAddKey}
+                      onChange={(e) => setQuickAddKey(e.target.value)}
+                      placeholder="Paste API key…"
+                      autoComplete="off"
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleQuickAddTest}
+                      loading={quickAddTesting}
+                      disabled={quickAddTesting || !quickAddKey.trim()}
+                      leftIcon={<Activity className="size-3" />}
+                    >
+                      Test
+                    </Button>
+                  </div>
+                  {quickAddTestResult && (
+                    <div className={`flex items-center gap-1.5 text-[11px] ${
+                      quickAddTestResult.ok ? 'text-success' : 'text-danger'
+                    }`}>
+                      {quickAddTestResult.ok ? (
+                        <CheckCircle2 className="size-3" />
+                      ) : (
+                        <AlertCircle className="size-3" />
+                      )}
+                      {quickAddTestResult.ok
+                        ? `Connected · ${formatDuration(quickAddTestResult.latencyMs)}`
+                        : quickAddTestResult.error ?? 'Test failed'}
+                    </div>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleQuickAddSubmit}
+                    loading={quickAddSubmitting}
+                    disabled={quickAddSubmitting || !quickAddKey.trim()}
+                    leftIcon={<Plus className="size-3" />}
+                  >
+                    Save key
+                  </Button>
+                </div>
+              ) : (
+                <div className="mt-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => {
+                      setShowQuickAdd(true);
+                      setQuickAddLabel('');
+                      setQuickAddKey('');
+                      setQuickAddTestResult(null);
+                    }}
+                    leftIcon={<Plus className="size-3" />}
+                  >
+                    Quick-add key
+                  </Button>
+                  <p className="text-[10px] text-fg-subtle mt-1 text-center">
+                    Add a key without opening a dialog
+                  </p>
+                </div>
+              )}
             </section>
           )}
 

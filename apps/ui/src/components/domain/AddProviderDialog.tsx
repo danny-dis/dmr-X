@@ -1,5 +1,5 @@
 import {
-  Plus, KeyRound, Globe, Cpu, Server, ExternalLink, Loader2, CheckCircle2, AlertCircle, Clock,
+  Plus, KeyRound, Globe, Cpu, Server, ExternalLink, Loader2, CheckCircle2, AlertCircle, Clock, Activity,
 } from 'lucide-react';
 import * as React from 'react';
 
@@ -58,6 +58,7 @@ interface FormState {
   adapterType: string;
   baseUrl: string;
   apiKey: string;
+  keyLabel: string;
   oauthAccessToken: string;
   region: string;
   priority: string;
@@ -68,6 +69,7 @@ const EMPTY: FormState = {
   adapterType: 'openai',
   baseUrl: '',
   apiKey: '',
+  keyLabel: '',
   oauthAccessToken: '',
   region: '',
   priority: '0',
@@ -105,6 +107,8 @@ export function AddProviderDialog({
   const [submitting, setSubmitting] = React.useState(false);
   const [errors, setErrors] = React.useState<Partial<Record<keyof FormState, string>>>({});
   const [oauth, setOauth] = React.useState<OAuthState>(OAUTH_IDLE);
+  const [testingKey, setTestingKey] = React.useState(false);
+  const [keyTestResult, setKeyTestResult] = React.useState<{ ok: boolean; latencyMs: number; error?: string } | null>(null);
 
   const popupRef = React.useRef<Window | null>(null);
   const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
@@ -146,6 +150,8 @@ export function AddProviderDialog({
     if (open) {
       setErrors({});
       setOauth(OAUTH_IDLE);
+      setTestingKey(false);
+      setKeyTestResult(null);
       if (template) {
         const preset = ADAPTER_PRESETS.find(
           (p) => p.id === template.id || p.label.toLowerCase() === template.name.toLowerCase(),
@@ -155,6 +161,7 @@ export function AddProviderDialog({
           adapterType: preset?.id ?? template.id,
           baseUrl: template.baseUrl ?? preset?.baseUrl ?? '',
           apiKey: '',
+          keyLabel: 'Default',
           oauthAccessToken: '',
           region: '',
           priority: '0',
@@ -358,6 +365,39 @@ export function AddProviderDialog({
     return Object.keys(next).length === 0;
   };
 
+  const handleTestKeyClick = async () => {
+    if (!template || !form.apiKey.trim()) return;
+    setTestingKey(true);
+    setKeyTestResult(null);
+    const baseUrl = form.baseUrl || template.baseUrl;
+    if (!baseUrl) {
+      setKeyTestResult({ ok: false, latencyMs: 0, error: 'No base URL configured' });
+      setTestingKey(false);
+      return;
+    }
+    try {
+      const start = performance.now();
+      // Try fetching the provider's models endpoint as a connectivity check
+      const response = await fetch(`${baseUrl}/models`, {
+        headers: form.apiKey ? { Authorization: `Bearer ${form.apiKey.trim()}` } : {},
+        signal: AbortSignal.timeout(10000),
+      });
+      const latencyMs = Math.round(performance.now() - start);
+      if (response.ok) {
+        setKeyTestResult({ ok: true, latencyMs });
+      } else if (response.status === 401 || response.status === 403) {
+        setKeyTestResult({ ok: false, latencyMs, error: `Invalid API key (HTTP ${response.status})` });
+      } else {
+        setKeyTestResult({ ok: false, latencyMs, error: `Provider returned HTTP ${response.status}` });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Connection failed';
+      setKeyTestResult({ ok: false, latencyMs: 0, error: msg.includes('abort') ? 'Connection timed out (10s)' : msg });
+    } finally {
+      setTestingKey(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate() || isOAuthFlowActive) return;
@@ -389,6 +429,7 @@ export function AddProviderDialog({
         ? (await Admin.activateProvider({
             template_id: template.id,
             api_key: apiKey || undefined,
+            key_label: form.keyLabel.trim() || undefined,
             oauth_access_token: oauthAccessToken || undefined,
             auth_method: oauthAccessToken ? 'oauth' : 'api_key',
             tier: forceTier,
@@ -446,64 +487,82 @@ export function AddProviderDialog({
               {errors.name && <FieldError>{errors.name}</FieldError>}
             </Field>
 
-            <Field>
-              <FieldLabel required>Adapter</FieldLabel>
-              <select
-                value={form.adapterType}
-                onChange={(e) => onAdapterChange(e.target.value)}
-                className="h-9 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg focus:outline-none focus:border-primary/40 focus:ring-2 focus:ring-primary/20"
-              >
-                {ADAPTER_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-              {errors.adapterType && <FieldError>{errors.adapterType}</FieldError>}
-              <FieldDescription>
-                Adapter type determines how requests are formatted.
-              </FieldDescription>
-              {(() => {
-                const preset = ADAPTER_PRESETS.find((p) => p.id === form.adapterType);
-                if (!preset) return null;
-                return (
-                  <div className="mt-2 flex items-center gap-3">
-                    {preset.exploreUrl && (
-                      <a
-                        href={preset.exploreUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
-                      >
-                        <ExternalLink className="size-2.5" />
-                        Explore models
-                      </a>
-                    )}
-                    {preset.hint && (
-                      <span className="text-[10px] text-fg-subtle">{preset.hint}</span>
-                    )}
-                  </div>
-                );
-              })()}
-            </Field>
+            {!template && (
+              <Field>
+                <FieldLabel required>Adapter</FieldLabel>
+                <select
+                  value={form.adapterType}
+                  onChange={(e) => onAdapterChange(e.target.value)}
+                  className="h-9 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg focus:outline-none focus:border-primary/40 focus:ring-2 focus:ring-primary/20"
+                >
+                  {ADAPTER_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+                {errors.adapterType && <FieldError>{errors.adapterType}</FieldError>}
+                <FieldDescription>
+                  Adapter type determines how requests are formatted.
+                </FieldDescription>
+                {(() => {
+                  const preset = ADAPTER_PRESETS.find((p) => p.id === form.adapterType);
+                  if (!preset) return null;
+                  return (
+                    <div className="mt-2 flex items-center gap-3">
+                      {preset.exploreUrl && (
+                        <a
+                          href={preset.exploreUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                        >
+                          <ExternalLink className="size-2.5" />
+                          Explore models
+                        </a>
+                      )}
+                      {preset.hint && (
+                        <span className="text-[10px] text-fg-subtle">{preset.hint}</span>
+                      )}
+                    </div>
+                  );
+                })()}
+              </Field>
+            )}
 
-            <Field>
-              <FieldLabel>
-                <span className="inline-flex items-center gap-1.5">
-                  <Globe className="size-3" />
-                  Base URL
-                </span>
-              </FieldLabel>
-              <Input
-                value={form.baseUrl}
-                onChange={(e) => update('baseUrl', e.target.value)}
-                placeholder="https://api.openai.com/v1"
-                mono
-              />
-              <FieldDescription>
-                Leave blank to use the adapter default.
-              </FieldDescription>
-            </Field>
+            {!template && (
+              <Field>
+                <FieldLabel>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Globe className="size-3" />
+                    Base URL
+                  </span>
+                </FieldLabel>
+                <Input
+                  value={form.baseUrl}
+                  onChange={(e) => update('baseUrl', e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  mono
+                />
+                <FieldDescription>
+                  Leave blank to use the adapter default.
+                </FieldDescription>
+              </Field>
+            )}
+
+            {template && (
+              <Field>
+                <FieldLabel>Key label</FieldLabel>
+                <Input
+                  value={form.keyLabel}
+                  onChange={(e) => update('keyLabel', e.target.value)}
+                  placeholder="Default, Work, Personal…"
+                />
+                <FieldDescription>
+                  A friendly name so you can tell keys apart.
+                </FieldDescription>
+              </Field>
+            )}
 
             <Field>
               <FieldLabel>
@@ -526,6 +585,35 @@ export function AddProviderDialog({
                 <Badge tone="success" size="sm" className="mt-1">
                   Free-tier key
                 </Badge>
+              )}
+              {template && form.apiKey.trim() && (
+                <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTestKeyClick}
+                    loading={testingKey}
+                    disabled={testingKey}
+                    leftIcon={<Activity className="size-3" />}
+                  >
+                    Test connection
+                  </Button>
+                  {keyTestResult && (
+                    <span className={`text-[11px] flex items-center gap-1 ${
+                      keyTestResult.ok ? 'text-success' : 'text-danger'
+                    }`}>
+                      {keyTestResult.ok ? (
+                        <CheckCircle2 className="size-3" />
+                      ) : (
+                        <AlertCircle className="size-3" />
+                      )}
+                      {keyTestResult.ok
+                        ? `Connected · ${keyTestResult.latencyMs}ms`
+                        : keyTestResult.error ?? 'Test failed'}
+                    </span>
+                  )}
+                </div>
               )}
             </Field>
 
@@ -665,28 +753,30 @@ export function AddProviderDialog({
               </Field>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <Field>
-                <FieldLabel>Region</FieldLabel>
-                <Input
-                  value={form.region}
-                  onChange={(e) => update('region', e.target.value)}
-                  placeholder="us-east-1"
-                />
-              </Field>
+            {!template && (
+              <div className="grid grid-cols-2 gap-3">
+                <Field>
+                  <FieldLabel>Region</FieldLabel>
+                  <Input
+                    value={form.region}
+                    onChange={(e) => update('region', e.target.value)}
+                    placeholder="us-east-1"
+                  />
+                </Field>
 
-              <Field>
-                <FieldLabel>Priority</FieldLabel>
-                <Input
-                  type="number"
-                  min="0"
-                  value={form.priority}
-                  onChange={(e) => update('priority', e.target.value)}
-                  invalid={!!errors.priority}
-                />
-                {errors.priority && <FieldError>{errors.priority}</FieldError>}
-              </Field>
-            </div>
+                <Field>
+                  <FieldLabel>Priority</FieldLabel>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={form.priority}
+                    onChange={(e) => update('priority', e.target.value)}
+                    invalid={!!errors.priority}
+                  />
+                  {errors.priority && <FieldError>{errors.priority}</FieldError>}
+                </Field>
+              </div>
+            )}
 
             <div className="rounded-lg border border-border bg-surface-2/40 p-3 flex items-start gap-2">
               <Cpu className="size-3.5 text-fg-muted shrink-0 mt-0.5" />

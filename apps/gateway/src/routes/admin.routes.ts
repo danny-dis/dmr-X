@@ -241,6 +241,12 @@ const ActivateProviderSchema = z.object({
   auth_method: z.enum(['api_key', 'oauth']).optional(),
   name: z.string().optional(),
   /**
+   * Optional label for the initial key. When omitted the key is
+   * labelled "Default". When specified, it's used as-is so operators
+   * can name their keys meaningfully (e.g. "Work", "Personal").
+   */
+  key_label: z.string().min(1).max(64).optional(),
+  /**
    * Tier of the key being attached. The catalog entry sets a sensible
    * default (free when every model is free, paid otherwise) but the
    * caller can override — a free key for Google has the same shape as
@@ -727,11 +733,14 @@ function upsertDefaultKey(
     oauthTokenExpiresAt?: string | null;
     authMethod?: string;
     tier?: 'free' | 'paid';
+    /** Custom label for the key. Defaults to 'Default' when omitted. */
+    keyLabel?: string | null;
   },
 ): void {
+  const keyLabel = fields.keyLabel || 'Default';
   const existing = db
-    .prepare(`SELECT id FROM provider_keys WHERE provider_id = ? AND label = 'Default' LIMIT 1`)
-    .get(providerId) as { id: string } | undefined;
+    .prepare(`SELECT id FROM provider_keys WHERE provider_id = ? AND label = ? LIMIT 1`)
+    .get(providerId, keyLabel) as { id: string } | undefined;
 
   const apiKeyEncrypted =
     fields.apiKeyPlaintext != null && fields.apiKeyPlaintext !== ''
@@ -778,17 +787,18 @@ function upsertDefaultKey(
     params.push(existing.id);
     db.prepare(`UPDATE provider_keys SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   } else {
-    const id = `${providerId}-default`;
+    const id = `${providerId}-${keyLabel.toLowerCase().replace(/\s+/g, '-')}`;
     db.prepare(
       `INSERT INTO provider_keys (
         id, provider_id, label, tier,
         api_key_encrypted, oauth_access_token_encrypted,
         oauth_refresh_token_encrypted, oauth_token_expires_at,
         auth_method, priority, is_active
-      ) VALUES (?, ?, 'Default', ?, ?, ?, ?, ?, ?, 0, 1)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
     ).run(
       id,
       providerId,
+      keyLabel,
       fields.tier ?? 'paid',
       apiKeyEncrypted ?? null,
       oauthAccessEncrypted ?? null,
@@ -1055,6 +1065,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       oauth_token_expires_at,
       auth_method,
       name: custom_name,
+      key_label,
       tier: requestedTier,
     } = parsed.data;
     const template = PROVIDER_CATALOG.find(t => t.id === template_id);
@@ -1133,6 +1144,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           oauthTokenExpiresAt: oauth_token_expires_at,
           authMethod: requestedAuthMethod,
           tier: keyTier,
+          keyLabel: key_label,
         });
       }
       recomputeProviderTier(db, provider.id);
@@ -1195,6 +1207,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           oauthTokenExpiresAt: oauth_token_expires_at,
           authMethod: requestedAuthMethod,
           tier: keyTier,
+          keyLabel: key_label,
         });
       }
       recomputeProviderTier(db, id);
@@ -1727,6 +1740,140 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (refreshCandidates) await refreshCandidates();
 
     return { success: true };
+  });
+
+  // Test a specific provider key by its ID. Unlike the provider-level
+  // test endpoint (which decrypts the default key from providers.config),
+  // this endpoint decrypts the specific key from the provider_keys table
+  // and runs the connectivity test against it. This lets the operator
+  // verify each credential independently, which is essential when a
+  // provider has multiple keys (free + paid, or rotated keys).
+  server.post('/admin/providers/:id/keys/:keyId/test', async (request, reply) => {
+    const { id, keyId } = request.params as { id: string; keyId: string };
+    const db = getDb();
+
+    // 1. Validate the provider exists
+    const provider = db.prepare('SELECT id, name, base_url FROM providers WHERE id = ?').get(id) as
+      | { id: string; name: string; base_url: string | null }
+      | undefined;
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+    if (!provider.base_url) {
+      reply.status(400);
+      return { error: { message: 'Provider has no base_url configured', type: 'validation', code: 'no_base_url' } };
+    }
+
+    // 2. Fetch the specific key row
+    const keyRow = db.prepare('SELECT * FROM provider_keys WHERE id = ? AND provider_id = ?').get(keyId, id) as
+      | ProviderKeyRow
+      | undefined;
+    if (!keyRow) {
+      reply.status(404);
+      return { error: { message: 'Key not found', type: 'not_found', code: 'provider_key_not_found' } };
+    }
+
+    // 3. Decrypt the key's credential
+    let apiKey = '';
+    if (keyRow.api_key_encrypted) {
+      try {
+        apiKey = decrypt(keyRow.api_key_encrypted);
+      } catch {
+        apiKey = '';
+      }
+    }
+    if (!apiKey && keyRow.oauth_access_token_encrypted) {
+      try {
+        apiKey = decrypt(keyRow.oauth_access_token_encrypted);
+      } catch {
+        apiKey = keyRow.oauth_access_token_encrypted;
+      }
+    }
+
+    const baseUrl = provider.base_url;
+
+    // 4. SSRF validation
+    let validated: ValidatedURL;
+    try {
+      validated = await validateBaseUrlForSSRF(baseUrl);
+    } catch (err) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        key_id: keyId,
+        error: err instanceof Error ? err.message : 'SSRF validation failed',
+      };
+    }
+    const ssrfDispatcher = new Agent({ connect: { lookup: validated.lookup } });
+
+    // 5. Run connectivity test (same logic as the provider-level test)
+    const start = Date.now();
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+
+      // Try /models first (works for most OpenAI-compatible providers)
+      let response = await fetch(`${baseUrl}/models`, {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: controller.signal,
+        redirect: 'error',
+        dispatcher: ssrfDispatcher,
+      });
+
+      // If /models returns 404, try /chat/completions with a minimal request
+      if (!response.ok && response.status === 404) {
+        response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'test',
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 1,
+          }),
+          signal: controller.signal,
+          redirect: 'error',
+          dispatcher: ssrfDispatcher,
+        });
+      }
+
+      clearTimeout(timeout);
+      const latencyMs = Date.now() - start;
+
+      if (response.ok) {
+        return { ok: true, latencyMs, key_id: keyId };
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        return {
+          ok: false,
+          latencyMs,
+          key_id: keyId,
+          error: `Invalid API key (HTTP ${response.status})`,
+        };
+      }
+
+      return {
+        ok: false,
+        latencyMs,
+        key_id: keyId,
+        error: `Provider returned HTTP ${response.status}`,
+      };
+    } catch (error: unknown) {
+      const latencyMs = Date.now() - start;
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn({ err: error, provider: provider.name, key_id: keyId }, 'Per-key provider test error');
+
+      return {
+        ok: false,
+        latencyMs,
+        key_id: keyId,
+        error: msg.includes('abort') ? 'Connection timed out (10s)' : 'Connection failed',
+      };
+    }
   });
 
   // ─── OAuth Endpoints ───────────────────────────────────────────────
