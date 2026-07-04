@@ -1,15 +1,18 @@
 import { timingSafeEqual } from 'node:crypto';
 
 import { AuthenticationError } from '@dmr-x/core';
-import { getDb } from '@dmr-x/db';
+import { getDb, MemoryCache } from '@dmr-x/db';
 import { verifyApiKey, logger } from '@dmr-x/utils';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { setImmediate } from 'node:timers/promises';
 
-// Debounced last_used_at: module-level cache keyed by api_key id.
-// Avoids SQLite write contention on every authenticated request.
-// Capped at 10 000 entries; oldest are evicted when the limit is hit.
-const lastUsedAtCache = new Map<string, number>();
-const LAST_USED_CACHE_MAX = 10_000;
+// Per-key rate limiting with LRU eviction (100K entry limit)
+const PER_KEY_LIMIT = Math.max(1, parseInt(process.env.DMRX_PER_KEY_RATE_LIMIT || '1000', 10));
+const perKeyRateCache = new MemoryCache(100_000);
+
+// Debounced last_used_at with cleanup via MemoryCache sweep
+const lastUsedAtCache = new MemoryCache(10_000);
+const LAST_USED_CACHE_TTL = 5 * 60; // 5 minutes TTL
 
 // Routes that don't require auth.
 const PUBLIC_ROUTES = new Set(['/health', '/healthz', '/livez', '/ready', '/v1/models', '/validate']);
@@ -58,21 +61,28 @@ export function refreshAdminKey(): void {
   cachedAdminKey = process.env.DMRX_ADMIN_API_KEY;
 }
 
-// Simple per-key rate limiting (configurable via DMRX_PER_KEY_RATE_LIMIT, default 1000 req/min)
-const PER_KEY_LIMIT = Math.max(1, parseInt(process.env.DMRX_PER_KEY_RATE_LIMIT || '1000', 10));
-const perKeyRateMap = new Map<string, { count: number; resetAt: number }>();
-
 function checkPerKeyRateLimit(apiKeyId: string): void {
   const now = Date.now();
-  const entry = perKeyRateMap.get(apiKeyId);
+  const entryStr = perKeyRateCache.get(apiKeyId);
+  let entry: { count: number; resetAt: number } | null = null;
+  if (entryStr) {
+    try {
+      entry = JSON.parse(entryStr) as { count: number; resetAt: number };
+    } catch {
+      entry = null;
+    }
+  }
+
   if (!entry || now > entry.resetAt) {
-    perKeyRateMap.set(apiKeyId, { count: 1, resetAt: now + 60_000 });
+    perKeyRateCache.set(apiKeyId, JSON.stringify({ count: 1, resetAt: now + 60_000 }), 120);
     return;
   }
+
   entry.count++;
   if (entry.count > PER_KEY_LIMIT) {
     throw new AuthenticationError('Rate limit exceeded for this API key');
   }
+  perKeyRateCache.set(apiKeyId, JSON.stringify(entry), 120);
 }
 
 logger.info({ localMode: LOCAL_MODE, deploymentMode: DEPLOYMENT_MODE, anthropicPassthrough: ANTHROPIC_PASSTHROUGH, adminKeySet: !!process.env.DMRX_ADMIN_API_KEY }, 'Auth middleware status');
@@ -173,7 +183,12 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     if (LOCAL_MODE) {
       logger.warn('LOCAL MODE ACTIVE — tenant API key check is disabled. Do not use in production.');
       const db = getDb();
-      const tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined;
+      // Yield event loop for DB read
+      const tenant = await new Promise<{ id: string; name: string } | undefined>((resolve) => {
+        setImmediate(() => {
+          resolve(db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined);
+        });
+      });
       (request as any).tenant = {
         id: tenant?.id ?? 'local',
         name: tenant?.name ?? 'local',
@@ -194,18 +209,24 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       throw new AuthenticationError('Missing or invalid Authorization header');
     }
 
+    // Single DB connection per request
     const db = getDb();
 
     // Fetch all active API key hashes for verification
     // This supports both legacy unsalted hashes and new salted hashes
     // Also check expires_at to reject expired keys
-    const activeKeys = db.prepare(
-      `SELECT ak.id, ak.key_hash, ak.tenant_id, t.name as tenant_name
-       FROM api_keys ak
-       JOIN tenants t ON t.id = ak.tenant_id
-       WHERE ak.is_active = 1
-         AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
-    ).all() as Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>;
+    // Yield event loop for DB read
+    const activeKeys = await new Promise<Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>>((resolve) => {
+      setImmediate(() => {
+        resolve(db.prepare(
+          `SELECT ak.id, ak.key_hash, ak.tenant_id, t.name as tenant_name
+           FROM api_keys ak
+           JOIN tenants t ON t.id = ak.tenant_id
+           WHERE ak.is_active = 1
+             AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
+        ).all() as Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>);
+      });
+    });
 
     // Find matching key using constant-time comparison
     let matchedKey: typeof activeKeys[0] | undefined;
@@ -240,15 +261,19 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // to avoid SQLite write contention on the hot path. Uses a module-level cache
     // instead of request-scoped state so the debounce persists across requests.
     const now = Date.now();
-    const lastUsed = lastUsedAtCache.get(matchedKey.id);
+    const lastUsedStr = lastUsedAtCache.get(matchedKey.id);
+    const lastUsed = lastUsedStr ? parseInt(lastUsedStr, 10) : undefined;
     if (!lastUsed || now - lastUsed > 5 * 60 * 1000) {
-      db.prepare(
-        "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
-      ).run(matchedKey.id);
-      if (lastUsedAtCache.size >= LAST_USED_CACHE_MAX) {
-        lastUsedAtCache.clear();
-      }
-      lastUsedAtCache.set(matchedKey.id, now);
+      // Yield event loop for DB write
+      await new Promise<void>((resolve) => {
+        setImmediate(() => {
+          db.prepare(
+            "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
+          ).run(matchedKey.id);
+          resolve();
+        });
+      });
+      lastUsedAtCache.set(matchedKey.id, String(now), LAST_USED_CACHE_TTL);
     }
   });
 }

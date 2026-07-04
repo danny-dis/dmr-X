@@ -104,11 +104,11 @@ function validateStartupConfig(): void {
     adminApiKey === 'replace-with-admin-key' ||
     adminApiKey.trim().length < MIN_ADMIN_API_KEY_LENGTH
   ) {
-    errors.push(`DMRX_ADMIN_API_KEY must be set to at least ${MIN_ADMIN_API_KEY_LENGTH} characters in production`);
+    errors.push(`DMRX_ADMIN_API_KEY must be at least ${MIN_ADMIN_API_KEY_LENGTH} characters in production. Generate a strong key: openssl rand -hex 32`);
   }
 
   if (!encryptionKey || !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
-    errors.push('DMRX_ENCRYPTION_KEY must be set to 64 hex characters in production');
+    errors.push('DMRX_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) in production for AES-256-GCM encryption. Generate with: openssl rand -hex 32');
   }
 
   if (!corsOrigin || corsOrigin.split(',').some(origin => {

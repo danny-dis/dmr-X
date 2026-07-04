@@ -143,6 +143,7 @@ const DEFAULT_INJECTION_PATTERNS: InjectionPattern[] = [
   // Null byte injection
   {
     name: 'null-byte',
+    // eslint-disable-next-line no-control-regex
     regex: /\x00|%00/g,
     severity: 'critical',
     description: 'Null byte injection attempt',

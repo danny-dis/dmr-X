@@ -97,7 +97,7 @@ export class CompressionService {
     // Analyze content to pick best engine
     const allContent = messages.map(m => m.content).join('\n');
     const hasCode = /```[\s\S]*?```/.test(allContent) || /^\s*(import|export|const|let|var|function|class|def|fn)\s+/m.test(allContent);
-    const hasJSON = /^\s*[\[{]/.test(allContent) && /[\]}]\s*$/.test(allContent);
+    const hasJSON = /^\s*[[{]/.test(allContent) && /[\]}]\s*$/.test(allContent);
     const isCommandOutput = /^\s*(total|drwx|dr-x|-rw|npm|git|ls|cat|grep)/m.test(allContent);
 
     // Pick engine based on content characteristics

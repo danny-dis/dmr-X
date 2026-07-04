@@ -83,6 +83,7 @@ export class PollinationsImageAdapter extends BaseAdapter {
     };
   }
 
+  // eslint-disable-next-line require-yield
   async *executeStream(_request: UnifiedRequest, _options?: ExecuteOptions): AsyncIterable<StreamChunk> {
     throw new ProviderError('Pollinations images does not support streaming', this.providerId, 400);
   }

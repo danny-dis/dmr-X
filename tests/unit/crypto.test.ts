@@ -146,16 +146,16 @@ describe('Crypto: encrypt/decrypt graceful fallback', () => {
     }
   });
 
-  it('should return plaintext when no encryption key is set (encrypt)', () => {
+  it('should throw when no encryption key is set (encrypt)', () => {
     delete process.env.DMRX_ENCRYPTION_KEY;
     const plaintext = 'my-api-key';
-    expect(encrypt(plaintext)).toBe(plaintext);
+    expect(() => encrypt(plaintext)).toThrow('DMRX_ENCRYPTION_KEY is not set');
   });
 
-  it('should return input unchanged when no encryption key is set (decrypt)', () => {
+  it('should throw when no encryption key is set (decrypt)', () => {
     delete process.env.DMRX_ENCRYPTION_KEY;
     const input = 'my-api-key';
-    expect(decrypt(input)).toBe(input);
+    expect(() => decrypt(input)).toThrow('DMRX_ENCRYPTION_KEY is not set');
   });
 });
 

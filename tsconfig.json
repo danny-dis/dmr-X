@@ -18,6 +18,9 @@
     "node_modules",
     "dist",
     ".turbo",
-    "scripts/dev/**"
+    "scripts/dev/**",
+    "jan-repo",
+    "temp-clawrouter",
+    "tests"
   ]
 }

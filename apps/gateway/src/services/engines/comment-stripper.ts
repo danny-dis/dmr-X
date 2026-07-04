@@ -272,7 +272,7 @@ function matchComment(code: string, pos: number, starters: string[]): { content:
       return { content: code.slice(pos, end) };
     }
 
-    if (starter === '\"\"\"' || starter === "'''") {
+    if (starter === '"""' || starter === "'''") {
       // Python docstring
       const end = code.indexOf(starter, pos + 3);
       if (end === -1) return { content: code.slice(pos) };

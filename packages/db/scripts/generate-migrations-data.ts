@@ -14,8 +14,10 @@
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, basename } from 'path';
 
-const MIGRATIONS_DIR = join(import.meta.dir, '..', 'src', 'migrations');
-const OUTPUT_FILE = join(import.meta.dir, '..', 'src', 'migrations-data.ts');
+// Bun provides import.meta.dir; cast for TypeScript
+const scriptDir = (import.meta as { dir?: string }).dir ?? new URL('.', import.meta.url).pathname;
+const MIGRATIONS_DIR = join(scriptDir, '..', 'src', 'migrations');
+const OUTPUT_FILE = join(scriptDir, '..', 'src', 'migrations-data.ts');
 
 // Read all .sql files and parse version numbers
 const files = readdirSync(MIGRATIONS_DIR)

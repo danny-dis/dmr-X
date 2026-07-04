@@ -8,13 +8,16 @@
  * 4. Regular tool without outputSchema -> returns `ToolWithExecute`
  * 5. Shared context overload -> returns `Tool`
  *
- * Original used Zod v4 types ($ZodObject, $ZodShape, $ZodType, zodInfer).
- * Replaced with `unknown` + JSDoc TODO placeholders so the file compiles without Zod.
- * When Zod v4 (or compatible) is added to DMR-X, restore the schema type
- * parameters for full type-safe inference.
+ * Uses Zod v4 types for full type-safe inference.
  */
 
 import type { ToolExecuteContext } from './tool-context.js';
+import * as z4 from 'zod/v4';
+
+type $ZodType = z4.ZodType;
+type $ZodShape = Record<string, $ZodType>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type $ZodObject = z4.ZodObject<$ZodShape> | Record<string, any>;
 
 // ---------------------------------------------------------------------------
 // Local type definitions
@@ -39,15 +42,12 @@ export const SHARED_CONTEXT_KEY = 'shared' as const;
  * Functions to compute next turn parameters.
  * Each function receives the tool's input params and current request context.
  *
- * @template TInput - The inferred input type (Zod schema infer when available)
- *
- * TODO: When Zod is available, replace `Record<string, unknown>` with proper
- * NextTurnParamsFunctions<zodInfer<TInput>> from packages/core/src/types/tool-types.ts.
+ * @template TInput - The inferred input type from Zod schema
  */
-export type NextTurnParamsFunctions<TInput = Record<string, unknown>> = {
+export type NextTurnParamsFunctions<TInput extends $ZodObject = $ZodObject> = {
   [key: string]:
-    | ((params: TInput, context: Record<string, unknown>) => unknown)
-    | ((params: TInput, context: Record<string, unknown>) => Promise<unknown>)
+    | ((params: z4.infer<TInput>, context: Record<string, unknown>) => unknown)
+    | ((params: z4.infer<TInput>, context: Record<string, unknown>) => Promise<unknown>)
     | undefined;
 };
 
@@ -56,13 +56,10 @@ export type NextTurnParamsFunctions<TInput = Record<string, unknown>> = {
  * Receives the tool's input params and turn context.
  * Returns true if approval is required, false otherwise.
  *
- * @template TInput - The inferred input type (Zod schema infer when available)
- *
- * TODO: When Zod is available, replace with proper ToolApprovalCheck<zodInfer<TInput>>
- * from packages/core/src/types/tool-types.ts.
+ * @template TInput - The Zod schema type for tool input
  */
-export type ToolApprovalCheck<TInput = Record<string, unknown>> = (
-  params: TInput,
+export type ToolApprovalCheck<TInput extends $ZodObject = $ZodObject> = (
+  params: z4.infer<TInput>,
   context: Record<string, unknown>,
 ) => boolean | Promise<boolean>;
 

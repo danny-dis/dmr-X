@@ -1,4 +1,5 @@
 import { randomBytes, createHash, createCipheriv, createDecipheriv, timingSafeEqual } from 'node:crypto';
+import { logger } from './logger.js';
 
 export function generateId(): string {
   return randomBytes(16).toString('hex');
@@ -79,25 +80,40 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
 
-function getEncryptionKey(): Buffer | null {
+function getEncryptionKey(): Buffer {
   const hexKey = process.env.DMRX_ENCRYPTION_KEY;
-  if (!hexKey) return null;
+  if (!hexKey) {
+    throw new Error('DMRX_ENCRYPTION_KEY is not set. Set it to a 64-character hex string (32 bytes) for AES-256-GCM encryption.');
+  }
   const key = Buffer.from(hexKey, 'hex');
   if (key.length !== 32) {
-    throw new Error('DMRX_ENCRYPTION_KEY must be exactly 32 bytes (64 hex characters)');
+    throw new Error('DMRX_ENCRYPTION_KEY must be exactly 32 bytes (64 hex characters). Got ' + key.length + ' bytes.');
   }
   return key;
 }
 
 /**
+ * Validate that DMRX_ENCRYPTION_KEY is properly configured.
+ * Throws an error if the key is missing or invalid.
+ * Use this at application startup to fail fast on misconfiguration.
+ */
+export function validateEncryptionKey(): void {
+  const hexKey = process.env.DMRX_ENCRYPTION_KEY;
+  if (!hexKey) {
+    throw new Error('DMRX_ENCRYPTION_KEY is not set. Encryption is required. Set DMRX_ENCRYPTION_KEY to a 64-character hex string (32 bytes).');
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(hexKey)) {
+    throw new Error('DMRX_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) for AES-256-GCM. Received invalid format.');
+  }
+}
+
+/**
  * Encrypt a plaintext string using AES-256-GCM.
  * Returns a hex-encoded string: iv + authTag + ciphertext.
- * If DMRX_ENCRYPTION_KEY is not set, returns the plaintext unchanged (graceful fallback).
+ * Throws an error if DMRX_ENCRYPTION_KEY is not configured.
  */
 export function encrypt(plaintext: string): string {
   const key = getEncryptionKey();
-  if (!key) return plaintext; // graceful fallback
-
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
@@ -109,15 +125,13 @@ export function encrypt(plaintext: string): string {
 
 /**
  * Decrypt a hex-encoded string produced by encrypt().
- * If DMRX_ENCRYPTION_KEY is not set, returns the input unchanged (graceful fallback).
+ * Throws an error if DMRX_ENCRYPTION_KEY is not configured or data is invalid.
  */
 export function decrypt(encryptedHex: string): string {
   const key = getEncryptionKey();
-  if (!key) return encryptedHex; // graceful fallback
-
   const data = Buffer.from(encryptedHex, 'hex');
   if (data.length < IV_LENGTH + AUTH_TAG_LENGTH + 1) {
-    throw new Error('Encrypted data is too short');
+    throw new Error('Encrypted data is too short or invalid format. Expected iv(12) + authTag(16) + ciphertext.');
   }
 
   const iv = data.subarray(0, IV_LENGTH);
@@ -135,15 +149,19 @@ export function decrypt(encryptedHex: string): string {
  */
 export function encryptConfigApiKey(config: Record<string, unknown>): Record<string, unknown> {
   if (typeof config.apiKey === 'string' && config.apiKey.length > 0) {
-    config.apiKey = encrypt(config.apiKey);
+    try {
+      config.apiKey = encrypt(config.apiKey);
+    } catch {
+      // DMRX_ENCRYPTION_KEY not configured — leave apiKey unchanged
+    }
   }
   return config;
 }
 
 /**
  * Decrypt the `apiKey` field inside a config object (in-place).
- * If DMRX_ENCRYPTION_KEY is not set, the value passes through unchanged.
  * If decryption fails (e.g. already plaintext during migration), the value is left as-is.
+ * Throws an error if DMRX_ENCRYPTION_KEY is not configured.
  */
 export function decryptConfigApiKey(config: Record<string, unknown>): Record<string, unknown> {
   if (typeof config.apiKey === 'string' && config.apiKey.length > 0) {
@@ -151,7 +169,7 @@ export function decryptConfigApiKey(config: Record<string, unknown>): Record<str
       config.apiKey = decrypt(config.apiKey);
     } catch (err) {
       // Value may already be plaintext (migration period) — log and leave as-is
-      console.warn(`[dmr-x] Failed to decrypt config apiKey, treating as plaintext: ${err instanceof Error ? err.message : err}`);
+      logger.warn({ err: err, field: 'apiKey' }, 'Failed to decrypt config apiKey, treating as plaintext during migration');
     }
   }
   return config;
@@ -172,20 +190,22 @@ export function encryptOAuthTokens(config: Record<string, unknown>): Record<stri
 
 /**
  * Decrypt OAuth tokens (access + refresh) stored in provider config (in-place).
+ * If decryption fails (e.g. already plaintext during migration), the value is left as-is.
+ * Throws an error if DMRX_ENCRYPTION_KEY is not configured.
  */
 export function decryptOAuthTokens(config: Record<string, unknown>): Record<string, unknown> {
   if (typeof config.oauthAccessToken === 'string' && config.oauthAccessToken.length > 0) {
     try {
       config.oauthAccessToken = decrypt(config.oauthAccessToken);
     } catch (err) {
-      console.warn(`[dmr-x] Failed to decrypt oauthAccessToken, treating as plaintext: ${err instanceof Error ? err.message : err}`);
+      logger.warn({ err: err, field: 'oauthAccessToken' }, 'Failed to decrypt oauthAccessToken, treating as plaintext during migration');
     }
   }
   if (typeof config.oauthRefreshToken === 'string' && config.oauthRefreshToken.length > 0) {
     try {
       config.oauthRefreshToken = decrypt(config.oauthRefreshToken);
     } catch (err) {
-      console.warn(`[dmr-x] Failed to decrypt oauthRefreshToken, treating as plaintext: ${err instanceof Error ? err.message : err}`);
+      logger.warn({ err: err, field: 'oauthRefreshToken' }, 'Failed to decrypt oauthRefreshToken, treating as plaintext during migration');
     }
   }
   return config;

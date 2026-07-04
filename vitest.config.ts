@@ -21,6 +21,8 @@ export default defineConfig({
       // fastify — only in apps/gateway, not hoisted to root
       'fastify': resolve(__dirname, 'node_modules/.bun/fastify@5.9.0/node_modules/fastify'),
       '@fastify/compress': resolve(__dirname, 'node_modules/.bun/@fastify+compress@9.0.0/node_modules/@fastify/compress'),
+      'zod': resolve(__dirname, 'node_modules/.bun/zod@4.4.3/node_modules/zod'),
+      'zod/v4': resolve(__dirname, 'node_modules/.bun/zod@4.4.3/node_modules/zod/v4'),
     },
   },
   test: {

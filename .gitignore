@@ -28,6 +28,7 @@ coverage/
 # ─── Legitimate JS config files (not compiled from .ts) ────────────────────
 !apps/ui/postcss.config.js
 !apps/ui/tailwind.config.js
+!eslint.config.js
 
 # ─── Turbo cache ────────────────────────────────────────────────────────────
 .turbo/

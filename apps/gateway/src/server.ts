@@ -173,10 +173,24 @@ export async function createServer() {
 
   const db = getDb();
 
-  // Warn if encryption is not configured
-  if (!process.env.DMRX_ENCRYPTION_KEY) {
-    logger.warn('DMRX_ENCRYPTION_KEY not set — provider API keys are stored in plaintext');
+  // Validate admin API key strength in production
+  const MIN_ADMIN_API_KEY_LENGTH = 32;
+  if (!LOCAL_MODE) {
+    const adminKey = process.env.DMRX_ADMIN_API_KEY;
+    if (!adminKey || adminKey === 'replace-with-admin-key' || adminKey.length < MIN_ADMIN_API_KEY_LENGTH) {
+      throw new Error(`DMRX_ADMIN_API_KEY must be at least ${MIN_ADMIN_API_KEY_LENGTH} characters in production. Set a strong, unique key.`);
+    }
   }
+
+  // Validate encryption key in production
+  if (!LOCAL_MODE) {
+    const encryptionKey = process.env.DMRX_ENCRYPTION_KEY;
+    if (!encryptionKey || !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
+      throw new Error('DMRX_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) in production for AES-256-GCM encryption. Generate with: openssl rand -hex 32');
+    }
+  }
+  
+  logger.info('Security validation passed for admin key and encryption key');
 
   // Initialize router
   const freeTierStrategy = (process.env.DMRX_FREE_TIER_STRATEGY as any) || 'none';
@@ -375,11 +389,24 @@ export async function createServer() {
 
   // Start health checker — delay initial run to allow all adapters (including
   // those loaded from DB and auto-registered) to fully initialise.
-  const healthChecker = new HealthChecker(adapterRegistry, 30000);
-  let healthCheckStartTimer: ReturnType<typeof setTimeout> | null = null;
+  const healthChecker = new HealthChecker({ intervalMs: 30_000 });
   server.addHook('onListen', async () => {
-    healthCheckStartTimer = setTimeout(() => healthChecker.start(), 5000);
-    healthCheckStartTimer.unref();
+    // Register health checks for all providers after a short delay
+    setTimeout(async () => {
+      for (const id of adapterRegistry.list()) {
+        const adapter = adapterRegistry.peek(id);
+        if (adapter) {
+          healthChecker.startProviderCheck(id, async () => {
+            try {
+              const result = await adapter.healthCheck();
+              return result.healthy;
+            } catch {
+              return false;
+            }
+          });
+        }
+      }
+    }, 5000).unref();
   });
 
   // Background OAuth token refresh — check every 5 minutes.
@@ -555,15 +582,11 @@ void (async () => {
 
   // Cleanup on close
   server.addHook('onClose', async () => {
-    if (healthCheckStartTimer) {
-      clearTimeout(healthCheckStartTimer);
-      healthCheckStartTimer = null;
-    }
     if (oauthRefreshTimer) {
       clearTimeout(oauthRefreshTimer);
       oauthRefreshTimer = null;
     }
-    healthChecker.stop();
+    healthChecker.stopAll();
     contentCaptureService.stop();
     await adapterRegistry.disposeAll();
   });

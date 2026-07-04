@@ -88,8 +88,9 @@ let sharedProvider: BasicTracerProvider;
 
 beforeAll(() => {
   sharedExporter = new InMemorySpanExporter();
-  sharedProvider = new BasicTracerProvider();
-  sharedProvider.addSpanProcessor(new SimpleSpanProcessor(sharedExporter));
+  sharedProvider = new BasicTracerProvider({
+    spanProcessors: [new SimpleSpanProcessor(sharedExporter)],
+  });
   trace.setGlobalTracerProvider(sharedProvider);
   // Register our hand-rolled W3C propagator so the harness's
   // `propagation.extract(...)` call in the onRequest hook actually

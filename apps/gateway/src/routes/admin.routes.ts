@@ -5472,7 +5472,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       if (fs.existsSync(configPath)) {
         return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       }
-    } catch {}
+    } catch {
+      // Config file missing or invalid — return empty config
+    }
     return {};
   }
 

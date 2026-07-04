@@ -2,6 +2,7 @@ import type { CandidateSet, UnifiedRequest, UnifiedResponse } from '@dmr-x/core'
 import { describe, it, expect } from 'vitest';
 
 import { Router } from '../../services/router/src/router.service.js';
+import { GuardrailEngine } from '../../services/router/src/guardrails/guardrail-engine.js';
 
 function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0] {
   return {
@@ -30,6 +31,8 @@ interface ExecCall {
 
 function makeRouter(candidates: CandidateSet) {
   const router = new Router({ enableDecomposition: false });
+  // Disable guardrails so test content isn't flagged
+  router.setGuardrailEngine(new GuardrailEngine({ enableInput: false, enableOutput: false }));
   router.setCandidates(candidates);
   const calls: ExecCall[] = [];
   router.setAdapterExecutor({
