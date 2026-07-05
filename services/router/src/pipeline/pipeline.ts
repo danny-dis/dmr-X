@@ -312,7 +312,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   }
 
   // Build fallback chain from remaining candidates
-  const chain = buildFallbackChain(remaining, selected);
+  const chain = buildFallbackChain(remaining, selected, input.freeTierStrategy);
 
   return {
     selected,
@@ -323,9 +323,18 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
 
 function buildFallbackChain(
   remaining: ProviderModel[],
-  primary: SelectedProvider
+  primary: SelectedProvider,
+  freeTierStrategy?: string
 ): FallbackStep[] {
-  const crossProvider = remaining.filter(m => m.providerId !== primary.providerId);
+  let crossProvider = remaining.filter(m => m.providerId !== primary.providerId);
+  // When freeTierStrategy is 'prioritize', sort free models first
+  if (freeTierStrategy === 'prioritize') {
+    crossProvider = crossProvider.sort((a, b) => {
+      const aFree = isFreeModel(a) ? 0 : 1;
+      const bFree = isFreeModel(b) ? 0 : 1;
+      return aFree - bFree;
+    });
+  }
   // Allow more fallbacks when many free providers are available
   const maxFallbacks = remaining.length > 20 ? 8 : remaining.length > 10 ? 6 : 3;
   return crossProvider.slice(0, maxFallbacks).map((model, index) => ({

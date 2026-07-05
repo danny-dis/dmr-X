@@ -34,6 +34,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
   private apiKey = '';
   private apiKeys: string[] = [];
   private keyIndex = 0;
+  healthCheckTimeoutMs: number = 30000;
 
   constructor(providerId: string) {
     super();
@@ -55,6 +56,11 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
     // Enable rate limit tracking so response headers feed smart rotation
     this.enableRateLimitTracking();
+
+    // Allow configurable health check timeout (for cold-start providers)
+    if (this.config.healthCheckTimeoutMs != null) {
+      this.healthCheckTimeoutMs = this.config.healthCheckTimeoutMs;
+    }
 
     // Some free providers (e.g., Pollinations) don't need an API key
   }
@@ -100,7 +106,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       // Try /models endpoint first
       await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
         headers,
-        timeoutMs: 5000,
+        timeoutMs: this.healthCheckTimeoutMs,
       });
     } catch (error) {
       // If /models returns 404, try a minimal chat completion as a fallback
@@ -116,7 +122,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
             messages: [{ role: 'user', content: 'ping' }],
             max_tokens: 1,
           }),
-          timeoutMs: 5000,
+          timeoutMs: this.healthCheckTimeoutMs,
         });
       } else {
         throw error;

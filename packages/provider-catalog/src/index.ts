@@ -1800,6 +1800,11 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'togethercomputer/m2-bert-80M-32k-retrieval', modalities: ['reranking'], capabilities: ['reranking'], specializations: ['reranking'] },
       // Whisper
       { id: 'openai/whisper-large-v3', modalities: ['audio_stt'], capabilities: ['stt'], specializations: ['audio'] },
+      // Free-tier models (limited rate, no cost)
+      { id: 'together-free/Qwen2.5-72B-Instruct-Turbo', modalities: ['llm'], contextWindow: 32768, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general', 'free'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 100000, tpd: 0 }, monthlyTokenBudget: 10000000, intelligenceRank: 7, speedRank: 6 } },
+      { id: 'together-free/DeepSeek-R1', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming', 'reasoning'], specializations: ['reasoning', 'free'], freeTier: { rateLimits: { rpm: 10, rpd: 500, tpm: 50000, tpd: 0 }, monthlyTokenBudget: 5000000, intelligenceRank: 8, speedRank: 4 } },
+      { id: 'together-free/Meta-Llama-3.3-70B-Instruct-Turbo', modalities: ['llm'], contextWindow: 32768, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general', 'free'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 100000, tpd: 0 }, monthlyTokenBudget: 10000000, intelligenceRank: 7, speedRank: 7 } },
+      { id: 'together-free/Mixtral-8x22B-Instruct-v0.1', modalities: ['llm'], contextWindow: 65536, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general', 'free'], freeTier: { rateLimits: { rpm: 20, rpd: 500, tpm: 50000, tpd: 0 }, monthlyTokenBudget: 5000000, intelligenceRank: 6, speedRank: 5 } },
     ],
     streaming: true,
     toolCalling: true,
@@ -1834,6 +1839,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'groq/compound', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 250, tpm: 70000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 8 } },
       { id: 'groq/compound-mini', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 250, tpm: 70000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'whisper-large-v3', modalities: ['audio_stt'], capabilities: ['stt'], specializations: ['audio'], freeTier: { rateLimits: { rpm: 20, rpd: 2000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 0, speedRank: 9 } },
+      { id: 'gemma2-9b-it', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 500000 }, monthlyTokenBudget: 15000000, intelligenceRank: 6, speedRank: 9 } },
     ],
     streaming: true,
     toolCalling: true,
@@ -2542,46 +2548,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   // ADDITIONAL FREE-TIER PROVIDERS (from OmniRoute catalog)
   // ═══════════════════════════════════════════════════════════
 
-  {
-    id: 'groq',
-    name: 'Groq',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.groq.com/openai/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'llama-3.3-70b-versatile', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 500000 }, monthlyTokenBudget: 15000000, intelligenceRank: 8, speedRank: 10 } },
-      { id: 'llama-3.1-8b-instant', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 20000, tpd: 500000 }, monthlyTokenBudget: 15000000, intelligenceRank: 7, speedRank: 10 } },
-      { id: 'gemma2-9b-it', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 500000 }, monthlyTokenBudget: 15000000, intelligenceRank: 6, speedRank: 9 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'GROQ_API_KEY',
-    description: 'Groq free tier. Ultra-fast inference on LPUs. 15M tokens/month free across models.',
-    region: 'global',
-    signupUrl: 'https://console.groq.com',
-  },
-
-  {
-    id: 'together',
-    name: 'Together AI',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.together.xyz/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm', 'diffusion'],
-    models: [
-      { id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.88, outputCostPer1M: 0.88, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
-      { id: 'deepseek-ai/DeepSeek-R1', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['reasoning'], freeTier: { rateLimits: { rpm: 10, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'TOGETHER_API_KEY',
-    description: 'Together AI. DeepSeek R1 free tier. Signup credits for other models.',
-    region: 'us',
-    signupUrl: 'https://api.together.xyz',
-  },
+  // [groq moved to primary entry above]
 
   {
     id: 'deepseek',
