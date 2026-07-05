@@ -52,10 +52,15 @@ export class RateLimitService {
   private providerDailyRequests = new Map<string, { count: number; windowStart: number }>();
   // Concurrent (in-flight) request tracking per provider
   private concurrentRequests = new Map<string, Set<string>>(); // providerId -> Set<requestId>
+  private sharedPoolCounters = new Map<string, { rpm?: number; rpd?: number; tpm?: number; tpd?: number; windowStart: number }>();
   private persistTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     this.recoverState();
+    // Auto-start decay if penalties were recovered from DB
+    if (this.penalties.size > 0) {
+      this.startDecay();
+    }
     // Persist state every 60 seconds
     this.persistTimer = setInterval(() => this.persistState(), 60_000);
   }
@@ -279,6 +284,45 @@ export class RateLimitService {
       }
     }
 
+    // Check shared provider-wide pool limits
+    const poolLimit = config.sharedPool;
+    if (poolLimit) {
+      const poolKey = `pool:${providerId}`;
+      const poolData = this.sharedPoolCounters.get(poolKey);
+
+      // Check RPM
+      if (poolLimit.rpm && poolData) {
+        const poolCount = poolData.rpm ?? 0;
+        if (poolCount >= poolLimit.rpm) {
+          return { allowed: false, retryAfterMs: 60_000, reason: `Provider shared pool RPM limit (${poolLimit.rpm}) reached (${poolCount} across all models)` };
+        }
+      }
+
+      // Check RPD
+      if (poolLimit.rpd && poolData) {
+        const poolCount = poolData.rpd ?? 0;
+        if (poolCount >= poolLimit.rpd) {
+          return { allowed: false, retryAfterMs: 86_400_000, reason: `Provider shared pool RPD limit (${poolLimit.rpd}) reached (${poolCount} across all models)` };
+        }
+      }
+
+      // Check TPM
+      if (poolLimit.tpm && poolData && estimatedTokens > 0) {
+        const poolTokens = poolData.tpm ?? 0;
+        if (poolTokens + estimatedTokens > poolLimit.tpm) {
+          return { allowed: false, retryAfterMs: 60_000, reason: `Provider shared pool TPM limit (${poolLimit.tpm}) would be exceeded (${poolTokens} + ${estimatedTokens} across all models)` };
+        }
+      }
+
+      // Check TPD
+      if (poolLimit.tpd && poolData && estimatedTokens > 0) {
+        const poolTokens = poolData.tpd ?? 0;
+        if (poolTokens + estimatedTokens > poolLimit.tpd) {
+          return { allowed: false, retryAfterMs: 86_400_000, reason: `Provider shared pool TPD limit (${poolLimit.tpd}) would be exceeded (${poolTokens} + ${estimatedTokens} across all models)` };
+        }
+      }
+    }
+
     return { allowed: true };
   }
 
@@ -308,6 +352,24 @@ export class RateLimitService {
       // Record tokens in TPD window
       const tpdKey = this.cacheKey(providerId, modelId, 'tpd');
       this.addToTokenWindow(tpdKey, now, tokens, 86_400_000);
+    }
+
+    // Record in shared provider-wide pool
+    const config = this.configs.get(this.configKey(providerId, modelId));
+    if (config?.sharedPool) {
+      const poolKey = `pool:${providerId}`;
+      const existing = this.sharedPoolCounters.get(poolKey);
+      if (!existing || now - existing.windowStart > 86_400_000) {
+        this.sharedPoolCounters.set(poolKey, { rpm: 1, rpd: 1, tpm: tokens, tpd: tokens, windowStart: now });
+      } else {
+        this.sharedPoolCounters.set(poolKey, {
+          rpm: (existing.rpm ?? 0) + 1,
+          rpd: (existing.rpd ?? 0) + 1,
+          tpm: (existing.tpm ?? 0) + tokens,
+          tpd: (existing.tpd ?? 0) + tokens,
+          windowStart: existing.windowStart,
+        });
+      }
     }
   }
 

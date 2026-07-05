@@ -188,7 +188,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'gemini-3-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
       { id: 'gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
-      { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 }, sharedPool: { rpm: 30, rpd: 1500, tpm: 1000000, tpd: 50000000 } },
       { id: 'gemini-2.5-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 10, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'gemini-2.0-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
       { id: 'text-embedding-004', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
@@ -1119,7 +1119,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['llm'],
     models: [
-      { id: 'qwen/qwen3-coder', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['bulk_generation', 'backend_logic'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 8, speedRank: 7 } },
+      { id: 'qwen/qwen3-coder', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['bulk_generation', 'backend_logic'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 8, speedRank: 7 }, sharedPool: { rpm: 20, rpd: 1000 } },
       { id: 'minimax/minimax-m2.5', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } },
       { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 8, speedRank: 7 } },
       { id: 'thudm/glm-4.7', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } },
@@ -1827,7 +1827,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['llm', 'audio_stt'],
     models: [
-      { id: 'llama-3.1-8b-instant', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 6000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 10 } },
+      { id: 'llama-3.1-8b-instant', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 6000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 10 }, sharedPool: { rpm: 30, rpd: 14400, tpm: 70000, tpd: 500000 } },
       { id: 'llama-3.3-70b-versatile', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
       { id: 'meta-llama/llama-4-scout-17b-16e-instruct', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 30000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'qwen/qwen3-32b', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 60, rpd: 1000, tpm: 6000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 8 } },
@@ -3018,6 +3018,26 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     signupUrl: 'https://www.ovhcloud.com/en/public-cloud/ai-endpoints/catalog/',
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Auto-populate pricingTier for every model.
+// Uses explicit catalog metadata rather than runtime heuristics.
+// ---------------------------------------------------------------------------
+for (const provider of PROVIDER_CATALOG) {
+  for (const model of provider.models) {
+    if (model.subscriptionOnly) {
+      model.pricingTier = 'subscription_only';
+    } else if (model.freeTier) {
+      // Has a monthly token budget → truly free (generous).
+      // No monthly budget → free but strictly rate-limited.
+      model.pricingTier = model.freeTier.monthlyTokenBudget > 0 ? 'free' : 'free_with_limits';
+    } else {
+      const inputCost = model.inputCostPer1M ?? 0;
+      const outputCost = model.outputCostPer1M ?? 0;
+      model.pricingTier = (inputCost > 0 || outputCost > 0) ? 'paid' : 'free';
+    }
+  }
+}
 
 /**
  * Get provider template by ID

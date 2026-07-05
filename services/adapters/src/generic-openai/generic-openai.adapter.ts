@@ -187,6 +187,25 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       throw this.handleAdapterError(error, 'chat');
     }
 
+    // Provider-specific header-based error detection
+    // OpenRouter returns error info in response headers
+    if (this.providerId === 'openrouter' && !response.ok) {
+      const orError = response.headers.get('X-OpenRouter-Error-Message');
+      const orType = response.headers.get('X-OpenRouter-Error-Type');
+      if (orError) {
+        let status = response.status;
+        if (orType === 'rate_limited') status = 429;
+        else if (orType === 'insufficient_quota') status = 402;
+        else if (orType === 'invalid_api_key') status = 401;
+        else if (orType === 'model_not_found') status = 404;
+        throw new ProviderError(
+          `${this.providerId} chat: ${orError}`,
+          this.providerId,
+          status,
+        );
+      }
+    }
+
     const rawText = await response.text();
     let data: any;
     try {
@@ -201,6 +220,33 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         `${this.providerId} chat: upstream returned non-JSON response (${response.status}): ${rawText.slice(0, 200)}`,
         this.providerId,
         response.status || 502,
+      );
+    }
+
+    // Together AI puts status code inside error.code
+    if (this.providerId === 'together' && data?.error?.code) {
+      const code = parseInt(data.error.code, 10);
+      if (!isNaN(code) && code >= 400) {
+        throw new ProviderError(
+          `${this.providerId} chat: ${data.error.message || JSON.stringify(data.error)}`,
+          this.providerId,
+          code,
+        );
+      }
+    }
+
+    // SiliconFlow returns 200 with error inside for rate limits
+    if (this.providerId === 'siliconflow' && data?.error) {
+      const msg = (data.error.message || '').toLowerCase();
+      const code = msg.includes('rate limit') ? 429
+                 : msg.includes('quota') ? 402
+                 : msg.includes('auth') ? 401
+                 : msg.includes('not found') ? 404
+                 : response.status || 502;
+      throw new ProviderError(
+        `${this.providerId} chat: ${data.error.message || JSON.stringify(data.error)}`,
+        this.providerId,
+        code,
       );
     }
 

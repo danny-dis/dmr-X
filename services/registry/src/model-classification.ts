@@ -52,33 +52,17 @@ export interface VerificationResult {
  * Pure function, no side effects.
  */
 export function classifyPricingTier(model: ModelTemplate): PricingTier {
-  // Subscription-only models are always classified separately
   if (model.subscriptionOnly) {
     return 'subscription_only';
   }
 
+  if (model.freeTier) {
+    return model.freeTier.monthlyTokenBudget > 0 ? 'free' : 'free_with_limits';
+  }
+
   const inputCost = model.inputCostPer1M ?? 0;
   const outputCost = model.outputCostPer1M ?? 0;
-  const isZeroCost = inputCost === 0 && outputCost === 0;
-
-  if (!isZeroCost) {
-    return 'paid';
-  }
-
-  // Zero cost — check if there are strict rate limits
-  if (model.freeTier) {
-    const { rpm, rpd, tpm, tpd } = model.freeTier.rateLimits;
-    const hasStrictLimits = (rpm > 0 && rpm <= 10) ||
-                            (rpd > 0 && rpd <= 100) ||
-                            (tpm > 0 && tpm <= 10000);
-    if (hasStrictLimits) {
-      return 'free_with_limits';
-    }
-    return 'free';
-  }
-
-  // Zero cost, no freeTier metadata — assume free
-  return 'free';
+  return (inputCost > 0 || outputCost > 0) ? 'paid' : 'free';
 }
 
 /**

@@ -8,6 +8,12 @@ export interface RateLimitConfig {
   tpm?: number;   // tokens per minute
   tpd?: number;   // tokens per day
   maxConcurrent?: number; // max concurrent (in-flight) requests (e.g., Gemini free: ~10)
+  sharedPool?: {
+    rpm?: number;   // provider-wide requests per minute
+    rpd?: number;   // provider-wide requests per day
+    tpm?: number;   // provider-wide tokens per minute
+    tpd?: number;   // provider-wide tokens per day
+  };
 }
 
 /**
