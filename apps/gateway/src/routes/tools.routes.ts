@@ -323,7 +323,7 @@ export function registerCodingToolHandlers(): void {
         return { error: `File too large (${stat.size} bytes, max ${MAX_FILE_SIZE})` };
       }
 
-      let content = fs.readFileSync(fullPath, 'utf-8');
+      const content = fs.readFileSync(fullPath, 'utf-8');
       const lines = content.split('\n');
       const totalLines = lines.length;
 

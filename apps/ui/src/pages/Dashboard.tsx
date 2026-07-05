@@ -189,7 +189,7 @@ export function DashboardPage() {
 
   const dismissOnboarding = () => {
     setOnboardingDismissed(true);
-    try { localStorage.setItem(DISMISS_KEY, 'true'); } catch {}
+    try { localStorage.setItem(DISMISS_KEY, 'true'); } catch { /* private browsing — ignore */ }
   };
 
   return (

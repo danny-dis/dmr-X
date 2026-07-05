@@ -16,7 +16,7 @@ import * as z4 from 'zod/v4';
 
 type $ZodType = z4.ZodType;
 type $ZodShape = Record<string, $ZodType>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 type $ZodObject = z4.ZodObject<$ZodShape> | Record<string, any>;
 
 // ---------------------------------------------------------------------------

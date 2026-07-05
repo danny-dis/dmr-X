@@ -3738,8 +3738,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     // Aggregate totals
     let totalMonthlyBudget = 0;
-    let totalModels = freeModels.length;
-    let healthyProviders = new Set<string>();
+    const totalModels = freeModels.length;
+    const healthyProviders = new Set<string>();
 
     const providerBreakdown: Record<string, {
       provider_name: string;
@@ -4835,7 +4835,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     try {
       let testUrl: string;
       let testBody: Record<string, unknown>;
-      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
       if (tool === 'claude-code') {
         testUrl = `${gatewayUrl}/v1/messages`;
@@ -5464,7 +5464,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // --- MCP Configuration Endpoints ------------------------------------------
 
   // Helper: Read MCP config file
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   function readMcpConfig(): any {
     try {
       const configPath = process.env.DMRX_MCP_CONFIG_PATH || 'dmrx-mcp.config.json';

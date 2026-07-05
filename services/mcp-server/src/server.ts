@@ -3230,7 +3230,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         for (const step of template.steps) {
           try {
             // Merge parameters with any overrides from params.inputs
-            let stepParams = { ...step.parameters };
+            const stepParams = { ...step.parameters };
 
             // Apply input mapping from previous steps
             if (step.input_mapping) {

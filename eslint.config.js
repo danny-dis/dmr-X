@@ -1,10 +1,12 @@
 import js from '@eslint/js';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
+import reactHooks from 'eslint-plugin-react-hooks';
 
 export default [
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  reactHooks.configs['recommended-latest'],
   {
     ignores: [
       '**/node_modules/**',
@@ -21,6 +23,7 @@ export default [
       'bun.lock',
       'bun.lockb',
       'jan-repo/**',
+      'temp-clawrouter/**',
       'check-db.js',
     ],
   },

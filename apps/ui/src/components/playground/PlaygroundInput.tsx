@@ -172,7 +172,7 @@ export function PlaygroundInput() {
   const addRecentModel = React.useCallback((modelId: string) => {
     setRecentModels(prev => {
       const next = [modelId, ...prev.filter(m => m !== modelId)].slice(0, 5);
-      try { localStorage.setItem('dmrx-recent-models', JSON.stringify(next)); } catch {}
+      try { localStorage.setItem('dmrx-recent-models', JSON.stringify(next)); } catch { /* private browsing — ignore */ }
       return next;
     });
   }, []);

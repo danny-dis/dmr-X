@@ -88,7 +88,7 @@ export function costLatencyScorer(
   turnType?: TurnType,
 ): CandidateSet {
   // User's sort preference overrides quality target weights
-  let weights = sortStrategy
+  const weights = sortStrategy
     ? { ...SORT_WEIGHT_OVERRIDES[sortStrategy] }
     : { ...WEIGHT_PRESETS[qualityTarget] };
 

@@ -102,3 +102,10 @@ temp-clawrouter/
 # ─── Turbo / build output artifacts ───────────────────────────────────────
 turbo-dry.json
 turbo-output.txt
+
+# ─── Ad-hoc debug / test output logs ──────────────────────────────────────
+*-output.txt
+*-log.txt
+*-build*.txt
+crypto-test.txt
+unit-test-full.txt

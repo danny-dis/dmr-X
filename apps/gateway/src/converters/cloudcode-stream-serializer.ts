@@ -21,7 +21,7 @@ export async function* createCloudCodeSSEStream(
   options: CloudCodeStreamOptions,
 ): AsyncGenerator<string> {
   let outputTokens = 0;
-  let finishReason = 'STOP';
+  const finishReason = 'STOP';
 
   // Accumulate text across tokens (Cloud Code sends complete growing responses)
   const textParts: string[] = [];

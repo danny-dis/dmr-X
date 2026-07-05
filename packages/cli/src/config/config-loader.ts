@@ -107,7 +107,7 @@ function parseYamlConfig(content: string): DMRXConfig {
   let currentSection: string | null = null;
   let currentModel: Partial<ModelListItem> | null = null;
   let currentSubSection: string | null = null;
-  let indent = 0;
+  const indent = 0;
 
   for (const line of lines) {
     const trimmed = line.trim();

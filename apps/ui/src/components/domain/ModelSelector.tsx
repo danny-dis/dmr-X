@@ -32,7 +32,7 @@ function getLastUsedModel(): { providerId: string; modelId: string } | null {
 function setLastUsedModel(providerId: string, modelId: string) {
   try {
     localStorage.setItem(LAST_USED_KEY, JSON.stringify({ providerId, modelId }));
-  } catch {}
+  } catch { /* private browsing — ignore */ }
 }
 
 function getFavorites(): string[] {
@@ -47,7 +47,7 @@ function getFavorites(): string[] {
 function saveFavorites(favs: string[]) {
   try {
     localStorage.setItem(FAVORITES_KEY, JSON.stringify(favs));
-  } catch {}
+  } catch { /* private browsing — ignore */ }
 }
 
 interface ModelSelectorProps {
