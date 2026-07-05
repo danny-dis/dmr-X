@@ -7,6 +7,7 @@ export interface RateLimitConfig {
   rpd?: number;   // requests per day
   tpm?: number;   // tokens per minute
   tpd?: number;   // tokens per day
+  maxConcurrent?: number; // max concurrent (in-flight) requests (e.g., Gemini free: ~10)
 }
 
 /**
@@ -20,6 +21,7 @@ export interface RateLimitState {
   currentRPD: number;
   currentTPM: number;
   currentTPD: number;
+  currentConcurrent: number; // current in-flight request count
   penaltyPoints: number;  // 0-10, from 429 responses
 }
 

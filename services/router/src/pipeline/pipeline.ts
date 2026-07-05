@@ -326,7 +326,9 @@ function buildFallbackChain(
   primary: SelectedProvider
 ): FallbackStep[] {
   const crossProvider = remaining.filter(m => m.providerId !== primary.providerId);
-  return crossProvider.slice(0, 3).map((model, index) => ({
+  // Allow more fallbacks when many free providers are available
+  const maxFallbacks = remaining.length > 20 ? 8 : remaining.length > 10 ? 6 : 3;
+  return crossProvider.slice(0, maxFallbacks).map((model, index) => ({
     provider: {
       providerId: model.providerId,
       modelId: model.modelId,

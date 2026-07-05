@@ -211,6 +211,17 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       );
     }
 
+    // Gemini (free tier) returns 200 with finish_reason "content_filter" or
+    // "safety" when content is blocked by safety filters instead of an error.
+    // Throw a ProviderError so the fallback chain catches it.
+    if (data.choices?.[0]?.finish_reason === 'content_filter' || data.choices?.[0]?.finish_reason === 'safety') {
+      throw new ProviderError(
+        `${this.providerId} chat: Response blocked by content safety filters (${data.choices[0].finish_reason})`,
+        this.providerId,
+        422,
+      );
+    }
+
     const latencyMs = Date.now() - start;
 
     return {

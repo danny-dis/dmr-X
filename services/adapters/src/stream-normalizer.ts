@@ -32,8 +32,26 @@ export function createOpenAISSEIterator(
         };
       }
 
+      // Handle SSE error events
+      if (msg.event === 'error') {
+        throw new Error(`SSE error from upstream: ${msg.data || 'Unknown error'}`);
+      }
+
       try {
         const parsed = JSON.parse(msg.data!);
+
+        // Check for error in parsed data (some providers send {error: ...} in data)
+        if (parsed.error) {
+          throw new Error(
+            `Upstream streaming error: ${typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error)}`
+          );
+        }
+
+        // Check for finish_reason error indicators
+        if (parsed.choices?.[0]?.finish_reason === 'content_filter' || parsed.choices?.[0]?.finish_reason === 'safety') {
+          throw new Error(`Stream blocked by content safety filters: ${parsed.choices[0].finish_reason}`);
+        }
+
         const delta = parsed.choices?.[0]?.delta;
 
         if (delta) {
@@ -51,8 +69,13 @@ export function createOpenAISSEIterator(
           };
         }
       } catch (parseErr) {
-        // Skip malformed JSON chunks
-        logger.debug({ err: parseErr }, 'SSE stream: skipped malformed JSON chunk');
+        // Only skip parse errors for non-error events
+        if (parseErr instanceof SyntaxError) {
+          logger.warn({ err: parseErr }, 'SSE stream: malformed JSON chunk, skipping');
+        } else {
+          // Re-throw meaningful errors (content filter, upstream error, etc.)
+          throw parseErr;
+        }
       }
 
       return { done: false, value: undefined as unknown as StreamChunk };

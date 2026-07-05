@@ -11,6 +11,20 @@ import { GenericOpenAIAdapter } from '../generic-openai/generic-openai.adapter.j
 export class HuggingFaceAdapter extends GenericOpenAIAdapter {
   readonly providerId = 'huggingface';
 
+  // HuggingFace free Inference API has 30-60s cold starts.
+  // Override retry config with longer timeouts and more retries:
+  // 2s initial, 30s max, 2x exponent, 2 minute total budget.
+  protected retryConfig = {
+    strategy: 'backoff' as const,
+    backoff: {
+      initialInterval: 2000,
+      maxInterval: 30000,
+      exponent: 2,
+      maxElapsedTime: 120000,
+    },
+    retryConnectionErrors: true,
+  };
+
   constructor() {
     super('huggingface');
   }

@@ -3,6 +3,15 @@ import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, Quota
 import type { RateLimitService, QuotaService, KeyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
 
+// Model error tracking: temporarily skip models that returned 404/410
+// TTL: 1 hour for deprecated models, 5 minutes for other errors
+const MODEL_ERROR_TTL: Record<string, number> = {
+  'model_not_found': 60 * 60_000,     // 1 hour
+  'auth_error': 24 * 60 * 60_000,     // 24 hours
+  'provider_overloaded': 5 * 60_000,  // 5 minutes
+};
+const modelErrorCache = new Map<string, { category: string; expiresAt: number }>();
+
 export interface AdapterExecutor {
   execute(
     providerId: string,
@@ -55,6 +64,49 @@ function isForbiddenError(error: unknown): boolean {
   return false;
 }
 
+function isProviderOverloadedError(error: unknown): boolean {
+  if (error instanceof ProviderError) {
+    return error.statusCode === 529 || error.statusCode === 530;
+  }
+  return false;
+}
+
+function isModelNotFoundError(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) return false;
+  if (error.statusCode === 404 || error.statusCode === 410) return true;
+  if (error.statusCode === 400) {
+    const msg = error.message.toLowerCase();
+    return (
+      msg.includes('model not found') ||
+      msg.includes('model_not_found') ||
+      msg.includes('model not supported') ||
+      msg.includes('model_required') ||
+      msg.includes('unknown model') ||
+      msg.includes('model does not exist')
+    );
+  }
+  return false;
+}
+
+function isAuthError(error: unknown): boolean {
+  if (error instanceof ProviderError) {
+    return error.statusCode === 401;
+  }
+  return false;
+}
+
+function isInsufficientQuotaError(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) return false;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes('insufficient_quota') ||
+    msg.includes('insufficient quota') ||
+    msg.includes('quota_exhausted') ||
+    msg.includes('out of credits') ||
+    msg.includes('payment_required')
+  );
+}
+
 function isQuotaError(error: unknown): boolean {
   return error instanceof QuotaExhaustedError;
 }
@@ -104,12 +156,34 @@ function isContentPolicyError(error: unknown): boolean {
 /**
  * Determine the error category for fallback routing.
  */
-function classifyError(error: unknown): 'rate_limit' | 'context_window' | 'content_policy' | 'quota' | 'error' {
+function classifyError(error: unknown): 'rate_limit' | 'context_window' | 'content_policy' | 'quota' | 'model_not_found' | 'auth_error' | 'provider_overloaded' | 'insufficient_quota' | 'error' {
   if (isRateLimitError(error)) return 'rate_limit';
   if (isContextWindowError(error)) return 'context_window';
   if (isContentPolicyError(error)) return 'content_policy';
   if (isQuotaError(error)) return 'quota';
+  if (isModelNotFoundError(error)) return 'model_not_found';
+  if (isAuthError(error)) return 'auth_error';
+  if (isProviderOverloadedError(error)) return 'provider_overloaded';
+  if (isInsufficientQuotaError(error)) return 'insufficient_quota';
   return 'error';
+}
+
+function trackModelError(providerId: string, modelId: string, category: string): void {
+  const ttl = MODEL_ERROR_TTL[category] || 5 * 60_000;
+  const key = `${providerId}:${modelId}`;
+  modelErrorCache.set(key, { category, expiresAt: Date.now() + ttl });
+  logger.warn({ providerId, modelId, category, ttl }, 'Tracked model error — will skip for cooldown period');
+}
+
+function isModelOnErrorCooldown(providerId: string, modelId: string): boolean {
+  const key = `${providerId}:${modelId}`;
+  const entry = modelErrorCache.get(key);
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) {
+    modelErrorCache.delete(key);
+    return false;
+  }
+  return true;
 }
 
 export async function executeWithFallback(
@@ -124,6 +198,25 @@ export async function executeWithFallback(
   const tenantId = options?.tenantId;
   let anyNonRateLimitError = false;
   let primaryErrorRaw: unknown = null;
+  const requestId = options?.requestId || crypto.randomUUID();
+
+  // Helper: acquire concurrency slot for a provider, release on completion via finally
+  async function withConcurrencySlot<T>(
+    providerId: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const slotId = `${providerId}:${requestId}`;
+    if (rls) {
+      rls.acquireConcurrencySlot(providerId, slotId);
+    }
+    try {
+      return await fn();
+    } finally {
+      if (rls) {
+        rls.releaseConcurrencySlot(providerId, slotId);
+      }
+    }
+  }
 
   // Try primary
   try {
@@ -142,7 +235,9 @@ export async function executeWithFallback(
       await qs.checkQuota(tenantId, plan.primary.providerId, 0, 0);
     }
     tried.push(plan.primary.providerId);
-    const response = await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
+    const response = await withConcurrencySlot(plan.primary.providerId, () =>
+      executor.execute(plan.primary.providerId, plan.primary.modelId, request)
+    );
     // Record circuit breaker success (wrapped in try/catch)
     try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
     // Record successful usage (fire-and-forget, never fail the request)
@@ -197,6 +292,14 @@ export async function executeWithFallback(
         'Model forbidden (403) — applying 24h cooldown'
       );
     }
+    // On 529/530 (Provider Overloaded), apply 5-minute cooldown
+    if (rls && isProviderOverloadedError(error)) {
+      rls.setCooldown(plan.primary.providerId, plan.primary.modelId, 5 * 60_000);
+      logger.warn(
+        { provider: plan.primary.providerId, statusCode: error instanceof ProviderError ? error.statusCode : 'unknown' },
+        'Provider overloaded — applying 5-minute cooldown'
+      );
+    }
   }
 
   // Same-provider key retry: if primary failed with rate limit, try next key on same provider
@@ -205,7 +308,9 @@ export async function executeWithFallback(
     if (nextKey) {
       try {
         logger.info({ provider: plan.primary.providerId }, 'Trying next key on same provider');
-        const response = await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
+        const response = await withConcurrencySlot(plan.primary.providerId, () =>
+          executor.execute(plan.primary.providerId, plan.primary.modelId, request)
+        );
         try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
         try {
           if (rls) {
@@ -230,6 +335,10 @@ export async function executeWithFallback(
 
   // Classify the primary error for smart fallback selection
   const errorCategory = classifyError(primaryErrorRaw);
+  // Track model-level errors so we skip them on subsequent attempts
+  if (errorCategory === 'model_not_found' || errorCategory === 'auth_error') {
+    trackModelError(plan.primary.providerId, plan.primary.modelId, errorCategory);
+  }
 
   // Try configured fallbacks first (from config.yaml), then built-in chain
   const configuredSteps = options?.configuredFallbacks || [];
@@ -257,6 +366,12 @@ export async function executeWithFallback(
 
   for (const step of deduplicated) {
     try {
+      // Skip models on error cooldown (deprecated, auth errors, etc.)
+      if (isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)) {
+        logger.info({ provider: step.provider.providerId, model: step.provider.modelId }, 'Skipping model on error cooldown');
+        continue;
+      }
+
       // Re-check rate limit before executing fallback
       if (rls) {
         const limitCheck = rls.checkLimit(step.provider.providerId, step.provider.modelId, 0);
@@ -275,7 +390,9 @@ export async function executeWithFallback(
         await qs.checkQuota(tenantId, step.provider.providerId, 0, 0);
       }
       tried.push(step.provider.providerId);
-      const response = await executor.execute(step.provider.providerId, step.provider.modelId, request);
+      const response = await withConcurrencySlot(step.provider.providerId, () =>
+        executor.execute(step.provider.providerId, step.provider.modelId, request)
+      );
       // Record circuit breaker success (wrapped in try/catch)
       try { options?.onSuccess?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
       // Record successful usage (fire-and-forget, never fail the request)
@@ -335,6 +452,19 @@ export async function executeWithFallback(
           { provider: step.provider.providerId, modelId: step.provider.modelId },
           'Model forbidden (403) on fallback — applying 24h cooldown'
         );
+      }
+      // On 529/530 (Provider Overloaded), apply 5-minute cooldown
+      if (rls && isProviderOverloadedError(error)) {
+        rls.setCooldown(step.provider.providerId, step.provider.modelId, 5 * 60_000);
+        logger.warn(
+          { provider: step.provider.providerId, statusCode: error instanceof ProviderError ? error.statusCode : 'unknown' },
+          'Provider overloaded — applying 5-minute cooldown'
+        );
+      }
+      // Track model-level errors so we skip them on subsequent attempts
+      const fallbackErrorCategory = classifyError(error);
+      if (fallbackErrorCategory === 'model_not_found' || fallbackErrorCategory === 'auth_error') {
+        trackModelError(step.provider.providerId, step.provider.modelId, fallbackErrorCategory);
       }
     }
   }

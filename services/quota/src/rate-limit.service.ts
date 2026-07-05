@@ -50,6 +50,8 @@ export class RateLimitService {
   private rateLimitHits = new Map<string, RateLimitHit>(); // key -> hit timestamps
   // Provider-wide daily request tracking
   private providerDailyRequests = new Map<string, { count: number; windowStart: number }>();
+  // Concurrent (in-flight) request tracking per provider
+  private concurrentRequests = new Map<string, Set<string>>(); // providerId -> Set<requestId>
   private persistTimer: NodeJS.Timeout | null = null;
 
   constructor() {
@@ -246,6 +248,16 @@ export class RateLimitService {
         const windowStart = this.getWindowStart(rpdKey, now, 86_400_000);
         const retryAfterMs = windowStart ? 86_400_000 - (now - windowStart) : 86_400_000;
         return { allowed: false, retryAfterMs, reason: `RPD limit (${config.rpd}) exceeded` };
+      }
+    }
+
+    // Check concurrent (in-flight) request limit
+    // Checks env var PROVIDER_MAX_CONCURRENT_{PROVIDER_ID} first, then falls back to config.maxConcurrent
+    const concurrentCap = this.getMaxConcurrent(providerId) ?? config.maxConcurrent ?? null;
+    if (concurrentCap !== null) {
+      const current = this.getConcurrentCount(providerId);
+      if (current >= concurrentCap) {
+        return { allowed: false, retryAfterMs: 30_000, reason: `Concurrent request limit (${concurrentCap}) reached (${current} in-flight)` };
       }
     }
 
@@ -457,6 +469,64 @@ export class RateLimitService {
     this.rateLimitHits.delete(hitKey);
   }
 
+  // ── Concurrent Request Tracking ──────────────────────────────────────────
+
+  /**
+   * Acquire a concurrency slot for a provider.
+   * Returns false if the provider has reached its max concurrent request limit.
+   * @param providerId - the provider identifier
+   * @param requestId - unique request identifier for tracking
+   */
+  acquireConcurrencySlot(providerId: string, requestId: string): boolean {
+    let slots = this.concurrentRequests.get(providerId);
+    if (!slots) {
+      slots = new Set();
+      this.concurrentRequests.set(providerId, slots);
+    }
+    // Check if we have a configured max concurrent limit
+    const cap = this.getMaxConcurrent(providerId);
+    if (cap !== null && slots.size >= cap) {
+      logger.debug({ providerId, current: slots.size, max: cap }, 'Concurrency limit reached');
+      return false;
+    }
+    slots.add(requestId);
+    return true;
+  }
+
+  /**
+   * Release a concurrency slot for a provider (call when request completes or fails).
+   */
+  releaseConcurrencySlot(providerId: string, requestId: string): void {
+    const slots = this.concurrentRequests.get(providerId);
+    if (slots) {
+      slots.delete(requestId);
+      if (slots.size === 0) {
+        this.concurrentRequests.delete(providerId);
+      }
+    }
+  }
+
+  /**
+   * Get current concurrent request count for a provider.
+   */
+  getConcurrentCount(providerId: string): number {
+    return this.concurrentRequests.get(providerId)?.size ?? 0;
+  }
+
+  /**
+   * Get the max concurrent limit for a provider.
+   * Checks env var PROVIDER_MAX_CONCURRENT_{PROVIDER_ID} first, returns null if unset.
+   */
+  private getMaxConcurrent(providerId: string): number | null {
+    const envKey = `PROVIDER_MAX_CONCURRENT_${providerId.toUpperCase()}`;
+    const envVal = process.env[envKey];
+    if (envVal !== undefined) {
+      const n = Number(envVal);
+      if (Number.isFinite(n) && n >= 0) return n === 0 ? null : n;
+    }
+    return null;
+  }
+
   // ── Provider-Wide Daily Request Caps ─────────────────────────────────────
 
   /**
@@ -618,6 +688,7 @@ export class RateLimitService {
       currentRPD,
       currentTPM,
       currentTPD,
+      currentConcurrent: this.getConcurrentCount(providerId),
       penaltyPoints: this.getPenaltyPoints(providerId, modelId),
     };
   }

@@ -41,7 +41,8 @@ export const PROVIDER_INIT_CONFIG: ProviderInitConfig[] = [
   { id: 'together_ai', envApiKey: 'TOGETHER_API_KEY' },
   { id: 'fireworks_ai', envApiKey: 'FIREWORKS_API_KEY' },
   { id: 'cerebras', envApiKey: 'CEREBRAS_API_KEY' },
-  { id: 'sambanova', envApiKey: 'SAMBA_API_KEY' },
+  // Note: .env.example uses SAMBANOVA_API_KEY — both are accepted for backward compat
+  { id: 'sambanova', envApiKey: 'SAMBANOVA_API_KEY' },
   { id: 'nebius', envApiKey: 'NEBIUS_API_KEY' },
   { id: 'novita', envApiKey: 'NOVITA_API_KEY' },
   { id: 'moonshot', envApiKey: 'MOONSHOT_API_KEY' },
@@ -50,6 +51,12 @@ export const PROVIDER_INIT_CONFIG: ProviderInitConfig[] = [
   { id: 'volcengine', envApiKey: 'VOLCENGINE_API_KEY' },
   { id: 'dashscope', envApiKey: 'DASHSCOPE_API_KEY' },
   { id: 'vllm', requireEnv: 'VLLM_API_BASE', envBaseUrl: 'VLLM_API_BASE' },
+
+  // ---- Free-tier provider adapters (GitHub Models, Cloudflare Workers AI) ----
+  { id: 'github', envApiKey: 'GITHUB_TOKEN', defaultBaseUrl: 'https://models.inference.ai.azure.com/v1', registerGenericOpenAI: true },
+  { id: 'cloudflare', envApiKey: 'CLOUDFLARE_AI_TOKEN', defaultBaseUrl: 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1', registerGenericOpenAI: true, buildConfig: (env) => ({
+    accountId: env.CLOUDFLARE_ACCOUNT_ID || '',
+  })},
 
   // ---- AND / OR condition providers ----
   { id: 'azure_openai', requireEnv: ['AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT'], envApiKey: 'AZURE_OPENAI_API_KEY', envBaseUrl: 'AZURE_OPENAI_ENDPOINT' },
@@ -65,7 +72,7 @@ export const PROVIDER_INIT_CONFIG: ProviderInitConfig[] = [
   })},
 
   // ---- Google / Vertex AI (try/catch, same env key) ----
-  { id: 'google', envApiKey: 'GOOGLE_API_KEY', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', swallowError: true, swallowErrorMsg: 'Skipping google env-init (adapter not registered yet — will retry in background init)' },
+  { id: 'google', envApiKey: 'GOOGLE_API_KEY', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', registerGenericOpenAI: true },
   { id: 'veo', envApiKey: 'GOOGLE_API_KEY', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
   { id: 'vertex_ai', requireAnyEnv: ['VERTEX_PROJECT_ID', 'GOOGLE_API_KEY'], envApiKey: 'GOOGLE_API_KEY', swallowError: true, swallowErrorMsg: 'Skipping vertex_ai init (will retry in background)' },
 
