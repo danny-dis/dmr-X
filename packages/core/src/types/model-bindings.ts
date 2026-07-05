@@ -1,4 +1,4 @@
-import { ProviderModel, ModelBinding, BindingEntry, SelectedProvider } from './routing.js';
+import { ProviderModel, ModelBinding, BindingEntry } from './routing.js';
 
 /**
  * Resolve all unique (providerId, modelId) pairs from a model's bindings.

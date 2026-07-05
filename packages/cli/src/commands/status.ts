@@ -5,7 +5,6 @@
  */
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 
 import chalk from 'chalk';
 import { Command } from 'commander';

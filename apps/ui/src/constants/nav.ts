@@ -10,7 +10,6 @@ import {
   Settings,
   Layers,
   Terminal,
-  type LucideIcon,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 

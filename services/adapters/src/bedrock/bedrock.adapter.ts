@@ -4,8 +4,6 @@ import type {
   UnifiedResponse,
   StreamChunk,
 } from '@dmr-x/core';
-import { ProviderError } from '@dmr-x/core';
-import { logger } from '@dmr-x/utils';
 
 import type {
   ProviderConfig,
@@ -13,7 +11,7 @@ import type {
   ExecuteOptions,
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
-import { createOpenAISSEIterator } from '../stream-normalizer.js';
+import { logger } from '@dmr-x/utils';
 
 /**
  * AWS Bedrock adapter.

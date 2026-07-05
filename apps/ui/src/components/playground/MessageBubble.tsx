@@ -24,7 +24,7 @@ function MessageBubbleComponent({ message }: MessageBubbleProps) {
       await navigator.clipboard.writeText(message.content);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
+    } catch (_error) {
       // ignore
     }
   };
@@ -36,7 +36,7 @@ function MessageBubbleComponent({ message }: MessageBubbleProps) {
         rating: rating === 'up' ? 1 : -1,
       });
       setFeedback(rating);
-    } catch (error) {
+    } catch (_error) {
       // ignore
     }
   };

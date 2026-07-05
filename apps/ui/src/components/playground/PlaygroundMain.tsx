@@ -4,7 +4,6 @@ import { EmptyState } from './EmptyState';
 import { MessageBubble } from './MessageBubble';
 import { StreamingBubble } from './StreamingBubble';
 
-import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export function PlaygroundMain() {

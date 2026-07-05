@@ -1,7 +1,7 @@
 import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
 
-import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
+import type { ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
 
 export class PollinationsImageAdapter extends BaseAdapter {

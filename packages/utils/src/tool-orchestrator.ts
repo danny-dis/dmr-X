@@ -24,7 +24,6 @@ import type {
   OpenResponsesResult,
   OutputFunctionCallItem,
   InputsUnion,
-  ParsedToolCall,
 } from './tool-types.js';
 import type {
   NextTurnRequest,

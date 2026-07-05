@@ -1,4 +1,4 @@
-import { Bell, Activity, FileText, AlertCircle, CheckCircle2, Filter, Download } from 'lucide-react';
+import { Bell, Activity, FileText, AlertCircle, CheckCircle2, Download } from 'lucide-react';
 import * as React from 'react';
 
 import { AlertCard } from '@/components/domain/AlertCard';

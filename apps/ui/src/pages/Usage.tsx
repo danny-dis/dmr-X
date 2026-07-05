@@ -1,4 +1,4 @@
-import { Wallet, TrendingUp, DollarSign, Users, ChevronRight, ArrowUp, ArrowDown, Sparkles } from 'lucide-react';
+import { Wallet, TrendingUp, DollarSign, Users, Sparkles } from 'lucide-react';
 import * as React from 'react';
 
 import { BarSeriesChart } from '@/components/charts/BarSeriesChart';

@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import type { UnifiedRequest } from '@dmr-x/core';
 import { logger } from '@dmr-x/utils';
 
 import {

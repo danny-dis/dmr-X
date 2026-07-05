@@ -10,8 +10,8 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 import ora from 'ora';
 
-import { getProvider, PROVIDER_CATALOG, type ProviderEntry } from '../catalog.js';
-import { isInitialized, loadConfig, getEnvPath, type RegisteredProvider } from '../config.js';
+import { getProvider, type ProviderEntry } from '../catalog.js';
+import { isInitialized, loadConfig, getEnvPath } from '../config.js';
 
 interface TestResult {
   provider: string;

@@ -1,5 +1,5 @@
 import type { OAuthProviderConfig } from '@dmr-x/registry';
-import { encrypt, decrypt } from '@dmr-x/utils';
+import { encrypt } from '@dmr-x/utils';
 
 import { generateCodeVerifier, generateCodeChallenge } from './pkce.js';
 import { oauthStateStore } from './state-store.js';

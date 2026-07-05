@@ -8,6 +8,7 @@
  */
 
 import type { ContextSchema } from './tool-context.js';
+import * as z4 from 'zod/v4';
 import {
   hasExecuteFunction,
   isGeneratorTool,
@@ -115,23 +116,16 @@ function isZodSchema(value: unknown): value is { _zod: object } {
 
 /**
  * Convert a Zod schema to JSON Schema.
- * When Zod is available, uses z4.toJSONSchema(). Otherwise, returns a basic
- * object schema placeholder.
- *
- * TODO: Add Zod as a dependency and implement proper conversion:
- *   import * as z4 from 'zod/v4';
- *   const jsonSchema = z4.toJSONSchema(zodSchema, { target: 'draft-7' });
- *   return sanitizeJsonSchema(jsonSchema);
+ * Uses z4.toJSONSchema() for proper conversion.
  */
 export function convertZodToJsonSchema(zodSchema: unknown): Record<string, unknown> {
   if (isZodSchema(zodSchema)) {
-    // Zod schema detected but z4 module not available
-    // TODO: Import zod/v4 and use z4.toJSONSchema()
-    console.warn(
-      'Zod schema detected but z4 module not available. ' +
-      'Add zod as a dependency to enable proper schema conversion.',
-    );
-    return { type: 'object', properties: {} };
+    try {
+      const jsonSchema = z4.toJSONSchema(zodSchema as any, { target: 'draft-7' });
+      return sanitizeJsonSchema(jsonSchema as Record<string, unknown>);
+    } catch {
+      return { type: 'object', properties: {} };
+    }
   }
 
   // If it's already a plain object, assume it's JSON Schema

@@ -1,9 +1,9 @@
-import { HeadroomClient, type CompressResult } from 'headroom-ai';
+import { HeadroomClient } from 'headroom-ai';
 import { logger } from '@dmr-x/utils';
 import { getDb } from '@dmr-x/db';
 import { compressRTK, type RTKOptions } from './engines/rtk.js';
 import { compressCaveman, type CavemanOptions } from './engines/caveman.js';
-import { stripComments, type CommentStripOptions, type SupportedLanguage } from './engines/comment-stripper.js';
+import { stripComments, type CommentStripOptions } from './engines/comment-stripper.js';
 
 export type CompressionEngine = 'headroom' | 'rtk' | 'caveman' | 'comment-strip' | 'auto';
 

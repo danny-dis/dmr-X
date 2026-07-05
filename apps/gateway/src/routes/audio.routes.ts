@@ -111,7 +111,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
           }
         }
       }
-    } catch (err) {
+    } catch (_err) {
       throw new ValidationError('Failed to parse multipart upload');
     }
 

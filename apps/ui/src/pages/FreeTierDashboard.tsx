@@ -1,4 +1,4 @@
-import { RefreshCw, ExternalLink, Gift } from 'lucide-react';
+import { RefreshCw, Gift } from 'lucide-react';
 import * as React from 'react';
 
 import { FreeTierBudgetCard } from '@/components/domain/FreeTierBudgetCard';

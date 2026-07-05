@@ -5,7 +5,7 @@ import type {
   StreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { createHttpError, logger, type HttpMeta } from '@dmr-x/utils';
+import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 
 import type {
   ProviderConfig,

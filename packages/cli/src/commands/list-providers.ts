@@ -7,7 +7,7 @@
 import chalk from 'chalk';
 import { Command } from 'commander';
 
-import { PROVIDER_CATALOG, type ProviderCategory, type ProviderEntry } from '../catalog.js';
+import { PROVIDER_CATALOG, type ProviderCategory } from '../catalog.js';
 import { isInitialized, loadConfig, type RegisteredProvider } from '../config.js';
 
 const CATEGORY_LABELS: Record<ProviderCategory, string> = {

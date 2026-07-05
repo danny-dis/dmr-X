@@ -34,7 +34,7 @@ export default defineConfig({
     poolOptions: {
       forks: {
         maxForks: 1,
-        execArgv: ['--max-old-space-size=7168'],
+        execArgv: ['--max-old-space-size=8192'],
       },
     },
     coverage: {

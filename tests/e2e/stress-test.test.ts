@@ -301,7 +301,7 @@ describeE2E('Stress Tests - Failure & Load Balancing', () => {
             success: true,
             hasContent: !!response.message?.content,
           });
-        } catch (e) {
+        } catch (_e) {
           results.push({ success: false, hasContent: false });
         }
       }

@@ -15,7 +15,7 @@ import fastifyMultipart from '@fastify/multipart';
 
 import { getTelemetryService, contentCaptureService } from '@dmr-x/telemetry';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications, type ProviderTemplate, type ModelTemplate } from '@dmr-x/registry';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { quotaService, getRateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';

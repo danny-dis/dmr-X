@@ -1,6 +1,5 @@
-import { agentRegistryService, AgentDefinitionCreateSchema, AgentDefinitionUpdateSchema, AgentInstanceCreateSchema, AgentListQuerySchema, AgentListingCreateSchema, AgentRatingCreateSchema, MarketplaceQuerySchema } from '@dmr-x/agent-registry';
+import { agentRegistryService, AgentDefinitionCreateSchema, AgentDefinitionUpdateSchema, AgentInstanceCreateSchema, AgentListQuerySchema, AgentRatingCreateSchema, MarketplaceQuerySchema } from '@dmr-x/agent-registry';
 import { getDb } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 
 import { agentPermissions } from '../middleware/agent-rbac.middleware.js';

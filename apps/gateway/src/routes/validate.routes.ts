@@ -1,5 +1,5 @@
 import { getDb } from '@dmr-x/db';
-import { verifyApiKey, logger } from '@dmr-x/utils';
+import { verifyApiKey } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 
 import { LOCAL_MODE } from '../middleware/auth.middleware.js';

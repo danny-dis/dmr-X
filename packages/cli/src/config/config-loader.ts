@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import path from 'node:path';
 
 /**
  * YAML Config Loader for DMR-X.

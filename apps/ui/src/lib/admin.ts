@@ -33,7 +33,6 @@ import type {
   ApiBenchmarkRun,
   ApiSandboxSubmit,
   ApiFederationRegister,
-  ApiRerankResult,
   ApiMcpConfig,
   ApiRbacPolicy,
   ApiMcpFederationPeer,

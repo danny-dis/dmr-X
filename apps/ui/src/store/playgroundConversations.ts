@@ -76,7 +76,7 @@ export const createConversationsSlice: StateCreator<PlaygroundState, [], [], Con
 
     try {
       await apiPut(`/v1/conversations/${id}`, { title: trimmed });
-    } catch (error) {
+    } catch (_error) {
       set(state => ({
         conversations: state.conversations.map(c =>
           c.id === id ? { ...c, title: '' } : c

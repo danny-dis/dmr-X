@@ -1,9 +1,6 @@
 import {
-  Compass,
-  Clock,
   Box,
   Cpu,
-  ArrowRight,
   CornerDownLeft,
 } from 'lucide-react';
 import * as React from 'react';

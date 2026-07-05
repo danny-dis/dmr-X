@@ -1,4 +1,4 @@
-import { Cpu, Pause, Play, Plus, Trash2, Eye, Clock, Zap } from 'lucide-react';
+import { Cpu, Pause, Play, Plus, Trash2, Eye, Clock } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';

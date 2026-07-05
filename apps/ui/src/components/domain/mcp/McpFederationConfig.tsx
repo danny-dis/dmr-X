@@ -12,7 +12,7 @@ import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import type { ApiMcpFederationConfig, ApiMcpFederationPeer } from '@/types/api';
+import type { ApiMcpFederationPeer } from '@/types/api';
 
 export function McpFederationConfig() {
   const config = useApiData<{ enabled: boolean; discovery: { mdns: boolean; dns: { domain: string } }; syncInterval: string }>(

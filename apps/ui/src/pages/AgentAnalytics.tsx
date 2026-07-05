@@ -1,8 +1,7 @@
-import { BarChart3, TrendingUp, Clock, DollarSign, Bot } from 'lucide-react';
+import { BarChart3, TrendingUp, DollarSign, Bot } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Badge } from '@/components/primitives/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Skeleton } from '@/components/primitives/Skeleton';

@@ -1,4 +1,4 @@
-import { isConnectionError, isTimeoutError } from './error-classifiers.js';
+import { isConnectionError } from './error-classifiers.js';
 
 export interface BackoffStrategy {
   initialInterval: number;

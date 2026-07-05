@@ -393,7 +393,7 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
                 fullContent += data.choices[0].delta.content;
                 get().updateStreamingMessage(fullContent);
               }
-            } catch (e) {
+            } catch (_e) {
               // Skip invalid JSON
             }
           }

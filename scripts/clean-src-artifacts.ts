@@ -14,7 +14,7 @@
  */
 
 import { join, dirname } from 'node:path';
-import { readdir, unlink, stat, existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const BUILD_ARTIFACTS = ['.js', '.d.ts', '.js.map', '.d.ts.map'];
 const SRC_DIR = 'src';

@@ -1,7 +1,5 @@
 import { type SVGProps } from 'react';
 
-type IconProps = SVGProps<SVGSVGElement> & { size?: number };
-
 export function HealthDot({ size = 8, className = '', color = 'currentColor' }: { size?: number; className?: string; color?: string }) {
   return (
     <span className={`relative inline-flex ${className}`} style={{ width: size, height: size }}>

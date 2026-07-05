@@ -3,7 +3,6 @@ import * as React from 'react';
 
 import { QuotaGauge, QuotaProgressBar } from '@/components/domain/QuotaGauge';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { Badge } from '@/components/primitives/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Progress } from '@/components/primitives/Progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';

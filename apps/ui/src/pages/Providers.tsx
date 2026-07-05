@@ -1,4 +1,4 @@
-import { Boxes, Plus, Search, Star, Globe, Zap, KeyRound, RefreshCw, Trash2, Gift } from 'lucide-react';
+import { Boxes, Plus, Search, Globe, Gift } from 'lucide-react';
 import * as React from 'react';
 
 import { AddProviderDialog } from '@/components/domain/AddProviderDialog';

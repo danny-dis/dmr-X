@@ -1,8 +1,7 @@
-import { ExternalLink, Server, Zap, Brain, Clock } from 'lucide-react';
+import { Server, Zap } from 'lucide-react';
 import { Badge } from '@/components/primitives/Badge';
 import { Card } from '@/components/primitives/Card';
 import { formatNumber } from '@/lib/formatters';
-import { cn } from '@/lib/utils';
 
 interface ProviderData {
   provider_name: string;

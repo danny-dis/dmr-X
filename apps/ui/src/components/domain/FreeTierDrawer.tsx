@@ -23,14 +23,9 @@ import {
   DrawerFooter,
 } from '@/components/primitives/Drawer';
 import { Progress } from '@/components/primitives/Progress';
-import { StatusPill } from '@/components/primitives/StatusPill';
-import { Switch } from '@/components/primitives/Switch';
-import { toast } from '@/components/primitives/Toast';
-import { Admin } from '@/lib/admin';
-import { formatDateTime, formatDuration, formatNumber } from '@/lib/formatters';
-import { maskKey } from '@/lib/formatters';
+import { formatNumber } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
-import type { ApiProvider, ApiCatalogEntry } from '@/types/api';
+import type { ApiCatalogEntry } from '@/types/api';
 
 export interface FreeTierDrawerProps {
   provider: ApiCatalogEntry | null;

@@ -1,4 +1,3 @@
-import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dmr-x/core';
 import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import { GenericOpenAIAdapter } from '../generic-openai/generic-openai.adapter.js';
 

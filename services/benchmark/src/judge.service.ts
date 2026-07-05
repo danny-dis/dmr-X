@@ -1,6 +1,6 @@
-import type { UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
+import type { UnifiedRequest } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
-import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
+import { logger } from '@dmr-x/utils';
 
 export interface EvaluationResult {
   winner: 'A' | 'B' | 'Tie';

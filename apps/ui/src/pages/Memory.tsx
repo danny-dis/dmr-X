@@ -21,7 +21,7 @@ import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { formatDateTime, timeAgo } from '@/lib/formatters';
+import { timeAgo } from '@/lib/formatters';
 import type { ApiMemoryItem } from '@/types/api';
 
 export function MemoryPage() {

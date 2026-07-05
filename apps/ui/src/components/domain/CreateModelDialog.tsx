@@ -1,4 +1,4 @@
-import { Database, Plus, Hash, DollarSign, Cpu } from 'lucide-react';
+import { Database, Plus } from 'lucide-react';
 import * as React from 'react';
 
 import { Button } from '@/components/primitives/Button';

@@ -4,8 +4,6 @@ import type {
   UnifiedResponse,
   StreamChunk,
 } from '@dmr-x/core';
-import { ProviderError } from '@dmr-x/core';
-import { logger } from '@dmr-x/utils';
 
 import type {
   ProviderConfig,

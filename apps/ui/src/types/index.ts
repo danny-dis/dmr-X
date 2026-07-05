@@ -1,15 +1,9 @@
 import type {
-  ApiProvider, ApiModel, ApiTenant, ApiKey, ApiRouteDecision, ApiQuotaState,
-  ApiBillingSummary, ApiAlert, ApiAuditEvent, ApiTelemetryEvent, ApiBenchmarkResult,
-  ApiPolicyRule, ApiMemoryItem, ApiSandboxJob, ApiWorker, ApiFederationNode,
-  ApiDashboardStats, Modality,
+  ApiProvider, ApiModel, Modality,
 } from './api';
 
 export type {
-  ApiProvider, ApiModel, ApiTenant, ApiKey, ApiRouteDecision, ApiQuotaState,
-  ApiBillingSummary, ApiAlert, ApiAuditEvent, ApiTelemetryEvent, ApiBenchmarkResult,
-  ApiPolicyRule, ApiMemoryItem, ApiSandboxJob, ApiWorker, ApiFederationNode,
-  ApiDashboardStats,
+  ApiProvider, ApiModel,
 } from './api';
 
 export type CostTier = 'free' | 'low' | 'medium' | 'high' | 'premium';

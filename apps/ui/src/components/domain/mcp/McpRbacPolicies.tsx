@@ -11,7 +11,7 @@ import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import type { ApiMcpRbacConfig, ApiRbacPolicy } from '@/types/api';
+import type { ApiMcpRbacConfig } from '@/types/api';
 
 export function McpRbacPolicies() {
   const config = useApiData<ApiMcpRbacConfig>(Admin.listRbacPolicies, []);

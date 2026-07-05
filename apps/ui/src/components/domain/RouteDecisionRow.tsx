@@ -1,10 +1,6 @@
 import { ChevronRight, Zap, Brain, Bot, Wrench, Cog, Clock } from 'lucide-react';
 import * as React from 'react';
 
-import { Badge } from '@/components/primitives/Badge';
-import { StatusPill } from '@/components/primitives/StatusPill';
-import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
-import { ModalityBadge } from '@/icons/Modality';
 import { formatDuration, timeAgo } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiRouteDecision } from '@/types/api';

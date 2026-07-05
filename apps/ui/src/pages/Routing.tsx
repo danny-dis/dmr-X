@@ -1,4 +1,4 @@
-import { Activity, Brain, Zap, Bot, Wrench, Cog, GitBranch, TrendingUp, BarChart3 } from 'lucide-react';
+import { Activity, GitBranch } from 'lucide-react';
 import * as React from 'react';
 
 import { DonutChart, Sunburst } from '@/components/charts/DonutChart';
@@ -13,7 +13,6 @@ import { StatTile } from '@/components/primitives/StatTile';
 import { useApiData } from '@/hooks/useApiData';
 import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
 import { Admin } from '@/lib/admin';
-import { formatNumber, formatDuration, timeAgo } from '@/lib/formatters';
 import type { ApiRouteDecision, ApiProvider, ApiUsagePoint } from '@/types/api';
 
 const TONE = {

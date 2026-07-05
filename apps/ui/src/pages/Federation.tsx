@@ -1,4 +1,4 @@
-import { Network, Plus, Globe, ArrowRight, ChevronRight, Trash2, Activity, RefreshCw } from 'lucide-react';
+import { Network, Plus, Globe, Trash2, Activity, RefreshCw } from 'lucide-react';
 import * as React from 'react';
 
 import { TopologyGraph } from '@/components/charts/TopologyGraph';

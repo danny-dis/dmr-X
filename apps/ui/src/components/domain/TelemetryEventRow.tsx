@@ -1,7 +1,7 @@
-import { CheckCircle2, XCircle, AlertTriangle, Info, Filter, Cpu, Network, Zap, Wrench, User } from 'lucide-react';
+import { CheckCircle2, XCircle, Info, Cpu, Network, Zap, Wrench, User } from 'lucide-react';
 import * as React from 'react';
 
-import { formatDuration, timeAgo } from '@/lib/formatters';
+import { formatDuration } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiTelemetryEvent } from '@/types/api';
 

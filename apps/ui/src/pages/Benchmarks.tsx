@@ -1,8 +1,7 @@
-import { Trophy, Play, Plus, Clock, Cpu, Zap, TrendingUp, Swords, ShieldCheck, Info, ChevronRight, Activity } from 'lucide-react';
+import { Trophy, Plus, Clock, TrendingUp, Swords, Info, Activity } from 'lucide-react';
 import * as React from 'react';
 
 import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
-import { LatencyChart } from '@/components/charts/LatencyChart';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';

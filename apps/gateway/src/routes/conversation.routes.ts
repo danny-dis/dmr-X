@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 
 import { getDb } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 

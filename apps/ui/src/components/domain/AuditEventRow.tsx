@@ -1,7 +1,7 @@
 import { ChevronRight, FileText, Brain, Wrench, User, Globe } from 'lucide-react';
 import * as React from 'react';
 
-import { formatDuration, timeAgo } from '@/lib/formatters';
+import { timeAgo } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiAuditEvent } from '@/types/api';
 

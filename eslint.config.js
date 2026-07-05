@@ -55,4 +55,11 @@ export default [
       'no-undef': 'off',
     },
   },
+  // CLI tools use stdout by design — silence no-console
+  {
+    files: ['packages/cli/**'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
 ];

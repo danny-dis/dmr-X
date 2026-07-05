@@ -1,4 +1,4 @@
-import { Shield, Plus, Hash, Zap, Tag, Box, Bot } from 'lucide-react';
+import { Shield, Plus, Hash, Zap, Tag, Box } from 'lucide-react';
 import * as React from 'react';
 
 import { Button } from '@/components/primitives/Button';

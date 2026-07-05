@@ -185,7 +185,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     let data: any;
     try {
       data = rawText ? JSON.parse(rawText) : {};
-    } catch (parseErr) {
+    } catch (_parseErr) {
       // Some OpenAI-compatible providers (Pollinations legacy, Cloudflare
       // misconfigurations, etc.) return a non-JSON error body on 2xx
       // or send plain text. Surface the upstream body in the error so

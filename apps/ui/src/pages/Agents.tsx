@@ -1,4 +1,4 @@
-import { Bot, Plus, Trash2, Play, Square, ExternalLink, Copy } from 'lucide-react';
+import { Bot, Plus, Trash2, Play, ExternalLink } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -12,7 +12,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitive
 import { Textarea } from '@/components/primitives/Textarea';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // Types

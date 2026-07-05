@@ -1,4 +1,4 @@
-import { Modality, QualityTarget } from './modality.js';
+import { Modality } from './modality.js';
 import type { ProviderPreferences } from './provider-preferences.js';
 
 export interface Message {

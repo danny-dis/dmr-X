@@ -16,7 +16,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger } from '@dmr-x/utils';
 
 import { buildAgentCard, type AgentCardConfig } from './agent-card.js';
-import { getTaskManager, type TaskCreateRequest, type TaskMessage } from './task-manager.js';
+import { getTaskManager, type TaskMessage } from './task-manager.js';
 
 const logger = createLogger('mcp-server:a2a:handler');
 

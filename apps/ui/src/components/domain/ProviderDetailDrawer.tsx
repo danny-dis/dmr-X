@@ -4,7 +4,6 @@ import {
   KeyRound,
   Cpu,
   Hash,
-  Calendar,
   Star,
   StarOff,
   Trash2,
@@ -20,16 +19,12 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
-  Copy,
-  Check,
   Search,
-  ExternalLink,
   Loader2,
   RefreshCw,
 } from 'lucide-react';
 import * as React from 'react';
 
-import { AddKeyDialog } from '@/components/domain/AddKeyDialog';
 import { TierBadge, KeyTierBadge } from '@/components/domain/TierBadge';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';

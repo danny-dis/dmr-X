@@ -3,7 +3,6 @@ import { ProviderError } from '@dmr-x/core';
 import {
   logger,
   DefaultHttpHooks,
-  type HttpHooks,
   type BeforeRequestHook,
   type AfterSuccessHook,
   type AfterErrorHook,

@@ -1,4 +1,4 @@
-import { Layers, Plus, Trash2, GripVertical, Zap, Server, Brain, Timer, ArrowUpDown, Save, RefreshCw, Settings } from 'lucide-react';
+import { Layers, Plus, Trash2, GripVertical, Zap, Server, ArrowUpDown, RefreshCw, Settings } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -13,8 +13,7 @@ import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin, FusionPanel as FusionPanelApi } from '@/lib/admin';
 import { fetchAuthenticated } from '@/lib/api';
-import type { ApiFusionPanel, ApiFusionSlot } from '@/lib/admin';
-import { formatNumber } from '@/lib/formatters';
+import type { ApiFusionPanel } from '@/lib/admin';
 import { cn } from '@/lib/utils';
 import type { ApiProvider, ApiCatalogEntry } from '@/types/api';
 
@@ -80,7 +79,7 @@ export function FusionPanelPage() {
       if (!activePanelId && data.length > 0) {
         setActivePanelId(data[0]!.id);
       }
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to load fusion panels');
     } finally {
       setIsLoading(false);
@@ -101,7 +100,7 @@ export function FusionPanelPage() {
       setPanels(prev => [newPanel, ...prev]);
       setActivePanelId(newPanel.id);
       toast.success(`Created "${name}"`);
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to create panel');
     }
   };
@@ -114,7 +113,7 @@ export function FusionPanelPage() {
         setActivePanelId(panels.find(p => p.id !== id)?.id ?? null);
       }
       toast.success('Panel deleted');
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to delete panel');
     }
   };
@@ -143,7 +142,7 @@ export function FusionPanelPage() {
       setSelectedProvider('');
       setSelectedModel('');
       toast.success(`Added ${newSlot.display_name}`);
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to add slot');
     }
   };
@@ -157,7 +156,7 @@ export function FusionPanelPage() {
         return { ...p, slots: p.slots.filter(s => s.id !== slotId) };
       }));
       toast.success('Slot removed');
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to remove slot');
     }
   };
@@ -179,7 +178,7 @@ export function FusionPanelPage() {
         if (p.id !== activePanelId) return p;
         return { ...p, slots: currentSlots };
       }));
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to reorder slots');
     }
   };
@@ -198,7 +197,7 @@ export function FusionPanelPage() {
         if (p.id !== activePanelId) return p;
         return { ...p, slots: updatedSlots };
       }));
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to toggle slot');
     }
   };
@@ -209,7 +208,7 @@ export function FusionPanelPage() {
     try {
       const updated = await FusionPanelApi.update(panelId, { is_active: panel.is_active ? 0 : 1 });
       setPanels(prev => prev.map(p => p.id === panelId ? updated : p));
-    } catch (err) {
+    } catch (_err) {
       toast.error('Failed to toggle panel');
     }
   };
@@ -249,7 +248,7 @@ export function FusionPanelPage() {
         setConsortiumResults(data);
       }
       toast.success(`${fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} completed`);
-    } catch (err) {
+    } catch (_err) {
       toast.error(`Failed to run ${fusionMode}`);
     } finally {
       setIsRunningGodmode(false);

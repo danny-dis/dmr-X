@@ -1,4 +1,4 @@
-import { Store, Star, Download, Search, Filter, ExternalLink } from 'lucide-react';
+import { Store, Star, Download, Search } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -10,7 +10,6 @@ import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // Types

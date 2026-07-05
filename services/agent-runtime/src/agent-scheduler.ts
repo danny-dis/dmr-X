@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { agentRegistryService, type AgentDefinition } from '@dmr-x/agent-registry';
+import { agentRegistryService } from '@dmr-x/agent-registry';
 import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 

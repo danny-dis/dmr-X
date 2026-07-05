@@ -1,5 +1,4 @@
 import { getDb } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
 
 // ---------------------------------------------------------------------------
 // Per-Agent Billing Service

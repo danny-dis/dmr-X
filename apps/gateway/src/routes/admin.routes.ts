@@ -9,7 +9,7 @@ import { federationService } from '@dmr-x/federation';
 import { memoryService, retentionManager } from '@dmr-x/memory';
 import { PROVIDER_CATALOG, discoverOpenAIModels } from '@dmr-x/registry';
 import { sandboxService } from '@dmr-x/sandbox';
-import { logger, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
+import { logger, encrypt, decrypt, encryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
 import { workersService } from '@dmr-x/workers';
 import { trace, type Span } from '@opentelemetry/api';
 import type { FastifyInstance } from 'fastify';

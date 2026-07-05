@@ -5,7 +5,6 @@ import type {
   StreamChunk,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import { logger } from '@dmr-x/utils';
 import { keyRotationService } from '@dmr-x/quota';
 
 import type {

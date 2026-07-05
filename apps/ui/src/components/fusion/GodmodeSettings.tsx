@@ -3,7 +3,7 @@
  */
 
 import * as React from 'react';
-import { Settings, Zap, Brain, Shield, Sparkles } from 'lucide-react';
+import { Settings, Zap, Shield, Sparkles } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Switch } from '@/components/primitives/Switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';

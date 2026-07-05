@@ -9,7 +9,7 @@ import type { Modality, UnifiedRequest, UnifiedResponse, StreamChunk } from '@dm
 import { generateRequestId } from '@dmr-x/utils';
 import { createLogger } from '@dmr-x/utils';
 
-import type { MCPServerRegistry, ConnectedServer } from './registry.js';
+import type { MCPServerRegistry } from './registry.js';
 
 const logger = createLogger('mcp-client:adapter');
 
@@ -211,7 +211,7 @@ export class MCPToolAdapter implements ProviderAdapter {
         let args: Record<string, unknown> = {};
         try {
           args = JSON.parse(tc.function.arguments);
-        } catch (parseErr) {
+        } catch (_parseErr) {
           // If arguments is not valid JSON, pass as-is
           logger.debug({ toolName: tc.function.name }, 'Non-JSON tool arguments, passing raw');
           args = { raw: tc.function.arguments };
