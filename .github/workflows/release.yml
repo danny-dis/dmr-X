@@ -117,6 +117,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write  # for cosign keyless signing
     steps:
       - uses: actions/checkout@v4
         with:
