@@ -43,10 +43,17 @@ describe('WorkersService', () => {
     expect(worker.load).toBe(0);
   });
 
-  it('should list workers', () => {
-    workersService.register({ name: 'worker1', type: 'test' });
-    workersService.register({ name: 'worker2', type: 'test' });
-    
+  it('should register and list workers', () => {
+    const w1 = workersService.register({ name: 'worker1', type: 'test' });
+    // Second register with same hostname+pid should return existing worker (dedup)
+    const w2 = workersService.register({ name: 'worker2', type: 'test' });
+    expect(w2.id).toBe(w1.id); // dedup reuses the same DB record
+
+    // Manually insert a worker with distinct hostname/pid to simulate another instance
+    db.prepare(`INSERT INTO workers (id, name, type, status, hostname, pid, load, last_heartbeat_at)
+                VALUES (?, ?, ?, 'active', ?, ?, 0, datetime('now'))`)
+      .run('worker-2-id', 'worker2', 'test', 'different-host', '99999');
+
     const workers = workersService.list();
     expect(workers.length).toBe(2);
   });
