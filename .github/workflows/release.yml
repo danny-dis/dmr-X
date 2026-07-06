@@ -103,11 +103,33 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
-          path: |
-            apps/gateway/dist/*.tar.gz
-            apps/gateway/dist/*.zip
-            apps/gateway/checksums.txt
+          name: binaries-linux-x64
+          path: apps/gateway/dist/dmrx-linux-x64.tar.gz
+      - name: Upload linux arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-linux-arm64
+          path: apps/gateway/dist/dmrx-linux-arm64.tar.gz
+      - name: Upload darwin x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-darwin-x64
+          path: apps/gateway/dist/dmrx-darwin-x64.tar.gz
+      - name: Upload darwin arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-darwin-arm64
+          path: apps/gateway/dist/dmrx-darwin-arm64.tar.gz
+      - name: Upload windows x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-windows-x64
+          path: apps/gateway/dist/dmrx-windows-x64.zip
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: apps/gateway/checksums.txt
 
   container:
     name: Build & push container
@@ -264,9 +286,12 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           files: |
-            artifacts/binaries/*.tar.gz
-            artifacts/binaries/*.zip
-            artifacts/binaries/checksums.txt
+            artifacts/binaries-linux-x64/*.tar.gz
+            artifacts/binaries-linux-arm64/*.tar.gz
+            artifacts/binaries-darwin-x64/*.tar.gz
+            artifacts/binaries-darwin-arm64/*.tar.gz
+            artifacts/binaries-windows-x64/*.zip
+            artifacts/checksums/checksums.txt
             artifacts/sbom/sbom.cdx.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
