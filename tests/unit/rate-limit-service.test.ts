@@ -17,7 +17,7 @@ vi.mock('@dmr-x/db', () => ({
       all: vi.fn(() => []),
       get: vi.fn(() => undefined),
     }),
-    transaction: (fn: Function) => fn(),
+    transaction: (fn: () => void) => fn(),
   }),
 }));
 
