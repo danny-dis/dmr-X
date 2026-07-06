@@ -83,6 +83,89 @@ The SLOs are evaluated against `dmr_request_latency_ms` and
 `dmr_ttft_latency_ms` histograms. p99 / p95 are computed with
 `histogram_quantile()` in Prometheus.
 
+## Benchmarks
+
+Service-level objectives for the benchmark infrastructure: prompt evaluation,
+arena battles, AI judge quality, and human validation.
+
+### Benchmark execution latency
+
+| Benchmark type | SLO | Definition |
+|----------------|-----|------------|
+| **Quick benchmark** (1 model, all 54 prompts) | p95 < 5 min | `/admin/benchmarks/run` with a single model |
+| **Arena battle** (2 models + AI judge) | p95 < 3 min | `/admin/benchmarks/battle` — model responses + judge evaluation |
+| **Tournament** (N models, round-robin) | p95 < 3 min × N² | `/admin/benchmarks/tournament` — O(N²) battles |
+| **Multi-judge ensemble** (3 judges per battle) | p95 < 6 min | Adds 2 extra frontier-LLM judge calls per battle |
+
+### Measurement
+
+Benchmark latency is measured from when the admin endpoint receives the request
+to when the final result set is persisted. It includes model inference time
+(which varies by provider) and AI judge inference time.
+
+The 95th percentile is evaluated from `dmr_benchmark_latency_ms` histogram data
+in Prometheus. Benchmarks that time out (default: 10 min per individual run)
+are counted as failures against the benchmark completion SLO.
+
+### Judge quality
+
+| Metric | SLO | Window | Source |
+|--------|-----|--------|--------|
+| **Judge-human agreement rate** | ≥ 80% | Rolling 30 days | `benchmark_validations` table |
+| **Inter-rater reliability** (Cohen's Kappa) | ≥ 0.6 (substantial) | Per batch | `judge_reliability` table |
+| **Regression detection sensitivity** | 100% of violations where \|Z\| > 3.0 | Per run | `BENCHMARK_REGRESSION` event |
+
+The agreement rate measures how often the AI judge's winner matches the human
+reviewer's verdict. A rate below 80% triggers investigation into judge prompt
+quality, rubric calibration, or panel composition.
+
+Cohen's Kappa is computed between every pair of judges in the default ensemble
+(GPT-4o, Claude Sonnet 4, Gemini 2.5 Pro). Kappa < 0.6 indicates that judges
+disagree more than expected — the rubric likely needs recalibration.
+
+Regression detection fires `BENCHMARK_REGRESSION` when a model's score deviates
+more than 2.0 Z-scores from its trailing 5-run average. All Critical-severity
+(|Z| > 3.0) regressions must be detected without false negatives.
+
+### Benchmark error budget
+
+| SLO | Definition |
+|-----|------------|
+| **Benchmark completion rate** | ≥ 99% of all benchmark runs complete without error (timeout, judge failure, provider error) |
+| **Judge service availability** | < 1% of judge evaluation calls fail due to downstream LLM unavailability |
+
+Burn-rate alerts for benchmark completion use the existing Prometheus framework
+in `monitoring/prometheus-alerts.yml`:
+
+```yaml
+      # Benchmark failure rate > 5% in 1h
+      - alert: DmrxSloBenchmarkFailures
+        expr: |
+          (
+            sum(rate(dmr_benchmark_failures_total[1h]))
+            /
+            sum(rate(dmr_benchmark_attempts_total[1h]))
+          ) > 0.05
+        for: 5m
+        labels: { severity: ticket, slo: benchmark }
+        annotations:
+          summary: "Benchmark failure rate > 5% in the last hour"
+          description: "Elevated benchmark failures. Check provider health and judge availability."
+```
+
+### Benchmark reporting
+
+```promql
+# Judge agreement rate over the last 30 days
+avg_over_time(dmr_judge_agreement_rate[30d])
+
+# Benchmark P95 latency
+histogram_quantile(0.95, sum(rate(dmr_benchmark_latency_ms_bucket[5m])))
+
+# Regression events in the last 7 days
+increase(dmr_regression_events_total[7d])
+```
+
 ## Cost
 
 We commit to the following *operational* SLOs (not a per-user
