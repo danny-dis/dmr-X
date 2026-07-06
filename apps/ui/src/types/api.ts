@@ -3,8 +3,16 @@ export type ProviderStatus = 'healthy' | 'degraded' | 'unavailable' | 'maintenan
 export type RouteStatus = 'success' | 'fallback' | 'error' | 'retry';
 export type ExecutionMode = 'sync' | 'async' | 'stream';
 export type AuthMethod = 'api_key' | 'oauth' | 'none' | 'device_code' | 'client_credentials' | 'pkce';
+/** @deprecated Use CapabilityTier with 9-dimension taxonomy instead. */
 export type IntelligenceLayer = 'brain' | 'thinker' | 'executor' | 'worker' | 'temp_worker';
-export type CapabilityTier = 'orchestrator' | 'brain' | 'thinker' | 'executor' | 'specialist' | 'worker' | 'temp_worker';
+export type CapabilityTier = 'frontier' | 'strong' | 'balanced' | 'fast' | 'economy';
+// 9-Dimension Taxonomy Types
+export type ArchitectureTier = 'dense' | 'moe' | 'ssm' | 'hybrid' | 'unknown';
+export type ContextTier = 'short' | 'medium' | 'long' | 'ultra' | 'massive';
+export type DeploymentModel = 'cloud' | 'self_hosted' | 'on_device';
+export type ReasoningMode = 'fixed' | 'adaptive' | 'hybrid';
+export type SafetyTier = 'unrestricted' | 'standard' | 'restricted';
+export type AgenticLevel = 'chat' | 'tool_use' | 'autonomous';
 export type Modality =
   | 'llm'
   | 'diffusion'
@@ -146,6 +154,14 @@ export interface ApiModel {
   capability_tier?: CapabilityTier;
   /** @deprecated Use capability_tier. camelCase alias. */
   capabilityTier?: CapabilityTier;
+  // 9-Dimension Taxonomy Fields
+  architecture?: ArchitectureTier;
+  task_categories?: string[];
+  context_tier?: ContextTier;
+  deployment?: DeploymentModel;
+  reasoning_mode?: ReasoningMode;
+  safety_tier?: SafetyTier;
+  agentic_level?: AgenticLevel;
   context_window?: number | null;
   /** @deprecated Use context_window. camelCase alias. */
   contextWindow?: number | null;

@@ -1,4 +1,4 @@
-import { Modality, IntelligenceLayer, CapabilityTier, QualityTarget } from './modality.js';
+import { Modality, IntelligenceLayer, CapabilityTier, QualityTarget, ArchitectureTier, ContextTier, DeploymentModel, ReasoningMode, SafetyTier, AgenticLevel } from './modality.js';
 
 export type FreeTierStrategy = 'prioritize' | 'load_balance' | 'fallback' | 'none';
 
@@ -50,6 +50,22 @@ export interface ProviderModel {
   qualityScore: number;
   isHealthy: boolean;
   compositeScore?: number;
+
+  // 9-Dimension Taxonomy Fields
+  /** Dimension 2: Model architecture (dense, moe, ssm, hybrid) */
+  architectureTier?: ArchitectureTier;
+  /** Dimension 3: Task categories (JSON array) */
+  taskCategories?: string[];
+  /** Dimension 5: Context window tier */
+  contextTier?: ContextTier;
+  /** Dimension 6: Deployment model */
+  deployment?: DeploymentModel;
+  /** Dimension 7: Reasoning mode */
+  reasoningMode?: ReasoningMode;
+  /** Dimension 8: Safety tier */
+  safetyTier?: SafetyTier;
+  /** Dimension 9: Agentic level */
+  agenticLevel?: AgenticLevel;
 
   // Enriched metadata (optional, populated when available)
   /** Latency percentiles in ms over last 30 min */

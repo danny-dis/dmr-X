@@ -26,6 +26,8 @@
  *   COHERE_API_KEY, JINA_API_KEY
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { watchFile, readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
@@ -38,7 +40,7 @@ import {
   resolveConfigBool,
   type McpConfigFile,
 } from './config.js';
-import { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
+import { createDMRXMcpServer, reconcileExternalTools, type DMRXMcpServerConfig } from './server.js';
 
 // Re-export for programmatic use
 export { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
@@ -344,6 +346,23 @@ interface BuiltConfig {
   telemetryConfig: TelemetryConfig;
 }
 
+// ---------------------------------------------------------------------------
+// Module-level state for live config reload
+// ---------------------------------------------------------------------------
+
+/**
+ * Holds references to the running McpServer and its state for live
+ * external MCP server management (add/remove without restart).
+ */
+interface LiveServerHandle {
+  server: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer;
+  state: import('./server.js').ServerState;
+}
+
+let liveHandle: LiveServerHandle | null = null;
+
+const MCP_CONFIG_WATCH_INTERVAL = 2000; // 2 seconds
+
 async function buildConfig(): Promise<BuiltConfig> {
   const configFile = loadConfigFile();
   const adapterConfigs: Record<string, { baseUrl: string; apiKey?: string }> = {};
@@ -548,7 +567,9 @@ async function buildConfig(): Promise<BuiltConfig> {
 // ---------------------------------------------------------------------------
 
 async function startStdio(config: DMRXMcpServerConfig): Promise<void> {
-  const { server } = createDMRXMcpServer(config);
+  const result = createDMRXMcpServer(config);
+  const { server, state } = result;
+  liveHandle = { server, state };
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
@@ -891,6 +912,103 @@ async function main(): Promise<void> {
       console.error(`Unknown transport: ${transport}. Use "stdio", "sse", or "http".`);
       await disposeAndExit(externalMcpClient, 1);
   }
+
+  // Start config file watcher for live aggregation server changes
+  if (liveHandle) {
+    startConfigWatcher();
+  }
+}
+
+/**
+ * Watch dmrx-mcp.config.json for changes to the aggregation servers list
+ * and live-reconcile external MCP server connections and tool registrations.
+ */
+function startConfigWatcher(): void {
+  // Determine the config file path (same resolution as loadConfigFile)
+  const configPath = process.env.DMRX_MCP_CONFIG
+    ? resolve(process.cwd(), process.env.DMRX_MCP_CONFIG)
+    : resolve(process.cwd(), 'dmrx-mcp.config.json');
+
+  // Track the last known set of aggregation server IDs to detect changes
+  let knownServerIds = new Set<string>();
+  const registry = liveHandle!.state.externalMcpClient?.getRegistry();
+  if (registry) {
+    for (const s of registry.listAll()) {
+      knownServerIds.add(s.config.id);
+    }
+  }
+
+  watchFile(configPath, { interval: MCP_CONFIG_WATCH_INTERVAL }, async () => {
+    const handle = liveHandle;
+    if (!handle) return;
+
+    // If the file doesn't exist (yet), skip this poll cycle
+    if (!existsSync(configPath)) return;
+
+    try {
+      const content = readFileSync(configPath, 'utf-8');
+      const config = JSON.parse(content);
+
+      // Read desired aggregation servers (from either config path or env var)
+      const desiredServers: MCPServerConfig[] = [];
+      if (config?.aggregation?.servers?.length) {
+        for (const s of config.aggregation.servers) {
+          if (s && typeof s.id === 'string' && typeof s.name === 'string' &&
+              (s.transport === 'stdio' || s.transport === 'sse')) {
+            desiredServers.push(s as MCPServerConfig);
+          }
+        }
+      }
+
+      const desiredIds = new Set(desiredServers.map(s => s.id));
+      const currentClient = handle.state.externalMcpClient;
+
+      // Quick check: if server IDs are identical, no change needed
+      if (knownServerIds.size === desiredIds.size &&
+          [...knownServerIds].every(id => desiredIds.has(id))) {
+        return;
+      }
+
+      console.error(`[config-watcher] Aggregation servers changed: ${knownServerIds.size} -> ${desiredIds.size}`);
+
+      // Disconnect servers no longer in config
+      if (currentClient) {
+        for (const id of knownServerIds) {
+          if (!desiredIds.has(id) && currentClient.listServers().includes(id)) {
+            try {
+              await currentClient.disconnectServer(id);
+              console.error(`[config-watcher] Disconnected server: ${id}`);
+            } catch (err) {
+              console.error(`[config-watcher] Error disconnecting server ${id}:`, err);
+            }
+          }
+        }
+
+        // Connect new servers from config
+        for (const serverCfg of desiredServers) {
+          if (!knownServerIds.has(serverCfg.id) && !currentClient.listServers().includes(serverCfg.id)) {
+            try {
+              await currentClient.connectServer(serverCfg);
+              console.error(`[config-watcher] Connected server: ${serverCfg.id}`);
+            } catch (err) {
+              console.error(`[config-watcher] Error connecting server ${serverCfg.id}:`, err);
+            }
+          }
+        }
+      }
+
+      // Update known IDs
+      knownServerIds = desiredIds;
+
+      // Reconcile tool registrations on the McpServer instance
+      handle.state.lastError = null;
+      reconcileExternalTools(handle.server, handle.state);
+    } catch (err) {
+      console.error('[config-watcher] Failed to process config change:', err);
+    }
+  });
+
+  console.error(`[config-watcher] Watching ${configPath} for aggregation server changes`);
 }
 
 main().catch((error) => {

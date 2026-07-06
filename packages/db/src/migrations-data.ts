@@ -1535,4 +1535,163 @@ CREATE INDEX IF NOT EXISTS idx_benchmark_validations_battle ON benchmark_validat
 CREATE INDEX IF NOT EXISTS idx_benchmark_validations_agreed ON benchmark_validations(agreed);
 `,
   },
+  41: {
+    filename: '041_nine_dimension_taxonomy.sql',
+    sql: `-- Add 9-dimension taxonomy columns to model_profiles
+-- This replaces the single-dimension CapabilityTier with a multi-dimensional classification system
+
+-- Dimension 3: Task categories (JSON array of task types the model is good at)
+ALTER TABLE model_profiles ADD COLUMN task_categories TEXT DEFAULT '["general"]';
+
+-- Dimension 5: Context window tier
+ALTER TABLE model_profiles ADD COLUMN context_tier TEXT DEFAULT 'medium';
+
+-- Dimension 6: Deployment model (where the model runs)
+ALTER TABLE model_profiles ADD COLUMN deployment TEXT DEFAULT 'cloud';
+
+-- Dimension 7: Reasoning mode (how the model handles thinking)
+ALTER TABLE model_profiles ADD COLUMN reasoning_mode TEXT DEFAULT 'fixed';
+
+-- Dimension 8: Safety tier (whether model has deliberate capability limits)
+ALTER TABLE model_profiles ADD COLUMN safety_tier TEXT DEFAULT 'standard';
+
+-- Dimension 9: Agentic level (how much autonomy the model has)
+ALTER TABLE model_profiles ADD COLUMN agentic_level TEXT DEFAULT 'chat';
+
+-- Technical: Model architecture type
+ALTER TABLE model_profiles ADD COLUMN architecture TEXT;
+
+-- Technical: Total parameter count (null if unknown)
+ALTER TABLE model_profiles ADD COLUMN parameter_count INTEGER;
+
+-- Technical: Active parameters per token (for MoE models)
+ALTER TABLE model_profiles ADD COLUMN active_parameters INTEGER;
+
+-- Legal: License type
+ALTER TABLE model_profiles ADD COLUMN license TEXT;
+
+-- Indexes for the new columns
+CREATE INDEX IF NOT EXISTS idx_model_profiles_task_categories ON model_profiles(task_categories);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_context_tier ON model_profiles(context_tier);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_deployment ON model_profiles(deployment);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_reasoning_mode ON model_profiles(reasoning_mode);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_safety_tier ON model_profiles(safety_tier);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_agentic_level ON model_profiles(agentic_level);
+`,
+  },
+  42: {
+    filename: '042_backfill_taxonomy_from_legacy.sql',
+    sql: `-- Backfill 9-dimension taxonomy columns from legacy intelligence_layer and capability_tier
+-- This migration populates the new columns for existing models
+
+-- Backfill context_tier from context_window
+UPDATE model_profiles SET context_tier = 'short' WHERE context_tier = 'medium' AND context_window < 32000;
+UPDATE model_profiles SET context_tier = 'medium' WHERE context_tier = 'medium' AND context_window >= 32000 AND context_window < 128000;
+UPDATE model_profiles SET context_tier = 'long' WHERE context_tier = 'medium' AND context_window >= 128000 AND context_window < 1000000;
+UPDATE model_profiles SET context_tier = 'ultra' WHERE context_tier = 'medium' AND context_window >= 1000000 AND context_window < 10000000;
+UPDATE model_profiles SET context_tier = 'massive' WHERE context_tier = 'medium' AND context_window >= 10000000;
+
+-- Backfill deployment from provider name
+UPDATE model_profiles SET deployment = 'self_hosted' WHERE deployment = 'cloud' AND provider_id IN (
+  SELECT id FROM providers WHERE name IN ('ollama', 'vllm', 'llamacpp', 'localai', 'lmstudio')
+);
+
+-- Backfill task_categories from specializations (basic mapping)
+UPDATE model_profiles SET task_categories = '["reasoning"]' WHERE task_categories = '["general"]' AND supports_reasoning = 1;
+UPDATE model_profiles SET task_categories = '["code"]' WHERE task_categories = '["general"]' AND (model_id LIKE '%codestral%' OR model_id LIKE '%coder%');
+UPDATE model_profiles SET task_categories = '["embedding"]' WHERE task_categories = '["general"]' AND modality = 'embedding';
+UPDATE model_profiles SET task_categories = '["tts"]' WHERE task_categories = '["general"]' AND modality = 'audio_tts';
+UPDATE model_profiles SET task_categories = '["stt"]' WHERE task_categories = '["general"]' AND modality = 'audio_stt';
+UPDATE model_profiles SET task_categories = '["image_generation"]' WHERE task_categories = '["general"]' AND modality = 'diffusion';
+UPDATE model_profiles SET task_categories = '["moderation"]' WHERE task_categories = '["general"]' AND modality = 'moderation';
+
+-- Backfill reasoning_mode from capabilities
+UPDATE model_profiles SET reasoning_mode = 'hybrid' WHERE reasoning_mode = 'fixed' AND supports_reasoning = 1 AND model_id LIKE '%deepseek%';
+UPDATE model_profiles SET reasoning_mode = 'adaptive' WHERE reasoning_mode = 'fixed' AND model_id LIKE '%gpt-5%';
+
+-- Backfill agentic_level from capabilities
+UPDATE model_profiles SET agentic_level = 'tool_use' WHERE agentic_level = 'chat' AND supports_tool_use = 1;
+`,
+  },
+  43: {
+    filename: '043_add_architecture_dimension.sql',
+    sql: `-- Formalize ModelArchitecture as Dimension 2 of the 9-dimension taxonomy.
+-- The 'architecture' column was added in migration 041 but not typed as a taxonomy dimension.
+-- Add index for the existing column to support taxonomy-based queries.
+
+CREATE INDEX IF NOT EXISTS idx_model_profiles_architecture ON model_profiles(architecture);
+`,
+  },
+  44: {
+    filename: '044_backfill_new_taxonomy.sql',
+    sql: `-- Backfill taxonomy data for existing models
+-- This migration populates architecture and other taxonomy fields for models
+-- that were registered before the taxonomy system was fully adopted.
+
+-- Backfill architecture tier from model_id patterns
+UPDATE model_profiles SET architecture = 'moe'
+WHERE architecture IS NULL AND (
+  model_id LIKE '%mixtral%' OR
+  model_id LIKE '%grok%' OR
+  model_id LIKE '%mistral-large%' OR
+  model_id LIKE '%deepseek-v3%' OR
+  model_id LIKE '%deepseek-v4%' OR
+  model_id LIKE '%qwen%235b%' OR
+  model_id LIKE '%phi-4-moe%'
+);
+
+UPDATE model_profiles SET architecture = 'ssm'
+WHERE architecture IS NULL AND (
+  model_id LIKE '%mamba%' OR
+  model_id LIKE '%jamba%'
+);
+
+UPDATE model_profiles SET architecture = 'hybrid'
+WHERE architecture IS NULL AND (
+  model_id LIKE '%zamba%' OR
+  model_id LIKE '%jamba-hybrid%'
+);
+
+UPDATE model_profiles SET architecture = 'dense'
+WHERE architecture IS NULL AND (
+  model_id LIKE '%gpt%' OR
+  model_id LIKE '%claude%' OR
+  model_id LIKE '%gemini%' OR
+  model_id LIKE '%llama%' OR
+  model_id LIKE '%phi%' OR
+  model_id LIKE '%qwen%' OR
+  model_id LIKE '%mistral%' OR
+  model_id LIKE '%yi%' OR
+  model_id LIKE '%command%' OR
+  model_id LIKE '%embed%' OR
+  model_id LIKE '%whisper%' OR
+  model_id LIKE '%dall%' OR
+  model_id LIKE '%stable%' OR
+  model_id LIKE '%flux%'
+);
+
+-- Default remaining to unknown
+UPDATE model_profiles SET architecture = 'unknown' WHERE architecture IS NULL;
+
+-- Backfill context_tier from context_window (for models that still have default 'medium')
+UPDATE model_profiles SET context_tier = 'short' WHERE context_tier = 'medium' AND context_window < 32000;
+UPDATE model_profiles SET context_tier = 'medium' WHERE context_tier = 'medium' AND context_window >= 32000 AND context_window < 128000;
+UPDATE model_profiles SET context_tier = 'long' WHERE context_tier = 'medium' AND context_window >= 128000 AND context_window < 1000000;
+UPDATE model_profiles SET context_tier = 'ultra' WHERE context_tier = 'medium' AND context_window >= 1000000 AND context_window < 10000000;
+UPDATE model_profiles SET context_tier = 'massive' WHERE context_tier = 'medium' AND context_window >= 10000000;
+
+-- Backfill deployment from provider name (for models that still have default 'cloud')
+UPDATE model_profiles SET deployment = 'self_hosted' WHERE deployment = 'cloud' AND provider_id IN (
+  SELECT id FROM providers WHERE name IN ('ollama', 'vllm', 'llamacpp', 'localai', 'lmstudio')
+);
+
+-- Backfill agentic_level from capabilities (for models that still have default 'chat')
+UPDATE model_profiles SET agentic_level = 'tool_use' WHERE agentic_level = 'chat' AND supports_tool_use = 1;
+UPDATE model_profiles SET agentic_level = 'autonomous' WHERE agentic_level = 'chat' AND (
+  model_id LIKE '%gpt-5%' OR
+  model_id LIKE '%gemini%pro%' OR
+  model_id LIKE '%grok%4%'
+);
+`,
+  },
 };

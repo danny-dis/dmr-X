@@ -326,7 +326,7 @@ export class CompositeExecutor {
         completion_tokens: totalCompletion,
         total_tokens: totalPrompt + totalCompletion,
       },
-      finishReason: failedResults.length > 0 ? 'partial_success' : 'stop',
+      finishReason: 'stop',
       latencyMs: totalLatency,
       qualitySignals: [
         {

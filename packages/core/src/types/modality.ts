@@ -20,28 +20,90 @@ export type Modality =
   | 'vision'
   | '3d';
 
+/**
+ * @deprecated Use CapabilityTier with 9-dimension taxonomy instead.
+ * IntelligenceLayer is legacy and will be removed in a future version.
+ */
 export type IntelligenceLayer = 'brain' | 'thinker' | 'executor' | 'worker' | 'temp_worker';
 
 /**
  * Capability tier — classifies models by their actual capability level.
- * Separate from IntelligenceLayer which indicates source (cloud/local/free).
+ * This is Dimension 1 of the 9-dimension taxonomy.
  *
- * - orchestrator: Coordinates other models, meta-level reasoning
- * - brain: Best general intelligence (Opus, GPT-4/5, o3)
- * - thinker: Reasoning/thinking ability (DeepSeek R1, o3-mini)
- * - executor: General-purpose tasks (Sonnet, Gemini, Grok)
- * - specialist: Domain-specific narrow AI (Codestral, MiMo, v0)
- * - worker: Fast/cheap/simple tasks (mini, flash, haiku)
- * - temp_worker: Local/free tier models (further classified at runtime)
+ * - frontier: Best available (GPT-5.5, Claude Opus 4.8, Gemini 3.1 Pro)
+ * - strong: High capability (GPT-5.4, Claude Sonnet 4.6, Llama 4 Maverick)
+ * - balanced: Good all-around (Claude Haiku 4.5, Gemini 2.5 Flash, Qwen3)
+ * - fast: Optimized for speed (GPT-5.4 mini, Gemini Flash Lite)
+ * - economy: Cheapest/simplest (Phi-4 Mini, Gemma 3 4B)
  */
-export type CapabilityTier =
-  | 'orchestrator'
-  | 'brain'
-  | 'thinker'
-  | 'executor'
-  | 'specialist'
-  | 'worker'
-  | 'temp_worker';
+export type CapabilityTier = 'frontier' | 'strong' | 'balanced' | 'fast' | 'economy';
+
+/**
+ * Architecture tier — the model's structural paradigm.
+ * This is Dimension 2 of the 9-dimension taxonomy.
+ * Architecture directly affects routing decisions: MoE models have different
+ * latency/cost profiles than dense models of similar capability.
+ *
+ * - dense: Standard transformer (GPT-4, Claude, Llama dense variants)
+ * - moe: Mixture of Experts (Mixtral, DeepSeek-V3, Grok)
+ * - ssm: State-space model (Mamba, Jamba)
+ * - hybrid: Hybrid architecture (Jamba, Zamba)
+ * - unknown: Not determined
+ */
+export type ArchitectureTier = 'dense' | 'moe' | 'ssm' | 'hybrid' | 'unknown';
+
+/**
+ * Task category — what a model is good at.
+ * This is Dimension 3 of the 9-dimension taxonomy.
+ * Models can have multiple task categories.
+ */
+export type TaskCategory =
+  | 'general'
+  | 'reasoning'
+  | 'code'
+  | 'analysis'
+  | 'creative'
+  | 'classification'
+  | 'translation'
+  | 'embedding'
+  | 'reranking'
+  | 'tts'
+  | 'stt'
+  | 'vision'
+  | 'image_generation'
+  | 'video'
+  | 'security'
+  | 'moderation';
+
+/**
+ * Context window tier — how much a model can remember.
+ * This is Dimension 5 of the 9-dimension taxonomy.
+ */
+export type ContextTier = 'short' | 'medium' | 'long' | 'ultra' | 'massive';
+
+/**
+ * Deployment model — where the model runs.
+ * This is Dimension 6 of the 9-dimension taxonomy.
+ */
+export type DeploymentModel = 'cloud' | 'self_hosted' | 'on_device';
+
+/**
+ * Reasoning mode — how the model handles thinking.
+ * This is Dimension 7 of the 9-dimension taxonomy.
+ */
+export type ReasoningMode = 'fixed' | 'adaptive' | 'hybrid';
+
+/**
+ * Safety tier — whether the model has deliberate capability limits.
+ * This is Dimension 8 of the 9-dimension taxonomy.
+ */
+export type SafetyTier = 'unrestricted' | 'standard' | 'restricted';
+
+/**
+ * Agentic level — how much autonomy the model has.
+ * This is Dimension 9 of the 9-dimension taxonomy.
+ */
+export type AgenticLevel = 'chat' | 'tool_use' | 'autonomous';
 
 export type QualityTarget = 'frontier' | 'balanced' | 'economy';
 

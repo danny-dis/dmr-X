@@ -30,7 +30,7 @@ import type { AgentCardConfig } from './a2a/agent-card.js';
 import type { FederationConfig } from './federation/manager.js';
 import { logger } from '@dmr-x/utils';
 import { persistentContextStore } from '@dmr-x/db';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import { TOOL_ANNOTATIONS, type ToolAnnotations } from './annotations.js';
@@ -170,7 +170,7 @@ export interface DMRXMcpServerConfig {
   federation?: FederationConfig;
 }
 
-interface ServerState {
+export interface ServerState {
   router: Router;
   adapterRegistry: AdapterRegistry;
   candidates: CandidateSet;
@@ -201,6 +201,8 @@ interface ServerState {
   templatesService: ToolTemplatesService;
   /** Audit logging enabled */
   auditEnabled: boolean;
+  /** Tracks RegisteredTool references from the McpServer for each external server (for live add/remove) */
+  externalToolRegistrations: Map<string, RegisteredTool[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -617,21 +619,227 @@ function formatRoutingInfo(response: UnifiedResponse, requestId?: string): strin
 }
 
 /**
+ * Maximum size for external tool arguments (1MB)
+ */
+const MAX_EXTERNAL_ARGS_SIZE = 1_000_000;
+
+/**
+ * Factory that creates an MCP tool handler for proxying calls to an external
+ * MCP server tool. Used by both initial registration and live add/remove.
+ */
+function createExternalToolProxyHandler(
+  state: ServerState,
+  serverId: string,
+  toolName: string
+) {
+  return async (params: any) => {
+    const namespacedName = `${serverId}__${toolName}`;
+    state.requestCount++;
+    const rateLimitResponse = checkRateLimit(state, namespacedName);
+    if (rateLimitResponse) return rateLimitResponse;
+
+    const args = (params?.args ?? {}) as Record<string, unknown>;
+
+    // Validate args size
+    const argsSize = JSON.stringify(args).length;
+    if (argsSize > MAX_EXTERNAL_ARGS_SIZE) {
+      state.lastError = `External tool arguments too large: ${argsSize} bytes (max: ${MAX_EXTERNAL_ARGS_SIZE})`;
+      return toolError(
+        state.lastError,
+        'INPUT_TOO_LARGE',
+        `external-${serverId}-${toolName}`
+      );
+    }
+
+    // Run input validation for injection detection
+    if (state.guardrailsEnabled) {
+      const validationResult = state.inputValidator.validateInput(JSON.stringify(args));
+      if (!validationResult.valid) {
+        logAuditEvent(state, 'input_validation.deny', namespacedName, {
+          requestId: `external-${serverId}-${toolName}`,
+          reason: validationResult.blockReason,
+          detections: validationResult.detections.map(d => d.patternName),
+          serverId,
+          upstreamTool: toolName,
+        });
+        return toolError(
+          validationResult.blockReason || 'Input validation failed',
+          'INPUT_VALIDATION_FAILED',
+          `external-${serverId}-${toolName}`
+        );
+      }
+    }
+
+    try {
+      const registry = state.externalMcpClient!.getRegistry();
+      const result = await registry.callTool(serverId, toolName, args);
+      const text = typeof result === 'string'
+        ? result
+        : JSON.stringify(result, null, 2);
+      return {
+        content: [{ type: 'text' as const, text }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      state.lastError = message;
+
+      const errorDetail: Record<string, unknown> = { message };
+      if (error && typeof error === 'object') {
+        const errObj = error as Record<string, unknown>;
+        if (errObj.code) errorDetail.code = errObj.code;
+        if (errObj.data) errorDetail.data = errObj.data;
+      }
+      errorDetail.server = serverId;
+      errorDetail.tool = toolName;
+
+      logAuditEvent(state, 'tool.error', namespacedName, {
+        requestId: `external-${serverId}-${toolName}`,
+        error: message,
+        serverId,
+        upstreamTool: toolName,
+      });
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: errorDetail }, null, 2) }],
+        isError: true as const,
+      };
+    }
+  };
+}
+
+/**
+ * Compute live external tool count from the registration map.
+ */
+function computeExternalToolCount(state: ServerState): number {
+  let count = 0;
+  for (const tools of state.externalToolRegistrations.values()) {
+    count += tools.length;
+  }
+  return count;
+}
+
+/**
+ * Register tools for a single external server on the McpServer instance.
+ * Captures the RegisteredTool references for later live removal.
+ */
+function registerServerToolsOnMcpServer(
+  server: McpServer,
+  state: ServerState,
+  serverId: string,
+  allowedTools?: string[]
+): void {
+  const registry = state.externalMcpClient?.getRegistry();
+  if (!registry) return;
+
+  const connected = registry.get(serverId);
+  if (!connected) return;
+
+  const registrations: RegisteredTool[] = [];
+
+  for (const tool of connected.tools) {
+    const namespacedName = `${serverId}__${tool.name}`;
+    if (!isToolAllowed(namespacedName, allowedTools)) continue;
+
+    const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
+
+    const passthroughSchema = {
+      args: z.record(z.unknown()).optional().describe(
+        `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+      ),
+    };
+
+    const registered = server.tool(
+      namespacedName,
+      description,
+      passthroughSchema as any,
+      createExternalToolProxyHandler(state, serverId, tool.name)
+    );
+
+    registrations.push(registered as RegisteredTool);
+
+    state.sdkTools.push({
+      name: namespacedName,
+      description,
+      params: passthroughSchema,
+    });
+  }
+
+  state.externalToolRegistrations.set(serverId, registrations);
+  state.externalToolCount = computeExternalToolCount(state);
+}
+
+/**
+ * Remove all registered tools for a single external server from the McpServer.
+ */
+function unregisterServerToolsFromMcpServer(
+  _server: McpServer,
+  state: ServerState,
+  serverId: string
+): void {
+  const registrations = state.externalToolRegistrations.get(serverId);
+  if (registrations) {
+    for (const reg of registrations) {
+      reg.remove();
+    }
+    state.externalToolRegistrations.delete(serverId);
+  }
+
+  // Remove from sdkTools
+  state.sdkTools = state.sdkTools.filter(t => !t.name.startsWith(`${serverId}__`));
+
+  // Update count
+  state.externalToolCount = computeExternalToolCount(state);
+}
+
+/**
+ * Reconcile external server tools against the current registry state:
+ * - Adds tools for newly connected servers
+ * - Removes tools for servers that have been disconnected
+ * - Notifies MCP clients of tool list changes
+ */
+export function reconcileExternalTools(
+  server: McpServer,
+  state: ServerState,
+  allowedTools?: string[]
+): void {
+  const connectedServerIds = state.externalMcpClient?.listServers() ?? [];
+  const registeredServerIds = Array.from(state.externalToolRegistrations.keys());
+
+  // Remove tools for servers no longer connected
+  for (const serverId of registeredServerIds) {
+    if (!connectedServerIds.includes(serverId)) {
+      unregisterServerToolsFromMcpServer(server, state, serverId);
+    }
+  }
+
+  // Add tools for newly connected servers
+  for (const serverId of connectedServerIds) {
+    if (!state.externalToolRegistrations.has(serverId)) {
+      registerServerToolsOnMcpServer(server, state, serverId, allowedTools);
+    }
+  }
+
+  // Notify MCP clients of tool list changes (only if connected)
+  server.sendToolListChanged();
+}
+
+/**
  * Register every tool from every connected external MCP server into the
  * given McpServer, namespaced as `<serverId>__<toolName>`.
  *
  * Example: a tool named `create_issue` on server `github` becomes
  * `github__create_issue` in the aggregated tool list.
+ *
+ * This is called at startup. For live updates, use reconcileExternalTools().
  */
 function registerExternalTools(server: McpServer, client: MCPClient, state: ServerState, allowedTools?: string[]): void {
   const registry = client.getRegistry();
   const allServers = registry.listAll();
 
-  // Maximum size for external tool arguments (1MB)
-  const MAX_EXTERNAL_ARGS_SIZE = 1_000_000;
-
   for (const connected of allServers) {
     const serverId = connected.config.id;
+    const registrations: RegisteredTool[] = [];
+
     for (const tool of connected.tools) {
       const namespacedName = `${serverId}__${tool.name}`;
       if (!isToolAllowed(namespacedName, allowedTools)) {
@@ -639,102 +847,32 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
       }
       const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
-      // Use a passthrough Zod schema for args; the underlying MCP server
-      // validates the actual input shape via its own JSON Schema.
       const passthroughSchema = {
         args: z.record(z.unknown()).optional().describe(
           `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
         ),
       };
 
-      server.tool(
+      const registered = server.tool(
         namespacedName,
         description,
         passthroughSchema as any,
-        async (params: any) => {
-          state.requestCount++;
-          const rateLimitResponse = checkRateLimit(state, namespacedName);
-          if (rateLimitResponse) return rateLimitResponse;
-          const args = (params?.args ?? {}) as Record<string, unknown>;
-
-          // Validate args size
-          const argsSize = JSON.stringify(args).length;
-          if (argsSize > MAX_EXTERNAL_ARGS_SIZE) {
-            state.lastError = `External tool arguments too large: ${argsSize} bytes (max: ${MAX_EXTERNAL_ARGS_SIZE})`;
-            return toolError(
-              state.lastError,
-              'INPUT_TOO_LARGE',
-              `external-${serverId}-${tool.name}`
-            );
-          }
-
-          // Run input validation for injection detection
-          if (state.guardrailsEnabled) {
-            const validationResult = state.inputValidator.validateInput(JSON.stringify(args));
-            if (!validationResult.valid) {
-              logAuditEvent(state, 'input_validation.deny', namespacedName, {
-                requestId: `external-${serverId}-${tool.name}`,
-                reason: validationResult.blockReason,
-                detections: validationResult.detections.map(d => d.patternName),
-                serverId,
-                upstreamTool: tool.name,
-              });
-              return toolError(
-                validationResult.blockReason || 'Input validation failed',
-                'INPUT_VALIDATION_FAILED',
-                `external-${serverId}-${tool.name}`
-              );
-            }
-          }
-
-          try {
-            // Use the registry's 3-arg form so we route to a specific
-            // serverId, not by tool-name lookup (which can be ambiguous
-            // when multiple external servers host a same-named tool).
-            const result = await registry.callTool(serverId, tool.name, args);
-            const text = typeof result === 'string'
-              ? result
-              : JSON.stringify(result, null, 2);
-            return {
-              content: [{ type: 'text' as const, text }],
-            };
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            state.lastError = message;
-
-            // Preserve upstream error structure when possible
-            const errorDetail: Record<string, unknown> = { message };
-            if (error && typeof error === 'object') {
-              const errObj = error as Record<string, unknown>;
-              if (errObj.code) errorDetail.code = errObj.code;
-              if (errObj.data) errorDetail.data = errObj.data;
-            }
-            errorDetail.server = serverId;
-            errorDetail.tool = tool.name;
-
-            logAuditEvent(state, 'tool.error', namespacedName, {
-              requestId: `external-${serverId}-${tool.name}`,
-              error: message,
-              serverId,
-              upstreamTool: tool.name,
-            });
-
-            return {
-              content: [{ type: 'text' as const, text: JSON.stringify({ error: errorDetail }, null, 2) }],
-              isError: true as const,
-            };
-          }
-        }
+        createExternalToolProxyHandler(state, serverId, tool.name)
       );
 
-      state.externalToolCount++;
+      registrations.push(registered as RegisteredTool);
+
       state.sdkTools.push({
         name: namespacedName,
         description,
         params: passthroughSchema,
       });
     }
+
+    state.externalToolRegistrations.set(serverId, registrations);
   }
+
+  state.externalToolCount = computeExternalToolCount(state);
 }
 
 /**
@@ -983,6 +1121,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     policyEngine: getToolInvocationPolicyEngine(),
     templatesService: getToolTemplatesService(),
     auditEnabled: config.audit?.enabled ?? false,
+    externalToolRegistrations: new Map(),
   };
 
   // SDK tool definitions for programmatic access and discovery

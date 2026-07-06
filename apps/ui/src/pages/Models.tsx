@@ -12,7 +12,6 @@ import { Input } from '@/components/primitives/Input';
 import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData, useUrlState, useUrlNullableState } from '@/hooks';
-import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
 import { ModalityBadge } from '@/icons/Modality';
 import { Admin } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
@@ -26,20 +25,45 @@ const PRICING_TIER_CONFIG: Record<string, { label: string; tone: 'success' | 'in
   unknown: { label: '?', tone: 'muted' },
 };
 
-const INTELLIGENCE_LAYER_DESCRIPTIONS: Record<string, string> = {
-  brain: 'Best reasoning — handles complex, multi-step tasks',
-  thinker: 'Specialized thinking — coding, math, planning',
-  executor: 'General purpose — balanced quality and cost',
-  worker: 'Fast & cheap — simple, quick tasks',
-  temp_worker: 'One-time gig work — local/free tier models',
+const CAPABILITY_TIER_CONFIG: Record<string, { label: string; description: string; tone: 'success' | 'info' | 'warning' | 'danger' | 'muted' }> = {
+  frontier: { label: 'Frontier', description: 'Best available — GPT-5.5, Claude Opus 4.8', tone: 'danger' },
+  strong: { label: 'Strong', description: 'High capability — GPT-5.4, Claude Sonnet 4.6', tone: 'warning' },
+  balanced: { label: 'Balanced', description: 'Good all-around — Gemini Flash, Qwen3', tone: 'info' },
+  fast: { label: 'Fast', description: 'Optimized for speed — GPT-5.4 mini', tone: 'success' },
+  economy: { label: 'Economy', description: 'Cheapest — Phi-4 Mini, Gemma 3 4B', tone: 'muted' },
+};
+
+const DEPLOYMENT_CONFIG: Record<string, { label: string; icon: string }> = {
+  cloud: { label: 'Cloud', icon: '☁️' },
+  self_hosted: { label: 'Self-hosted', icon: '🏠' },
+  on_device: { label: 'On-device', icon: '📱' },
+};
+
+const REASONING_MODE_CONFIG: Record<string, { label: string; description: string }> = {
+  fixed: { label: 'Fixed', description: 'Standard inference' },
+  adaptive: { label: 'Adaptive', description: 'Auto-switches thinking depth' },
+  hybrid: { label: 'Hybrid', description: 'User-controlled thinking toggle' },
+};
+
+const SAFETY_TIER_CONFIG: Record<string, { label: string; description: string; tone: 'success' | 'warning' | 'danger' }> = {
+  unrestricted: { label: 'Unrestricted', description: 'Minimal guardrails', tone: 'success' },
+  standard: { label: 'Standard', description: 'Normal safety measures', tone: 'warning' },
+  restricted: { label: 'Restricted', description: 'Deliberate capability limits', tone: 'danger' },
+};
+
+const AGENTIC_LEVEL_CONFIG: Record<string, { label: string; description: string }> = {
+  chat: { label: 'Chat', description: 'Conversational only' },
+  tool_use: { label: 'Tool Use', description: 'Can call functions' },
+  autonomous: { label: 'Autonomous', description: 'Can take actions independently' },
 };
 
 export function ModelsPage() {
   const [query, setQuery] = useUrlState('q', '');
   const [modality, setModality] = useUrlNullableState('modality');
   const [providerFilter, setProviderFilter] = useUrlNullableState('provider');
-  const [layerFilter, setLayerFilter] = useUrlNullableState('layer');
+  const [capabilityTierFilter, setCapabilityTierFilter] = useUrlNullableState('tier');
   const [pricingTierFilter, setPricingTierFilter] = useUrlNullableState('pricing');
+  const [deploymentFilter, setDeploymentFilter] = useUrlNullableState('deployment');
   const [showUnavailable, setShowUnavailable] = useUrlState('unavailable', 'false');
   const [page, setPage] = React.useState(1);
   const [selectedModel, setSelectedModel] = React.useState<ApiModel | null>(null);
@@ -63,13 +87,18 @@ export function ModelsPage() {
     if (query && !m.name.toLowerCase().includes(query.toLowerCase())) return false;
     if (modality && m.modality !== modality) return false;
     if (providerFilter && m.provider_id !== providerFilter) return false;
-    if (layerFilter && m.intelligence_layer !== layerFilter) return false;
+    if (capabilityTierFilter && m.capability_tier !== capabilityTierFilter) return false;
     if (pricingTierFilter && (m as any).pricing_tier !== pricingTierFilter) return false;
+    if (contextTierFilter && m.context_tier !== contextTierFilter) return false;
+    if (deploymentFilter && m.deployment !== deploymentFilter) return false;
+    if (reasoningModeFilter && m.reasoning_mode !== reasoningModeFilter) return false;
+    if (safetyTierFilter && m.safety_tier !== safetyTierFilter) return false;
+    if (agenticLevelFilter && m.agentic_level !== agenticLevelFilter) return false;
     return true;
   });
 
   const modalities = Array.from(new Set((models.data ?? []).map((m) => m.modality).filter(Boolean)));
-  const intelligenceLayers = Array.from(new Set((models.data ?? []).map((m) => m.intelligence_layer).filter(Boolean)));
+  const capabilityTiers = ['frontier', 'strong', 'balanced', 'fast', 'economy'];
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   const availableCount = (models.data ?? []).filter(m => providerKeyStatus.get(m.provider_id) !== false).length;
@@ -172,26 +201,48 @@ export function ModelsPage() {
           </div>
           <div className="flex items-center gap-1 ml-2 pl-2 border-l border-border">
             <button
-              onClick={() => setLayerFilter(null)}
+              onClick={() => setCapabilityTierFilter(null)}
               className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
-                !layerFilter ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+                !capabilityTierFilter ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
               }`}
             >
-              all layers
+              all tiers
             </button>
-            {intelligenceLayers.map((layer) => (
+            {capabilityTiers.map((tier) => (
               <button
-                key={layer}
-                onClick={() => setLayerFilter(layer === layerFilter ? null : layer)}
-                className={`h-7 px-2.5 rounded-md text-[11px] font-medium flex items-center gap-1 ${
-                  layerFilter === layer
+                key={tier}
+                onClick={() => setCapabilityTierFilter(tier === capabilityTierFilter ? null : tier)}
+                className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                  capabilityTierFilter === tier
                     ? 'bg-primary/10 text-primary border border-primary/20'
                     : 'text-fg-muted hover:bg-surface-2 border border-transparent'
                 }`}
-                title={INTELLIGENCE_LAYER_DESCRIPTIONS[layer] ?? layer}
+                title={CAPABILITY_TIER_CONFIG[tier]?.description}
               >
-                <IntelligenceBadge layer={layer as 'brain' | 'thinker' | 'executor' | 'worker' | 'temp_worker'} size={12} showLabel={false} />
-                {layer.replace('_', ' ')}
+                {CAPABILITY_TIER_CONFIG[tier]?.label ?? tier}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-border">
+            <button
+              onClick={() => setDeploymentFilter(null)}
+              className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                !deploymentFilter ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+              }`}
+            >
+              all deploy
+            </button>
+            {Object.entries(DEPLOYMENT_CONFIG).map(([key, config]) => (
+              <button
+                key={key}
+                onClick={() => setDeploymentFilter(key === deploymentFilter ? null : key)}
+                className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                  deploymentFilter === key
+                    ? 'bg-primary/10 text-primary border border-primary/20'
+                    : 'text-fg-muted hover:bg-surface-2 border border-transparent'
+                }`}
+              >
+                {config.icon} {config.label}
               </button>
             ))}
           </div>
@@ -258,11 +309,14 @@ export function ModelsPage() {
                       {m.provider ?? 'unknown'}
                     </Badge>
                     {m.modality && <ModalityBadge modality={m.modality} size={14} />}
-                    {m.intelligence_layer && (
-                      <span title={INTELLIGENCE_LAYER_DESCRIPTIONS[m.intelligence_layer] ?? m.intelligence_layer}>
-                        <IntelligenceBadge layer={m.intelligence_layer as 'brain' | 'thinker' | 'executor' | 'worker' | 'temp_worker'} size={14} showLabel={false} />
-                      </span>
-                    )}
+                    {(() => {
+                      const tier = m.capability_tier;
+                      if (tier && CAPABILITY_TIER_CONFIG[tier]) {
+                        const config = CAPABILITY_TIER_CONFIG[tier];
+                        return <Badge tone={config.tone} size="sm">{config.label}</Badge>;
+                      }
+                      return null;
+                    })()}
                     {(() => {
                       const tier = (m as any).pricing_tier;
                       if (tier && tier !== 'unknown') {
@@ -272,17 +326,7 @@ export function ModelsPage() {
                       return null;
                     })()}
                   </div>
-                <div className="grid grid-cols-4 gap-2 text-[10px] text-fg-muted">
-                  <div>
-                    <div className="text-fg-subtle">Layer</div>
-                    <div className="text-fg flex items-center gap-1">
-                      {m.intelligence_layer ? (
-                        <span title={INTELLIGENCE_LAYER_DESCRIPTIONS[m.intelligence_layer] ?? m.intelligence_layer}>
-                          {m.intelligence_layer.replace('_', ' ')}
-                        </span>
-                      ) : '—'}
-                    </div>
-                  </div>
+                <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
                   <div>
                     <div className="text-fg-subtle">Context</div>
                     <div className="text-fg tabular-nums">{formatNumber(m.context_window ?? 0, true)}</div>
@@ -294,9 +338,26 @@ export function ModelsPage() {
                     </div>
                   </div>
                   <div>
-                    <div className="text-fg-subtle">Tier</div>
-                    <div className="text-fg">{m.tier ?? 'standard'}</div>
+                    <div className="text-fg-subtle">Deploy</div>
+                    <div className="text-fg">{m.deployment ?? 'cloud'}</div>
                   </div>
+                </div>
+                <div className="flex items-center gap-1.5 text-[9px] text-fg-subtle mt-1">
+                  {m.reasoning_mode && m.reasoning_mode !== 'fixed' && (
+                    <span title={REASONING_MODE_CONFIG[m.reasoning_mode]?.description}>
+                      🧠 {REASONING_MODE_CONFIG[m.reasoning_mode]?.label ?? m.reasoning_mode}
+                    </span>
+                  )}
+                  {m.agentic_level && m.agentic_level !== 'chat' && (
+                    <span title={AGENTIC_LEVEL_CONFIG[m.agentic_level]?.description}>
+                      🤖 {AGENTIC_LEVEL_CONFIG[m.agentic_level]?.label ?? m.agentic_level}
+                    </span>
+                  )}
+                  {m.safety_tier && m.safety_tier !== 'standard' && (
+                    <span title={SAFETY_TIER_CONFIG[m.safety_tier]?.description}>
+                      🛡️ {SAFETY_TIER_CONFIG[m.safety_tier]?.label ?? m.safety_tier}
+                    </span>
+                  )}
                 </div>
               </button>
             );

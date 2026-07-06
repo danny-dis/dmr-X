@@ -208,7 +208,15 @@ const CreateModelSchema = z.object({
   display_name: z.string().optional(),
   modality: z.enum(['llm', 'diffusion', 'embedding', 'audio_tts', 'audio_stt', 'audio_speech', 'audio_transcription', 'video', 'music', 'reranking', 'moderation', 'code_completion', 'image_upscaling', 'image_inpainting', 'vision', '3d']),
   intelligence_layer: z.enum(['brain', 'thinker', 'executor', 'worker', 'temp_worker']).optional().default('executor'),
-  capability_tier: z.enum(['orchestrator', 'brain', 'thinker', 'executor', 'specialist', 'worker', 'temp_worker']).optional().default('executor'),
+  capability_tier: z.enum(['frontier', 'strong', 'balanced', 'fast', 'economy']).optional().default('balanced'),
+  // 9-Dimension Taxonomy Fields
+  architecture: z.enum(['dense', 'moe', 'ssm', 'hybrid', 'unknown']).optional(),
+  task_categories: z.array(z.string()).optional(),
+  context_tier: z.enum(['short', 'medium', 'long', 'ultra', 'massive']).optional(),
+  deployment: z.enum(['cloud', 'self_hosted', 'on_device']).optional(),
+  reasoning_mode: z.enum(['fixed', 'adaptive', 'hybrid']).optional(),
+  safety_tier: z.enum(['unrestricted', 'standard', 'restricted']).optional(),
+  agentic_level: z.enum(['chat', 'tool_use', 'autonomous']).optional(),
   context_window: z.number().positive().optional(),
   max_output_tokens: z.number().positive().optional(),
   supports_streaming: z.boolean().optional().default(false),
@@ -909,12 +917,13 @@ async function autoDiscoverModelsOnKeyAdd(
 
     const insert = db.prepare(
       `INSERT OR IGNORE INTO model_profiles (
-        id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
+        id, provider_id, model_id, display_name, modality, capability_tier,
         supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
         context_window, max_output_tokens,
         input_cost_per_1k, output_cost_per_1k, cost_per_image,
-        quality_score, is_active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        quality_score, is_active,
+        task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level, architecture
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     let inserted = 0;
@@ -927,8 +936,7 @@ async function autoDiscoverModelsOnKeyAdd(
         m.modelId,
         m.displayName || m.modelId,
         m.modality || 'llm',
-        'executor',
-        'executor',
+        'balanced',
         caps.has('streaming') ? 1 : 0,
         caps.has('vision') ? 1 : 0,
         caps.has('tool_use') ? 1 : 0,
@@ -942,6 +950,13 @@ async function autoDiscoverModelsOnKeyAdd(
         m.costPerImage,
         0.5,
         1, // is_active = 1 since we just got a valid key
+        JSON.stringify(['general']),
+        'medium',
+        'cloud',
+        'fixed',
+        'standard',
+        'chat',
+        'unknown',
       );
       if (result.changes > 0) inserted++;
     }
@@ -2660,12 +2675,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         if (discovered.length > 0) {
           const insertModel = db.prepare(
             `INSERT OR IGNORE INTO model_profiles (
-              id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
+              id, provider_id, model_id, display_name, modality, capability_tier,
               supports_streaming, supports_vision, supports_tool_use, supports_json_mode,
               context_window, max_output_tokens,
               input_cost_per_1k, output_cost_per_1k, cost_per_image,
-              quality_score, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              quality_score, is_active,
+              task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level, architecture
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           );
           let inserted = 0;
           for (const m of discovered) {
@@ -2676,8 +2692,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
               m.modelId,
               m.displayName || m.modelId,
               m.modality || 'llm',
-              'executor',
-              'executor',
+              'balanced',
               caps.has('streaming') ? 1 : 0,
               caps.has('vision') ? 1 : 0,
               caps.has('tool_use') ? 1 : 0,
@@ -2689,6 +2704,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
               m.costPerImage || 0,
               0.5,
               1,
+              JSON.stringify(['general']),
+              'medium',
+              'cloud',
+              'fixed',
+              'standard',
+              'chat',
+              'unknown',
             );
             inserted++;
           }

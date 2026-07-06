@@ -23,16 +23,13 @@ export interface ClassifyOptions {
 function inferCapabilityTier(qualityTarget: 'frontier' | 'balanced' | 'economy'): CapabilityTier {
   switch (qualityTarget) {
     case 'frontier':
-      // Frontier tasks want the best — brain or thinker tier
-      return 'brain';
+      return 'frontier';
     case 'balanced':
-      // Balanced tasks are fine with executor or specialist
-      return 'executor';
+      return 'balanced';
     case 'economy':
-      // Economy tasks want cheap/fast — worker tier
-      return 'worker';
+      return 'economy';
     default:
-      return 'executor';
+      return 'balanced';
   }
 }
 

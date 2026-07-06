@@ -1,4 +1,4 @@
-import type { CapabilityTier } from '@dmr-x/core';
+import type { CapabilityTier, ArchitectureTier, ContextTier, DeploymentModel, ReasoningMode, SafetyTier, AgenticLevel } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 
@@ -23,6 +23,14 @@ export interface RequestRecord {
   success: boolean;
   errorCode?: string;
   capabilityTier?: CapabilityTier;
+  // 9-Dimension Taxonomy Fields
+  architectureTier?: ArchitectureTier;
+  taskCategories?: string[];
+  contextTier?: ContextTier;
+  deployment?: DeploymentModel;
+  reasoningMode?: ReasoningMode;
+  safetyTier?: SafetyTier;
+  agenticLevel?: AgenticLevel;
   // Optional 8C.1 signal — time to first token for streaming responses.
   firstTokenLatencyMs?: number;
   // Optional 8C.2 signals — tool-call success rate. Only meaningful when
@@ -73,7 +81,7 @@ export class RewardUpdater {
         modelId: record.modelId,
         modality: 'llm', // Will be updated with actual modality
         intelligenceLayer: 'executor',
-        capabilityTier: record.capabilityTier || 'executor',
+        capabilityTier: record.capabilityTier || 'balanced',
         capabilities: [],
         costPerInputToken: record.costPerInputToken,
         costPerOutputToken: record.costPerOutputToken,
@@ -326,10 +334,20 @@ export class RewardUpdater {
         successRate > 0.5
       );
 
-      // Look up actual capability tier from model_profiles
+      // Look up full taxonomy from model_profiles
       const modelProfile = db.prepare(
-        `SELECT capability_tier FROM model_profiles WHERE model_id = ? LIMIT 1`
-      ).get(row.modelId) as { capability_tier?: string } | undefined;
+        `SELECT capability_tier, architecture, task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level
+         FROM model_profiles WHERE model_id = ? LIMIT 1`
+      ).get(row.modelId) as {
+        capability_tier?: string;
+        architecture?: string;
+        task_categories?: string;
+        context_tier?: string;
+        deployment?: string;
+        reasoning_mode?: string;
+        safety_tier?: string;
+        agentic_level?: string;
+      } | undefined;
 
       this.sampler.update(
         {
@@ -338,7 +356,15 @@ export class RewardUpdater {
           modelId: row.modelId,
           modality: 'llm',
           intelligenceLayer: 'executor',
-          capabilityTier: (modelProfile?.capability_tier as CapabilityTier) || 'executor',
+          capabilityTier: (modelProfile?.capability_tier as CapabilityTier) || 'balanced',
+          // 9-Dimension Taxonomy Fields
+          architectureTier: (modelProfile?.architecture as ArchitectureTier) || undefined,
+          taskCategories: modelProfile?.task_categories ? JSON.parse(modelProfile.task_categories) : undefined,
+          contextTier: (modelProfile?.context_tier as ContextTier) || undefined,
+          deployment: (modelProfile?.deployment as DeploymentModel) || undefined,
+          reasoningMode: (modelProfile?.reasoning_mode as ReasoningMode) || undefined,
+          safetyTier: (modelProfile?.safety_tier as SafetyTier) || undefined,
+          agenticLevel: (modelProfile?.agentic_level as AgenticLevel) || undefined,
           capabilities: [],
           costPerInputToken: 0.001,
           costPerOutputToken: 0.002,

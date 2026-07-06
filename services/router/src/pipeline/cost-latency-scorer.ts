@@ -1,7 +1,7 @@
 import type { CandidateSet, QualityTarget, ProviderSort, CapabilityTier, Modality, TurnType } from '@dmr-x/core';
 import type { RateLimitService } from '@dmr-x/quota';
 
-import { calculateTierMatchScore } from './capability-filter.js';
+import { calculateTierMatchScore, calculateTaskMatchScore, calculateContextMatchScore, calculateReasoningMatchScore, calculateAgenticMatchScore, type RoutingContext } from './capability-filter.js';
 
 /**
  * Default estimated video duration in seconds used for cost comparison
@@ -16,12 +16,16 @@ interface Weights {
   latency: number;
   reliability: number;
   layerMatch: number;
+  taskMatch: number;
+  contextMatch: number;
+  reasoningMatch: number;
+  agenticMatch: number;
 }
 
 const WEIGHT_PRESETS: Record<QualityTarget, Weights> = {
-  frontier: { quality: 0.6, cost: 0.1, latency: 0.1, reliability: 0.1, layerMatch: 0.1 },
-  balanced: { quality: 0.35, cost: 0.25, latency: 0.2, reliability: 0.1, layerMatch: 0.1 },
-  economy: { quality: 0.1, cost: 0.5, latency: 0.2, reliability: 0.1, layerMatch: 0.1 },
+  frontier: { quality: 0.45, cost: 0.1, latency: 0.1, reliability: 0.1, layerMatch: 0.1, taskMatch: 0.1, contextMatch: 0.05, reasoningMatch: 0.05, agenticMatch: 0.05 },
+  balanced: { quality: 0.25, cost: 0.2, latency: 0.15, reliability: 0.1, layerMatch: 0.1, taskMatch: 0.1, contextMatch: 0.05, reasoningMatch: 0.05, agenticMatch: 0.05 },
+  economy: { quality: 0.1, cost: 0.4, latency: 0.15, reliability: 0.1, layerMatch: 0.1, taskMatch: 0.05, contextMatch: 0.05, reasoningMatch: 0.05, agenticMatch: 0.05 },
 };
 
 /**
@@ -29,9 +33,9 @@ const WEIGHT_PRESETS: Record<QualityTarget, Weights> = {
  * These dominate the quality-target-based weights.
  */
 const SORT_WEIGHT_OVERRIDES: Record<ProviderSort, Weights> = {
-  price: { quality: 0.1, cost: 0.7, latency: 0.1, reliability: 0.05, layerMatch: 0.05 },
-  latency: { quality: 0.1, cost: 0.1, latency: 0.7, reliability: 0.05, layerMatch: 0.05 },
-  throughput: { quality: 0.1, cost: 0.15, latency: 0.15, reliability: 0.55, layerMatch: 0.05 },
+  price: { quality: 0.1, cost: 0.7, latency: 0.1, reliability: 0.05, layerMatch: 0.05, taskMatch: 0, contextMatch: 0, reasoningMatch: 0, agenticMatch: 0 },
+  latency: { quality: 0.1, cost: 0.1, latency: 0.7, reliability: 0.05, layerMatch: 0.05, taskMatch: 0, contextMatch: 0, reasoningMatch: 0, agenticMatch: 0 },
+  throughput: { quality: 0.1, cost: 0.15, latency: 0.15, reliability: 0.55, layerMatch: 0.05, taskMatch: 0, contextMatch: 0, reasoningMatch: 0, agenticMatch: 0 },
 };
 
 /**
@@ -86,6 +90,7 @@ export function costLatencyScorer(
   requiredCapabilityTier?: CapabilityTier,
   modality?: Modality,
   turnType?: TurnType,
+  routingContext?: RoutingContext,
 ): CandidateSet {
   // User's sort preference overrides quality target weights
   const weights = sortStrategy
@@ -135,12 +140,33 @@ export function costLatencyScorer(
       // Layer match score — how well does this model's capability tier match the request?
       const layerMatchScore = calculateTierMatchScore(model.capabilityTier, requiredCapabilityTier);
 
+      // Multi-dimensional scores (using routing context if provided)
+      const taskMatchScore = routingContext?.taskCategories
+        ? calculateTaskMatchScore(model.taskCategories || ['general'], routingContext.taskCategories)
+        : 0.5;
+      
+      const contextMatchScore = routingContext?.minContextWindow
+        ? calculateContextMatchScore(model.contextLength || 0, routingContext.minContextWindow)
+        : 0.5;
+      
+      const reasoningMatchScore = routingContext?.reasoningMode
+        ? calculateReasoningMatchScore(model.reasoningMode || 'fixed', routingContext.reasoningMode)
+        : 0.5;
+      
+      const agenticMatchScore = routingContext?.agenticLevel
+        ? calculateAgenticMatchScore(model.agenticLevel || 'chat', routingContext.agenticLevel)
+        : 0.5;
+
       let compositeScore =
         weights.quality * qualityScore +
         weights.cost * costScore +
         weights.latency * latencyScore +
         weights.reliability * reliabilityScore +
-        weights.layerMatch * layerMatchScore;
+        weights.layerMatch * layerMatchScore +
+        weights.taskMatch * taskMatchScore +
+        weights.contextMatch * contextMatchScore +
+        weights.reasoningMatch * reasoningMatchScore +
+        weights.agenticMatch * agenticMatchScore;
 
       // Apply dynamic penalty from 429 responses
       // Each penalty point costs 5% of composite score

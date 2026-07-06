@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import type { CapabilityTier } from '@dmr-x/core';
+import type { CapabilityTier, ArchitectureTier } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
 
@@ -78,51 +78,247 @@ export { isLocalProviderUnconfigured };
 
 /**
  * Classify a model's capability tier based on its properties.
- * This determines the model's actual capability level (brain/thinker/executor/specialist/worker).
+ * This determines the model's actual capability level (frontier/strong/balanced/fast/economy).
+ * 
+ * Uses model ID patterns, pricing, context window, and capabilities to infer tier.
  */
 function classifyCapabilityTier(model: DiscoveredModel): CapabilityTier {
   const id = (model.modelId || '').toLowerCase();
   const caps = model.capabilities || [];
   const specs = model.specializations || [];
+  const contextWindow = model.contextWindow || 0;
+  const inputCost = model.inputCostPer1M || 0;
 
-  // Orchestrator: Multi-model coordination
-  if (specs.includes('orchestration')) return 'orchestrator';
-
-  // Brain: Top-tier models (best reasoning, largest, most capable)
+  // Frontier: Best available models (highest cost, largest context, most capabilities)
   if (
-    id.match(/opus|gpt-5\.5|gpt-5\.4($|-)|o3($|-)|deepseek-r1/) ||
-    (id.includes('gpt-4') && !id.includes('mini') && !id.includes('nano'))
+    id.match(/opus|gpt-5\.5|gpt-5\.4($|-)|o3($|-)|gemini.*pro|mythos|fable/) ||
+    (inputCost >= 10 && contextWindow >= 128000) ||
+    (id.includes('gpt-4') && !id.includes('mini') && !id.includes('nano') && contextWindow >= 100000)
   ) {
-    // Exclude mini/nano variants from brain
-    if (!id.match(/mini|nano|flash|haiku/)) return 'brain';
+    if (!id.match(/mini|nano|flash|haiku|lite/)) return 'frontier';
   }
 
-  // Thinker: Reasoning/thinking models
+  // Strong: High capability models (good cost/performance ratio)
   if (
-    id.match(/o3-mini|o4-mini|deepseek-r1/) ||
-    (caps.includes('reasoning') && !id.match(/mini|nano|flash/))
+    id.match(/sonnet|gpt-5\.4|gemini.*flash(?!.*lite)|llama.*70b|llama.*405b|deepseek.*v[34]|qwen.*235b|grok/) ||
+    (inputCost >= 2 && inputCost < 10 && contextWindow >= 32000) ||
+    caps.includes('reasoning')
   ) {
-    return 'thinker';
+    if (!id.match(/mini|nano|flash.*lite|haiku/)) return 'strong';
   }
 
-  // Specialist: Domain-specific narrow AI
+  // Balanced: Good all-around models (moderate cost, decent capabilities)
   if (
-    id.match(/codestral|v0|mimo|sonar|embed|rerank|whisper|piper|kokoro|orpheus|ultralytics|yolo/) ||
-    specs.some(s => ['database_schema', 'database_query', 'ui_component', 'embedding', 'reranking', 'stt', 'tts', 'music_generation', 'vision', '3d'].includes(s))
+    id.match(/haiku|flash(?!.*lite)|mistral.*large|qwen.*[72]b|phi-3/) ||
+    (inputCost >= 0.5 && inputCost < 2) ||
+    specs.some(s => ['general', 'code', 'analysis'].includes(s))
   ) {
-    return 'specialist';
+    return 'balanced';
   }
 
-  // Worker: Fast/cheap models
+  // Fast: Optimized for speed (low cost, fast inference)
   if (
+    id.match(/mini|nano|flash.*lite|haiku.*3\.5/) ||
     specs.some(s => ['fast', 'cheap'].includes(s)) ||
-    id.match(/mini|flash|haiku|nano/)
+    (inputCost < 0.5 && contextWindow < 128000)
   ) {
-    return 'worker';
+    return 'fast';
   }
 
-  // Default: Executor (general-purpose)
-  return 'executor';
+  // Economy: Cheapest/simplest models
+  if (
+    id.match(/phi-4.*mini|gemma.*4b|smolllm|tiny|1b|3b/) ||
+    inputCost < 0.1 ||
+    contextWindow < 8000
+  ) {
+    return 'economy';
+  }
+
+  // Default: Balanced (safe fallback)
+  return 'balanced';
+}
+
+/**
+ * Infer model architecture tier from model properties.
+ * This is Dimension 2 of the 9-dimension taxonomy.
+ */
+function inferArchitectureTier(model: DiscoveredModel): ArchitectureTier {
+  const id = (model.modelId || '').toLowerCase();
+  const caps = model.capabilities || [];
+
+  // MoE: Mixture of Experts models
+  if (id.match(/mixtral|moe|grok|deepseek.*v[34]|mistral.*large|qwen.*235b|phi-4.*moe/)) {
+    return 'moe';
+  }
+
+  // SSM: State-space models
+  if (id.match(/mamba|jamba|ssm/)) {
+    return 'ssm';
+  }
+
+  // Hybrid: Hybrid architectures
+  if (id.match(/hybrid|zamba|jamba.*hybrid/)) {
+    return 'hybrid';
+  }
+
+  // Dense: Standard transformer models (most models)
+  if (id.match(/gpt|claude|gemini|llama|phi|qwen|deepseek.*v[12]|mistral(?!.*large)|yi|command|embed|whisper|dall|stable|flux/)) {
+    return 'dense';
+  }
+
+  // Default: Unknown for models we can't classify
+  return 'unknown';
+}
+
+/**
+ * Infer task categories from model capabilities and specializations.
+ */
+function inferTaskCategories(model: DiscoveredModel): string[] {
+  const categories: string[] = [];
+  const id = (model.modelId || '').toLowerCase();
+  const caps = model.capabilities || [];
+  const specs = model.specializations || [];
+  const modality = model.modality || 'llm';
+
+  // General chat (default for LLMs)
+  if (modality === 'llm' && !specs.some(s => ['embedding', 'reranking', 'stt', 'tts'].includes(s))) {
+    categories.push('general');
+  }
+
+  // Reasoning
+  if (caps.includes('reasoning') || id.match(/o3|o4|r1|think|reason/)) {
+    categories.push('reasoning');
+  }
+
+  // Code
+  if (id.match(/codestral|coder|code|devstral/) || specs.includes('coding')) {
+    categories.push('code');
+  }
+
+  // Vision
+  if (caps.includes('vision') || id.match(/vision|gpt-4o|gemini/)) {
+    categories.push('vision');
+  }
+
+  // Image generation
+  if (modality === 'diffusion' || specs.includes('image_generation') || id.match(/dall-e|stable|flux|imagen/)) {
+    categories.push('image_generation');
+  }
+
+  // TTS
+  if (modality === 'audio_tts' || specs.includes('tts') || id.match(/tts|whisper|kokoro|orpheus|piper/)) {
+    categories.push('tts');
+  }
+
+  // STT
+  if (modality === 'audio_stt' || specs.includes('stt') || id.match(/whisper|stt|transcri/)) {
+    categories.push('stt');
+  }
+
+  // Embedding
+  if (modality === 'embedding' || specs.includes('embedding') || id.match(/embed/)) {
+    categories.push('embedding');
+  }
+
+  // Security (for specialized models like Mythos)
+  if (id.match(/mythos|fable|security|cyber/) || specs.includes('security')) {
+    categories.push('security');
+  }
+
+  // Creative
+  if (specs.includes('creative') || id.match(/creative|story|write/)) {
+    categories.push('creative');
+  }
+
+  // Moderation
+  if (modality === 'moderation' || specs.includes('moderation') || id.match(/moderat|guard|shield/)) {
+    categories.push('moderation');
+  }
+
+  return categories.length > 0 ? categories : ['general'];
+}
+
+/**
+ * Classify context window into a tier.
+ */
+function classifyContextTier(contextWindow?: number): 'short' | 'medium' | 'long' | 'ultra' | 'massive' {
+  if (!contextWindow || contextWindow < 32000) return 'short';
+  if (contextWindow < 128000) return 'medium';
+  if (contextWindow < 1000000) return 'long';
+  if (contextWindow < 10000000) return 'ultra';
+  return 'massive';
+}
+
+/**
+ * Infer deployment model from provider.
+ */
+function inferDeployment(providerId: string): 'cloud' | 'self_hosted' | 'on_device' {
+  // Local/self-hosted providers
+  const selfHosted = ['ollama', 'vllm', 'llamacpp', 'localai', 'lmstudio'];
+  if (selfHosted.some(p => providerId.toLowerCase().includes(p))) {
+    return 'self_hosted';
+  }
+  return 'cloud';
+}
+
+/**
+ * Infer reasoning mode from model properties.
+ */
+function inferReasoningMode(model: DiscoveredModel): 'fixed' | 'adaptive' | 'hybrid' {
+  const id = (model.modelId || '').toLowerCase();
+  const caps = model.capabilities || [];
+
+  // Adaptive: Models that auto-switch between fast/thinking (GPT-5, etc.)
+  if (id.match(/gpt-5|gemini.*2\.5|adaptive/)) {
+    return 'adaptive';
+  }
+
+  // Hybrid: Models with user-controlled thinking toggle (DeepSeek, Qwen3)
+  if (id.match(/deepseek.*v3\.1|qwen3|r1/) || caps.includes('reasoning')) {
+    return 'hybrid';
+  }
+
+  return 'fixed';
+}
+
+/**
+ * Infer safety tier from model properties.
+ */
+function inferSafetyTier(model: DiscoveredModel): 'unrestricted' | 'standard' | 'restricted' {
+  const id = (model.modelId || '').toLowerCase();
+
+  // Restricted: Models with deliberate capability limits (Fable 5, Mythos)
+  if (id.match(/mythos|fable|restricted/)) {
+    return 'restricted';
+  }
+
+  // Unrestricted: Open-weight models with minimal guardrails
+  if (id.match(/llama|mistral|deepseek|qwen|open/)) {
+    return 'unrestricted';
+  }
+
+  return 'standard';
+}
+
+/**
+ * Infer agentic level from model properties.
+ */
+function inferAgenticLevel(model: DiscoveredModel): 'chat' | 'tool_use' | 'autonomous' {
+  const caps = model.capabilities || [];
+  const specs = model.specializations || [];
+  const id = (model.modelId || '').toLowerCase();
+
+  // Autonomous: Models that can take actions independently
+  if (id.match(/gpt-5|gemini.*pro|grok.*4|agentic|autonomous/)) {
+    return 'autonomous';
+  }
+
+  // Tool use: Models that can call tools/functions
+  if (caps.includes('tool_use') || caps.includes('function_call') || specs.includes('tool_use')) {
+    return 'tool_use';
+  }
+
+  return 'chat';
 }
 
 /**
@@ -131,13 +327,11 @@ function classifyCapabilityTier(model: DiscoveredModel): CapabilityTier {
  */
 function getInitialQualityScore(tier: CapabilityTier): number {
   const scores: Record<CapabilityTier, number> = {
-    orchestrator: 0.95,
-    brain: 0.9,
-    thinker: 0.75,
-    executor: 0.6,
-    specialist: 0.65,
-    worker: 0.4,
-    temp_worker: 0.3,
+    frontier: 0.9,
+    strong: 0.75,
+    balanced: 0.6,
+    fast: 0.5,
+    economy: 0.4,
   };
   return scores[tier] ?? 0.5;
 }
@@ -154,12 +348,14 @@ function insertModelProfiles(
   const db = getDb();
   const insert = db.prepare(
     `INSERT OR IGNORE INTO model_profiles (
-      id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
+      id, provider_id, model_id, display_name, modality, capability_tier,
       supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
       context_window, max_output_tokens,
       input_cost_per_1k, output_cost_per_1k, cost_per_image,
-      quality_score, is_active, subscription_only
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      quality_score, is_active, subscription_only,
+      task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level,
+      architecture, parameter_count, active_parameters, license
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let count = 0;
@@ -167,6 +363,13 @@ function insertModelProfiles(
     if (!m.modelId) continue;
     const caps = new Set(m.capabilities);
     const capabilityTier = classifyCapabilityTier(m);
+    const architectureTier = inferArchitectureTier(m);
+    const taskCategories = inferTaskCategories(m);
+    const contextTier = classifyContextTier(m.contextWindow ?? undefined);
+    const deployment = inferDeployment(providerId);
+    const reasoningMode = inferReasoningMode(m);
+    const safetyTier = inferSafetyTier(m);
+    const agenticLevel = inferAgenticLevel(m);
     const id = crypto.randomUUID();
     const result = insert.run(
       id,
@@ -174,7 +377,6 @@ function insertModelProfiles(
       m.modelId,
       m.displayName || m.modelId,
       m.modality || 'llm',
-      'executor', // intelligence_layer (source: cloud by default)
       capabilityTier,
       caps.has('streaming') ? 1 : 0,
       caps.has('vision') ? 1 : 0,
@@ -190,6 +392,16 @@ function insertModelProfiles(
       getInitialQualityScore(capabilityTier),
       isActive ? 1 : 0,
       m.subscriptionOnly ? 1 : 0,
+      JSON.stringify(taskCategories),
+      contextTier,
+      deployment,
+      reasoningMode,
+      safetyTier,
+      agenticLevel,
+      architectureTier,
+      null, // parameter_count (to be filled from catalog)
+      null, // active_parameters (to be filled from catalog)
+      null, // license (to be filled from catalog)
     );
     if (result.changes > 0) {
       count += 1;
@@ -199,6 +411,7 @@ function insertModelProfiles(
         modelId: m.modelId,
         modality: m.modality || 'llm',
         capabilityTier,
+        taskCategories,
       });
     }
   }
@@ -350,20 +563,22 @@ export async function autoRegisterProviders(): Promise<string[]> {
       // Create model profiles (rich variant with rate-limit / rank fields)
       const insert = db.prepare(
         `INSERT INTO model_profiles (
-          id, provider_id, model_id, display_name, modality, intelligence_layer, capability_tier,
+          id, provider_id, model_id, display_name, modality, capability_tier,
           supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
           context_window, max_output_tokens,
           input_cost_per_1k, output_cost_per_1k, cost_per_image,
           quality_score, is_active,
           rate_limit_rpm, rate_limit_rpd, rate_limit_tpm, rate_limit_tpd,
-          monthly_token_budget, intelligence_rank, speed_rank
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          monthly_token_budget, intelligence_rank, speed_rank,
+          task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level,
+          architecture
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const m of modelsForInsert) {
         if (!m.modelId) continue;
         const caps = new Set(m.capabilities);
         // Convert to DiscoveredModel-like object for classification
-        const capabilityTier = classifyCapabilityTier({
+        const discoveredModel = {
           modelId: m.modelId,
           displayName: m.displayName,
           modality: m.modality,
@@ -374,14 +589,21 @@ export async function autoRegisterProviders(): Promise<string[]> {
           costPerImage: m.costPerImage,
           capabilities: m.capabilities,
           specializations: m.specializations,
-        });
+        };
+        const capabilityTier = classifyCapabilityTier(discoveredModel);
+        const architectureTier = inferArchitectureTier(discoveredModel);
+        const taskCategories = inferTaskCategories(discoveredModel);
+        const contextTier = classifyContextTier(m.contextWindow ?? undefined);
+        const deployment = inferDeployment(template.id);
+        const reasoningMode = inferReasoningMode(discoveredModel);
+        const safetyTier = inferSafetyTier(discoveredModel);
+        const agenticLevel = inferAgenticLevel(discoveredModel);
         insert.run(
           crypto.randomUUID(),
           providerId,
           m.modelId,
           m.displayName || m.modelId,
           m.modality || 'llm',
-          'executor', // intelligence_layer (source: cloud by default)
           capabilityTier,
           caps.has('streaming') ? 1 : 0,
           caps.has('vision') ? 1 : 0,
@@ -403,6 +625,13 @@ export async function autoRegisterProviders(): Promise<string[]> {
           m.monthlyTokenBudget ?? null,
           m.intelligenceRank ?? null,
           m.speedRank ?? null,
+          JSON.stringify(taskCategories),
+          contextTier,
+          deployment,
+          reasoningMode,
+          safetyTier,
+          agenticLevel,
+          architectureTier,
         );
       }
 

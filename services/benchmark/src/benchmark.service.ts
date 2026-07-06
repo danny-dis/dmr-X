@@ -735,9 +735,20 @@ export class BenchmarkService {
       }
 
       // Pit against a champion in same tier (use a medium reasoning prompt)
+      // Match on both capability_tier and architecture for fairer matchups
       const champion = db.prepare(
-        'SELECT id FROM model_profiles WHERE capability_tier = ? AND is_active = 1 AND id != ? ORDER BY elo_rating DESC LIMIT 1'
-      ).get(model.capability_tier, modelProfileId) as { id: string } | undefined;
+        'SELECT id FROM model_profiles WHERE capability_tier = ? AND architecture = ? AND is_active = 1 AND id != ? ORDER BY elo_rating DESC LIMIT 1'
+      ).get(model.capability_tier, model.architecture, modelProfileId) as { id: string } | undefined;
+
+      // Fallback: if no same-architecture champion, try same tier only
+      if (!champion) {
+        const fallbackChampion = db.prepare(
+          'SELECT id FROM model_profiles WHERE capability_tier = ? AND is_active = 1 AND id != ? ORDER BY elo_rating DESC LIMIT 1'
+        ).get(model.capability_tier, modelProfileId) as { id: string } | undefined;
+        if (fallbackChampion) {
+          await this.runArenaBattle(modelProfileId, fallbackChampion.id, selected[0]!);
+        }
+      }
 
       if (champion) {
         const battlePrompt = selected[0]!;
@@ -756,16 +767,16 @@ export class BenchmarkService {
       // Pick a random prompt
       const prompt = prompts[Math.floor(Math.random() * prompts.length)]!;
       
-      // Pick two models in the same capability tier
+      // Pick two models in the same capability tier and architecture for fairer matchups
       const tierRow = db.prepare(
-        'SELECT capability_tier FROM model_profiles WHERE is_active = 1 GROUP BY capability_tier HAVING COUNT(*) >= 2 ORDER BY RANDOM() LIMIT 1'
-      ).get() as { capability_tier: string } | undefined;
+        'SELECT capability_tier, architecture FROM model_profiles WHERE is_active = 1 GROUP BY capability_tier, architecture HAVING COUNT(*) >= 2 ORDER BY RANDOM() LIMIT 1'
+      ).get() as { capability_tier: string; architecture: string } | undefined;
 
       if (!tierRow) continue;
 
       const models = db.prepare(
-        'SELECT id FROM model_profiles WHERE capability_tier = ? AND is_active = 1 ORDER BY RANDOM() LIMIT 2'
-      ).all(tierRow.capability_tier) as { id: string }[];
+        'SELECT id FROM model_profiles WHERE capability_tier = ? AND architecture = ? AND is_active = 1 ORDER BY RANDOM() LIMIT 2'
+      ).all(tierRow.capability_tier, tierRow.architecture) as { id: string }[];
 
       if (models.length < 2) continue;
 

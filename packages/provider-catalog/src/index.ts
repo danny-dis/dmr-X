@@ -61,6 +61,43 @@ export interface ModelTemplate {
     tpm?: number;
     tpd?: number;
   };
+
+  // ═══════════════════════════════════════════════════════════
+  // 9-DIMENSION TAXONOMY FIELDS
+  // ═══════════════════════════════════════════════════════════
+
+  /** Dimension 1: How smart/powerful is the model? */
+  capabilityTier?: 'frontier' | 'strong' | 'balanced' | 'fast' | 'economy';
+  
+  /** Dimension 3: What is the model good at? */
+  taskCategories?: string[];
+  
+  /** Dimension 5: How much can the model remember? */
+  contextTier?: 'short' | 'medium' | 'long' | 'ultra' | 'massive';
+  
+  /** Dimension 6: Where does the model run? */
+  deployment?: 'cloud' | 'self_hosted' | 'on_device';
+  
+  /** Dimension 7: Can the model switch thinking styles? */
+  reasoningMode?: 'fixed' | 'adaptive' | 'hybrid';
+  
+  /** Dimension 8: Is the model deliberately limited for safety? */
+  safetyTier?: 'unrestricted' | 'standard' | 'restricted';
+  
+  /** Dimension 9: How much autonomy does the model have? */
+  agenticLevel?: 'chat' | 'tool_use' | 'autonomous';
+  
+  /** Technical: Model architecture type */
+  architecture?: 'dense' | 'moe' | 'ssm' | 'hybrid';
+  
+  /** Technical: Total parameter count (null if unknown) */
+  parameterCount?: number;
+  
+  /** Technical: Active parameters per token (for MoE models) */
+  activeParameters?: number;
+  
+  /** Legal: License type */
+  license?: 'open_weight' | 'open_source' | 'proprietary' | 'api_only';
 }
 
 /**

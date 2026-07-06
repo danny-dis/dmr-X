@@ -47,13 +47,13 @@ const EMPTY: FormState = {
 // Map the dialog's human-friendly tier labels to the backend's
 // capability_tier enum (see CreateModelSchema in admin.routes.ts).
 // `standard` is the common default; `premium` upgrades to brain (top of
-// the routing chain); `economy` falls back to worker (cheapest tier);
-// `experimental` opts into specialist for newer/non-mainline capabilities.
+// the routing chain); `economy` falls back to economy (cheapest tier);
+// `experimental` opts into strong for newer/non-mainline capabilities.
 const TIER_TO_CAPABILITY_TIER: Record<string, string> = {
-  standard: 'executor',
-  premium: 'brain',
-  economy: 'worker',
-  experimental: 'specialist',
+  standard: 'balanced',
+  premium: 'frontier',
+  economy: 'economy',
+  experimental: 'strong',
 };
 
 export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModelDialogProps) {

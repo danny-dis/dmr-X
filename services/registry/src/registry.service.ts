@@ -61,7 +61,14 @@ export class RegistryService {
         mp.monthly_token_budget as "monthlyTokenBudget",
         mp.intelligence_rank as "intelligenceRank",
         mp.speed_rank as "speedRank",
-        mp.subscription_only as "subscriptionOnly"
+        mp.subscription_only as "subscriptionOnly",
+        mp.architecture as "architectureTier",
+        mp.task_categories as "taskCategories",
+        mp.context_tier as "contextTier",
+        mp.deployment as "deployment",
+        mp.reasoning_mode as "reasoningMode",
+        mp.safety_tier as "safetyTier",
+        mp.agentic_level as "agenticLevel"
       FROM model_profiles mp
       JOIN providers p ON p.id = mp.provider_id
       WHERE mp.is_active = 1 AND p.is_healthy = 1
@@ -106,7 +113,7 @@ export class RegistryService {
         modelId: row.modelId,
         modality: row.modality,
         intelligenceLayer: row.intelligenceLayer,
-        capabilityTier: row.capabilityTier || 'executor',
+        capabilityTier: row.capabilityTier || 'balanced',
         capabilities: this.extractCapabilities(row),
         costPerInputToken,
         costPerOutputToken,
@@ -118,6 +125,14 @@ export class RegistryService {
         isHealthy: row.isHealthy === 1 || row.isHealthy === true,
         subscriptionOnly: row.subscriptionOnly === 1 || row.subscriptionOnly === true,
         pricingTier: classification?.pricingTier ?? 'unknown',
+        // 9-Dimension Taxonomy Fields
+        architectureTier: row.architectureTier || undefined,
+        taskCategories: row.taskCategories ? JSON.parse(row.taskCategories) : undefined,
+        contextTier: row.contextTier || undefined,
+        deployment: row.deployment || undefined,
+        reasoningMode: row.reasoningMode || undefined,
+        safetyTier: row.safetyTier || undefined,
+        agenticLevel: row.agenticLevel || undefined,
         freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
           intelligenceRank: row.intelligenceRank ?? 0,
           speedRank: row.speedRank ?? 0,
