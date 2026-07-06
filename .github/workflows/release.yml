@@ -90,7 +90,7 @@ jobs:
           bun build --compile --target=bun-windows-x64 \
             --outfile=dist/dmrx-windows-x64.exe src/main.ts
           mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
-          powershell -NoProfile -Command "Compress-Archive -Path 'dist/dmrx-windows-x64.exe','public' -DestinationPath 'dist/dmrx-windows-x64.zip' -Force"
+          cd dist && zip -r dmrx-windows-x64.zip dmrx-windows-x64.exe public/ && cd ..
 
       - name: Compute checksums
         working-directory: apps/gateway
