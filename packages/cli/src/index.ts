@@ -19,6 +19,7 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { createAddProviderCommand } from './commands/add-provider.js';
+import { createFreeProvidersCommand } from './commands/free-providers.js';
 import { createInitCommand } from './commands/init.js';
 import { createListProvidersCommand } from './commands/list-providers.js';
 import { createSetupCommand } from './commands/setup.js';
@@ -35,11 +36,13 @@ program
 
 // Register commands
 program.addCommand(createInitCommand());
+program.addCommand(createFreeProvidersCommand());
 
 // providers subcommand group
 const providersCmd = new Command('providers').description('Manage AI providers');
 providersCmd.addCommand(createListProvidersCommand());
 providersCmd.addCommand(createAddProviderCommand());
+providersCmd.addCommand(createFreeProvidersCommand());
 program.addCommand(providersCmd);
 
 program.addCommand(createStatusCommand());
@@ -58,6 +61,9 @@ program.addHelpText('after', () => {
     chalk.cyan('      dmrx init --name my-project'),
     '',
     chalk.white('    Manage providers:'),
+    chalk.cyan('      dmrx free                   ') + chalk.gray('# Browse all free providers'),
+    chalk.cyan('      dmrx free --category llm    ') + chalk.gray('# Free LLM providers only'),
+    chalk.cyan('      dmrx free --add groq        ') + chalk.gray('# Quick-add a free provider'),
     chalk.cyan('      dmrx providers list'),
     chalk.cyan('      dmrx providers list --free'),
     chalk.cyan('      dmrx providers list --category llm'),

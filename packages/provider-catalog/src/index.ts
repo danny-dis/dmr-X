@@ -1827,7 +1827,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['llm', 'audio_stt'],
     models: [
-      { id: 'llama-3.1-8b-instant', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 6000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 10 }, sharedPool: { rpm: 30, rpd: 14400, tpm: 70000, tpd: 500000 } },
+      { id: 'llama-3.1-8b-instant', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 6000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 10 } },
       { id: 'llama-3.3-70b-versatile', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
       { id: 'meta-llama/llama-4-scout-17b-16e-instruct', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 30000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'qwen/qwen3-32b', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 60, rpd: 1000, tpm: 6000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 8 } },
@@ -1840,11 +1840,12 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'groq/compound-mini', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 250, tpm: 70000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'whisper-large-v3', modalities: ['audio_stt'], capabilities: ['stt'], specializations: ['audio'], freeTier: { rateLimits: { rpm: 20, rpd: 2000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 0, speedRank: 9 } },
       { id: 'gemma2-9b-it', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 500000 }, monthlyTokenBudget: 15000000, intelligenceRank: 6, speedRank: 9 } },
+      { id: 'allam-2-7b', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 7000, tpm: 6000, tpd: 500000 }, monthlyTokenBudget: 0, intelligenceRank: 5, speedRank: 10 } },
     ],
     streaming: true,
     toolCalling: true,
     envKey: 'GROQ_API_KEY',
-    description: 'Groq. Ultra-fast LPU inference. 30 RPM free, 14.4K RPD on Llama 3.1 8B.',
+    description: 'Groq. Ultra-fast LPU inference. 30 RPM free. Verified rate limits.',
     region: 'us',
     signupUrl: 'https://console.groq.com/',
   },
@@ -1882,13 +1883,15 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'Meta-Llama-3.3-70B-Instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 80, rpd: 1600, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 8 } },
       { id: 'DeepSeek-R1', modalities: ['llm'], contextWindow: 32000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['reasoning', 'streaming'], specializations: ['reasoning'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 200000 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
       { id: 'DeepSeek-V3.1', modalities: ['llm'], contextWindow: 100000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 200000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
-      { id: 'Qwen2.5-72B-Instruct', modalities: ['llm'], contextWindow: 32000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 200000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
       { id: 'Llama-4-Maverick-17B-128E-Instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 200000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'Qwen2.5-72B-Instruct', modalities: ['llm'], contextWindow: 32000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 200000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
+      { id: 'gemma-4-31B-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 20, tpm: 0, tpd: 200000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'DeepSeek-V3.2', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 20, tpm: 0, tpd: 200000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
     ],
     streaming: true,
     toolCalling: true,
     envKey: 'SAMBANOVA_API_KEY',
-    description: 'SambaNova. RDU-accelerated inference. $5 free credit, fast Llama/DeepSeek.',
+    description: 'SambaNova. RDU-accelerated inference. Verified: 80 RPM Llama, 20 RPM others, 200K TPD.',
     region: 'us',
     signupUrl: 'https://cloud.sambanova.ai/',
   },
@@ -2386,26 +2389,6 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   // ═══════════════════════════════════════════════════════════
 
   {
-    id: 'opencode-zen',
-    name: 'OpenCode Zen',
-    category: 'cloud_llm',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'deepseek-v4-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 10, rpd: 500, tpm: 100000, tpd: 5000000 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
-      { id: 'nemotron-nano-12b-vl', modalities: ['llm'], contextWindow: 32768, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'vision'], specializations: ['fast', 'multimodal'], freeTier: { rateLimits: { rpm: 10, rpd: 500, tpm: 100000, tpd: 5000000 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 8 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'OPENCODE_ZEN_API_KEY',
-    description: 'OpenCode Zen free tier. DeepSeek V4 Flash, Nemotron (promo).',
-    region: 'global',
-    signupUrl: 'https://opencode.ai/auth',
-  },
-
-  {
     id: 'agnes',
     name: 'Agnes AI',
     category: 'cloud_llm',
@@ -2545,128 +2528,8 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 
   // ═══════════════════════════════════════════════════════════
-  // ADDITIONAL FREE-TIER PROVIDERS (from OmniRoute catalog)
+  // NEW FREE PROVIDERS (not in main section above)
   // ═══════════════════════════════════════════════════════════
-
-  // [groq moved to primary entry above]
-
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.deepseek.com/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'deepseek-chat', modalities: ['llm'], contextWindow: 65536, inputCostPer1M: 0.14, outputCostPer1M: 0.28, capabilities: ['streaming', 'tool_use', 'json_mode'], specializations: ['general', 'coding'] },
-      { id: 'deepseek-reasoner', modalities: ['llm'], contextWindow: 65536, inputCostPer1M: 0.55, outputCostPer1M: 2.19, capabilities: ['streaming'], specializations: ['reasoning'] },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'DEEPSEEK_API_KEY',
-    description: 'DeepSeek API. Competitive pricing with free tier credits on signup.',
-    region: 'cn',
-    signupUrl: 'https://platform.deepseek.com',
-  },
-
-  {
-    id: 'mistral',
-    name: 'Mistral AI',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.mistral.ai/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm', 'embedding'],
-    models: [
-      { id: 'mistral-small-latest', modalities: ['llm'], contextWindow: 32000, inputCostPer1M: 0.1, outputCostPer1M: 0.3, capabilities: ['streaming', 'tool_use', 'json_mode'], specializations: ['fast', 'cheap'] },
-      { id: 'mistral-large-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 2, outputCostPer1M: 6, capabilities: ['streaming', 'tool_use', 'json_mode'], specializations: ['general'] },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'MISTRAL_API_KEY',
-    description: 'Mistral AI. Le Chat API free tier available.',
-    region: 'eu',
-    signupUrl: 'https://console.mistral.ai',
-  },
-
-  {
-    id: 'cerebras',
-    name: 'Cerebras',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.cerebras.ai/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'llama-3.3-70b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 30000, tpd: 1000000 }, monthlyTokenBudget: 10000000, intelligenceRank: 8, speedRank: 9 } },
-      { id: 'llama-3.1-8b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 1000, tpm: 30000, tpd: 1000000 }, monthlyTokenBudget: 10000000, intelligenceRank: 7, speedRank: 10 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'CEREBRAS_API_KEY',
-    description: 'Cerebras free tier. Wafer-scale inference, ultra-fast. 10M tokens/month free.',
-    region: 'global',
-    signupUrl: 'https://cloud.cerebras.ai',
-  },
-
-  {
-    id: 'sambanova',
-    name: 'SambaNova',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.sambanova.ai/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'Meta-Llama-3.3-70B-Instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 10, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 8 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'SAMBANOVA_API_KEY',
-    description: 'SambaNova free tier. RDU-accelerated inference, no credit card required.',
-    region: 'us',
-    signupUrl: 'https://cloud.sambanova.ai',
-  },
-
-  {
-    id: 'nvidia-nim',
-    name: 'NVIDIA NIM',
-    category: 'cloud_llm',
-    baseUrl: 'https://integrate.api.nvidia.com/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm', 'embedding', 'diffusion'],
-    models: [
-      { id: 'meta/llama-3.3-70b-instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 5, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 8 } },
-      { id: 'nvidia/llama-3.1-nemotron-70b-instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 5, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'NVIDIA_API_KEY',
-    description: 'NVIDIA NIM free tier. GPU-accelerated inference, keyless access for some models.',
-    region: 'global',
-    signupUrl: 'https://build.nvidia.com',
-  },
-
-  {
-    id: 'huggingface',
-    name: 'HuggingFace Inference',
-    category: 'cloud_llm',
-    baseUrl: 'https://api-inference.huggingface.co/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm', 'embedding', 'diffusion'],
-    models: [
-      { id: 'meta-llama/Llama-3.3-70B-Instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 1, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 5 } },
-    ],
-    streaming: true,
-    toolCalling: false,
-    envKey: 'HF_TOKEN',
-    description: 'HuggingFace Inference API free tier. Serverless inference, rate-limited.',
-    region: 'global',
-    signupUrl: 'https://huggingface.co/settings/tokens',
-  },
 
   {
     id: 'deepinfra',
@@ -2688,45 +2551,6 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 
   {
-    id: 'fireworks',
-    name: 'Fireworks AI',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.fireworks.ai/inference/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'accounts/fireworks/models/llama-v3p3-70b-instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.9, outputCostPer1M: 0.9, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'FIREWORKS_API_KEY',
-    description: 'Fireworks AI. Fast inference, signup credits available.',
-    region: 'us',
-    signupUrl: 'https://fireworks.ai',
-  },
-
-  {
-    id: 'llm7',
-    name: 'LLM7',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.llm7.io/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'llama-3.3-70b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 10, rpd: 5000, tpm: 50000, tpd: 150000000 }, monthlyTokenBudget: 150000000, intelligenceRank: 8, speedRank: 7 } },
-      { id: 'deepseek-r1', modalities: ['llm'], contextWindow: 65536, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['reasoning'], freeTier: { rateLimits: { rpm: 10, rpd: 5000, tpm: 50000, tpd: 150000000 }, monthlyTokenBudget: 150000000, intelligenceRank: 9, speedRank: 6 } },
-    ],
-    streaming: true,
-    toolCalling: false,
-    envKey: 'LLM7_API_KEY',
-    description: 'LLM7 free tier. 150M tokens/month free, generous limits.',
-    region: 'global',
-    signupUrl: 'https://llm7.io',
-  },
-
-  {
     id: 'kilo',
     name: 'Kilo Gateway',
     category: 'cloud_llm',
@@ -2735,7 +2559,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['llm'],
     models: [
-      { id: 'auto:free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
+      { id: 'auto:free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 10, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
     ],
     streaming: true,
     toolCalling: true,
@@ -2744,130 +2568,6 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     region: 'global',
     signupUrl: 'https://kilo.ai',
   },
-
-  {
-    id: 'opencode-zen',
-    name: 'OpenCode Zen',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.zen.opencode.ai/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'deepseek-v4-flash', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 20, rpd: 2000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 8 } },
-      { id: 'nemotron-ultra-253b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 10, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'OPENCODE_ZEN_API_KEY',
-    description: 'OpenCode Zen free tier. DeepSeek V4 Flash, Nemotron Ultra.',
-    region: 'global',
-    signupUrl: 'https://zen.opencode.ai',
-  },
-
-  {
-    id: 'reka',
-    name: 'Reka AI',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.reka.ai/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'reka-flash-3', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'vision'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 10, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-      { id: 'reka-edge-2603', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast'], freeTier: { rateLimits: { rpm: 10, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 9 } },
-    ],
-    streaming: true,
-    toolCalling: false,
-    envKey: 'REKA_API_KEY',
-    description: 'Reka AI free tier. Flash and Edge models, fast inference.',
-    region: 'global',
-    signupUrl: 'https://platform.reka.ai',
-  },
-
-  {
-    id: 'zhipu',
-    name: 'Zhipu AI',
-    category: 'cloud_llm',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm', 'diffusion'],
-    models: [
-      { id: 'glm-4-flash', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'vision'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 60, rpd: 10000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-      { id: 'glm-4-flashx', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast'], freeTier: { rateLimits: { rpm: 60, rpd: 10000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'ZHIPU_API_KEY',
-    description: 'Zhipu AI free tier. GLM-4 Flash, generous free limits.',
-    region: 'cn',
-    signupUrl: 'https://open.bigmodel.cn',
-  },
-
-  {
-    id: 'qwen',
-    name: 'Alibaba Qwen',
-    category: 'cloud_llm',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm', 'diffusion'],
-    models: [
-      { id: 'qwen-turbo', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 120, rpd: 10000, tpm: 100000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-      { id: 'qwen-max', modalities: ['llm'], contextWindow: 32000, inputCostPer1M: 0.4, outputCostPer1M: 1.2, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
-      { id: 'qwen-coder-plus', modalities: ['llm'], contextWindow: 131072, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['coding'], freeTier: { rateLimits: { rpm: 120, rpd: 10000, tpm: 100000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'DASHSCOPE_API_KEY',
-    description: 'Alibaba Qwen free tier. Qwen-Turbo and Coder free, generous limits.',
-    region: 'cn',
-    signupUrl: 'https://dashscope.console.aliyun.com',
-  },
-
-  {
-    id: 'tencent',
-    name: 'Tencent Hunyuan',
-    category: 'cloud_llm',
-    baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
-    authMethod: 'bearer',
-    apiFormat: 'openai',
-    modalities: ['llm'],
-    models: [
-      { id: 'hunyuan-turbo-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'vision'], specializations: ['general'], freeTier: { rateLimits: { rpm: 10, rpd: 1000, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
-    ],
-    streaming: true,
-    toolCalling: true,
-    envKey: 'TENCENT_SECRET_ID',
-    description: 'Tencent Hunyuan free tier. Uncapped within rate limits.',
-    region: 'cn',
-    signupUrl: 'https://console.cloud.tencent.com/hunyuan',
-  },
-
-  {
-    id: 'baidu',
-    name: 'Baidu ERNIE',
-    category: 'cloud_llm',
-    baseUrl: 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop',
-    authMethod: 'bearer',
-    apiFormat: 'custom',
-    modalities: ['llm'],
-    models: [
-      { id: 'ernie-speed-128k', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
-      { id: 'ernie-speed-8k', modalities: ['llm'], contextWindow: 8192, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-    ],
-    streaming: true,
-    toolCalling: false,
-    envKey: 'BAIDU_API_KEY',
-    description: 'Baidu ERNIE free tier. Speed models free within rate limits.',
-    region: 'cn',
-    signupUrl: 'https://console.bce.baidu.com/qianfan/ais/console/onlineService',
-  },
-
-  // ═══════════════════════════════════════════════════════════
-  // ADDITIONAL TRIAL-CREDIT PROVIDERS
-  // ═══════════════════════════════════════════════════════════
 
   {
     id: 'scaleway',
@@ -2889,7 +2589,6 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'devstral-2-123b-instruct-2512', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['coding'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 8, speedRank: 7 } },
       { id: 'holo2-30b-a3b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } },
       { id: 'mistral-small-3.2-24b-instruct-2506', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } },
-      // Embeddings
       { id: 'bge-multilingual-gemma2', modalities: ['embedding'], capabilities: ['embedding', 'multilingual'], specializations: ['embedding'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 7 } },
       { id: 'qwen3-embedding-8b', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 8, speedRank: 7 } },
     ],
@@ -2962,10 +2661,6 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     region: 'us',
     signupUrl: 'https://app.hyperbolic.ai/',
   },
-
-  // ═══════════════════════════════════════════════════════════
-  // ADDITIONAL FREE PROVIDERS
-  // ═══════════════════════════════════════════════════════════
 
   {
     id: 'aion-labs',

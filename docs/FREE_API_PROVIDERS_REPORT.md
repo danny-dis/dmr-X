@@ -1,7 +1,8 @@
 # Free AI API Access — Comprehensive Report
 
-**Date:** May 21, 2026
+**Date:** July 5, 2026 (updated)
 **Purpose:** Research all providers, labs, and aggregators offering free AI API access with detailed limits for DMR-X integration
+**Status:** 56 providers · 187 free models · Verified rate limits
 
 ---
 
@@ -122,11 +123,19 @@
 
 - **URL:** https://console.groq.com
 - **Cost:** Permanent free tier, no credit card
-- **Models:** Llama 3.3 70B, Llama 3.1 8B/70B, Mixtral 8x7B, Gemma 2 9B, Whisper (STT)
-- **Rate Limits:**
-  - **30 RPM, 14,400 RPD**
-  - ~5,000-15,000 TPM (varies by model)
-  - ~500,000 TPD
+- **Models (verified July 2026):**
+  - `llama-3.1-8b-instant` — 30 RPM, 14,400 RPD, 6K TPM, 500K TPD
+  - `llama-3.3-70b-versatile` — 30 RPM, 1,000 RPD, 12K TPM, 100K TPD
+  - `llama-4-scout-17b-16e-instruct` — 30 RPM, 1,000 RPD, 30K TPM, 500K TPD
+  - `qwen/qwen3-32b` — 60 RPM, 1,000 RPD, 6K TPM, 500K TPD
+  - `openai/gpt-oss-120b` — 30 RPM, 1,000 RPD, 8K TPM, 200K TPD
+  - `openai/gpt-oss-20b` — 30 RPM, 1,000 RPD, 8K TPM, 200K TPD
+  - `moonshotai/kimi-k2-instruct` — 60 RPM, 1,000 RPD, 10K TPM, 300K TPD
+  - `groq/compound` — 30 RPM, 250 RPD, 70K TPM
+  - `groq/compound-mini` — 30 RPM, 250 RPD, 70K TPM
+  - `gemma2-9b-it` — 30 RPM, 14,400 RPD, 15K TPM, 500K TPD, 15M monthly budget
+  - `allam-2-7b` — 30 RPM, 7,000 RPD, 6K TPM, 500K TPD
+  - `whisper-large-v3` — 20 RPM, 2,000 RPD (STT)
 - **Speed:** 500+ tokens/sec on Llama 70B (custom LPU hardware)
 - **Restrictions:** Development/evaluation only, no SLA
 - **Access:** Sign up → API key
@@ -153,11 +162,17 @@
 ### SambaNova
 
 - **URL:** https://sambanova.ai
-- **Cost:** Free tier + $1 credit on signup
-- **Models:** Llama 3.1 8B/70B/405B, DeepSeek V3/R1, Qwen
-- **Rate Limits:** ~100 RPM, generous token limits
+- **Cost:** Free tier, no credit card
+- **Models (verified July 2026):**
+  - `Meta-Llama-3.3-70B-Instruct` — 80 RPM, 1,600 RPD
+  - `DeepSeek-R1` — 20 RPM, 200 RPD, 200K TPD
+  - `DeepSeek-V3.1` — 20 RPM, 200 RPD, 200K TPD
+  - `DeepSeek-V3.2` — 20 RPM, 200 RPD, 200K TPD
+  - `Llama-4-Maverick-17B-128E-Instruct` — 20 RPM, 200 RPD, 200K TPD
+  - `Qwen2.5-72B-Instruct` — 20 RPM, 200 RPD, 200K TPD
+  - `gemma-4-31B-it` — 20 RPM, 20 RPD, 200K TPD
 - **Speed:** Fast 405B inference (RDU hardware)
-- **Restrictions:** Smaller ecosystem, model selection rotates
+- **Restrictions:** 200K TPD binding constraint for bulk usage
 - **Access:** Sign up → API key
 
 ### Hugging Face Inference API
@@ -367,36 +382,51 @@ These cost nothing — you supply hardware and electricity.
 
 | Provider | Free Mechanism | Best Models | Rate Limits | Credit Card? |
 |----------|---------------|-------------|-------------|--------------|
-| **Google AI Studio** | Unlimited free w/ limits | Gemini 2.0 Flash, 1.5 Pro | 15 RPM, 1M TPM, 1500 RPD | No |
-| **OpenRouter** | 29 $0 models | DeepSeek V4 Flash, Qwen3 Coder 480B, Llama 3.3 70B | ~20 RPM, ~200 RPD | No |
-| **Groq** | Free tier | Llama 3.3 70B, Mixtral 8x7B | 30 RPM, 14K RPD | No |
-| **Cloudflare** | 10K neurons/day | Llama 3.1 70B, Mistral 7B | 100 RPM | No |
-| **Cerebras** | Free tier | Llama 3.1/3.3 70B | ~30 RPM | No |
-| **SambaNova** | Free tier | Llama 3.1 405B, DeepSeek | ~100 RPM | No |
-| **HuggingFace** | Rate-limited | 200+ models (cold start) | ~10 RPM | No |
-| **Cohere** | Trial key | command-r, embed-v3, rerank-v3 | 100 calls/min | No |
-| **Jina AI** | 1M tok/month | embeddings-v3, reranker-v2 | ~200 RPM | No |
-| **Qwen/DashScope** | Daily quotas | qwen-max, qwen-coder, qwen-vl | ~1M tok/day turbo | No |
-| **Mistral** | Free tier (small models) | Mistral NeMo, 7B | ~2-5 RPM | No |
-| **xAI/Grok** | ~$25/month credits | grok-3, grok-3-mini | ~5-10 RPM | No |
-| **ElevenLabs** | Free Starter | eleven_multilingual_v2 | ~5 RPM, 10K chars/mo | No |
-| **Deepgram** | $200 credits | nova-2 (STT) | ~100 streams | No |
-| **Modal** | $30/month credits | Any (self-host) | N/A | No |
-| **GitHub Models** | Free for GH users | GPT-4o, Llama, Mistral | Rate-limited | No |
+| **Google AI Studio** | Unlimited free w/ limits | Gemini 3.5 Flash, 2.5 Pro | 5-30 RPM, 250K TPM | No |
+| **OpenRouter Free** | 21+ $0 models | DeepSeek V4 Flash, Qwen3 Coder, Nemotron Ultra | 20 RPM, 200 RPD | No |
+| **Groq** | Free tier (verified) | Llama 3.3 70B, GPT-OSS 120B, Kimi K2 | 30 RPM, 14.4K RPD (8B) | No |
+| **Cloudflare** | 10K neurons/day | Llama 3.3 70B, Kimi K2.6, GPT-OSS 120B | Unlimited RPM | No |
+| **Cerebras** | Free tier | Llama 3.1/3.3 70B, GPT-OSS 120B | 30 RPM, 1M TPD | No |
+| **SambaNova** | Free tier (verified) | Llama 3.3 70B, DeepSeek R1/V3, Gemma 4 | 80 RPM (Llama), 20 RPM others | No |
+| **GitHub Models** | Free for GH users | GPT-5, GPT-4.1, o3, DeepSeek R1 | 15 RPM, 150 RPD | No |
+| **NVIDIA NIM** | Free tier | Llama 3.1/4, DeepSeek R1, Nemotron Ultra | 5-40 RPM | No |
+| **SiliconFlow** | Free tier | DeepSeek V4, Qwen3, GLM, Kimi | 1000 RPM, 50K TPM | No |
+| **Cohere** | Trial key | command-r, embed-v3, rerank-v3 | 20 RPM | No |
+| **HuggingFace** | Rate-limited | 200+ models (cold start) | 10 RPM | No |
+| **Jina AI** | 1M tok/month | embeddings-v3, reranker-v2 | 200 RPM | No |
+| **Qwen/DashScope** | Daily quotas | qwen-turbo, qwen-coder-plus | 120 RPM, 1M tok/day | No |
+| **Mistral** | Free tier | mistral-small-4, mistral-medium-3.5 | 60 RPM, 500K TPM | No |
+| **Zhipu** | Free tier | GLM-4.5 Flash, GLM-4.7 Flash | 60 RPM, 10K RPD | No |
+| **Scaleway** | 1M tokens/model | Qwen3 235B, GLM 5.2, Devstral 2 | 1M tokens/model | No |
+| **OVHcloud** | Anonymous access | Qwen3.5 397B, Llama 3.3 70B, Mistral | 2 RPM | No |
+| **LLM7** | 150M tok/month | Llama 3.3 70B, DeepSeek R1 | 10 RPM, 5K RPD | No |
+| **Ollama Cloud** | Free tier | GPT-OSS 120B, Kimi K2.6, DeepSeek V4 | 10 RPM | No |
+| **Kilo Gateway** | Free tier | auto:free routing | 10 RPM | No |
+| **OpenCode Zen** | Free tier | DeepSeek V4 Flash, Nemotron Ultra | 10-20 RPM | No |
+| **Pollinations** | No key needed | openai-fast, Mistral Large | 30 RPM, 1K RPD | No |
+| **DeepInfra** | Free tier | Llama 3.3 70B | 5 RPM, 500 RPD | No |
+| **Featherless** | Free tier | Llama 3.1 405B/70B, DeepSeek V3 | 10 RPM, 500 RPD | No |
+| **Kluster AI** | Free tier | DeepSeek R1, Llama 4, Gemma 3 | Unlimited | No |
+| **Aion Labs** | Free tier | aion-2.5, aion-2.0 | 15 RPM, 20K TPD | No |
 
-### One-Time Credit Providers
+### Trial Credit Providers
 
 | Provider | Free Credits | Expiry | Best For |
 |----------|-------------|--------|----------|
-| OpenAI | ~$5 | 3 months | GPT-4o-mini |
-| Together AI | $1-$5 | 30 days | Open models |
-| Fireworks AI | $1 | ~30 days | Fast inference |
-| Deepinfra | $0.50-$1 | ~30 days | Cheapest open models |
-| Stability AI | 25 credits | Expires | Image generation |
-| Voyage AI | 50M tokens | One-time | Best embeddings |
-| Perplexity | $5 | Varies | Search-augmented AI |
-| Azure | $200 | 30 days | GPT via Azure |
-| AWS Bedrock | Limited | 2 months | Titan, Claude |
+| **Modal** | $30/month | Monthly recurring | Self-host any model on GPU |
+| **Baseten** | $30 | One-time | Model deployment |
+| **Deepgram** | $200 | One-time | STT (~775 hours) |
+| **xAI/Grok** | ~$25/month | Monthly | Grok models |
+| **ElevenLabs** | 10K chars/month | Monthly | TTS |
+| **AI21 Labs** | $10 | One-time | Jamba models |
+| **Perplexity** | $5 | One-time | Search-augmented AI |
+| **OpenAI** | ~$5 | 3 months | GPT-4o-mini |
+| **Together AI** | $1-$5 | 30 days | Open models |
+| **Fireworks AI** | $1 | ~30 days | Fast inference |
+| **Nebius** | $1 | One-time | Open models |
+| **Hyperbolic** | $1 | One-time | DeepSeek, Llama |
+| **Stability AI** | 25 credits | Expires | Image generation |
+| **Voyage AI** | 50M tokens | One-time | Best embeddings |
 
 ---
 
@@ -404,38 +434,52 @@ These cost nothing — you supply hardware and electricity.
 
 ### Tier 1 — Must Integrate (Permanent Free, High Value)
 
-1. **Google Gemini** — Best overall free tier (1M TPM, no card)
-2. **OpenRouter** — 29 free models, single API key, includes heavy hitters
-3. **Groq** — Fastest free inference (500+ tok/sec), reliable
-4. **Cerebras** — Ultra-fast (2000+ tok/sec), good backup
-5. **SambaNova** — Fast 405B inference, generous limits
-6. **Cohere** — Best free embeddings + reranking
-7. **Jina AI** — Recurring 1M tok/month for embeddings
-8. **Deepgram** — $200 = 775 hours free STT
+1. **Google Gemini** — Best overall free tier (250K TPM, no card)
+2. **OpenRouter Free** — 21+ free models, single API key
+3. **Groq** — Fastest free inference (500+ tok/sec), verified limits
+4. **GitHub Models** — GPT-5, o3, DeepSeek R1 free
+5. **Cerebras** — Ultra-fast (2000+ tok/sec), 1M TPD
+6. **SambaNova** — Fast inference, verified 80 RPM Llama
+7. **SiliconFlow** — 1000 RPM, 6 free models
+8. **Cohere** — Best free embeddings + reranking
 
 ### Tier 2 — Should Integrate (Good Free Value)
 
 9. **Cloudflare Workers AI** — Edge inference, 10K neurons/day
-10. **HuggingFace** — 200+ models, good fallback
-11. **Qwen/DashScope** — Generous daily quotas
-12. **Modal** — $30/month for self-hosting any model
-13. **GitHub Models** — Free prototyping access
-14. **xAI/Grok** — ~$25/month credits
+10. **NVIDIA NIM** — Llama 4, DeepSeek R1, Nemotron Ultra
+11. **HuggingFace** — 200+ models, good fallback
+12. **Qwen/DashScope** — 120 RPM, generous daily quotas
+13. **Scaleway** — 1M tokens/model, EU-hosted
+14. **LLM7** — 150M tokens/month
+15. **Ollama Cloud** — Large open-source models
+16. **Modal** — $30/month for self-hosting any model
 
 ### Tier 3 — Nice to Have (Limited/One-Time)
 
-15. **ElevenLabs** — Free TTS (10K chars/mo)
-16. **Mistral** — Free small models
-17. **Perplexity** — Search-augmented, $5 free
-18. **Voyage AI** — 50M tokens one-time (best embeddings)
-19. **Stability AI** — 25 free images
+17. **Deepgram** — $200 = 775 hours free STT
+18. **ElevenLabs** — Free TTS (10K chars/mo)
+19. **Mistral** — Free small models (60 RPM)
+20. **Zhipu** — GLM-4 Flash, generous limits
+21. **OVHcloud** — Anonymous access, no signup
+22. **Perplexity** — Search-augmented, $5 free
+23. **Voyage AI** — 50M tokens one-time (best embeddings)
+24. **Stability AI** — 25 free images
+
+### Community/Grey-Area (Use as Fallback)
+
+25. **Pollinations** — No key needed, 30 RPM
+26. **Kilo Gateway** — Auto-routing free models
+27. **OpenCode Zen** — Curated free models
+28. **Kluster AI** — Unlimited free inference
+29. **AI Horde** — Community-powered, no key
 
 ### Self-Hosted Stack (Zero Cost)
 
 - **Ollama** for local development
 - **vLLM** for production self-hosting
 - **llama.cpp** for CPU/edge deployment
+- **Modal** for GPU compute ($30/month free)
 
 ---
 
-*Report compiled from 4 parallel research agents. Provider policies and rate limits change frequently — verify current limits at each provider's docs before implementing.*
+*Report updated July 5, 2026. Verified rate limits from official documentation. 56 providers, 187 free models. Use `dmrx free` to browse all providers interactively.*
