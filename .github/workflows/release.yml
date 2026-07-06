@@ -185,9 +185,13 @@ jobs:
       # Sign the images with cosign keyless (uses OIDC token from GHA)
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
       - name: Sign node image
+        env:
+          COSIGN_YES: 'true'
         run: |
-          cosign sign --yes ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+          cosign sign ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
 
       - name: Generate SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
