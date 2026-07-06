@@ -1,15 +1,11 @@
 import {
-  FlaskConical,
-  Workflow,
-  Activity,
-  Boxes,
-  Database,
-  Users,
-  Wallet,
+  Bot,
   Cpu,
-  Settings,
   Layers,
+  ShoppingBag,
   Terminal,
+  TrendingUp,
+  Wallet,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 
@@ -41,7 +37,7 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         label: 'Playground',
         path: '/playground',
-        icon: FlaskConical,
+        icon: SidebarIcons.PlaygroundIcon,
         description: 'Test models & routing',
       },
     ],
@@ -52,13 +48,13 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         label: 'Requests',
         path: '/requests',
-        icon: Workflow,
+        icon: SidebarIcons.RequestsIcon,
         description: 'Live request stream',
       },
       {
         label: 'Routing',
         path: '/routing',
-        icon: Activity,
+        icon: SidebarIcons.RoutingIcon,
         description: 'Decisions & strategies',
       },
       {
@@ -66,6 +62,23 @@ export const NAV_GROUPS: NavGroup[] = [
         path: '/fusion',
         icon: Layers,
         description: 'Multi-model diversity',
+      },
+      {
+        label: 'Policies',
+        path: '/policies',
+        icon: SidebarIcons.PoliciesIcon,
+        description: 'Routing policies & rules',
+      },
+    ],
+  },
+  {
+    label: 'Monitor',
+    items: [
+      {
+        label: 'Observability',
+        path: '/observability',
+        icon: SidebarIcons.ObservabilityIcon,
+        description: 'Metrics & telemetry',
       },
     ],
   },
@@ -75,20 +88,26 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         label: 'Providers',
         path: '/providers',
-        icon: Boxes,
+        icon: SidebarIcons.ProvidersIcon,
         description: 'AI provider catalog',
       },
       {
         label: 'Models',
         path: '/models',
-        icon: Database,
+        icon: SidebarIcons.ModelsIcon,
         description: 'Model registry',
       },
       {
         label: 'Tenants',
         path: '/tenants',
-        icon: Users,
+        icon: SidebarIcons.TenantsIcon,
         description: 'Tenants & API keys',
+      },
+      {
+        label: 'Free Tier',
+        path: '/free-tier',
+        icon: SidebarIcons.FreeTierIcon,
+        description: 'Free provider budget & routing',
       },
     ],
   },
@@ -96,10 +115,28 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'Agents',
     items: [
       {
-        label: 'Agent Integrations',
+        label: 'Agents',
+        path: '/agents',
+        icon: Bot,
+        description: 'Agent definitions & instances',
+      },
+      {
+        label: 'Integrations',
         path: '/integrations',
         icon: Terminal,
         description: 'Claude Code, Codex & Antigravity',
+      },
+      {
+        label: 'Marketplace',
+        path: '/marketplace',
+        icon: ShoppingBag,
+        description: 'Community agent marketplace',
+      },
+      {
+        label: 'Analytics',
+        path: '/agent-analytics',
+        icon: TrendingUp,
+        description: 'Agent performance metrics',
       },
     ],
   },
@@ -110,7 +147,13 @@ export const NAV_GROUPS: NavGroup[] = [
         label: 'Billing',
         path: '/billing',
         icon: Wallet,
-        description: 'Costs, credits & quotas',
+        description: 'Usage, credits & quotas',
+      },
+      {
+        label: 'Cost Dashboard',
+        path: '/cost',
+        icon: SidebarIcons.UsageIcon,
+        description: 'Real-time cost tracking',
       },
     ],
   },
@@ -121,7 +164,7 @@ export const NAV_GROUPS: NavGroup[] = [
         label: 'Infrastructure',
         path: '/infrastructure',
         icon: Cpu,
-        description: 'MCP, tools & workers',
+        description: 'MCP, tools, workers & sandbox',
       },
     ],
   },
@@ -131,7 +174,7 @@ export const NAV_GROUPS: NavGroup[] = [
       {
         label: 'Settings',
         path: '/settings',
-        icon: Settings,
+        icon: SidebarIcons.SettingsIcon,
         description: 'Configuration & API',
       },
     ],

@@ -1,3 +1,4 @@
+// ── Primary (routed) pages ──
 export { DashboardPage } from './Dashboard';
 export { PlaygroundPage } from './Playground';
 export { RequestsPage } from './Requests';
@@ -14,3 +15,26 @@ export { NotFoundPage } from './NotFound';
 export { AgentsPage } from './Agents';
 export { MarketplacePage } from './Marketplace';
 export { AgentAnalyticsPage } from './AgentAnalytics';
+export { AgentIntegrationsPage } from './AgentIntegrations';
+
+// ── Sub-pages / tab content ──
+export { UsagePage } from './Usage';
+export { CreditsPage } from './Credits';
+export { QuotaPage } from './Quota';
+export { BenchmarksPage } from './Benchmarks';
+export { MemoryPage } from './Memory';
+export { MCPPage } from './MCP';
+export { ToolsPage } from './Tools';
+export { WorkersPage } from './Workers';
+export { FederationPage } from './Federation';
+export { SandboxPage } from './Sandbox';
+export { SettingsPage } from './Settings';
+export { CompressionPage } from './Compression';
+export { ConnectPage } from './Connect';
+export { ClaudeCodePage } from './ClaudeCode';
+export { CodexPage } from './Codex';
+export { AntigravityPage } from './Antigravity';
+export { FreeTierPage } from './FreeTier';
+export { FreeTierDashboardPage } from './FreeTierDashboard';
+export { CostDashboardPage } from './CostDashboard';
+export { ObservabilityPage } from './Observability';
