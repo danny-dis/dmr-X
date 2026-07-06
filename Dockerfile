@@ -32,6 +32,7 @@ COPY package.json turbo.json bun.lock ./
 COPY packages/ packages/
 COPY services/ services/
 COPY apps/ apps/
+COPY scripts/ scripts/
 COPY tsconfig.json ./
 
 # Install all dependencies (frozen lockfile for reproducible builds)
