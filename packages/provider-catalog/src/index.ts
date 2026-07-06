@@ -54,6 +54,13 @@ export interface ModelTemplate {
   subscriptionOnly?: boolean;
   /** Unified pricing classification for routing decisions */
   pricingTier?: PricingTier;
+  /** Shared provider-wide rate limit pool (across all models) */
+  sharedPool?: {
+    rpm?: number;
+    rpd?: number;
+    tpm?: number;
+    tpd?: number;
+  };
 }
 
 /**

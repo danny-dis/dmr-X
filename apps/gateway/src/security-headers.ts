@@ -10,6 +10,9 @@ export function registerSecurity(server: FastifyInstance): void {
     reply.header('X-XSS-Protection', '1; mode=block');
     reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    // NOTE: 'unsafe-inline' in script-src is required for OAuth callback pages
+    // (admin.routes.ts) that use inline scripts to close popup windows.
+    // A future improvement would be to use nonce-based CSP with per-request nonces.
     reply.header(
       'Content-Security-Policy',
       "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: *; connect-src 'self'"

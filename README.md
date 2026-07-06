@@ -192,6 +192,26 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 | `POST` | `/v1/tools/execute` | Single tool execution |
 | `POST` | `/v1/tools/loop` | Multi-turn tool loop |
 | `POST` | `/v1/agentic/chat` | Agentic chat with approval gates |
+| `POST/GET/DELETE` | `/v1/conversations` | Conversation history management |
+| `POST` | `/v1/agents` | Agent execution |
+| `POST` | `/v1/agent-chat` | Agent chat with streaming |
+| `POST` | `/v1/prompts` | Prompt template management |
+
+### Utilities
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/compression` | Prompt compression |
+| `POST` | `/v1/route` | Route decision preview |
+| `POST` | `/v1/validate` | Request validation |
+| `POST` | `/v1/count-tokens` | Token counting |
+
+### Integrations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/godmode/*` | G0DM0D3 integration (ULTRAPLINIAN, CONSORTIUM, etc.) |
+| `POST` | `/cloudcode/*` | Cloud Code protocol (Antigravity/agy) |
 
 ### Admin
 

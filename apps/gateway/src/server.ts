@@ -252,7 +252,8 @@ export async function createServer() {
           ).join('\n'),
           tokens: 0
         };
-      } catch {
+      } catch (err) {
+        logger.warn({ err }, 'Summarization adapter failed, using fallback');
         return {
           content: input.messages.map(m =>
             typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
@@ -601,11 +602,11 @@ void (async () => {
     logger.info('MANAGED MODE: Admin routes and UI are disabled.');
   }
 
-  // Validate admin API key strength in production
+  // Validate admin API key strength in production (must be at least 32 characters)
   if (!LOCAL_MODE) {
     const adminKey = process.env.DMRX_ADMIN_API_KEY;
-    if (!adminKey || adminKey === 'replace-with-admin-key' || adminKey.length < 16) {
-      logger.warn('DMRX_ADMIN_API_KEY is weak or unset. Set a strong key for production.');
+    if (!adminKey || adminKey === 'replace-with-admin-key' || adminKey.length < 32) {
+      logger.warn('DMRX_ADMIN_API_KEY is weak or unset. Set a strong key (>= 32 characters) for production.');
     }
   }
 
@@ -848,7 +849,7 @@ void (async () => {
         logger.warn({ err }, 'Failed to activate models during background init');
       }
 
-      // 5) Refresh the candidate set so any newly-registered providers
+      // 6) Refresh the candidate set so any newly-registered providers
       //    or model profiles become routable.
       try {
         const candidates = registryService.getCandidates();

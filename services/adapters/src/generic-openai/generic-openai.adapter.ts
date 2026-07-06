@@ -59,7 +59,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
     // Allow configurable health check timeout (for cold-start providers)
     if (this.config.healthCheckTimeoutMs != null) {
-      this.healthCheckTimeoutMs = this.config.healthCheckTimeoutMs;
+      this.healthCheckTimeoutMs = Number(this.config.healthCheckTimeoutMs);
     }
 
     // Some free providers (e.g., Pollinations) don't need an API key

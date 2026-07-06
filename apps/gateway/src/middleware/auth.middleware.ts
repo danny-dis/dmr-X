@@ -163,11 +163,15 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       }
       const keyBuf = Buffer.from(apiKey);
       const adminBuf = Buffer.from(adminApiKey);
-      // Compare lengths first (leaks length timing, but admin key length is
-      // fixed per deployment and not secret), then use timing-safe comparison
-      // on the actual values. The previous zero-padding scheme allowed
-      // null-byte appended keys to match.
-      if (keyBuf.length !== adminBuf.length || !timingSafeEqual(keyBuf, adminBuf)) {
+      // Pad both buffers to a fixed length to prevent timing attacks that
+      // could leak the admin key length. The previous implementation compared
+      // lengths first, which leaks timing information about the key size.
+      const FIXED_KEY_LENGTH = 256;
+      const keyPadded = Buffer.alloc(FIXED_KEY_LENGTH, 0);
+      const adminPadded = Buffer.alloc(FIXED_KEY_LENGTH, 0);
+      keyBuf.copy(keyPadded);
+      adminBuf.copy(adminPadded);
+      if (!timingSafeEqual(keyPadded, adminPadded)) {
         (server as any).recordTelemetryEvent?.({
           level: 'warning',
           service: 'gateway',

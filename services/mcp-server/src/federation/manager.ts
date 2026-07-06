@@ -224,10 +224,10 @@ export class FederationManager {
     try {
       // Dynamic import for mDNS (optional dependency)
       // Note: mdns package needs to be installed separately if mDNS discovery is needed
-      // Use Function constructor to avoid TypeScript type checking for optional dependency
       let mdns: any;
       try {
-        mdns = await new Function('return import("mdns")')();
+        // @ts-ignore - mdns is an optional peer dependency
+        mdns = await import('mdns');
       } catch {
         logger.warn('mDNS module not available, falling back to static discovery');
         this.config.discoveryMethod = 'static';
