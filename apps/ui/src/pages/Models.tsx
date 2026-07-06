@@ -12,20 +12,11 @@ import { Input } from '@/components/primitives/Input';
 import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData, useUrlState, useUrlNullableState } from '@/hooks';
+import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
 import { ModalityBadge } from '@/icons/Modality';
 import { Admin } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
 import type { ApiModel, ApiProvider } from '@/types/api';
-
-const CAPABILITY_TIER_LABELS: Record<string, string> = {
-  orchestrator: 'Orchestrator',
-  brain: 'Brain',
-  thinker: 'Thinker',
-  executor: 'Executor',
-  specialist: 'Specialist',
-  worker: 'Worker',
-  temp_worker: 'Temp Worker',
-};
 
 const PRICING_TIER_CONFIG: Record<string, { label: string; tone: 'success' | 'info' | 'warning' | 'danger' | 'muted' }> = {
   free: { label: 'Free', tone: 'success' },
@@ -35,12 +26,19 @@ const PRICING_TIER_CONFIG: Record<string, { label: string; tone: 'success' | 'in
   unknown: { label: '?', tone: 'muted' },
 };
 
+const INTELLIGENCE_LAYER_DESCRIPTIONS: Record<string, string> = {
+  brain: 'Best reasoning — handles complex, multi-step tasks',
+  thinker: 'Specialized thinking — coding, math, planning',
+  executor: 'General purpose — balanced quality and cost',
+  worker: 'Fast & cheap — simple, quick tasks',
+  temp_worker: 'One-time gig work — local/free tier models',
+};
+
 export function ModelsPage() {
   const [query, setQuery] = useUrlState('q', '');
   const [modality, setModality] = useUrlNullableState('modality');
   const [providerFilter, setProviderFilter] = useUrlNullableState('provider');
   const [layerFilter, setLayerFilter] = useUrlNullableState('layer');
-  const [capabilityFilter, setCapabilityFilter] = useUrlNullableState('tier');
   const [pricingTierFilter, setPricingTierFilter] = useUrlNullableState('pricing');
   const [showUnavailable, setShowUnavailable] = useUrlState('unavailable', 'false');
   const [page, setPage] = React.useState(1);
@@ -66,14 +64,12 @@ export function ModelsPage() {
     if (modality && m.modality !== modality) return false;
     if (providerFilter && m.provider_id !== providerFilter) return false;
     if (layerFilter && m.intelligence_layer !== layerFilter) return false;
-    if (capabilityFilter && m.capability_tier !== capabilityFilter) return false;
     if (pricingTierFilter && (m as any).pricing_tier !== pricingTierFilter) return false;
     return true;
   });
 
   const modalities = Array.from(new Set((models.data ?? []).map((m) => m.modality).filter(Boolean)));
   const intelligenceLayers = Array.from(new Set((models.data ?? []).map((m) => m.intelligence_layer).filter(Boolean)));
-  const capabilityTiers = ['orchestrator', 'brain', 'thinker', 'executor', 'specialist', 'worker', 'temp_worker'];
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   const availableCount = (models.data ?? []).filter(m => providerKeyStatus.get(m.provider_id) !== false).length;
@@ -176,24 +172,26 @@ export function ModelsPage() {
           </div>
           <div className="flex items-center gap-1 ml-2 pl-2 border-l border-border">
             <button
-              onClick={() => setCapabilityFilter(null)}
+              onClick={() => setLayerFilter(null)}
               className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
-                !capabilityFilter ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
+                !layerFilter ? 'bg-primary/10 text-primary' : 'text-fg-muted hover:bg-surface-2'
               }`}
             >
-              all tiers
+              all layers
             </button>
-            {capabilityTiers.map((tier) => (
+            {intelligenceLayers.map((layer) => (
               <button
-                key={tier}
-                onClick={() => setCapabilityFilter(tier === capabilityFilter ? null : tier)}
-                className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
-                  capabilityFilter === tier
+                key={layer}
+                onClick={() => setLayerFilter(layer === layerFilter ? null : layer)}
+                className={`h-7 px-2.5 rounded-md text-[11px] font-medium flex items-center gap-1 ${
+                  layerFilter === layer
                     ? 'bg-primary/10 text-primary border border-primary/20'
                     : 'text-fg-muted hover:bg-surface-2 border border-transparent'
                 }`}
+                title={INTELLIGENCE_LAYER_DESCRIPTIONS[layer] ?? layer}
               >
-                {CAPABILITY_TIER_LABELS[tier] ?? tier}
+                <IntelligenceBadge layer={layer as 'brain' | 'thinker' | 'executor' | 'worker' | 'temp_worker'} size={12} showLabel={false} />
+                {layer.replace('_', ' ')}
               </button>
             ))}
           </div>
@@ -260,6 +258,11 @@ export function ModelsPage() {
                       {m.provider ?? 'unknown'}
                     </Badge>
                     {m.modality && <ModalityBadge modality={m.modality} size={14} />}
+                    {m.intelligence_layer && (
+                      <span title={INTELLIGENCE_LAYER_DESCRIPTIONS[m.intelligence_layer] ?? m.intelligence_layer}>
+                        <IntelligenceBadge layer={m.intelligence_layer as 'brain' | 'thinker' | 'executor' | 'worker' | 'temp_worker'} size={14} showLabel={false} />
+                      </span>
+                    )}
                     {(() => {
                       const tier = (m as any).pricing_tier;
                       if (tier && tier !== 'unknown') {
@@ -269,7 +272,17 @@ export function ModelsPage() {
                       return null;
                     })()}
                   </div>
-                <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
+                <div className="grid grid-cols-4 gap-2 text-[10px] text-fg-muted">
+                  <div>
+                    <div className="text-fg-subtle">Layer</div>
+                    <div className="text-fg flex items-center gap-1">
+                      {m.intelligence_layer ? (
+                        <span title={INTELLIGENCE_LAYER_DESCRIPTIONS[m.intelligence_layer] ?? m.intelligence_layer}>
+                          {m.intelligence_layer.replace('_', ' ')}
+                        </span>
+                      ) : '—'}
+                    </div>
+                  </div>
                   <div>
                     <div className="text-fg-subtle">Context</div>
                     <div className="text-fg tabular-nums">{formatNumber(m.context_window ?? 0, true)}</div>

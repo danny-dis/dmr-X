@@ -567,6 +567,8 @@ const RunArenaBattleSchema = z.object({
   modelA: z.string().uuid(),
   modelB: z.string().uuid(),
   prompt: z.string().min(1).max(100_000).optional(),
+  category: z.enum(['reasoning', 'instruction', 'creative', 'coding', 'knowledge', 'multilingual', 'multi-turn', 'safety']).optional(),
+  difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
 });
 
 /** POST /admin/playground/feedback */
@@ -4891,13 +4893,24 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const db = getDb();
     const rows = db.prepare(`
       SELECT mp.id, mp.model_id, mp.display_name, p.name as provider_name, 
-             mp.elo_rating, mp.quality_score, mp.avg_latency_ms, mp.capability_tier
+             mp.elo_rating, mp.quality_score, mp.avg_latency_ms, mp.capability_tier,
+             (SELECT COUNT(*) FROM benchmark_results br 
+              WHERE br.model_id = mp.id 
+              AND br.benchmark_type LIKE 'battle:%') as battle_count
       FROM model_profiles mp
       JOIN providers p ON p.id = mp.provider_id
       WHERE mp.is_active = 1
       ORDER BY mp.elo_rating DESC
-    `).all();
-    return { leaderboard: rows };
+    `).all() as any[];
+
+    // Compute confidence intervals for each model
+    const { getEloConfidenceInterval } = await import('@dmr-x/benchmark');
+    const leaderboard = rows.map(row => ({
+      ...row,
+      confidenceInterval: getEloConfidenceInterval(row.elo_rating, row.battle_count || 0, 95),
+    }));
+
+    return { leaderboard };
   });
 
   // Get battle history
@@ -4940,23 +4953,359 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { modelA, modelB, prompt } = parsed.data;
+    const { modelA, modelB, prompt, category, difficulty } = parsed.data;
     const { benchmarkService } = server as any;
 
     if (!benchmarkService) {
       throw new ValidationError('Benchmark service not initialized');
     }
 
-    // Trigger in background. If the caller passed a custom `prompt`, use it;
-    // otherwise pick a random prompt from LLM_BENCHMARKS as before.
-    const benchmark = await import('@dmr-x/benchmark');
-    const chosenPrompt = prompt ?? benchmark.LLM_BENCHMARKS[Math.floor(Math.random() * benchmark.LLM_BENCHMARKS.length)];
+    // Trigger in background. If the caller passed a custom `prompt`, wrap it;
+    // otherwise pick a random prompt from LLM_BENCHMARKS.
+    const benchmarkModule = await import('@dmr-x/benchmark');
+    const availablePrompts = benchmarkModule.LLM_BENCHMARKS.filter((p: any) => {
+      if (category && p.category !== category) return false;
+      if (difficulty && p.difficulty !== difficulty) return false;
+      return true;
+    });
+    const chosenPrompt = prompt
+      ? {
+          id: 'custom-battle',
+          category: (category ?? 'instruction') as any,
+          modality: 'llm',
+          difficulty: (difficulty ?? 'medium') as any,
+          tags: ['custom'],
+          request: {
+            modality: 'llm',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 500,
+            stream: false,
+            metadata: {} as Record<string, unknown>,
+          },
+        }
+      : availablePrompts[Math.floor(Math.random() * availablePrompts.length)]
+        ?? benchmarkModule.LLM_BENCHMARKS[Math.floor(Math.random() * benchmarkModule.LLM_BENCHMARKS.length)];
 
     benchmarkService.runArenaBattle(modelA, modelB, chosenPrompt).catch((err: any) => {
       logger.error({ err }, 'Manual arena battle failed');
     });
 
     return { status: 'started' };
+  });
+
+  // Run a round-robin tournament between multiple models
+  server.post('/admin/benchmarks/tournament', async (request) => {
+    const parsed = z.object({
+      modelIds: z.array(z.string().uuid()).min(2).max(10),
+      prompt: z.string().min(1).max(100_000).optional(),
+      category: z.enum(['reasoning', 'instruction', 'creative', 'coding', 'knowledge', 'multilingual', 'multi-turn', 'safety']).optional(),
+      difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
+    }).safeParse(request.body);
+
+    if (!parsed.success) {
+      throw new ValidationError('Invalid tournament request', { errors: parsed.error.errors });
+    }
+
+    const { modelIds, prompt, category, difficulty } = parsed.data;
+    const { benchmarkService } = server as any;
+    if (!benchmarkService) {
+      throw new ValidationError('Benchmark service not initialized');
+    }
+
+    const benchmarkModule = await import('@dmr-x/benchmark');
+
+    // Pick a prompt (custom, filtered, or random)
+    let chosenPrompt;
+    if (prompt) {
+      chosenPrompt = {
+        id: 'custom-tournament',
+        category: (category ?? 'instruction') as any,
+        modality: 'llm',
+        difficulty: (difficulty ?? 'medium') as any,
+        tags: ['custom', 'tournament'],
+        request: {
+          modality: 'llm',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 500,
+          stream: false,
+          metadata: {} as Record<string, unknown>,
+        },
+      };
+    } else {
+      const available = benchmarkModule.LLM_BENCHMARKS.filter((p: any) => {
+        if (category && p.category !== category) return false;
+        if (difficulty && p.difficulty !== difficulty) return false;
+        return true;
+      });
+      chosenPrompt = available.length > 0
+        ? available[Math.floor(Math.random() * available.length)]
+        : benchmarkModule.LLM_BENCHMARKS[Math.floor(Math.random() * benchmarkModule.LLM_BENCHMARKS.length)];
+    }
+
+    // Generate all unique pairs (round-robin)
+    const pairs: Array<[string, string]> = [];
+    for (let i = 0; i < modelIds.length; i++) {
+      for (let j = i + 1; j < modelIds.length; j++) {
+        pairs.push([modelIds[i]!, modelIds[j]!]);
+      }
+    }
+
+    const totalBattles = pairs.length;
+    logger.info({ modelCount: modelIds.length, totalBattles }, 'Starting round-robin tournament');
+
+    // Fire all battles in background (sequential to avoid rate limits)
+    let completed = 0;
+    let errors = 0;
+    for (const [a, b] of pairs) {
+      try {
+        await benchmarkService.runArenaBattle(a, b, chosenPrompt);
+        completed++;
+      } catch (err) {
+        errors++;
+        logger.error({ err, modelA: a, modelB: b }, 'Tournament battle failed');
+      }
+    }
+
+    logger.info({ totalBattles, completed, errors }, 'Tournament complete');
+
+    return {
+      status: 'completed',
+      totalBattles,
+      completed,
+      errors,
+      promptId: chosenPrompt.id,
+      promptCategory: chosenPrompt.category,
+    };
+  });
+
+  // Get per-category benchmark stats for a model
+  server.get('/admin/benchmarks/models/:id/stats', async (request) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+
+    // Verify model exists
+    const model = db.prepare('SELECT id, model_id, display_name FROM model_profiles WHERE id = ?').get(id);
+    if (!model) {
+      return { error: 'Model not found' };
+    }
+
+    // Get per-category scores (non-battle benchmarks)
+    const categoryScores = db.prepare(`
+      SELECT 
+        br.benchmark_type,
+        COUNT(*) as count,
+        ROUND(AVG(br.score), 3) as avg_score,
+        ROUND(MIN(br.score), 3) as min_score,
+        ROUND(MAX(br.score), 3) as max_score,
+        ROUND(AVG(CASE 
+          WHEN json_extract(br.details, '$.latencyMs') IS NOT NULL 
+          THEN CAST(json_extract(br.details, '$.latencyMs') AS REAL) 
+          ELSE NULL 
+        END), 0) as avg_latency_ms
+      FROM benchmark_results br
+      WHERE br.model_id = ? 
+        AND br.benchmark_type NOT LIKE 'battle:%'
+      GROUP BY br.benchmark_type
+      ORDER BY avg_score DESC
+    `).all(id);
+
+    return {
+      model,
+      categoryScores,
+      totalBenchmarks: (categoryScores as any[]).reduce((sum: number, r: any) => sum + r.count, 0),
+    };
+  });
+
+  // Get Elo rating history for a model
+  server.get('/admin/benchmarks/models/:id/history', async (request) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+
+    const model = db.prepare('SELECT id, display_name FROM model_profiles WHERE id = ?').get(id);
+    if (!model) {
+      return { error: 'Model not found' };
+    }
+
+    // Get battle history with Elo changes
+    const history = db.prepare(`
+      SELECT 
+        br.run_at,
+        br.score,
+        br.benchmark_type,
+        json_extract(br.details, '$.elo_change') as elo_change,
+        json_extract(br.details, '$.competitor_id') as competitor_id
+      FROM benchmark_results br
+      WHERE br.model_id = ? 
+        AND br.benchmark_type LIKE 'battle:%'
+      ORDER BY br.run_at ASC
+    `).all(id) as any[];
+
+    // Build cumulative Elo trace starting from current minus changes
+    const currentElo = (db.prepare('SELECT elo_rating FROM model_profiles WHERE id = ?').get(id) as any)?.elo_rating ?? 1200;
+
+    // Reconstruct Elo at each point
+    let runningElo = currentElo;
+    const eloTrace: Array<{ date: string; elo: number; type: string }> = [];
+    for (let i = history.length - 1; i >= 0; i--) {
+      const h = history[i];
+      const change = h.elo_change ? parseFloat(h.elo_change) : 0;
+      eloTrace.unshift({
+        date: h.run_at,
+        elo: Math.round(runningElo * 10) / 10,
+        type: h.benchmark_type,
+      });
+      runningElo -= change;
+    }
+
+    return {
+      model,
+      eloTrace,
+      totalBattles: history.length,
+      currentElo,
+    };
+  });
+
+  // Submit human validation of a judge decision
+  server.post('/admin/benchmarks/validate', async (request) => {
+    const parsed = z.object({
+      battleId: z.string().uuid(),
+      humanWinner: z.enum(['A', 'B', 'Tie']),
+      reviewerId: z.string().optional(),
+      notes: z.string().max(2000).optional(),
+    }).safeParse(request.body);
+
+    if (!parsed.success) {
+      throw new ValidationError('Invalid validation request', { errors: parsed.error.errors });
+    }
+
+    const { battleId, humanWinner, reviewerId, notes } = parsed.data;
+    const db = getDb();
+
+    // Get the battle's judge decision
+    const battle = db.prepare(`
+      SELECT br.*, mp.display_name as model_name
+      FROM benchmark_results br
+      JOIN model_profiles mp ON mp.id = br.model_id
+      WHERE br.id = ?
+    `).get(battleId) as any;
+
+    if (!battle) {
+      throw new ValidationError('Battle not found');
+    }
+
+    const details = typeof battle.details === 'string' ? JSON.parse(battle.details) : battle.details;
+    const judgeWinner = details?.winner ?? 'unknown';
+
+    // For battles, the score field encodes outcome (1.0 = A wins, 0.5 = tie, 0.0 = B wins)
+    let judgeWinnerLabel: 'A' | 'B' | 'Tie' = 'Tie';
+    if (battle.score === 1.0) judgeWinnerLabel = 'A';
+    else if (battle.score === 0.0) judgeWinnerLabel = 'B';
+
+    const agreed = judgeWinnerLabel === humanWinner ? 1 : 0;
+
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO benchmark_validations (id, battle_id, judge_winner, human_winner, agreed, reviewer_id, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, battleId, judgeWinnerLabel, humanWinner, agreed, reviewerId ?? null, notes ?? null);
+
+    // Emit event
+    const { eventBus, SystemEvents } = await import('@dmr-x/utils');
+    eventBus.emit(SystemEvents.BENCHMARK_VALIDATED, { battleId, agreed, judgeWinner: judgeWinnerLabel, humanWinner });
+
+    // Update running agreement stats
+    const stats = db.prepare(`
+      SELECT COUNT(*) as total, SUM(agreed) as agreed_count FROM benchmark_validations
+    `).get() as { total: number; agreed_count: number };
+
+    logger.info({
+      battleId, agreed: agreed === 1,
+      totalValidations: stats.total,
+      agreementRate: stats.total > 0 ? Math.round((stats.agreed_count / stats.total) * 1000) / 10 : 0
+    }, 'Human validation recorded');
+
+    return { success: true, id, agreed: agreed === 1, totalValidations: stats.total, agreementRate: stats.total > 0 ? Math.round((stats.agreed_count / stats.total) * 1000) / 10 : 0 };
+  });
+
+  // Get validation history and stats
+  server.get('/admin/benchmarks/validations', async () => {
+    const db = getDb();
+
+    const stats = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(agreed) as agreed_count,
+        CASE WHEN COUNT(*) > 0 THEN ROUND(CAST(SUM(agreed) AS REAL) / COUNT(*) * 100, 1) ELSE 0 END as agreement_rate
+      FROM benchmark_validations
+    `).get() as any;
+
+    const history = db.prepare(`
+      SELECT bv.*,
+             mp.display_name as model_a_name,
+             (SELECT mp2.display_name FROM model_profiles mp2
+              WHERE mp2.id = json_extract(br.details, '$.competitor_id')) as model_b_name
+      FROM benchmark_validations bv
+      LEFT JOIN benchmark_results br ON br.id = bv.battle_id
+      LEFT JOIN model_profiles mp ON mp.id = br.model_id
+      ORDER BY bv.created_at DESC
+      LIMIT 100
+    `).all();
+
+    return {
+      stats: { total: stats?.total ?? 0, agreedCount: stats?.agreed_count ?? 0, agreementRate: stats?.agreement_rate ?? 0 },
+      validations: history,
+    };
+  });
+
+  // Get next unvalidated battle for human review
+  server.get('/admin/benchmarks/validate/next', async () => {
+    const db = getDb();
+
+    const battle = db.prepare(`
+      SELECT br.id, br.score, br.benchmark_type, br.run_at,
+             br.details, br.model_id,
+             mp.display_name as model_name,
+             mp.model_id as model_internal_id,
+             p.name as provider_name
+      FROM benchmark_results br
+      JOIN model_profiles mp ON mp.id = br.model_id
+      JOIN providers p ON p.id = mp.provider_id
+      WHERE br.benchmark_type LIKE 'battle:%'
+      AND br.id NOT IN (SELECT battle_id FROM benchmark_validations)
+      ORDER BY br.run_at DESC
+      LIMIT 1
+    `).get() as any;
+
+    if (!battle) {
+      return { battle: null, message: 'No unvalidated battles' };
+    }
+
+    const details = typeof battle.details === 'string' ? JSON.parse(battle.details) : battle.details;
+
+    // Get competitor model info
+    const competitorId = details?.competitor_id;
+    let competitorName = 'Unknown';
+    if (competitorId) {
+      const comp = db.prepare('SELECT display_name FROM model_profiles WHERE id = ?').get(competitorId) as any;
+      if (comp) competitorName = comp.display_name;
+    }
+
+    // Get the judge reasoning
+    const judgeReasoning = details?.reasoning || null;
+    const judgeScores = details?.scores || null;
+
+    return {
+      battle: {
+        id: battle.id,
+        modelA: { name: battle.model_name, provider: battle.provider_name, id: battle.model_id },
+        modelB: { name: competitorName, provider: 'competitor', id: competitorId },
+        judgeWinner: battle.score === 1.0 ? 'A' : battle.score === 0.0 ? 'B' : 'Tie',
+        judgeReasoning,
+        judgeScores,
+        benchmarkType: battle.benchmark_type,
+        runAt: battle.run_at,
+      },
+    };
   });
 
   // Playground feedback capture

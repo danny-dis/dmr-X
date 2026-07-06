@@ -45,10 +45,13 @@ export interface AssignJobInput {
 
 export class WorkersService {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimeoutMs = 30_000;
 
   start(): void {
     this.heartbeatInterval = setInterval(() => this.checkStaleWorkers(), 10_000);
+    // Auto-cleanup every hour
+    this.cleanupInterval = setInterval(() => this.cleanup(), 60 * 60 * 1000);
     logger.info('Workers service started');
   }
 
@@ -57,15 +60,31 @@ export class WorkersService {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
     }
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
     logger.info('Workers service stopped');
   }
 
   register(input: RegisterWorkerInput): Worker {
     const db = getDb();
-    const id = crypto.randomUUID();
     const hostname = os.hostname();
     const pid = process.pid;
 
+    // Check for existing active worker with same hostname and PID
+    const existing = db.prepare(`
+      SELECT id FROM workers 
+      WHERE hostname = ? AND pid = ? AND status = 'active'
+    `).get(hostname, pid) as { id: string } | undefined;
+
+    if (existing) {
+      // Reuse existing worker instead of creating duplicate
+      logger.info(`Reusing existing worker: ${input.name} (${existing.id})`);
+      return this.getById(existing.id)!;
+    }
+
+    const id = crypto.randomUUID();
     db.prepare(`
       INSERT INTO workers (id, name, type, status, hostname, pid, load, last_heartbeat_at)
       VALUES (?, ?, ?, 'active', ?, ?, 0, datetime('now'))

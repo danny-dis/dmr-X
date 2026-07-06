@@ -28,6 +28,28 @@ export interface BenchmarkResult {
   details: Record<string, unknown>;
 }
 
+export interface RegressionReport {
+  regressions: Regression[];
+  totalCompared: number;
+  timestamp: string;
+}
+
+export interface Regression {
+  modelId: string;
+  benchmarkType: string;
+  previousAvg: number;
+  newScore: number;
+  zScore: number;
+  severity: 'minor' | 'major' | 'critical';
+}
+
+export interface MultiTurnEvalPrompt {
+  id: string;
+  category: string;
+  turns: Array<{ role: string; content: string }>;
+  modality: string;
+}
+
 // ─── Expanded LLM Benchmark Prompts ─────────────────────────────────────────
 // Industry-standard coverage across reasoning, instruction-following, creative,
 // coding, knowledge, multilingual, multi-turn, and safety categories.
@@ -649,8 +671,15 @@ export class BenchmarkService {
       results.push(...diffusionResults);
     }
 
+    // Run multi-turn benchmarks
+    const multiTurnResults = await this.runMultiTurnBenchmarks();
+    results.push(...multiTurnResults);
+
     // Store results
     await this.storeResults(results);
+
+    // Detect regressions
+    await this.detectRegressions(results);
 
     // After individual benchmarks, run some pairwise battles to refine Elo
     await this.runArenaBattles(5);
@@ -934,6 +963,159 @@ export class BenchmarkService {
         logger.error({ err: error }, 'Failed to store benchmark result');
       }
     }
+  }
+
+  async detectRegressions(results: BenchmarkResult[]): Promise<RegressionReport> {
+    const db = getDb();
+    const regressions: Regression[] = [];
+    const compared = new Set<string>();
+
+    for (const result of results) {
+      const key = `${result.modelId}:${result.benchmarkType}`;
+      if (compared.has(key)) continue;
+      compared.add(key);
+
+      // Get last 5 runs for this model + benchmark type (excluding current)
+      const history = db.prepare(`
+        SELECT score FROM benchmark_results
+        WHERE model_id IN (
+          SELECT id FROM model_profiles WHERE model_id = ? AND provider_id IN (
+            SELECT id FROM providers WHERE name = ?
+          )
+        ) AND benchmark_type = ?
+        ORDER BY run_at DESC LIMIT 5 OFFSET 0
+      `).all(result.modelId, result.providerId, result.benchmarkType) as { score: number }[];
+
+      if (history.length < 3) continue;
+
+      const scores = history.map(h => h.score);
+      const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+      const variance = scores.reduce((sq, s) => sq + Math.pow(s - mean, 2), 0) / scores.length;
+      const std = Math.sqrt(variance) || 0.01;
+
+      const zScore = (result.score - mean) / std;
+
+      if (Math.abs(zScore) > 2.0) {
+        const severity = Math.abs(zScore) > 3.0 ? 'critical' as const : Math.abs(zScore) > 2.5 ? 'major' as const : 'minor' as const;
+        regressions.push({
+          modelId: result.modelId,
+          benchmarkType: result.benchmarkType,
+          previousAvg: Math.round(mean * 1000) / 1000,
+          newScore: result.score,
+          zScore: Math.round(zScore * 100) / 100,
+          severity,
+        });
+      }
+    }
+
+    if (regressions.length > 0) {
+      logger.warn({ regressions }, 'Benchmark regressions detected');
+      // Emit event if eventBus is available
+      try {
+        const { eventBus, SystemEvents } = await import('@dmr-x/utils');
+        eventBus.emit(SystemEvents.BENCHMARK_REGRESSION, { regressions });
+      } catch { /* eventBus not critical */ }
+    }
+
+    return { regressions, totalCompared: results.length, timestamp: new Date().toISOString() };
+  }
+
+  /**
+   * Evaluate a model on a multi-turn conversation.
+   * Each turn is scored independently, then averaged.
+   */
+  async evaluateMultiTurn(
+    prompt: MultiTurnEvalPrompt,
+    responses: string[],
+  ): Promise<number> {
+    if (responses.length === 0) return 0;
+
+    const turnScores = await Promise.all(
+      prompt.turns.map((turn, i) =>
+        this.judgeService.grade(turn.content, responses[i] ?? '')
+      )
+    );
+
+    const avg = turnScores.reduce((a, b) => a + b, 0) / turnScores.length;
+    return Math.round(avg * 1000) / 1000;
+  }
+
+  /**
+   * Run multi-turn benchmarks against all adapters that support LLM.
+   * For each multi-turn prompt, executes all turns sequentially against each adapter.
+   */
+  async runMultiTurnBenchmarks(): Promise<BenchmarkResult[]> {
+    const results: BenchmarkResult[] = [];
+    const multiTurnPrompts = LLM_BENCHMARKS.filter(p => p.category === 'multi-turn');
+
+    if (multiTurnPrompts.length === 0) return results;
+
+    const adapters = this.adapterRegistry.list();
+
+    for (const providerId of adapters) {
+      const adapter = this.adapterRegistry.get(providerId);
+      if (!adapter || !adapter.supportedModalities.includes('llm')) continue;
+
+      for (const prompt of multiTurnPrompts) {
+        try {
+          const responses: string[] = [];
+          let totalLatencyMs = 0;
+
+          for (const turn of prompt.request.messages ?? []) {
+            // Build conversation history so far
+            const conversationMessages = [
+              ...(prompt.request.messages?.slice(0, prompt.request.messages.indexOf(turn)) ?? []),
+              turn,
+            ];
+
+            const start = Date.now();
+            const response = await adapter.execute(
+              { ...prompt.request, messages: conversationMessages },
+              { timeoutMs: 60000 }
+            );
+            totalLatencyMs += Date.now() - start;
+
+            const content = response.message?.content;
+            if (typeof content === 'string') {
+              responses.push(content);
+            }
+          }
+
+          const userTurns = (prompt.request.messages ?? [])
+            .filter(m => m.role === 'user')
+            .map(m => ({ role: m.role as string, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }));
+          const score = await this.evaluateMultiTurn(
+            { id: prompt.id, category: prompt.category, turns: userTurns, modality: 'llm' },
+            responses
+          );
+
+          results.push({
+            modelId: responses.length > 0 ? 'multi-turn' : 'unknown',
+            providerId,
+            benchmarkType: `multi-turn:${prompt.category}`,
+            score,
+            latencyMs: totalLatencyMs,
+            details: {
+              promptId: prompt.id,
+              turnCount: responses.length,
+              turnScores: responses.length > 0 ? 'see individual' : 'none',
+            },
+          });
+        } catch (error) {
+          logger.warn({ err: error, providerId, promptId: prompt.id }, 'Multi-turn benchmark failed');
+          results.push({
+            modelId: 'unknown',
+            providerId,
+            benchmarkType: `multi-turn:${prompt.category}`,
+            score: 0,
+            latencyMs: 0,
+            details: { promptId: prompt.id, error: error instanceof Error ? error.message : 'Unknown error' },
+          });
+        }
+      }
+    }
+
+    return results;
   }
 
   startScheduled(intervalMs: number = 24 * 60 * 60 * 1000): void {

@@ -510,6 +510,26 @@ export interface ApiBenchmarkRun {
   concurrency?: number;
 }
 
+export interface ApiConfidenceInterval {
+  lower: number;
+  upper: number;
+  margin: number;
+  games: number;
+}
+
+export interface ApiBenchmarkLeaderboardEntry {
+  id: string;
+  model_id: string;
+  display_name: string;
+  provider_name: string;
+  elo_rating: number;
+  quality_score: number;
+  avg_latency_ms: number;
+  capability_tier: string;
+  battle_count: number;
+  confidenceInterval: ApiConfidenceInterval;
+}
+
 export interface ApiCatalogEntry {
   id: string;
   name: string;

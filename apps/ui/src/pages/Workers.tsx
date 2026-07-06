@@ -88,8 +88,8 @@ export function WorkersPage() {
   return (
     <PageContainer>
       <PageHeader
-        title="Workers"
-        description="Background job workers — quota, telemetry, billing, garbage collection"
+        title="Infrastructure Workers"
+        description="Background processes — quota tracking, telemetry, billing, garbage collection. These are distinct from the Intelligence Hierarchy's Worker layer which handles parallel subtask execution."
         icon={<Cpu className="size-5" />}
         actions={
           <div className="flex items-center gap-2">
@@ -223,7 +223,7 @@ export function WorkersPage() {
           <Card padding="none" className="border-dashed">
             <EmptyState
               title="No workers running"
-              description="Workers are spawned automatically by the gateway as needed."
+              description="Infrastructure workers are spawned automatically by the gateway for background tasks like quota tracking and telemetry."
             />
           </Card>
         )}

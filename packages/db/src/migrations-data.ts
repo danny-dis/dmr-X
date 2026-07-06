@@ -1464,4 +1464,75 @@ CREATE INDEX IF NOT EXISTS idx_agent_scheduled_jobs_definition
 ON agent_scheduled_jobs(agent_definition_id);
 `,
   },
+  38: {
+    filename: '038_quota_share.sql',
+    sql: `-- Quota-Share: distribute provider quota across team keys
+
+CREATE TABLE IF NOT EXISTS quota_share_pools (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  window_seconds INTEGER NOT NULL DEFAULT 18000, -- 5 hours
+  policy TEXT NOT NULL DEFAULT 'soft' CHECK (policy IN ('hard', 'soft', 'burst')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS quota_share_allocations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pool_id TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  key_name TEXT NOT NULL,
+  weight INTEGER NOT NULL DEFAULT 1,
+  cap_requests INTEGER, -- NULL = unlimited within share
+  cap_tokens INTEGER,   -- NULL = unlimited within share
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (pool_id) REFERENCES quota_share_pools(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_share_pool_provider ON quota_share_pools(provider_id);
+CREATE INDEX IF NOT EXISTS idx_quota_share_alloc_pool ON quota_share_allocations(pool_id);
+CREATE INDEX IF NOT EXISTS idx_quota_share_alloc_key ON quota_share_allocations(key_id);
+`,
+  },
+  39: {
+    filename: '039_judge_reliability.sql',
+    sql: `-- Judge Reliability Tracking
+-- Tracks inter-rater agreement between multiple AI judges evaluating the same battle.
+
+CREATE TABLE IF NOT EXISTS judge_reliability (
+  id TEXT PRIMARY KEY,
+  battle_id TEXT NOT NULL REFERENCES benchmark_results(id) ON DELETE CASCADE,
+  judge_model_a TEXT NOT NULL,          -- e.g. 'gpt-4o'
+  judge_model_b TEXT NOT NULL,          -- e.g. 'claude-sonnet-4'
+  kappa REAL,                           -- Cohen's kappa coefficient (-1 to 1)
+  agreement_percent REAL,               -- Simple percent agreement (0-100)
+  total_comparisons INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_judge_reliability_battle ON judge_reliability(battle_id);
+CREATE INDEX IF NOT EXISTS idx_judge_reliability_judges ON judge_reliability(judge_model_a, judge_model_b);
+`,
+  },
+  40: {
+    filename: '040_benchmark_validations.sql',
+    sql: `-- Benchmark Human Validation
+-- Tracks human spot-checks of AI judge decisions to measure judge accuracy.
+
+CREATE TABLE IF NOT EXISTS benchmark_validations (
+  id TEXT PRIMARY KEY,
+  battle_id TEXT NOT NULL REFERENCES benchmark_results(id) ON DELETE CASCADE,
+  judge_winner TEXT NOT NULL,           -- What the AI judge decided ('A', 'B', 'Tie')
+  human_winner TEXT NOT NULL,           -- What the human decided ('A', 'B', 'Tie')
+  agreed INTEGER NOT NULL,              -- 1 if same, 0 if different
+  reviewer_id TEXT,                     -- Optional reviewer identifier
+  notes TEXT,                           -- Optional human notes
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_benchmark_validations_battle ON benchmark_validations(battle_id);
+CREATE INDEX IF NOT EXISTS idx_benchmark_validations_agreed ON benchmark_validations(agreed);
+`,
+  },
 };

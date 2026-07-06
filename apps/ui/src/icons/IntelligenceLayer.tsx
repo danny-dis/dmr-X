@@ -67,6 +67,14 @@ const IntelligenceLayerIcons = {
   temp_worker: TempWorkerIcon,
 };
 
+const INTELLIGENCE_LAYER_DESCRIPTIONS: Record<string, string> = {
+  brain: 'Best reasoning — handles complex, multi-step tasks',
+  thinker: 'Specialized thinking — coding, math, planning',
+  executor: 'General purpose — balanced quality and cost',
+  worker: 'Fast & cheap — simple, quick tasks',
+  temp_worker: 'One-time gig work — local/free tier models',
+};
+
 export function IntelligenceBadge({
   layer,
   size = 18,
@@ -89,13 +97,18 @@ export function IntelligenceBadge({
     temp_worker: 'text-warning',
   };
   const labelText = layer.replace('_', ' ');
+  const tooltip = INTELLIGENCE_LAYER_DESCRIPTIONS[layer] ?? layer;
+
   if (showLabel) {
     return (
-      <span className={`inline-flex items-center gap-1.5 ${colors[layer] || 'text-muted'} ${className}`}>
+      <span
+        className={`inline-flex items-center gap-1.5 ${colors[layer] || 'text-muted'} ${className}`}
+        title={tooltip}
+      >
         <Icon size={size} />
         <span className="text-[10px] font-medium uppercase tracking-wider">{labelText}</span>
       </span>
     );
   }
-  return <Icon size={size} className={`${colors[layer] || 'text-muted'} ${className}`} />;
+  return <Icon size={size} className={`${colors[layer] || 'text-muted'} ${className}`} title={tooltip} />;
 }

@@ -24,4 +24,13 @@ export const SystemEvents = {
   
   // Triggered when human feedback is received from the playground
   PLAYGROUND_FEEDBACK: 'playground:feedback',
+
+  // Triggered when a benchmark regression is detected
+  BENCHMARK_REGRESSION: 'benchmark:regression',
+
+  // Triggered when a human validates a judge's decision
+  BENCHMARK_VALIDATED: 'benchmark:validated',
+
+  // Triggered when inter-rater reliability is computed
+  JUDGE_RELIABILITY_UPDATED: 'judge:reliability:updated',
 } as const;

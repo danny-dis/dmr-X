@@ -441,8 +441,10 @@ export const Admin = {
   runBenchmark: (body: ApiBenchmarkRun) => apiPost<{ status: string; message: string }>('/admin/benchmarks/run', body),
   getLeaderboard: () => apiGet<{ leaderboard: any[] }>('/admin/benchmarks/leaderboard').then(r => r.leaderboard),
   getBattles: () => apiGet<{ battles: any[] }>('/admin/benchmarks/battles').then(r => r.battles),
-  runArenaBattle: (modelA: string, modelB: string) => apiPost('/admin/benchmarks/battle', { modelA, modelB }),
+  runArenaBattle: (modelA: string, modelB: string, prompt?: string, category?: string, difficulty?: string) => 
+    apiPost('/admin/benchmarks/battle', { modelA, modelB, ...(prompt ? { prompt } : {}), ...(category ? { category } : {}), ...(difficulty ? { difficulty } : {}) }),
   submitFeedback: (feedback: any) => apiPost('/admin/playground/feedback', feedback),
+  getAllModels: () => apiGet<{ models: any[] }>('/admin/models').then(r => r.models),
   // Batch add messages
   batchAddMessages: (conversationId: string, messages: any[]) =>
     apiPost<{ success: boolean; count: number }>(`/conversations/${conversationId}/messages/batch`, {

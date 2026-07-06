@@ -126,6 +126,23 @@ function classifyCapabilityTier(model: DiscoveredModel): CapabilityTier {
 }
 
 /**
+ * Get initial quality score based on capability tier.
+ * Higher-tier models start with higher scores to bias selection toward better models.
+ */
+function getInitialQualityScore(tier: CapabilityTier): number {
+  const scores: Record<CapabilityTier, number> = {
+    orchestrator: 0.95,
+    brain: 0.9,
+    thinker: 0.75,
+    executor: 0.6,
+    specialist: 0.65,
+    worker: 0.4,
+    temp_worker: 0.3,
+  };
+  return scores[tier] ?? 0.5;
+}
+
+/**
  * Insert a batch of model profiles for a provider.
  * Centralized so both auto-register and the backfill can share it.
  */
@@ -170,7 +187,7 @@ function insertModelProfiles(
       m.inputCostPer1M / 1000,
       m.outputCostPer1M / 1000,
       m.costPerImage,
-      0.5,
+      getInitialQualityScore(capabilityTier),
       isActive ? 1 : 0,
       m.subscriptionOnly ? 1 : 0,
     );
@@ -377,7 +394,7 @@ export async function autoRegisterProviders(): Promise<string[]> {
           m.inputCostPer1M / 1000,
           m.outputCostPer1M / 1000,
           m.costPerImage,
-          0.5,
+          getInitialQualityScore(capabilityTier),
           isActive ? 1 : 0,
           m.rateLimits?.rpm ?? null,
           m.rateLimits?.rpd ?? null,
