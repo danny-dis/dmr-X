@@ -20,7 +20,7 @@
 #   3. Compiled JS (~5 MB)
 #   4. UI static files (~3 MB)
 
-ARG BUN_VERSION=1.2.0
+ARG BUN_VERSION=1.3.14
 ARG BUILD_MODE=node  # node | binary
 
 FROM oven/bun:${BUN_VERSION}-alpine AS builder
