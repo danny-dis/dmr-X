@@ -188,10 +188,12 @@ jobs:
         with:
           cosign-release: 'v2.4.1'
       - name: Sign node image
-        env:
-          COSIGN_YES: 'true'
         run: |
-          cosign sign ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+          # Request OIDC token from GitHub Actions
+          OIDC_TOKEN=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sigstore" | jq -r '.value')
+          cosign sign --identity-token "$OIDC_TOKEN" --yes \
+            ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
 
       - name: Generate SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
