@@ -22,7 +22,7 @@
 ### Bug Fixes
 - **Pipeline fallback chain** — candidates from the same provider are no longer excluded from fallback chains when all candidates share a `providerId`. Tests updated to use distinct provider IDs.
 - **Provider-prefix + meta-model routing** — `parseModelTarget` now recognizes a provider prefix when the model part is a meta-model alias (e.g. `pollinations/auto-smart`), not just when it matches an exact candidate model ID.
-- **Migration count assertion** — updated `sqlite-client.test.ts` to match the current 21 migrations.
+- **Migration count assertion** — updated `sqlite-client.test.ts` to match the then-current 21 migrations (the schema has since grown to 45; see note at top).
 
 ### Version
 - All 22 workspace packages bumped to `0.5.0`.
@@ -32,7 +32,7 @@
 ## v0.4.0 — Follow-up (2026-06-20)
 
 ### Security
-- **fastify 4 → 5 upgrade** — bumped `fastify` 4.29.1 → 5.8.5 to close the Content-Type tab-character bypass CVE present in 4.x. The plugin stack is aligned to its fastify-5-compatible majors: `@fastify/compress` 9, `@fastify/cors` 11, `@fastify/multipart` 10, `@fastify/rate-limit` 11, `@fastify/static` 9. Code adjustments: `setErrorHandler` error param is now `unknown` (cast to `any` for the existing access pattern, same as elsewhere in the file); `reply.code()` → `reply.status()` (1 site in `setNotFoundHandler`); `maxParamLength` moved under `routerOptions` to silence the FSTDEP022 deprecation (top-level key will be removed in v6); `request.body` is now `unknown` but the existing Zod-`safeParse` pattern is forward-compatible so no route body access needed changing. `scripts/dev/server-original.ts` (a historical reference snapshot, not on any build path) was kept internally consistent. Verification: `npx tsc --noEmit` clean across the whole tree, `bun run test` → **1216 passed / 38 skipped**, gateway boots and reaches `DMR-X Gateway running` on `0.0.0.0:3099` with 82 adapters registered.
+- **fastify 4 → 5 upgrade** — bumped `fastify` 4.29.1 → 5.8.5 to close the Content-Type tab-character bypass CVE present in 4.x. The plugin stack is aligned to its fastify-5-compatible majors: `@fastify/compress` 9, `@fastify/cors` 11, `@fastify/multipart` 10, `@fastify/rate-limit` 11, `@fastify/static` 9. Code adjustments: `setErrorHandler` error param is now `unknown` (cast to `any` for the existing access pattern, same as elsewhere in the file); `reply.code()` → `reply.status()` (1 site in `setNotFoundHandler`); `maxParamLength` moved under `routerOptions` to silence the FSTDEP022 deprecation (top-level key will be removed in v6); `request.body` is now `unknown` but the existing Zod-`safeParse` pattern is forward-compatible so no route body access needed changing. `scripts/dev/server-original.ts` (a historical reference snapshot, not on any build path) was kept internally consistent. Verification: `npx tsc --noEmit` clean across the whole tree, `bun run test` → **1216 passed / 38 skipped**, gateway boots and reaches `DMR-X Gateway running` on `0.0.0.0:3099` with 82 adapters registered (historical count; the gateway now registers 57+ — see note at top).
 
 ### In Progress
 - **request_logs writes** — durable per-request audit log table (`request_logs`) is now being populated by the gateway's `onResponse` hook (CRIT-6). The `request_logs` table captures `request_id`, `tenant_id`, `task_profile`, `routing_plan` (JSON with primary + top-3 candidates), `selected_provider`, `selected_model`, `fallback_used`, `latency_ms`, `time_to_first_token_ms`, `tokens_input`, `tokens_output`, `estimated_cost`, `error_code`, and `error_message`. Coverage: `tests/unit/request-logs-writes.test.ts` (11 tests) — the bandit reward-updater at `services/router/src/bandit/reward-updater.ts:198` will now see real rows.
@@ -138,15 +138,15 @@ All six are validated by `validateStartupConfig()` in `apps/gateway/src/main.ts`
   (embedding + reranking). All three were already implemented on disk but
   missing from the public surface.
 - Audited `services/adapters/src` against the docs and the README.
-  Confirmed 18 concrete adapter implementations present (not 10 as the
+  Confirmed 18 concrete adapter implementations present at the time (not 10 as the
   docs/README previously claimed).
 
 ### Documentation
 - `docs/AI_PROVIDER_REFERENCE.md`: updated header to reflect the actual
-  adapter inventory (18 adapters + `GenericOpenAIAdapter`) with a
+  adapter inventory (18 adapters + `GenericOpenAIAdapter` at the time) with a
   cross-reference to `services/adapters/src/index.ts`.
 - `README.md`: corrected the "70+ providers" line to enumerate the real
-  18 adapters, and updated the architecture diagram's provider block.
+  18 adapters at the time, and updated the architecture diagram's provider block.
 - `docs/archive/agents checklist.md`: added **Phase 8 — Top-3 Improvement
   Sprint** tracking 16 new sub-tasks across three workstreams
   (adapter surface reconciliation, Intelligence Hierarchy Workers
@@ -161,7 +161,7 @@ All six are validated by `validateStartupConfig()` in `apps/gateway/src/main.ts`
 - Rewrote `docs/DEPLOYMENT.md` with Bun, Docker, binary, and reverse proxy configurations plus production checklist.
 - Rewrote `docs/CONFIGURATION.md` with complete environment variable reference, all provider keys, and security notes.
 - Created `docs/DISTRIBUTION.md` — binary packaging, install scripts, CI/CD release workflow.
-- Created `docs/MCP.md` — MCP server setup, all 8 tools documented, client integration examples.
+  - Created `docs/MCP.md` — MCP server setup, tools documented (8 at the time; the server now exposes 40+), client integration examples.
 - Created `docs/TESTING.md` — test suites, running tests, type checking, known issues.
 - Created `CONTRIBUTING.md` — contribution guidelines, branch naming, PR checklist.
 - Moved historical audit reports to `docs/archive/` (PHASE1_AUDIT, QA_SECURITY_REPORT, REFACTOR_REPORT, agents checklist).

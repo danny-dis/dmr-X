@@ -132,11 +132,11 @@ console.log(response.choices[0].message.content);
 | **Wire formats** | OpenAI, Anthropic, Google Gemini |
 | **LLMs** | OpenAI, Anthropic, Google, Ollama, Replicate, + more |
 | **Images** | DALL-E, Stability, Replicate, + more |
-| **Video** | Runway, Luma, FAL, Veo, ComfyUI, + more |
+| **Video** | Runway, FAL, Veo, ComfyUI, + more |
 | **Audio** | TTS (ElevenLabs, OpenAI), STT (Deepgram, OpenAI) |
 | **Embeddings** | OpenAI, Cohere, Jina, Ollama, + more |
 | **OCR** | Tesseract, PaddleOCR, HuggingFace |
-| **Reranking** | Cohere |
+| **Reranking** | Cohere, Jina, TEI |
 | **3D** | Available providers |
 
 Plus: intelligent provider selection, automatic fallback chains, format conversion, per-tenant rate limiting, per-tenant quotas, and request logging.
