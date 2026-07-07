@@ -17,6 +17,10 @@ export {
   AgentRatingCreateSchema,
   AgentListQuerySchema,
   MarketplaceQuerySchema,
+  AgentImportRequestSchema,
+  AgentImportResultSchema,
+  ImportedAgentSchema,
+  AGENT_CATEGORIES,
   type AgentDefinitionCreate,
   type AgentDefinitionUpdate,
   type AgentInstanceCreate,
@@ -25,12 +29,19 @@ export {
   type AgentRatingCreate,
   type AgentListQuery,
   type MarketplaceQuery,
+  type AgentImportRequest,
+  type AgentImportResult,
 } from './agent-schema.js';
 
 export {
   loadAgentFromConfig,
   loadAgentsFromDirectory,
+  parseAgentMdFromString,
+  parseAgentMdBatch,
+  fetchGitHubRepoMdFiles,
+  extractZipMdFiles,
   type AgentConfigFile,
+  type ParseAgentMdOptions,
 } from './agent-config-loader.js';
 
 export {

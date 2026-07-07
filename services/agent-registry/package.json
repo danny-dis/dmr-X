@@ -20,9 +20,11 @@
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
     "@dmr-x/utils": "*",
+    "jszip": "^3.10.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@types/jszip": "^3.4.1",
     "typescript": "5.9.3"
   }
 }

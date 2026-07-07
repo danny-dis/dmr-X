@@ -1,4 +1,4 @@
-import { Bot, Plus, Trash2, Play, ExternalLink } from 'lucide-react';
+import { Bot, Plus, Trash2, Play, ExternalLink, Upload } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -238,11 +238,237 @@ function AgentCard({
 }
 
 // ---------------------------------------------------------------------------
+// Import Agents Form
+// ---------------------------------------------------------------------------
+
+const AGENT_CATEGORIES = [
+  'Academic', 'Design', 'Engineering', 'Finance', 'Game Development', 'GIS',
+  'Healthcare', 'Marketing', 'Operations', 'Paid Media', 'Product',
+  'Project Management', 'Research', 'Sales', 'Security', 'Spatial Computing',
+  'Specialized', 'Support', 'Testing',
+];
+
+function ImportAgentsForm({ onImported }: { onImported: () => void }) {
+  const [source, setSource] = React.useState<'github' | 'zip' | 'text'>('github');
+  const [githubUrl, setGithubUrl] = React.useState('');
+  const [text, setText] = React.useState('');
+  const [filename, setFilename] = React.useState('agent.md');
+  const [modelTier, setModelTier] = React.useState('auto');
+  const [category, setCategory] = React.useState('');
+  const [zipFile, setZipFile] = React.useState<File | null>(null);
+  const [dragOver, setDragOver] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
+  const [result, setResult] = React.useState<any>(null);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const onFilePick = (files: FileList | null) => {
+    if (files && files.length > 0) setZipFile(files[0]);
+  };
+
+  const handleImport = async () => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await Admin.importAgents({
+        source,
+        githubUrl: source === 'github' ? githubUrl.trim() : undefined,
+        content: source === 'text' ? text : undefined,
+        filename: source === 'text' ? filename.trim() || 'agent.md' : undefined,
+        zipFile: source === 'zip' ? zipFile ?? undefined : undefined,
+        modelTier,
+        category: category || undefined,
+      });
+      setResult(res);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Import failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Import Agents</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Bring in agent definitions from external sources. Each agent is created
+            (public) and deployed automatically — ready to call downstream immediately.
+          </p>
+
+          {/* Source selector */}
+          <div className="flex gap-2 flex-wrap">
+            {(['github', 'zip', 'text'] as const).map((s) => (
+              <Button
+                key={s}
+                size="sm"
+                variant={source === s ? 'default' : 'outline'}
+                onClick={() => setSource(s)}
+              >
+                {s === 'github' ? 'GitHub URL' : s === 'zip' ? 'Upload ZIP' : 'Paste .md'}
+              </Button>
+            ))}
+          </div>
+
+          {/* GitHub URL */}
+          {source === 'github' && (
+            <div>
+              <label className="text-sm font-medium">Repository URL</label>
+              <Input
+                value={githubUrl}
+                onChange={(e) => setGithubUrl(e.target.value)}
+                placeholder="https://github.com/user/agents-repo"
+                className="mt-1"
+              />
+            </div>
+          )}
+
+          {/* ZIP upload */}
+          {source === 'zip' && (
+            <div>
+              <label className="text-sm font-medium">ZIP file (.zip containing .md agents)</label>
+              <div
+                className={`mt-1 flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 text-center transition-colors ${dragOver ? 'border-primary bg-primary/5' : 'border-muted-foreground/30'}`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => { e.preventDefault(); setDragOver(false); onFilePick(e.dataTransfer.files); }}
+                onClick={() => (document.getElementById('zip-input') as HTMLInputElement | null)?.click()}
+              >
+                <Upload className="mb-2 h-8 w-8 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">
+                  {zipFile ? zipFile.name : 'Drag & drop a .zip file here, or click to browse'}
+                </p>
+                <input
+                  id="zip-input"
+                  type="file"
+                  accept=".zip"
+                  className="hidden"
+                  onChange={(e) => onFilePick(e.target.files)}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Paste .md */}
+          {source === 'text' && (
+            <div className="space-y-2">
+              <div>
+                <label className="text-sm font-medium">Filename</label>
+                <Input
+                  value={filename}
+                  onChange={(e) => setFilename(e.target.value)}
+                  placeholder="agent.md"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Agent .md content</label>
+                <Textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={10}
+                  placeholder={'---\nname: My Agent\ndescription: ...\n---\n\n# System prompt...'}
+                  className="mt-1 font-mono text-sm"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Options */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-medium">Model Tier</label>
+              <select
+                value={modelTier}
+                onChange={(e) => setModelTier(e.target.value)}
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              >
+                <option value="auto">Auto</option>
+                <option value="premium">Premium</option>
+                <option value="budget">Budget</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Category (auto-detect if blank)</label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Auto-detect</option>
+                {AGENT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <Button onClick={handleImport} disabled={loading || (source === 'zip' && !zipFile) || (source === 'github' && !githubUrl.trim()) || (source === 'text' && !text.trim())}>
+            {loading ? 'Importing…' : 'Import Agents'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Results */}
+      {result && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Import Results</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="default">{result.imported ?? 0} imported</Badge>
+              {result.skipped > 0 && (
+                <Badge variant="secondary">{result.skipped} renamed (duplicates)</Badge>
+              )}
+              {result.errors?.length > 0 && (
+                <Badge variant="destructive">{result.errors.length} errors</Badge>
+              )}
+            </div>
+
+            {result.agents?.length > 0 && (
+              <div className="max-h-48 overflow-auto rounded-md border p-2 text-sm">
+                {result.agents.slice(0, 50).map((a: any) => (
+                  <div key={a.id} className="flex items-center justify-between py-1">
+                    <span>{a.name}</span>
+                    {a.category && <Badge variant="outline" className="text-xs">{a.category}</Badge>}
+                  </div>
+                ))}
+                {result.agents.length > 50 && (
+                  <p className="text-xs text-muted-foreground">…and {result.agents.length - 50} more</p>
+                )}
+              </div>
+            )}
+
+            {result.errors?.length > 0 && (
+              <div className="rounded-md border border-destructive/40 p-2 text-sm text-destructive">
+                {result.errors.slice(0, 10).map((e: any, i: number) => (
+                  <div key={i}>{e.file}: {e.error}</div>
+                ))}
+              </div>
+            )}
+
+            {result.imported > 0 && (
+              <Button variant="outline" onClick={onImported}>View Imported Agents →</Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Agents Page
 // ---------------------------------------------------------------------------
 
 export function AgentsPage() {
-  const [tab, setTab] = React.useState<'list' | 'create'>('list');
+  const [tab, setTab] = React.useState<'list' | 'create' | 'import'>('list');
   const { data, loading, refetch } = useApiData<{ items: AgentDefinition[] }>('/v1/agents');
   const { data: instancesData } = useApiData<{ items: AgentInstance[] }>('/v1/agents/instances');
   const [deploying, setDeploying] = React.useState<string | null>(null);
@@ -297,6 +523,7 @@ export function AgentsPage() {
         <TabsList>
           <TabsTrigger value="list">My Agents ({agents.length})</TabsTrigger>
           <TabsTrigger value="create">Create</TabsTrigger>
+          <TabsTrigger value="import">Import</TabsTrigger>
         </TabsList>
 
         <TabsContent value="list" className="mt-4">
@@ -329,6 +556,10 @@ export function AgentsPage() {
 
         <TabsContent value="create" className="mt-4">
           <CreateAgentForm onCreated={() => { refetch(); setTab('list'); }} />
+        </TabsContent>
+
+        <TabsContent value="import" className="mt-4">
+          <ImportAgentsForm onImported={() => { refetch(); setTab('list'); }} />
         </TabsContent>
       </Tabs>
     </PageContainer>

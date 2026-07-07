@@ -1,4 +1,19 @@
-import { agentRegistryService, AgentDefinitionCreateSchema, AgentDefinitionUpdateSchema, AgentInstanceCreateSchema, AgentListQuerySchema, AgentRatingCreateSchema, MarketplaceQuerySchema } from '@dmr-x/agent-registry';
+import { logger } from '@dmr-x/utils';
+import {
+  agentRegistryService,
+  AgentDefinitionCreateSchema,
+  AgentDefinitionUpdateSchema,
+  AgentInstanceCreateSchema,
+  AgentListQuerySchema,
+  AgentRatingCreateSchema,
+  MarketplaceQuerySchema,
+  AgentImportRequestSchema,
+  parseAgentMdFromString,
+  parseAgentMdBatch,
+  fetchGitHubRepoMdFiles,
+  extractZipMdFiles,
+  type AgentDefinitionCreate,
+} from '@dmr-x/agent-registry';
 import { getDb } from '@dmr-x/db';
 import type { FastifyInstance } from 'fastify';
 
@@ -193,5 +208,71 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
 
     if (!listing) return reply.code(500).send({ error: { message: 'Failed to publish agent' } });
     return reply.send(listing);
+  });
+
+  // ── Import Agents (GitHub / ZIP / pasted .md) ──────────────────────────────
+
+  server.post('/agents/import', { preHandler: [agentPermissions.create()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const contentType = String(request.headers['content-type'] ?? '');
+
+    // Options may arrive as query params (used by the ZIP multipart upload)
+    const query = request.query as Record<string, string | undefined>;
+    const modelTier = (query.modelTier as 'auto' | 'premium' | 'budget') ?? 'auto';
+    const categoryOverride = query.category;
+
+    let definitions: AgentDefinitionCreate[] = [];
+
+    try {
+      if (contentType.includes('multipart/form-data')) {
+        // ZIP upload: single file field named "file"
+        const data = await (request as any).file();
+        if (!data) {
+          return reply.code(400).send({ error: { message: 'No file uploaded' } });
+        }
+        const buffer: Buffer = await data.toBuffer();
+        const files = await extractZipMdFiles(buffer);
+        definitions = parseAgentMdBatch(files, categoryOverride).map((a) => a.definition);
+      } else {
+        const parsed = AgentImportRequestSchema.safeParse(request.body);
+        if (!parsed.success) {
+          return reply.code(400).send({ error: { message: 'Invalid request', details: parsed.error.issues } });
+        }
+        const body = parsed.data;
+
+        if (body.source === 'github') {
+          if (!body.githubUrl) {
+            return reply.code(400).send({ error: { message: 'githubUrl is required for github source' } });
+          }
+          const files = await fetchGitHubRepoMdFiles(body.githubUrl);
+          definitions = parseAgentMdBatch(files, categoryOverride ?? body.category).map((a) => a.definition);
+        } else if (body.source === 'text') {
+          if (!body.content) {
+            return reply.code(400).send({ error: { message: 'content is required for text source' } });
+          }
+          const agent = parseAgentMdFromString(body.content, {
+            filePath: body.filename,
+            categoryOverride: categoryOverride ?? body.category,
+          });
+          if (!agent) {
+            return reply.code(400).send({ error: { message: 'Failed to parse agent definition from content' } });
+          }
+          definitions = [agent.definition];
+        } else {
+          return reply.code(400).send({ error: { message: `Unsupported source: ${body.source}` } });
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ error: message }, 'Agent import failed');
+      return reply.code(502).send({ error: { message: `Import failed: ${message}` } });
+    }
+
+    if (definitions.length === 0) {
+      return reply.code(200).send({ imported: 0, skipped: 0, errors: [], agents: [] });
+    }
+
+    const result = await agentRegistryService.importAgents(tenant.id, definitions, { modelTier });
+    return reply.code(201).send(result);
   });
 }

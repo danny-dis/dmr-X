@@ -164,3 +164,73 @@ export const MarketplaceQuerySchema = z.object({
 });
 
 export type MarketplaceQuery = z.infer<typeof MarketplaceQuerySchema>;
+
+// ---------------------------------------------------------------------------
+// Import Schema
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical, expanded category list used across the platform (agents,
+ * marketplace, and imports). Improves on the original 6-category set by
+ * covering the full division set used by agent repos such as agency-agents.
+ */
+export const AGENT_CATEGORIES = [
+  'Academic',
+  'Design',
+  'Engineering',
+  'Finance',
+  'Game Development',
+  'GIS',
+  'Healthcare',
+  'Marketing',
+  'Operations',
+  'Paid Media',
+  'Product',
+  'Project Management',
+  'Research',
+  'Sales',
+  'Security',
+  'Spatial Computing',
+  'Specialized',
+  'Support',
+  'Testing',
+] as const;
+
+export type AgentCategory = (typeof AGENT_CATEGORIES)[number];
+
+/**
+ * Request body for POST /v1/agents/import.
+ * Source modes:
+ *  - github: fetch all .md agent definitions from a public repo
+ *  - zip:    multipart upload of a .zip containing .md agent definitions
+ *  - text:   a single pasted .md (or .agent/.json) agent definition
+ *
+ * Visibility is forced to 'public' on import regardless of input, per policy.
+ */
+export const AgentImportRequestSchema = z.object({
+  source: z.enum(['github', 'zip', 'text']),
+  githubUrl: z.string().url().optional(),
+  content: z.string().optional(),
+  filename: z.string().optional(),
+  // Options (may also be supplied as query params for multipart uploads)
+  category: z.string().optional(),
+  modelTier: z.enum(['auto', 'premium', 'budget']).optional().default('auto'),
+});
+
+export type AgentImportRequest = z.infer<typeof AgentImportRequestSchema>;
+
+export const ImportedAgentSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  instanceId: z.string(),
+  category: z.string().nullable(),
+});
+
+export const AgentImportResultSchema = z.object({
+  imported: z.number(),
+  skipped: z.number(),
+  errors: z.array(z.object({ file: z.string(), error: z.string() })),
+  agents: z.array(ImportedAgentSchema),
+});
+
+export type AgentImportResult = z.infer<typeof AgentImportResultSchema>;

@@ -10,7 +10,14 @@ import type {
   AgentRatingCreate,
   AgentListQuery,
   MarketplaceQuery,
+  AgentImportResult,
 } from './agent-schema.js';
+
+import {
+  parseAgentMdBatch,
+  fetchGitHubRepoMdFiles,
+  extractZipMdFiles,
+} from './agent-config-loader.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -231,6 +238,82 @@ export class AgentRegistryService {
     db.prepare('DELETE FROM agent_definitions WHERE id = ?').run(id);
     logger.info({ id, tenantId }, 'Agent definition deleted');
     return true;
+  }
+
+  /**
+   * Bulk-import agent definitions and automatically deploy an instance for
+   * each so they are ready to call immediately. On name collision the
+   * duplicate is created with an incrementing numeric suffix
+   * (e.g. "Frontend Developer", "Frontend Developer (1)"). Visibility is
+   * forced to 'public' regardless of per-definition value.
+   */
+  async importAgents(
+    tenantId: string,
+    definitions: AgentDefinitionCreate[],
+    options: { modelTier?: string } = {},
+  ): Promise<AgentImportResult> {
+    const visibility = 'public'; // forced per import policy
+    const modelTier = options.modelTier ?? 'auto';
+    const imported: AgentImportResult['agents'] = [];
+    const errors: AgentImportResult['errors'] = [];
+    let skipped = 0;
+
+    const existingNames = await this.getExistingDefinitionNames(tenantId);
+
+    for (const def of definitions) {
+      try {
+        if (!def.name) {
+          errors.push({ file: '(unnamed)', error: 'Missing agent name' });
+          continue;
+        }
+
+        // Duplicate handling: create with incrementing suffix
+        let finalName = def.name;
+        if (existingNames.has(finalName.toLowerCase())) {
+          let suffix = 1;
+          while (existingNames.has(`${finalName} (${suffix})`.toLowerCase())) suffix++;
+          finalName = `${finalName} (${suffix})`;
+          skipped++;
+        }
+        existingNames.add(finalName.toLowerCase());
+
+        const definition = await this.createDefinition(tenantId, {
+          ...def,
+          name: finalName,
+          visibility,
+          modelTier: (def.modelTier ?? modelTier) as AgentDefinitionCreate['modelTier'],
+        });
+
+        // Auto-deploy so the agent is ready to call downstream immediately
+        const instance = await this.createInstance(tenantId, {
+          agentDefinitionId: definition.id,
+          configOverride: {},
+        });
+        if (!instance) throw new Error('Failed to create agent instance');
+
+        imported.push({
+          id: definition.id,
+          name: finalName,
+          instanceId: instance.id,
+          category: definition.category ?? null,
+        });
+      } catch (error) {
+        errors.push({
+          file: def.name ?? '(unnamed)',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return { imported: imported.length, skipped, errors, agents: imported };
+  }
+
+  private async getExistingDefinitionNames(tenantId: string): Promise<Set<string>> {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT name FROM agent_definitions WHERE tenant_id = ?')
+      .all(tenantId) as Array<{ name: string }>;
+    return new Set((rows ?? []).map((r) => String(r.name).toLowerCase()));
   }
 
   // ── Agent Instances ───────────────────────────────────────────────────────

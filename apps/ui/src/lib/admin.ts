@@ -533,10 +533,10 @@ export const Admin = {
     apiGet<Record<string, unknown>>('/admin/settings').then((s) => ({
       claudeCode: (s.agentIntegrationClaudeCode as Record<string, unknown>) ?? null,
       codex: (s.agentIntegrationCodex as Record<string, unknown>) ?? null,
-      antigravity: (s.agentIntegrationAntigravity as Record<string, unknown>) ?? null,
+      geminiCli: (s.agentIntegrationGeminiCli as Record<string, unknown>) ?? null,
     })),
   updateAgentIntegrationConfig: (
-    tool: 'claudeCode' | 'codex' | 'antigravity',
+    tool: 'claudeCode' | 'codex' | 'gemini-cli',
     config: Record<string, unknown>,
   ) => {
     const key =
@@ -544,10 +544,10 @@ export const Admin = {
         ? 'agentIntegrationClaudeCode'
         : tool === 'codex'
           ? 'agentIntegrationCodex'
-          : 'agentIntegrationAntigravity';
+          : 'agentIntegrationGeminiCli';
     return apiPut('/admin/settings', { [key]: config });
   },
-  testIntegration: (tool: 'claude-code' | 'codex' | 'antigravity') =>
+  testIntegration: (tool: 'claude-code' | 'codex' | 'gemini-cli') =>
     apiPost<{ success: boolean; latencyMs: number; error?: string }>('/admin/integrations/test', { tool }),
 
   // Security
@@ -614,6 +614,57 @@ export const Admin = {
   },
   verifyModelFree: (providerId: string, modelId: string) => apiPost<any>('/admin/models/verify-free', { provider_id: providerId, model_id: modelId }),
   getFreeModels: () => apiGet<any>('/admin/models/free'),
+
+  // ── Agent Import (GitHub / ZIP / pasted .md) ───────────────────────────────
+  importAgents: async (params: {
+    source: 'github' | 'zip' | 'text';
+    githubUrl?: string;
+    content?: string;
+    filename?: string;
+    zipFile?: File;
+    modelTier?: string;
+    category?: string;
+  }): Promise<any> => {
+    const qs = new URLSearchParams();
+    if (params.modelTier) qs.set('modelTier', params.modelTier);
+    if (params.category) qs.set('category', params.category);
+    const query = qs.toString();
+    const path = `/v1/agents/import${query ? `?${query}` : ''}`;
+
+    if (params.source === 'zip') {
+      if (!params.zipFile) throw new Error('No ZIP file provided');
+      const base = (
+        (import.meta as ImportMeta & { env: Record<string, string | undefined> }).env?.VITE_API_BASE ?? ''
+      ).replace(/\/+$/, '');
+      const url = base ? `${base}${path}` : path;
+      const token = getTokenForPath('/v1/agents/import');
+      const form = new FormData();
+      form.append('file', params.zipFile);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+      if (!res.ok) {
+        let msg = `Import failed (${res.status})`;
+        try {
+          const j = await res.json();
+          msg = (j?.error?.message as string) || (j?.message as string) || msg;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(msg);
+      }
+      return await res.json();
+    }
+
+    return apiPost<any>(path, {
+      source: params.source,
+      githubUrl: params.githubUrl,
+      content: params.content,
+      filename: params.filename,
+    });
+  },
 };
 
 function buildSseUrl(path: string): string {

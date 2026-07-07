@@ -123,7 +123,12 @@ export function MarketplacePage() {
     }
   };
 
-  const categories = ['Sales', 'Marketing', 'Support', 'Engineering', 'Operations', 'Research'];
+  const categories = [
+    'Academic', 'Design', 'Engineering', 'Finance', 'Game Development', 'GIS',
+    'Healthcare', 'Marketing', 'Operations', 'Paid Media', 'Product',
+    'Project Management', 'Research', 'Sales', 'Security', 'Spatial Computing',
+    'Specialized', 'Support', 'Testing',
+  ];
 
   return (
     <PageContainer>
