@@ -10,7 +10,7 @@ bun run test
 
 ## Unit Tests
 
-41 test suites in `tests/unit/`:
+54 test files (50+ suites) in `tests/unit/` — a representative subset is listed below:
 
 | Test File | Covers |
 |-----------|--------|

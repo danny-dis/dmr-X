@@ -12,7 +12,7 @@ DMR-X is a universal AI routing and orchestration platform. It accepts requests 
 | **Build** | Turbo 2.9 | Monorepo task orchestration |
 | **Frontend** | React 19 + Vite 6 | Admin dashboard SPA |
 | **Language** | TypeScript 5.9+ (ESM) | Type-safe, modern module system |
-| **Packaging** | npm workspaces | Monorepo dependency management |
+| **Packaging** | Bun workspaces (npm-compatible) | Monorepo dependency management |
 
 **No external infrastructure required.** No Redis, no PostgreSQL, no message queues. The entire platform runs as a single process with SQLite for persistence.
 
@@ -81,67 +81,50 @@ dmr-x/
 │           └── hooks/        # API hooks and state management
 │
 ├── packages/
-│   ├── core/                 # Shared types, schemas, and contracts
-│   │   └── src/              # UnifiedRequest, UnifiedResponse, provider types
-│   │
-│   ├── db/                   # SQLite persistence layer
-│   │   └── src/              # SQLite client, cache, migration runner
-│   │
-│   ├── utils/                # Cross-cutting utilities
-│   │   └── src/              # Logging (pino), retries, streams, crypto, errors
-│   │
-│   └── cli/                  # CLI tool (dmrx command)
-│       └── src/
-│           ├── commands/     # init, add-provider, list-providers, status, test
-│           └── catalog.ts    # Provider catalog for CLI
+│   ├── core/                 # Shared types re-export (thin shim over @dmr-x/types)
+│   ├── types/                # Central shared TypeScript contracts (source of truth)
+│   ├── db/                   # SQLite persistence layer (client, cache, migration runner)
+│   ├── utils/                # Cross-cutting utilities (logging, retries, crypto, tool exec)
+│   ├── cli/                  # CLI tool (dmrx command)
+│   ├── secrets/              # Secrets manager (AES-encrypted provider-key storage)
+│   ├── tokenizers/           # Tokenizer registry (heuristic, tiktoken, anthropic)
+│   ├── provider-catalog/     # 35+ provider catalog: taxonomy, OAuth configs, pricing
+│   └── plugin-loader/        # Plugin loader (manifest/transport/tool/permissions)
 │
 ├── services/
-│   ├── adapters/             # Provider adapter layer
-│   │   └── src/
-│   │       ├── adapter.interface.ts    # Base adapter contract
-│   │       ├── base.adapter.ts         # Shared retry/error/hook logic
-│   │       ├── adapter-registry.ts     # Registry with health checking
-│   │       ├── openai/                 # OpenAI adapter
-│   │       ├── anthropic/              # Anthropic adapter
-│   │       ├── ollama/                 # Ollama (local) adapter
-│   │       ├── generic-openai/         # Generic OpenAI-compatible adapter
-│   │       ├── cohere/                 # Cohere adapter
-│   │       ├── replicate/              # Replicate adapter
-│   │       ├── stability/              # Stability AI adapter
-│   │       ├── elevenlabs/             # ElevenLabs TTS adapter
-│   │       ├── deepgram/               # Deepgram STT adapter
-│   │       └── jina/                   # Jina embeddings adapter
-│   │
-│   ├── router/               # Routing intelligence
-│   │   └── src/
-│   │       ├── pipeline/     # Multi-stage filtering and scoring pipeline
-│   │       ├── classifier/   # Task classification (modality + capabilities)
-│   │       ├── decomposer/   # Multi-subtask routing
-│   │       ├── fallback/     # Fallback chain execution
-│   │       └── bandit/       # Thompson Sampling bandit (self-learning)
-│   │
-│   ├── registry/             # Provider and model registry
-│   ├── quota/                # Quota management and enforcement
-│   ├── policy/               # Routing policies (allowlist, blocklist, cost, residency)
-│   ├── billing/              # Usage tracking and billing records
-│   ├── benchmark/            # Provider benchmarking and quality scoring
-│   ├── telemetry/            # Metrics collection and observability
-│   ├── oauth/                # OAuth provider authentication (Google, GitHub, HuggingFace)
+│   ├── adapters/             # Provider adapter layer — 57+ concrete adapters
+│   ├── router/               # Routing intelligence (pipeline, classifier, decomposer, bandit, A/B strategies)
+│   ├── registry/             # Provider and model registry (incl. classification/free-tier)
+│   ├── quota/                # Quota + rate-limit management
+│   ├── policy/               # Routing policies + RBAC policy engine
+│   ├── billing/              # Usage tracking, billing records, credits/wallet
+│   ├── benchmark/            # Provider benchmarking + LLM-judge quality scoring
+│   ├── telemetry/            # Metrics, OTel tracing, audit logging
+│   ├── oauth/                # OAuth provider authentication (auth_code / device_code)
 │   ├── federation/           # Cross-instance federation
-│   ├── memory/               # Conversation memory management
+│   ├── memory/               # Conversation memory + embeddings + vector search
 │   ├── sandbox/              # Sandboxed code execution
-│   ├── workers/              # Background worker tasks
-│   ├── mcp-server/           # MCP tool server
-│   └── mcp-client/           # MCP client integration
+│   ├── cache/                # Response + semantic cache
+│   ├── workers/              # Background worker tasks + task queue
+│   ├── mcp-server/           # MCP tool server + A2A, federation, RBAC, guardrails, audit
+│   ├── mcp-client/           # MCP client integration (external servers as adapters)
+│   ├── agent-registry/       # Agent definitions, instances, marketplace, RBAC roles
+│   ├── agent-runtime/        # Agent execution runtime + scheduler + billing
+│   ├── prompts/              # Prompt library + .mkd template parser
+│   ├── skill-registry/       # Universal skill registry (CRUD, import/export, versioning)
+│   ├── tool-search/          # Hybrid BM25 + semantic tool search engine
+│   ├── godmode/              # G0DM0D3 integration (ULTRAPLINIAN, CONSORTIUM, etc.)
+│   └── operator/             # Kubernetes operator (MCP/federation/workflow CRDs)
 │
 ├── tests/
-│   ├── unit/                 # 41 unit test files (1250+ tests)
-│   └── e2e/                  # Opt-in connectivity tests (3 files)
+│   ├── unit/                 # 54 unit test files
+│   └── e2e/                  # Opt-in connectivity tests (4 files)
 │
-├── scripts/                  # Install scripts and release packaging
+├── scripts/                  # Install scripts, release packaging, backup, loadtest, dev
 ├── docs/                     # Documentation
-├── infra/                    # Infrastructure configs
-└── release/                  # Pre-built release artifacts
+├── helm/                     # Helm chart for Kubernetes deployment
+├── monitoring/               # Prometheus/Alertmanager/Loki/Grafana + dashboards
+└── infra/                    # Additional infrastructure configs (terraform, etc.)
 ```
 
 ## Package Boundaries
@@ -150,22 +133,38 @@ Each package has a clear responsibility and dependency direction:
 
 | Package | Depends On | Provides |
 |---------|-----------|----------|
-| `packages/core` | nothing | Shared types, schemas, contracts |
+| `packages/core` | nothing | Shared types re-export (shim over `@dmr-x/types`) |
+| `packages/types` | nothing | Central shared TypeScript contracts |
 | `packages/db` | core | SQLite client, cache, migrations |
-| `packages/utils` | core | Logging, retries, streams, crypto, errors |
-| `services/adapters` | core, utils | Provider-specific I/O adapters |
-| `services/router` | core, utils | Selection, scoring, fallback logic |
+| `packages/utils` | core | Logging, retries, streams, crypto, errors, tool execution |
+| `packages/secrets` | core, db | AES-encrypted secrets/provider-key storage |
+| `packages/tokenizers` | core | Tokenizer registry |
+| `packages/provider-catalog` | core | 35+ provider catalog (taxonomy, OAuth, pricing) |
+| `packages/plugin-loader` | core | Plugin manifest/transport/tool/permissions |
+| `packages/cli` | core, provider-catalog | `dmrx` CLI commands |
+| `services/adapters` | core, utils | Provider-specific I/O adapters (57+) |
+| `services/router` | core, utils | Selection, scoring, fallback, bandit, A/B logic |
 | `services/registry` | core, db | Provider/model registration and lookup |
-| `services/quota` | core, db | Quota enforcement |
-| `services/policy` | core | Routing policy evaluation |
-| `services/billing` | core, db | Usage tracking |
+| `services/quota` | core, db | Quota + rate-limit enforcement |
+| `services/policy` | core | Routing + RBAC policy evaluation |
+| `services/billing` | core, db | Usage tracking, credits/wallet |
 | `services/benchmark` | core, adapters | Provider quality benchmarking |
-| `services/telemetry` | core | Metrics collection |
+| `services/cache` | core, db | Response + semantic cache |
+| `services/telemetry` | core | Metrics, OTel tracing, audit logging |
 | `services/oauth` | core, db | OAuth provider authentication |
 | `services/federation` | core | Cross-instance federation |
-| `services/memory` | core, db | Conversation memory management |
+| `services/memory` | core, db | Conversation memory + vector search |
 | `services/sandbox` | core | Sandboxed code execution |
-| `services/workers` | core | Background worker tasks |
+| `services/workers` | core | Background worker tasks + task queue |
+| `services/mcp-server` | core, adapters | MCP tools, A2A, federation, RBAC, guardrails, audit |
+| `services/mcp-client` | core, adapters | External MCP servers as adapters |
+| `services/agent-registry` | core, db | Agent definitions, marketplace, RBAC |
+| `services/agent-runtime` | core, db, agent-registry | Agent execution runtime + billing |
+| `services/prompts` | core, db | Prompt library + template parser |
+| `services/skill-registry` | core, db | Universal skill registry |
+| `services/tool-search` | core, utils | Hybrid BM25 + semantic tool search |
+| `services/godmode` | core, router | G0DM0D3 integration |
+| `services/operator` | core | Kubernetes operator (CRDs) |
 | `apps/gateway` | all services | HTTP API, middleware, route handlers |
 | `apps/ui` | — | Admin dashboard (bundled into gateway/public) |
 
@@ -180,7 +179,7 @@ SQLite via `sql.js` (WebAssembly-based, zero native dependencies):
 
 - **Debounced saves** — writes batched in a 100ms window to reduce I/O
 - **Shutdown flush** — `flush()` ensures all pending writes complete before exit
-- **Migrations** — SQL files in `packages/db/src/migrations/` run on startup
+- **Migrations** — 45 SQL migration files in `packages/db/src/migrations/` run on startup
 - **No ORM** — direct SQL queries with parameterized statements
 - **Data directory** — `~/.dmr-x/data.db` (configurable via `DMRX_DATA_DIR`)
 
@@ -254,31 +253,14 @@ If no provider matches the criteria at all, the gateway returns `503 No availabl
 
 ## MCP Server
 
-The MCP server (`services/mcp-server`) exposes DMR-X routing as MCP tools. The full SDK tool inventory (per `services/mcp-server/src/server.ts:650-671` and `tools.ts:358-380`) is 21 tools:
+The MCP server (`services/mcp-server`) exposes DMR-X routing as MCP tools and also provides A2A (Agent2Agent) agent cards, cross-instance federation, an RBAC engine, guardrails (PII redaction, content filtering), audit logging, and a hybrid tool-search engine. It registers **40+ tools** (see `docs/MCP.md` for the full catalog). Groups include:
 
-| Tool | Description |
-|------|-------------|
-| `dmrx_chat` | Chat completions |
-| `dmrx_chat_stream` | Streaming chat completions |
-| `dmrx_generate_image` | Image generation |
-| `dmrx_generate_image_stream` | Streaming image generation |
-| `dmrx_generate_video` | Video generation |
-| `dmrx_generate_video_stream` | Streaming video generation |
-| `dmrx_generate_music` | Music generation |
-| `dmrx_generate_3d` | 3D asset generation |
-| `dmrx_embed` | Text embeddings |
-| `dmrx_transcribe` | Speech-to-text |
-| `dmrx_speak` | Text-to-speech |
-| `dmrx_rerank` | Document reranking |
-| `dmrx_models` | List available models |
-| `dmrx_status` | System status |
-| `dmrx_batch` | Batch completions |
-| `dmrx_workflow` | Multi-step workflow execution |
-| `dmrx_context_save` | Save conversation context to memory |
-| `dmrx_context_load` | Load conversation context from memory |
-| `dmrx_context_list` | List stored conversation contexts |
-| `dmrx_context_summarize` | Summarize a stored conversation context |
-| `dmrx_context_compress` | Compress a stored conversation context |
+- **Routing/generation:** `dmrx_chat`, `dmrx_chat_stream`, `dmrx_models`, `dmrx_status`, `dmrx_batch`, `dmrx_workflow`, `dmrx_rerank`, `dmrx_embed`, `dmrx_transcribe`, `dmrx_speak`, `dmrx_generate_image` (+stream), `dmrx_generate_video` (+stream), `dmrx_generate_music`, `dmrx_generate_3d`.
+- **Context/memory:** `dmrx_context_save` / `_load` / `_list` / `_summarize` / `_compress`.
+- **Filesystem:** `dmrx_read_file`, `dmrx_write_file`, `dmrx_edit_file`, `dmrx_list_files`, `dmrx_search_files`.
+- **Skills:** `dmrx_skill_get` / `_list` / `_search` / `_sync`.
+- **Presets/Templates:** `dmrx_preset_*` (create/get/list/update/delete), `dmrx_template_*` (create/get/list/update/delete/execute).
+- **Tool search:** `dmrx_tool_search`, `dmrx_tool_list`.
 
 Transports: stdio (default), SSE, HTTP. Configured via `DMRX_MCP_TRANSPORT`.
 

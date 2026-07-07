@@ -6,7 +6,8 @@ We currently only provide security updates for the latest version of DMR-X.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| Latest  | :white_check_mark: |
+| 0.5.7 (latest) | :white_check_mark: |
+| Older  | :x: |
 
 ## Reporting a Vulnerability
 
@@ -26,6 +27,9 @@ Please include as much detail as possible in your report, including:
 Thank you for helping keep DMR-X secure!
 
 ## Security History
+
+### v0.5.1 – v0.5.7 (2026-06-26 – 2026-07-06)
+- Continuous security hardening across releases; no new public advisories beyond those listed below. The supported latest release is **v0.5.7**.
 
 ### v0.5.0 (2026-06-25)
 - **Hardened admin key validation** — Admin API key now requires minimum 32 characters in production. Previous versions accepted weaker keys.

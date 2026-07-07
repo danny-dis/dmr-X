@@ -24,6 +24,8 @@ DMRX_MCP_API_KEY=your-mcp-key    # API key for authentication (required in produ
 
 ## Available Tools
 
+The DMR-X MCP server exposes **40+ tools** across routing, generation, context/memory, filesystem, skills, presets, templates, and tool search. The most-used tools are documented in detail below; the remainder are summarized in [Additional tools](#additional-tools).
+
 ### `dmrx_chat`
 
 Chat completions via DMR-X routing.
@@ -226,6 +228,19 @@ Define and execute multi-step workflows.
 | `parameters` | `object` | Tool parameters |
 | `input_mapping` | `object` | Map previous step outputs to this step inputs |
 | `retry_policy` | `object` | Retry configuration (`max_retries`, `backoff_ms`) |
+
+### Additional tools (summary)
+
+The server also exposes the following tools (routing tools accept the same [Routing Parameters](#routing-parameters-all-tools) as above):
+
+- **Generation:** `dmrx_generate_video`, `dmrx_generate_video_stream`, `dmrx_generate_music`, `dmrx_generate_3d` — video/music/3D generation routed through DMR-X (parameters mirror `dmrx_generate_image`).
+- **Filesystem:** `dmrx_read_file`, `dmrx_write_file`, `dmrx_edit_file`, `dmrx_list_files`, `dmrx_search_files` — local file operations for agentic workflows (paths are constrained to the configured workspace).
+- **Skills:** `dmrx_skill_get`, `dmrx_skill_list`, `dmrx_skill_search`, `dmrx_skill_sync` — query and sync the universal skill registry.
+- **Presets:** `dmrx_preset_create`, `dmrx_preset_get`, `dmrx_preset_list`, `dmrx_preset_update`, `dmrx_preset_delete` — saved routing presets.
+- **Templates:** `dmrx_template_create`, `dmrx_template_get`, `dmrx_template_list`, `dmrx_template_update`, `dmrx_template_delete`, `dmrx_template_execute` — reusable prompt/tool templates.
+- **Tool search:** `dmrx_tool_search`, `dmrx_tool_list` — hybrid BM25 + semantic search over available tools (requires the tool-search engine).
+
+> The full, current tool inventory (40+) is the source of truth in `services/mcp-server/src/tools.ts`.
 
 ## Aggregating External MCP Servers
 

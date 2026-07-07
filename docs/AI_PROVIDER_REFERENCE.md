@@ -1,15 +1,18 @@
-# AI Provider Reference (2026)
+# AI Provider Reference
 
-Comprehensive catalog of 100+ AI providers with API details for adapter configuration.
-DMR-X ships 20+ first-class adapters (see "Local & Specialized Adapters" at the end) plus
-a `GenericOpenAIAdapter` that handles any OpenAI-compatible provider (OpenRouter, Together,
-Fireworks, Groq, Cerebras, SambaNova, etc.) without custom code.
+> **Canonical all-models provider reference for DMR-X.** Companion doc: `docs/FREE_API_PROVIDERS_REPORT.md` (free-tier only).
+>
+> **Adapter count:** DMR-X registers **57+ provider adapters** (not 18). The authoritative, current inventory is `services/adapters/src/index.ts`. This catalog is a *research snapshot* — prices and model lists reflect known state circa early/mid-2026 and **must be verified against provider docs** before use.
 
-> **Note**: Prices and model lists reflect known state circa early 2026. Always verify against provider docs before building adapters.
+DMR-X ships a `GenericOpenAIAdapter` that handles any OpenAI-compatible provider (OpenRouter, Together, Fireworks, Groq, Cerebras, SambaNova, etc.) without custom code, plus many first-class adapters — OpenAI, Anthropic, Google (via the `vertex-ai` adapter), Ollama, Bedrock, Azure OpenAI, and 50+ more (see the inventory below).
 
-> **Adapter inventory** (see `services/adapters/src/index.ts`): OpenAI, Anthropic,
-> Ollama, GenericOpenAI, Replicate, Stability, ComfyUI, FAL.ai, Runway, Veo,
-> ElevenLabs, Deepgram, Kokoro, Piper, Cohere, Jina, TEI. Total: **18 adapters**.
+> **Note on "Google"/"Mistral":** there is **no standalone `google` or `mistral` adapter**. Gemini is reached through the `vertex-ai` adapter; Mistral is reached via `GenericOpenAI` / `OpenRouter` with a Mistral base URL.
+
+## Adapter inventory (current — 57+ total)
+
+OpenAI, Anthropic, GenericOpenAI, GenericAnthropic, Ollama, Bedrock, Azure OpenAI, Vertex AI, Groq, Cerebras, SambaNova, NVIDIA-NIM, DeepSeek, xAI, Perplexity, OpenRouter, Together, Fireworks, HuggingFace, Databricks, vLLM, Nebius, Novita, Moonshot, MiniMax, LMStudio, Volcengine, Dashscope, Antigravity, Replicate, Stability, Pollinations, ComfyUI, Fal, Veo, Runway, ElevenLabs, Deepgram, Kokoro, Piper, Cohere, Jina, TEI, audio-separation, OCR, and more.
+
+> **9-dimension taxonomy:** DMR-X classifies providers/models along a 9-dimension taxonomy (reconciled live against MCP tools) — see `services/registry`.
 
 ---
 
@@ -1192,7 +1195,7 @@ Top-tier embeddings. `voyage-3` (1024d), `voyage-code-3`, domain-specific varian
 | Google Gemini | x | x | x | x | | | x | | | |
 | Mistral | x | x | | x | | | | | | |
 | Cohere | x | | | x | x | | | | | |
-| xAI (Grok) | x | x | x | | | | | | | |
+| xAI (Grok) | x | x | | | | | | | | |
 | DeepSeek | x | | | | | | | | | |
 | ElevenLabs | | | | | | x | x | | stem-separation | |
 | Deepgram | | | | | | x | x | | diarization | |

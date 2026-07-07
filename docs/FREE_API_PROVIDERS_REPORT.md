@@ -1,5 +1,7 @@
 # Free AI API Access — Comprehensive Report
 
+> **Free-tier companion to the canonical all-models reference `docs/AI_PROVIDER_REFERENCE.md`.** This document is a *research snapshot* (mid-2026) — verify rate limits and model availability against provider docs before relying on them.
+
 **Date:** July 5, 2026 (updated)
 **Purpose:** Research all providers, labs, and aggregators offering free AI API access with detailed limits for DMR-X integration
 **Status:** 56 providers · 187 free models · Verified rate limits

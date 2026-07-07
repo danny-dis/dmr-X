@@ -7,7 +7,7 @@ Universal AI routing, orchestration, and **Model Context Protocol (MCP) platform
 - **Multi-Format API** — native OpenAI, Anthropic, and Gemini endpoints from one gateway
 - **Dynamic Routing** — cost/latency/quality scoring with fallback chains and Thompson Sampling bandit
 - **Meta-Model Aliases** — `auto-coding`, `auto-smart`, `auto-agentic`, `auto-fast`, `auto` for automatic provider selection
-- **18 Provider Adapters** — OpenAI, Anthropic, Google, Mistral, Cohere, Ollama, Replicate, Stability, ElevenLabs, Deepgram, Jina, ComfyUI, FAL.ai, Runway, Veo, Kokoro, Piper, TEI, plus GenericOpenAI for any OAI-compatible provider
+- **57+ Provider Adapters** — a curated set includes OpenAI, Anthropic, Google (Vertex AI), Ollama, Bedrock, Azure OpenAI, GenericOpenAI/GenericAnthropic (any OAI-compatible provider), Groq, Cerebras, SambaNova, NVIDIA-NIM, DeepSeek, xAI, Perplexity, OpenRouter, Together, Fireworks, HuggingFace, Databricks, vLLM, Nebius, Novita, Moonshot, MiniMax, LMStudio, Volcengine, Dashscope, Antigravity, Replicate, Stability, Pollinations, ComfyUI, Fal, Veo, Runway, ElevenLabs, Deepgram, Kokoro, Piper, Cohere, Jina, TEI, audio-separation, and OCR. Full catalog in `docs/AI_PROVIDER_REFERENCE.md`.
 - **Zero External Dependencies** — SQLite via sql.js, no Redis/Postgres required
 - **Single Binary Distribution** — compile to standalone executable for Windows, Linux, macOS
 - **Admin UI** — React/Vite dashboard for providers, models, tenants, keys, policies, quotas, and telemetry
@@ -82,15 +82,18 @@ docker compose up -d
                        │
                        ▼
 ┌──────────────────────────────────────────────────────┐
-│  Provider Adapters (18 total)                         │
-│  OpenAI · Anthropic · Ollama · GenericOpenAI         │
-│  Replicate · Stability · ComfyUI · FAL · Runway · Veo│
-│  ElevenLabs · Deepgram · Kokoro · Piper              │
-│  Cohere · Jina · TEI                                 │
+│  Provider Adapters (57+ total)                       │
+│  OpenAI · Anthropic · Google(Vertex) · Ollama ·      │
+│  Bedrock · Azure OpenAI · GenericOpenAI · Groq ·     │
+│  DeepSeek · xAI · Perplexity · Together · Fireworks ·│
+│  Replicate · Stability · ComfyUI · Fal · Veo · Runway│
+│  ElevenLabs · Deepgram · Kokoro · Piper · Cohere ·   │
+│  Jina · TEI · OCR · audio-separation (+ many OAI-     │
+│  compatible subclasses) — full list in docs ref      │
 └──────────────────────────────────────────────────────┘
 ```
 
-This is an npm workspace TypeScript monorepo. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
+This is a Bun workspace (npm-compatible) TypeScript monorepo. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
 
 ## Repository Layout
 
@@ -100,33 +103,46 @@ dmr-x/
 │   ├── gateway/          # Fastify HTTP gateway + static UI host
 │   └── ui/               # React/Vite admin dashboard
 ├── packages/
-│   ├── core/             # Shared types, schemas, and contracts
+│   ├── core/             # Shared types re-export (thin shim over @dmr-x/types)
+│   ├── types/            # Central shared TypeScript contracts (source of truth)
 │   ├── db/               # SQLite client, cache, and migrations
-│   ├── utils/            # Logging, retries, streams, crypto, errors
-│   └── cli/              # CLI tool (dmrx command)
+│   ├── utils/            # Logging, retries, streams, crypto, errors, tool execution
+│   ├── cli/              # CLI tool (dmrx command)
+│   ├── secrets/          # Secrets manager (AES-encrypted provider-key storage)
+│   ├── tokenizers/       # Tokenizer registry (heuristic, tiktoken, anthropic)
+│   ├── provider-catalog/ # 35+ provider catalog: taxonomy, OAuth configs, pricing
+│   └── plugin-loader/    # Plugin loader (manifest/transport/tool/permissions)
 ├── services/
-│   ├── adapters/         # Provider adapter interface + 18 concrete adapters
-│   ├── router/           # Task classifier, routing pipeline, fallback, bandit
-│   ├── registry/         # Provider and model registry
-│   ├── quota/            # Quota management
-│   ├── policy/           # Routing policies (allowlist, blocklist, cost, residency)
-│   ├── billing/          # Usage tracking and billing
-│   ├── benchmark/        # Provider benchmarking
-│   ├── telemetry/        # Metrics and observability
-│   ├── oauth/            # OAuth provider authentication
+│   ├── adapters/         # Provider adapter interface + 57+ concrete adapters
+│   ├── router/           # Task classifier, routing pipeline, fallback, bandit, A/B strategies
+│   ├── registry/         # Provider and model registry (incl. model classification/free-tier)
+│   ├── quota/            # Quota + rate-limit management
+│   ├── policy/           # Routing policies + RBAC policy engine
+│   ├── billing/          # Usage tracking and billing (credits/wallet)
+│   ├── benchmark/        # Provider benchmarking + LLM-judge quality scoring
+│   ├── telemetry/        # Metrics, OTel tracing, audit logging
+│   ├── oauth/            # OAuth provider authentication (auth_code / device_code)
 │   ├── federation/       # Cross-instance federation
-│   ├── memory/           # Conversation memory management
+│   ├── memory/           # Conversation memory + embeddings + vector search
 │   ├── sandbox/          # Sandboxed code execution
-│   ├── workers/          # Background worker tasks
-│   ├── mcp-server/       # MCP tool server (stdio/SSE/HTTP)
-│   └── mcp-client/       # MCP client integration
+│   ├── workers/          # Background worker tasks + task queue
+│   ├── mcp-server/       # MCP tool server + A2A, federation, RBAC, guardrails, audit
+│   ├── mcp-client/       # MCP client integration (external servers as adapters)
+│   ├── agent-registry/   # Agent definitions, instances, marketplace, RBAC roles
+│   ├── agent-runtime/    # Agent execution runtime + scheduler + billing
+│   ├── prompts/          # Prompt library + .mkd template parser
+│   ├── skill-registry/   # Universal skill registry (CRUD, import/export, versioning)
+│   ├── tool-search/      # Hybrid BM25 + semantic tool search engine
+│   ├── godmode/          # G0DM0D3 integration (ULTRAPLINIAN, CONSORTIUM, etc.)
+│   └── operator/         # Kubernetes operator (MCP/federation/workflow CRDs)
 ├── tests/
-│   ├── unit/             # Unit tests (41 test files / 1250+ tests)
+│   ├── unit/             # Unit tests (54 test files)
 │   └── e2e/              # Opt-in end-to-end connectivity tests
-├── scripts/              # Install scripts and release packaging
+├── scripts/              # Install scripts, release packaging, backup, loadtest, dev
 ├── docs/                 # Documentation
-├── infra/                # Infrastructure configs
-└── release/              # Pre-built release artifacts
+├── helm/                 # Helm chart for Kubernetes deployment
+├── monitoring/           # Prometheus/Alertmanager/Loki/Grafana + dashboards
+└── infra/                # Additional infrastructure configs (terraform, etc.)
 ```
 
 ## Multi-Format API
@@ -161,6 +177,8 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 
 ## API Endpoints
 
+> The gateway exposes **200+ live routes** (core, multimodal, agentic, utilities, integrations, and a large admin surface). The tables below are a curated, correct subset. `prompt.routes` (`/v1/prompts`) and `cloudcode.routes` are implemented in source but **not currently registered** in the gateway.
+
 ### Core
 
 | Method | Endpoint | Description |
@@ -168,8 +186,10 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat |
 | `POST` | `/v1/messages` | Anthropic-compatible messages |
 | `POST` | `/v1/gemini/generateContent` | Gemini-compatible generateContent |
+| `POST` | `/v1/models/:model/gemini:generateContent` | Gemini generateContent with explicit model |
 | `GET` | `/v1/models` | List available models (OpenAI format) |
 | `GET` | `/v1/models/:modelId` | Single model lookup |
+| `POST` | `/v1/moderations` | Content moderation |
 
 ### Multimodal
 
@@ -192,39 +212,59 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 | `POST` | `/v1/tools/execute` | Single tool execution |
 | `POST` | `/v1/tools/loop` | Multi-turn tool loop |
 | `POST` | `/v1/agentic/chat` | Agentic chat with approval gates |
-| `POST/GET/DELETE` | `/v1/conversations` | Conversation history management |
-| `POST` | `/v1/agents` | Agent execution |
-| `POST` | `/v1/agent-chat` | Agent chat with streaming |
-| `POST` | `/v1/prompts` | Prompt template management |
+| `POST` | `/v1/agentic/chat/:conversationId/cancel` | Cancel an in-flight agentic chat |
+| `GET/POST/PUT/DELETE` | `/v1/conversations` | Conversation history (full CRUD + message append/batch) |
+| `GET/POST/PUT/DELETE` | `/v1/agents` | Agent definitions (CRUD, deploy, instances) |
+| `GET` | `/v1/marketplace` | Browse the agent marketplace |
+| `POST` | `/v1/marketplace/:id/install` | Install a marketplace agent |
+| `POST` | `/v1/agents/import` | Import agent (GitHub repo, ZIP, or pasted `.md`) |
+| `POST/GET` | `/v1/agent-chat` | Agent chat (streaming) + stats/executions/cancel |
 
 ### Utilities
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/v1/compression` | Prompt compression |
+| `GET/PUT/POST` | `/v1/compression/*` | Prompt compression (tenant/key config, retrieve, stats, cleanup) |
 | `POST` | `/v1/route` | Route decision preview |
-| `POST` | `/v1/validate` | Request validation |
-| `POST` | `/v1/count-tokens` | Token counting |
+| `GET` | `/validate` | Request validation (registered at root — **not** `/v1/validate`) |
+| `POST` | `/v1/messages/count_tokens` | Token counting (path is `/v1/messages/count_tokens`) |
 
 ### Integrations
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/v1/godmode/*` | G0DM0D3 integration (ULTRAPLINIAN, CONSORTIUM, etc.) |
-| `POST` | `/cloudcode/*` | Cloud Code protocol (Antigravity/agy) |
+| `POST` | `/v1/godmode/*` | G0DM0D3 integration — `chat`, `ultraplinian`, `consortium`, `autotune`, `parseltongue`, `transform` |
+| `POST` | `/cloudcode/*` | Cloud Code protocol (Antigravity/agy) — **route handler exists but is not yet registered in the gateway** |
 
 ### Admin
+
+> The admin surface is large (~120 routes). The groups below are representative; full coverage includes CRUD + sub-routes for each.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET/POST/PUT/DELETE` | `/v1/admin/tenants` | Tenant management |
-| `GET/POST/DELETE` | `/v1/admin/api-keys` | API key management |
-| `GET/PUT` | `/v1/admin/providers` | Provider configuration |
-| `GET/PUT` | `/v1/admin/settings` | System settings |
-| `GET` | `/v1/admin/policies` | Routing policies |
+| `GET/POST/DELETE` | `/v1/admin/api-keys` | API key management (+ `PATCH` expiry/compression, tools) |
+| `GET/PUT` + full CRUD | `/v1/admin/providers` | Provider config, keys, OAuth (auth_code/device_code) sub-routes |
+| `GET/PUT` + sub-routes | `/v1/admin/models` | Model management (classifications, free-tier, verify-free) |
+| `GET/POST/DELETE` | `/v1/admin/organizations` | Organizations + members |
+| `GET` | `/v1/admin/benchmarks/*` | Benchmark leaderboard, battles, tournaments, runs, validations |
+| `GET` | `/v1/admin/billing/*`, `/v1/admin/credits/*` | Usage history, billing summary, credit wallet |
+| `GET` | `/v1/admin/dashboard/*` | Dashboard stats + live stream |
+| `GET` | `/v1/admin/routing/*` | Routing decisions + performance-by-mode |
+| `GET` | `/v1/admin/free-tier/summary`, `/v1/admin/cost/dashboard` | Free-tier & cost dashboards |
+| `GET/POST` | `/v1/admin/policies` | Routing + RBAC policies |
 | `GET` | `/v1/admin/quotas` | Quota management |
-| `GET` | `/v1/admin/billing` | Usage and billing |
-| `GET` | `/v1/admin/telemetry` | Metrics and observability |
+| `GET` | `/v1/admin/alerts` | Alerts (ack/resolve) |
+| `GET` | `/v1/admin/telemetry/*` | Metrics + telemetry stream |
+| `GET` | `/v1/admin/audit/events` | Audit events |
+| `GET/POST` | `/v1/admin/memory/*` | Memory + vector search |
+| `GET/POST` | `/v1/admin/sandbox/jobs` | Sandbox job control |
+| `GET/POST` | `/v1/admin/workers` | Worker pool control |
+| `GET/POST/DELETE` | `/v1/admin/federation` | Cross-instance federation |
+| `GET/PUT` | `/v1/admin/settings` | System settings |
+| `GET/POST` | `/v1/admin/mcp/*` | MCP server control (tools, config, RBAC, federation, a2a, aggregation) |
+| `GET/POST/PUT/DELETE` | `/v1/admin/fusion-panels` | Fusion panels (slots) |
+| `POST` | `/v1/admin/security/rotate-admin-key` | Rotate admin key |
 
 ### Health
 
@@ -277,7 +317,7 @@ bun run test
 
 **Security:** Since v0.2.0, DMR-X has patched a cross-tenant data leak, an SSRF DNS-rebinding bypass, and 11 CVEs. See [SECURITY.md](SECURITY.md).
 
-41 unit test files / 1250+ tests covering:
+54 unit test files (50+ suites, 1200+ assertions) covering:
 
 - Routing pipeline (capability filter, availability, cost/latency scoring, final selector, fallback)
 - Anthropic converter and stream serializer
@@ -315,10 +355,9 @@ CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that build
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
 | [SECURITY.md](SECURITY.md) | Security policy, supported versions, and vulnerability disclosure |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operational runbook and incident response |
-| [docs/WIRING-VERIFICATION.md](docs/WIRING-VERIFICATION.md) | Technical wiring verification reference |
+| [docs/ROADMAP-STATUS.md](docs/ROADMAP-STATUS.md) | Feature/roadmap status checklist (supersedes old planning & wiring docs) |
 | [docs/TRANSPARENCY-VERIFICATION.md](docs/TRANSPARENCY-VERIFICATION.md) | Provider transparency verification |
-| [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Provider API reference (35+ providers) |
-| [docs/AI_API_PROVIDERS_EXHAUSTIVE.md](docs/AI_API_PROVIDERS_EXHAUSTIVE.md) | Exhaustive provider catalog (100+) |
+| [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Canonical all-models provider reference (57+ adapters / 100+ providers) |
 | [docs/FREE_API_PROVIDERS_REPORT.md](docs/FREE_API_PROVIDERS_REPORT.md) | Free-tier provider report |
 
 ## Contributing

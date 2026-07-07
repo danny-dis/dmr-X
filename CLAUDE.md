@@ -30,7 +30,7 @@ DMR-X is a universal AI routing and orchestration platform. A single Fastify gat
 - **Primary:** Bun 1.0+ — use `bun run` for all scripts
 - **Also works:** Node.js 18+ (but Bun is preferred)
 - **Package manager:** Bun (see `package.json` `packageManager` field)
-- **Monorepo:** npm workspaces managed by Turbo
+- **Monorepo:** Bun workspaces (npm-compatible) managed by Turbo
 
 ## Key Commands
 

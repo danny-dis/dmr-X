@@ -2,7 +2,7 @@
 
 DMR-X is configured via environment variables. Copy `.env.example` to `.env` for local development. Values are read from `process.env` in Bun/Node packages and `import.meta.env` in the Vite UI.
 
-This page documents **every** `DMRX_*` environment variable the gateway understands. Provider key variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) are listed at the bottom in [Provider Keys](#provider-keys) — they are not `DMRX_`-prefixed.
+This page documents the stable, supported `DMRX_*` environment variables. `.env.example` is the authoritative list and may include experimental variables not covered here. Provider key variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) are listed at the bottom in [Provider Keys](#provider-keys) — they are not `DMRX_`-prefixed.
 
 ## Quick Reference
 
@@ -129,6 +129,85 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 
 **Security:** The MCP server binds to `127.0.0.1` by default. Only change to `0.0.0.0` if you need remote access, and always set `DMRX_MCP_API_KEY` when exposing externally.
 
+## Federation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_FEDERATION_ENABLED` | `false` | Enable cross-instance federation. |
+| `DMRX_FEDERATION_INSTANCE_ID` | — | Unique ID for this instance in the federation. |
+| `DMRX_FEDERATION_INSTANCE_NAME` | — | Human-readable instance name. |
+| `DMRX_FEDERATION_DISCOVERY_METHOD` | — | Discovery mechanism (`mdns`, `static`, etc.). |
+| `DMRX_FEDERATION_MDNS_SERVICE_NAME` / `DMRX_FEDERATION_MDNS_SERVICE_TYPE` | — | mDNS service name/type for discovery. |
+| `DMRX_FEDERATION_HEARTBEAT_INTERVAL` | — | Heartbeat interval (ms). |
+| `DMRX_FEDERATION_SYNC_INTERVAL` | — | State sync interval (ms). |
+| `DMRX_FEDERATION_PEER_TIMEOUT` | — | Peer timeout (ms). |
+| `DMRX_FEDERATION_MAX_REMOTE_TOOLS` | — | Cap on tools proxied from remote peers. |
+| `DMRX_FEDERATION_ENABLE_TOOL_PROXY` | `false` | Proxy tools from federation peers as local MCP tools. |
+
+## RBAC
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_RBAC_ENABLED` | `false` | Enable the RBAC policy engine for MCP/admin access. |
+| `DMRX_RBAC_DEFAULT_EFFECT` | `deny` | Default effect when no policy matches (`allow`/`deny`). |
+| `DMRX_RBAC_POLICIES_PATH` | — | Path to the RBAC policy document. |
+| `DMRX_RBAC_AUDIT_LOGGING` | `false` | Audit RBAC decisions. |
+
+## Guardrails
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_GUARDRAILS_ENABLED` | `false` | Enable guardrails (PII redaction, content filtering). |
+| `DMRX_GUARDRAILS_PII_REDACTION` | `false` | Redact PII from prompts/responses. |
+| `DMRX_GUARDRAILS_CONTENT_FILTERING` | `false` | Apply content filtering. |
+| `DMRX_GUARDRAILS_BLOCKED_KEYWORDS` | — | Comma-separated blocked keywords. |
+| `DMRX_GUARDRAILS_LOG_DETECTIONS` | `false` | Log guardrail detections. |
+
+## Audit Logging
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_AUDIT_ENABLED` | `false` | Enable audit event logging. |
+| `DMRX_AUDIT_INCLUDE_BODIES` | `false` | Include request/response bodies in audit records. |
+| `DMRX_AUDIT_RETENTION_DAYS` | — | Audit record retention period (days). |
+
+## Tool Search
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_TOOL_SEARCH_ENABLE_BM` | `true` | Enable BM25 lexical tool search. |
+| `DMRX_TOOL_SEARCH_ENABLE_SEMANTIC` | `false` | Enable semantic (embedding) tool search. |
+| `DMRX_TOOL_SEARCH_MAX_RESULTS` | — | Max results returned. |
+| `DMRX_TOOL_SEARCH_MIN_SCORE` | — | Minimum relevance score. |
+| `DMRX_TOOL_SEARCH_RRF_CONSTANT` | — | Reciprocal Rank Fusion constant. |
+| `DMRX_TOOL_SEARCH_SEMANTIC_WEIGHT` | — | Weight for the semantic score in RRF. |
+| `DMRX_TOOL_SEARCH_EMBEDDING_PROVIDER` / `DMRX_TOOL_SEARCH_OPENAI_MODEL` / `DMRX_TOOL_SEARCH_OLLAMA_URL` / `DMRX_TOOL_SEARCH_OLLAMA_MODEL` | — | Embedding backend config for semantic search. |
+| `DMRX_TOOL_SEARCH_REMOTE_URL` / `DMRX_TOOL_SEARCH_REMOTE_API_KEY` | — | Remote tool-search service. |
+
+## Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_OTEL_TRACING` | `false` | Enable OpenTelemetry tracing. |
+| `DMRX_OTEL_METRICS` | `false` | Enable OTel metrics. |
+| `DMRX_OTLP_ENDPOINT` | — | OTLP exporter endpoint. |
+
+## Router Tuning
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_ROUTER_EPSILON` | — | Epsilon for epsilon-greedy selection (overrides default). |
+| `DMRX_ENABLE_DECOMPOSITION` | `false` | Enable task decomposition / specialist routing. |
+| `DMRX_DEFAULT_QUALITY_TARGET` | `balanced` | Default quality target (`frontier`/`balanced`/`economy`). |
+
+## MCP Server (additional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_MCP_ALLOWED_TOOLS` | — | Comma-separated allowlist of tool names the server may expose. |
+| `DMRX_MCP_API_KEYS_CONFIG` | — | Path to a file with multiple MCP API keys. |
+| `DMRX_MCP_METRICS_PORT` / `DMRX_MCP_METRICS_PATH` | — | Port/path for the MCP server's own metrics endpoint. |
+
 ## Testing (opt-in)
 
 These variables control the opt-in E2E test suite. They have no effect on production behaviour.
@@ -149,7 +228,7 @@ All provider keys are optional. Set the ones you want to use. None of these are 
 | `OPENAI_API_KEY` | OpenAI | `sk-...` |
 | `ANTHROPIC_API_KEY` | Anthropic | `sk-ant-...` |
 | `GOOGLE_API_KEY` | Google Gemini / Veo | API key |
-| `MISTRAL_API_KEY` | Mistral AI | API key |
+| `MISTRAL_API_KEY` | Mistral AI | API key — *no dedicated adapter; reach Mistral via `GenericOpenAI`/`OpenRouter` with a Mistral base URL* |
 | `DEEPSEEK_API_KEY` | DeepSeek | API key |
 | `XAI_API_KEY` | xAI (Grok) | API key |
 

@@ -1,5 +1,22 @@
 # Changelog
 
+> **Counts current as of v0.5.7:** the gateway registers **57+ provider adapters** (older entries referencing "18 adapters" reflect earlier releases) and ships **45 SQL migrations**. The full provider catalog lives in `docs/AI_PROVIDER_REFERENCE.md`.
+
+## v0.5.7 — Current (2026-07-06)
+
+### Features
+- **Agent import** — import agents from a GitHub repo, a ZIP archive, or a pasted `.md` file (`POST /v1/agents/import`).
+- **9-dimension model taxonomy** — providers/models are classified along a 9-dimension taxonomy with live reconciliation against MCP tools.
+- **Modernized benchmarking** — benchmark infrastructure reworked to industry standards, with new SLOs for benchmark execution latency, judge quality, and error budgets (`docs/SLO.md`).
+- **Admin surface expansion** — organizations/members, benchmarks (leaderboard/battles/tournaments), credits wallet, dashboards, routing analytics, free-tier & cost dashboards, alerts, memory + vector search, sandbox jobs, worker-pool control, federation, MCP control plane (RBAC/federation/A2A/aggregation), and fusion panels.
+- **New endpoints** — `/v1/moderations`, `/v1/messages/count_tokens`, `/v1/compression/*`, `/v1/godmode/*` sub-routes, and an expanded agents/conversations/marketplace surface. See the `README.md` API reference.
+
+### Fixes
+- Corrected migration-count assertions in the SQLite test; fixed the worker de-duplication test.
+- Bumped all workspace packages to `0.5.7`; updated the Helm `appVersion`.
+
+> Per-commit history lives in git (`git log`); this file summarizes notable releases.
+
 ## v0.5.0 — Stable Release (2026-06-25)
 
 ### Bug Fixes
@@ -65,6 +82,8 @@
 
 ### Versioning
 - All 5 workspace packages bumped to `0.1.1`.
+
+> _These legacy "Unreleased" sections were shipped in v0.1.x / v0.3.0 and are kept for historical context._
 
 ## Unreleased — Production Readiness (2026-06-12)
 
