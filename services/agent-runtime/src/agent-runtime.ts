@@ -74,7 +74,7 @@ export class AgentRuntimeService {
    * Build the system prompt for an agent, incorporating its definition.
    * Resolves linked skills (tenant-scoped) and inlines their markdown content.
    */
-  buildSystemPrompt(definition: AgentDefinition): string {
+  buildSystemPrompt(definition: AgentDefinition, turn?: number): string {
     const parts: string[] = [];
 
     // 1. Identity block
@@ -117,6 +117,20 @@ export class AgentRuntimeService {
         `Skills you currently possess: ${ownedList}. ` +
         `You may create new skills via the skill_create tool or refine existing (non-pinned) ones via skill_patch.`,
       );
+
+      // STRONG/ACTIONABLE nudge — only on hard turn counter multiples of the interval.
+      // When `turn` is undefined (e.g. single-shot dispatch), never show this.
+      if (
+        turn !== undefined &&
+        turn > 0 &&
+        turn % definition.skillNudgeInterval === 0
+      ) {
+        parts.push(
+          `SKILL-CAPTURE TURN: now is the moment to act. If anything reusable was learned this session, call ` +
+          `skill_create to capture it, or skill_patch to refine an existing (non-pinned) skill. ` +
+          `If nothing is worth saving, continue normally.`,
+        );
+      }
     }
 
     // 5. Tool constraints

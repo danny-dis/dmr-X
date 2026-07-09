@@ -7,6 +7,8 @@ import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
+import { Checkbox } from '@/components/primitives/Checkbox';
+import { Field, FieldDescription } from '@/components/primitives/Field';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
@@ -64,8 +66,18 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
   const [tools, setTools] = React.useState('');
   const [visibility, setVisibility] = React.useState('private');
   const [skills, setSkills] = React.useState<string[]>([]);
+  const [skillNudgeInterval, setSkillNudgeInterval] = React.useState(8);
+  const [enableSkillTools, setEnableSkillTools] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Self-learning is on when the nudge interval is a positive number.
+  const selfLearningEnabled = Number.isFinite(skillNudgeInterval) && skillNudgeInterval > 0;
+
+  // Check the skill-tools box by default when self-learning is enabled.
+  React.useEffect(() => {
+    if (selfLearningEnabled && !enableSkillTools) setEnableSkillTools(true);
+  }, [selfLearningEnabled, enableSkillTools]);
 
   // Skills available to attach to the agent. The backend exposes them at
   // GET /v1/skills; until it lands this just renders an empty selector.
@@ -87,7 +99,17 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
     setError(null);
 
     try {
-      const allowedTools = tools.split(',').map(t => t.trim()).filter(Boolean);
+      const skillTools = ['skill_create', 'skill_patch'];
+      const userTools = tools.split(',').map(t => t.trim()).filter(Boolean) as string[];
+      // Normalize to a unique string[] and merge the skill tools based on the
+      // checkbox, without clobbering tools the user typed.
+      let allowedTools = Array.from(new Set(userTools));
+      if (enableSkillTools) {
+        allowedTools = Array.from(new Set([...allowedTools, ...skillTools]));
+      } else {
+        allowedTools = allowedTools.filter(t => !skillTools.includes(t));
+      }
+
       const body: Record<string, unknown> = {
         name: name.trim(),
         description: description.trim() || undefined,
@@ -99,6 +121,10 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
       if (humanName.trim()) body.humanName = humanName.trim();
       if (personality.trim()) body.personality = personality.trim();
       if (skills.length > 0) body.skills = skills;
+      // Include nudge interval only when it's a non-negative number (0 disables).
+      if (Number.isFinite(skillNudgeInterval) && skillNudgeInterval >= 0) {
+        body.skillNudgeInterval = skillNudgeInterval;
+      }
 
       await Admin.fetch('/v1/agents', {
         method: 'POST',
@@ -113,6 +139,8 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
       setModel('');
       setTools('');
       setSkills([]);
+      setSkillNudgeInterval(8);
+      setEnableSkillTools(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create agent');
     } finally {
@@ -205,6 +233,45 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
             placeholder="dmrx_chat, dmrx_generate_image"
             className="mt-1"
           />
+        </div>
+        <div>
+          <Field orientation="vertical">
+            <div>
+              <label className="text-sm font-medium">Skill learning interval (turns)</label>
+              <Input
+                type="number"
+                min={0}
+                value={skillNudgeInterval}
+                onChange={e => {
+                  const n = parseInt(e.target.value, 10);
+                  setSkillNudgeInterval(Number.isNaN(n) ? 0 : n);
+                }}
+                className="mt-1 w-32"
+              />
+            </div>
+            <FieldDescription>
+              Every N turns the agent is nudged to capture or refine a skill. 0 disables.
+            </FieldDescription>
+          </Field>
+        </div>
+        <div>
+          <Field orientation="horizontal">
+            <Checkbox
+              id="enable-skill-tools"
+              checked={enableSkillTools}
+              onCheckedChange={(v) => setEnableSkillTools(v === true)}
+            />
+            <div>
+              <label htmlFor="enable-skill-tools" className="text-sm font-medium">
+                Enable skill learning tools
+              </label>
+              <FieldDescription>
+                Adds <code className="font-mono">skill_create</code> and{' '}
+                <code className="font-mono">skill_patch</code> to Allowed Tools so the agent
+                can capture and refine skills.
+              </FieldDescription>
+            </div>
+          </Field>
         </div>
         <div>
           <MultiSelect
