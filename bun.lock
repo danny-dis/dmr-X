@@ -46,7 +46,6 @@
         "@dmr-x/registry": "*",
         "@dmr-x/router": "*",
         "@dmr-x/sandbox": "*",
-        "@dmr-x/skill-registry": "*",
         "@dmr-x/telemetry": "*",
         "@dmr-x/tokenizers": "*",
         "@dmr-x/utils": "*",
@@ -344,7 +343,6 @@
         "@dmr-x/mcp-client": "*",
         "@dmr-x/policy": "*",
         "@dmr-x/router": "*",
-        "@dmr-x/skill-registry": "*",
         "@dmr-x/telemetry": "*",
         "@dmr-x/tool-search": "*",
         "@dmr-x/utils": "*",
@@ -480,19 +478,6 @@
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
         "@dmr-x/utils": "*",
-      },
-      "devDependencies": {
-        "typescript": "5.9.3",
-      },
-    },
-    "services/skill-registry": {
-      "name": "@dmr-x/skill-registry",
-      "version": "0.5.7",
-      "dependencies": {
-        "@dmr-x/core": "*",
-        "@dmr-x/db": "*",
-        "@dmr-x/utils": "*",
-        "zod": "^3.23.0",
       },
       "devDependencies": {
         "typescript": "5.9.3",
@@ -644,8 +629,6 @@
     "@dmr-x/sandbox": ["@dmr-x/sandbox@workspace:services/sandbox"],
 
     "@dmr-x/secrets": ["@dmr-x/secrets@workspace:packages/secrets"],
-
-    "@dmr-x/skill-registry": ["@dmr-x/skill-registry@workspace:services/skill-registry"],
 
     "@dmr-x/telemetry": ["@dmr-x/telemetry@workspace:services/telemetry"],
 
