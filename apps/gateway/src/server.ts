@@ -49,6 +49,7 @@ import { routeDecisionRoutes } from './routes/route.routes.js';
 import { validateRoutes } from './routes/validate.routes.js';
 import { countTokensRoutes } from './routes/count-tokens.routes.js';
 import { agentRoutes } from './routes/agent.routes.js';
+import { registerSkillRoutes } from './routes/skill.routes.js';
 import { agentChatRoutes } from './routes/agent-chat.routes.js';
 import { agentDispatchRoutes } from './routes/agent-dispatch.routes.js';
 import { createAgentConcurrencyGuard } from './middleware/agent-concurrency.middleware.js';
@@ -570,6 +571,8 @@ void (async () => {
     await server.register(countTokensRoutes, { prefix: '/v1' });
     logger.info('Registering route: agentRoutes');
     await server.register(agentRoutes, { prefix: '/v1' });
+    logger.info('Registering route: skillRoutes');
+    await server.register(registerSkillRoutes, { prefix: '/v1' });
     logger.info('Registering route: agentChatRoutes');
     await server.register(agentChatRoutes, { prefix: '/v1' });
     logger.info('Registering route: agentDispatchRoutes');

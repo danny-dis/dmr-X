@@ -34,6 +34,25 @@ export {
 } from './agent-schema.js';
 
 export {
+  skillService,
+  type Skill,
+  type SkillListResult,
+  type SkillImportItem,
+  type BulkImportSkillResult,
+} from './skill.service.js';
+
+export {
+  SkillCreateSchema,
+  SkillUpdateSchema,
+  SkillSourceSchema,
+  SkillListQuerySchema,
+  type SkillCreate,
+  type SkillUpdate,
+  type SkillSource,
+  type SkillListQuery,
+} from './skill-schema.js';
+
+export {
   loadAgentFromConfig,
   loadAgentsFromDirectory,
   parseAgentMdFromString,

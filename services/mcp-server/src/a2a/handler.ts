@@ -15,6 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { createLogger } from '@dmr-x/utils';
 
+import { resolveGatewayKey } from '../tenant-key.js';
 import { buildAgentCard, type AgentCardConfig } from './agent-card.js';
 import { getTaskManager, type TaskMessage } from './task-manager.js';
 
@@ -116,7 +117,10 @@ async function handleTaskSend(req: IncomingMessage, res: ServerResponse): Promis
     // the best matching defined subagent. This bridges A2A callers (other
     // agents) into DMR-X's subagent fleet.
     const gatewayUrl = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
-    const agentApiKey = process.env.DMRX_MCP_AGENT_API_KEY || '';
+    // Per-client tenant isolation: resolve key from the incoming request's
+    // X-DMR-Tenant-Key header, falling back to DMRX_MCP_AGENT_API_KEY (legacy
+    // shared tenant) or a best-effort auto-provisioned key.
+    const agentApiKey = resolveGatewayKey(req.headers);
     let taskText = '';
     const msg = body.message;
     if (typeof msg === 'string') {
@@ -125,6 +129,13 @@ async function handleTaskSend(req: IncomingMessage, res: ServerResponse): Promis
       taskText = msg.parts.map((p: any) => (typeof p === 'string' ? p : p?.text ?? '')).join('\n').trim();
     } else if (typeof msg?.text === 'string') {
       taskText = msg.text;
+    }
+
+    if (!agentApiKey) {
+      logger.warn(
+        { gatewayUrl },
+        'DMR-X A2A: agent key not configured (no DMRX_MCP_AGENT_API_KEY, X-DMR-Tenant-Key, or auto-provisioned key) — task will not be dispatched.',
+      );
     }
 
     if (taskText && agentApiKey) {

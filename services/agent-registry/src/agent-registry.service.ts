@@ -28,6 +28,7 @@ export interface AgentDefinition {
   tenantId: string;
   name: string;
   description: string | null;
+  humanName?: string | null;
   version: string;
   systemPrompt: string | null;
   personality: string | null;
@@ -41,6 +42,7 @@ export interface AgentDefinition {
   tags: string[];
   category: string | null;
   icon: string | null;
+  skills?: string[];
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -117,9 +119,9 @@ export class AgentRegistryService {
       INSERT INTO agent_definitions (
         id, tenant_id, name, description, version, system_prompt,
         personality, preferred_model, model_tier, allowed_tools, custom_tools,
-        workflow, triggers, visibility, tags, category, icon,
+        workflow, triggers, visibility, tags, category, icon, skills, human_name,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tenantId,
@@ -138,6 +140,8 @@ export class AgentRegistryService {
       JSON.stringify(input.tags ?? []),
       input.category ?? null,
       input.icon ?? null,
+      JSON.stringify(input.skills ?? []),
+      input.humanName ?? null,
       now,
       now,
     );
@@ -218,6 +222,8 @@ export class AgentRegistryService {
     if (input.tags !== undefined) { updates.push('tags = ?'); params.push(JSON.stringify(input.tags)); }
     if (input.category !== undefined) { updates.push('category = ?'); params.push(input.category); }
     if (input.icon !== undefined) { updates.push('icon = ?'); params.push(input.icon); }
+    if (input.humanName !== undefined) { updates.push('human_name = ?'); params.push(input.humanName); }
+    if (input.skills !== undefined) { updates.push('skills = ?'); params.push(JSON.stringify(input.skills)); }
 
     if (updates.length === 0) return existing;
 
@@ -645,6 +651,7 @@ export class AgentRegistryService {
       tenantId: row.tenant_id,
       name: row.name,
       description: row.description,
+      humanName: row.human_name ?? null,
       version: row.version,
       systemPrompt: row.system_prompt,
       personality: row.personality,
@@ -658,6 +665,7 @@ export class AgentRegistryService {
       tags: JSON.parse(row.tags || '[]'),
       category: row.category,
       icon: row.icon,
+      skills: row.skills ? JSON.parse(row.skills) : [],
       publishedAt: row.published_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

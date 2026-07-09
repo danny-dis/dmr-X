@@ -3,6 +3,7 @@ export * from './Badge';
 export * from './Button';
 export * from './Card';
 export * from './Checkbox';
+export * from './MultiSelect';
 export * from './Code';
 export * from './Command';
 export * from './CopyButton';

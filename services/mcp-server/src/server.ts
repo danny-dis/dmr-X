@@ -34,6 +34,11 @@ import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server
 import { z } from 'zod';
 
 import { TOOL_ANNOTATIONS, type ToolAnnotations } from './annotations.js';
+import {
+  resolveGatewayKey,
+  autoProvisionTenantKey,
+  setLastRequestHeaders,
+} from './tenant-key.js';
 import { registerPrompts } from './prompts.js';
 import { RateLimiter } from './rate-limiter.js';
 import { registerResources } from './resources.js';
@@ -2934,7 +2939,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // -----------------------------------------------------------------------
   const gatewayUrl =
     config.gatewayUrl || process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
+  // Legacy shared key (env/config). Per-request isolation is resolved via
+  // resolveGatewayKey() which prefers each client's X-DMR-Tenant-Key header.
   const agentApiKey = config.agentApiKey || process.env.DMRX_MCP_AGENT_API_KEY;
+
+  // Best-effort zero-config tenant isolation: if neither a per-client header
+  // nor the legacy shared key is set, auto-create a dedicated tenant + API key.
+  // Fire-and-forget so createDMRXMcpServer stays synchronous.
+  autoProvisionTenantKey(gatewayUrl);
 
   function slugifyAgentName(name: string): string {
     return name
@@ -2949,9 +2961,13 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   const registeredSubagentTools = new Map<string, any>();
 
   async function fetchSubagentDefs(): Promise<any[]> {
+    const key = resolveGatewayKey();
+    if (!key) {
+      return [];
+    }
     const listRes = await fetch(`${gatewayUrl}/v1/agents`, {
       method: 'GET',
-      headers: { authorization: `Bearer ${agentApiKey}` },
+      headers: { authorization: `Bearer ${key}` },
     });
     if (!listRes.ok) {
       mcpLog(server, 'warn', { status: listRes.status }, 'subagent-list-failed');
@@ -3007,11 +3023,20 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             },
             async (params: any) => {
               try {
+                const key = resolveGatewayKey();
+                if (!key) {
+                  return {
+                    content: [
+                      { type: 'text' as const, text: 'A2A agent key not configured (DMRX_MCP_AGENT_API_KEY / X-DMR-Tenant-Key)' },
+                    ],
+                    isError: true,
+                  };
+                }
                 const runRes = await fetch(`${gatewayUrl}/v1/agentic/dispatch`, {
                   method: 'POST',
                   headers: {
                     'content-type': 'application/json',
-                    authorization: `Bearer ${agentApiKey}`,
+                    authorization: `Bearer ${key}`,
                   },
                   body: JSON.stringify({ task: params.task, run: params.run ?? true }),
                 });
@@ -3060,11 +3085,13 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     }
   }
 
-  if (agentApiKey) {
+  {
     // Keep createDMRXMcpServer synchronous so existing callers can still
     // destructure { server, state } immediately. Registration refreshes
     // lazily on startup and then on an interval so gateway subagent changes
-    // are picked up without restarting the MCP server.
+    // are picked up without restarting the MCP server. refreshSubagentTools()
+    // self-guards on a missing key, so it's safe to start even before
+    // auto-provisioning (or an X-DMR-Tenant-Key) resolves.
     void refreshSubagentTools();
     const subagentRefreshInterval = setInterval(() => void refreshSubagentTools(), 60_000);
     void subagentRefreshInterval;

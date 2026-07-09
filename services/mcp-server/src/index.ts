@@ -32,6 +32,7 @@ import { resolve } from 'node:path';
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { setLastRequestHeaders } from './tenant-key.js';
 
 import {
   loadConfigFile,
@@ -597,6 +598,9 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   }));
 
   const httpServer = http.createServer(async (req, res) => {
+    // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
+    // can be resolved at request time inside tool handlers.
+    setLastRequestHeaders(req.headers);
     // CORS preflight
     setCorsHeaders(res);
     if (handlePreflight(req, res)) return;
@@ -733,6 +737,9 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   }));
 
   const httpServer = http.createServer(async (req, res) => {
+    // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
+    // can be resolved at request time inside tool handlers.
+    setLastRequestHeaders(req.headers);
     // CORS preflight
     setCorsHeaders(res);
     if (handlePreflight(req, res)) return;

@@ -10,8 +10,16 @@ import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
+import { MultiSelect, type MultiSelectOption } from '@/components/primitives/MultiSelect';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+
+interface Skill {
+  id: string;
+  name: string;
+  description: string | null;
+  tags: string[];
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,13 +56,30 @@ interface AgentInstance {
 
 function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = React.useState('');
+  const [humanName, setHumanName] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [systemPrompt, setSystemPrompt] = React.useState('');
+  const [personality, setPersonality] = React.useState('');
   const [model, setModel] = React.useState('');
   const [tools, setTools] = React.useState('');
   const [visibility, setVisibility] = React.useState('private');
+  const [skills, setSkills] = React.useState<string[]>([]);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Skills available to attach to the agent. The backend exposes them at
+  // GET /v1/skills; until it lands this just renders an empty selector.
+  const { data: skillsData } = useApiData<{ items?: Skill[] } | Skill[]>('/v1/skills');
+  const skillList = React.useMemo(() => {
+    if (!skillsData) return [];
+    return Array.isArray(skillsData)
+      ? skillsData
+      : (skillsData.items ?? []);
+  }, [skillsData]);
+  const skillOptions: MultiSelectOption[] = React.useMemo(
+    () => skillList.map(s => ({ value: s.id, label: s.name, description: s.description ?? undefined })),
+    [skillList]
+  );
 
   const handleCreate = async () => {
     if (!name.trim()) return;
@@ -63,23 +88,31 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
 
     try {
       const allowedTools = tools.split(',').map(t => t.trim()).filter(Boolean);
+      const body: Record<string, unknown> = {
+        name: name.trim(),
+        description: description.trim() || undefined,
+        systemPrompt: systemPrompt.trim() || undefined,
+        preferredModel: model.trim() || undefined,
+        allowedTools,
+        visibility,
+      };
+      if (humanName.trim()) body.humanName = humanName.trim();
+      if (personality.trim()) body.personality = personality.trim();
+      if (skills.length > 0) body.skills = skills;
+
       await Admin.fetch('/v1/agents', {
         method: 'POST',
-        body: JSON.stringify({
-          name: name.trim(),
-          description: description.trim() || undefined,
-          systemPrompt: systemPrompt.trim() || undefined,
-          preferredModel: model.trim() || undefined,
-          allowedTools,
-          visibility,
-        }),
+        body: JSON.stringify(body),
       });
       onCreated();
       setName('');
+      setHumanName('');
       setDescription('');
       setSystemPrompt('');
+      setPersonality('');
       setModel('');
       setTools('');
+      setSkills([]);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create agent');
     } finally {
@@ -103,6 +136,16 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
           />
         </div>
         <div>
+          <label className="text-sm font-medium">Human Name</label>
+          <Input
+            value={humanName}
+            onChange={e => setHumanName(e.target.value)}
+            placeholder="Ada"
+            className="mt-1"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">Human-friendly name (e.g. Ada).</p>
+        </div>
+        <div>
           <label className="text-sm font-medium">Description</label>
           <Input
             value={description}
@@ -118,6 +161,16 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
             onChange={e => setSystemPrompt(e.target.value)}
             placeholder="You are a helpful assistant that..."
             rows={4}
+            className="mt-1 font-mono text-sm"
+          />
+        </div>
+        <div>
+          <label className="text-sm font-medium">Personality</label>
+          <Textarea
+            value={personality}
+            onChange={e => setPersonality(e.target.value)}
+            placeholder="Warm, concise, and a little witty. Prefers concrete examples over abstractions."
+            rows={3}
             className="mt-1 font-mono text-sm"
           />
         </div>
@@ -152,6 +205,20 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
             placeholder="dmrx_chat, dmrx_generate_image"
             className="mt-1"
           />
+        </div>
+        <div>
+          <MultiSelect
+            label="Skills"
+            options={skillOptions}
+            value={skills}
+            onChange={setSkills}
+            placeholder="Select skills…"
+            searchPlaceholder="Search skills…"
+            emptyText="No skills available."
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Capabilities the agent can draw on. Imported via the same .md / ZIP / GitHub flow.
+          </p>
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <Button onClick={handleCreate} disabled={saving || !name.trim()}>
@@ -464,11 +531,74 @@ function ImportAgentsForm({ onImported }: { onImported: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// Skills Panel
+// ---------------------------------------------------------------------------
+
+function SkillsPanel() {
+  const { data, loading, error, refetch } = useApiData<{ items?: Skill[] } | Skill[]>('/v1/skills');
+  const skills = React.useMemo(() => {
+    if (!data) return [];
+    return Array.isArray(data) ? data : (data.items ?? []);
+  }, [data]);
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <div>
+          <CardTitle>Skills</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Reusable capabilities agents can draw on. Imported via the same .md / ZIP / GitHub flow used for agents.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => void refetch()}>Refresh</Button>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-20" />)}
+          </div>
+        ) : error ? (
+          <p className="text-sm text-destructive">
+            Failed to load skills. {(error as any)?.message ?? ''}
+          </p>
+        ) : skills.length === 0 ? (
+          <EmptyState
+            icon={<Bot className="h-12 w-12" />}
+            title="No skills yet"
+            description="Import skills from a GitHub repo, ZIP, or pasted .md to make them available here."
+          />
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            {skills.map(s => (
+              <div key={s.id} className="rounded-lg border border-border bg-surface-2 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-fg">{s.name}</span>
+                </div>
+                {s.description && (
+                  <p className="mt-1 text-xs text-fg-muted leading-relaxed">{s.description}</p>
+                )}
+                {s.tags?.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {s.tags.map(t => (
+                      <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Agents Page
 // ---------------------------------------------------------------------------
 
 export function AgentsPage() {
-  const [tab, setTab] = React.useState<'list' | 'create' | 'import'>('list');
+  const [tab, setTab] = React.useState<'list' | 'create' | 'import' | 'skills'>('list');
   const { data, loading, refetch } = useApiData<{ items: AgentDefinition[] }>('/v1/agents');
   const { data: instancesData } = useApiData<{ items: AgentInstance[] }>('/v1/agents/instances');
   const [deploying, setDeploying] = React.useState<string | null>(null);
@@ -524,6 +654,7 @@ export function AgentsPage() {
           <TabsTrigger value="list">My Agents ({agents.length})</TabsTrigger>
           <TabsTrigger value="create">Create</TabsTrigger>
           <TabsTrigger value="import">Import</TabsTrigger>
+          <TabsTrigger value="skills">Skills</TabsTrigger>
         </TabsList>
 
         <TabsContent value="list" className="mt-4">
@@ -560,6 +691,10 @@ export function AgentsPage() {
 
         <TabsContent value="import" className="mt-4">
           <ImportAgentsForm onImported={() => { refetch(); setTab('list'); }} />
+        </TabsContent>
+
+        <TabsContent value="skills" className="mt-4">
+          <SkillsPanel />
         </TabsContent>
       </Tabs>
     </PageContainer>

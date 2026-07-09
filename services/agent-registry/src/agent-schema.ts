@@ -33,6 +33,7 @@ export type AgentTriggerInput = z.infer<typeof AgentTriggerSchema>;
 export const AgentDefinitionCreateSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(2000).optional(),
+  humanName: z.string().max(100).optional(),
   version: z.string().regex(/^\d+\.\d+\.\d+$/).optional().default('1.0.0'),
   systemPrompt: z.string().max(100000).optional(),
   personality: z.string().max(5000).optional(),
@@ -75,6 +76,7 @@ export const AgentDefinitionCreateSchema = z.object({
   tags: z.array(z.string().max(50)).optional().default([]),
   category: z.string().max(100).optional(),
   icon: z.string().optional(),
+  skills: z.array(z.string()).optional().default([]),
 });
 
 export type AgentDefinitionCreate = z.infer<typeof AgentDefinitionCreateSchema>;
