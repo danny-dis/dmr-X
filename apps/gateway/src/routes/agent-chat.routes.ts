@@ -23,6 +23,8 @@ interface AgentChatBody {
   maxTokens?: number;
   temperature?: number;
   maxSteps?: number;
+  conversationId?: string;
+  max_cost_budget?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,8 +139,14 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const model = agentRuntimeService.resolveModel(context.definition);
     const agentTools = context.definition.allowedTools;
 
-    // Acquire conversation lock
-    const convId = instanceId;
+    // Acquire conversation lock. Key per-conversation (not per-instance) so
+    // concurrent external agents can run the same subagent in parallel without
+    // sharing one transcript. Callers may pass their own conversationId; if not,
+    // a fresh per-request conversation is used (guaranteed unique via requestId).
+    const convId =
+      body.conversationId && body.conversationId.length > 0
+        ? body.conversationId
+        : `${instanceId}:${requestId}`;
     while (true) {
       const existingLock = agentConversationLocks.get(convId);
       if (!existingLock) break;
@@ -230,6 +238,18 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
               totalTokensUsed += response.usage.total_tokens ?? 0;
               const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
               totalCost += stepCost;
+            }
+
+            // Stop if cost budget exceeded
+            if (body.max_cost_budget && totalCost >= body.max_cost_budget) {
+              if (response.message) messages.push(response.message);
+              conversation = updateState(conversation, { messages, status: 'completed' });
+              writeSSE(reply, 'budget_exceeded', {
+                conversationId: conversation.id,
+                max_cost_budget: body.max_cost_budget,
+                totalCost,
+              });
+              break;
             }
 
             writeSSE(reply, 'turn', {
@@ -324,6 +344,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           durationMs: Date.now() - startTime,
           totalTokensUsed,
           totalCost,
+          budget_exceeded: !!(body.max_cost_budget && totalCost >= body.max_cost_budget),
         });
         reply.raw.end();
 
@@ -372,6 +393,39 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           totalTokensUsed += response.usage.total_tokens ?? 0;
           const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
           totalCost += stepCost;
+        }
+
+        // Stop if cost budget exceeded
+        if (body.max_cost_budget && totalCost >= body.max_cost_budget) {
+          if (response.message) messages.push(response.message);
+          conversation = updateState(conversation, { messages, status: 'completed' });
+
+          await agentRuntimeService.recordExecution(
+            context,
+            JSON.stringify(body.messages),
+            lastResponseText,
+            allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
+            model,
+            totalTokensUsed,
+            0,
+            Date.now() - startTime,
+          );
+
+          return reply.send({
+            id: requestId,
+            agentInstanceId: instanceId,
+            agentName: context.definition.name,
+            content: responseText,
+            model: response.modelId,
+            usage: response.usage,
+            conversationId: conversation.id,
+            steps_completed: turn + 1,
+            all_steps: allSteps,
+            durationMs: Date.now() - startTime,
+            budget_exceeded: true,
+            max_cost_budget: body.max_cost_budget,
+            totalCost,
+          });
         }
 
         allSteps.push({ turn, message: response.message, tool_calls: toolCalls, tool_results: [] });

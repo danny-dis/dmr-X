@@ -250,15 +250,102 @@ export function registerBuiltinToolHandlers(): void {
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
 
-const CODING_WORKSPACE = process.env.DMRX_CODING_WORKSPACE || process.cwd();
+/**
+ * Root directory under which each (tenant, request) pair gets an isolated
+ * sandbox directory. This keeps concurrent subagents using the coding tools
+ * from clobbering each other's files. Falls back to a tmp dir if unset.
+ */
+const CODING_SANDBOX_ROOT = process.env.DMRX_CODING_SANDBOX_ROOT || path.join(os.tmpdir(), 'dmrx-coding');
 const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB limit for reads
 const SHELL_TIMEOUT_MS = 30_000; // 30s default for shell commands
+
+/**
+ * Resolve (and create) the per-(tenant, request) isolated sandbox directory.
+ * Each concurrent agent request gets its own workspace so file operations
+ * cannot collide across parallel subagent executions.
+ */
+function resolveSandboxDir(tenantId?: string, requestId?: string): string {
+  const tenant = tenantId || 'anonymous';
+  const req = requestId || 'default';
+  const dir = path.join(CODING_SANDBOX_ROOT, tenant, req);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * Remove a resolved sandbox directory, if it exists.
+ * No-throw: errors (e.g. ENOENT when the dir was never created) are ignored.
+ */
+export function cleanupSandboxDir(tenantId?: string, requestId?: string): void {
+  try {
+    const dir = resolveSandboxDir(tenantId, requestId);
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      logger.debug({ err, tenantId, requestId }, 'cleanupSandboxDir failed (ignored)');
+    }
+  }
+}
+
+/**
+ * Remove sandbox directories under the workspace root that are older than
+ * `maxAgeMs` (default 1 hour). Only deletes dirs directly under a tenant
+ * subdirectory; all errors are ignored. Intended to be called at startup.
+ */
+export function sweepStaleSandboxes(maxAgeMs = 60 * 60 * 1000): void {
+  try {
+    const now = Date.now();
+    if (!fs.existsSync(CODING_SANDBOX_ROOT)) return;
+    for (const tenant of fs.readdirSync(CODING_SANDBOX_ROOT, { withFileTypes: true })) {
+      if (!tenant.isDirectory()) continue;
+      const tenantDir = path.join(CODING_SANDBOX_ROOT, tenant.name);
+      try {
+        for (const req of fs.readdirSync(tenantDir, { withFileTypes: true })) {
+          if (!req.isDirectory()) continue;
+          try {
+            const dir = path.join(tenantDir, req.name);
+            const stat = fs.statSync(dir);
+            if (now - stat.mtimeMs > maxAgeMs) {
+              fs.rmSync(dir, { recursive: true, force: true });
+            }
+          } catch {
+            /* ignore per-request errors */
+          }
+        }
+      } catch {
+        /* ignore per-tenant errors */
+      }
+    }
+  } catch (err) {
+    logger.debug({ err }, 'sweepStaleSandboxes failed (ignored)');
+  }
+}
+
+/**
+ * Wrap a coding-tool handler so the sandbox dir is removed (deferred) after
+ * the handler settles. This keeps writes/reads working during execution but
+ * prevents per-request temp dirs from leaking disk space over time.
+ */
+function cleanupAfter(handler: ToolHandler): ToolHandler {
+  return async (args, context) => {
+    try {
+      return await handler(args, context);
+    } finally {
+      const tenantId = context?.tenant?.id;
+      const requestId = context?.requestId;
+      if (requestId) {
+        setTimeout(() => cleanupSandboxDir(tenantId, requestId), 0);
+      }
+    }
+  };
+}
 
 /**
  * Validate and resolve a file path, ensuring it stays within the workspace.
@@ -267,13 +354,15 @@ const SHELL_TIMEOUT_MS = 30_000; // 30s default for shell commands
  *
  * @throws Error if path is outside workspace or contains null bytes
  */
-function safePath(filePath: string): string {
+export function safePath(filePath: string, tenantId?: string, requestId?: string): string {
   // Block null bytes (can bypass path checks on some systems)
   if (filePath.includes('\0')) {
     throw new Error('Path contains invalid characters');
   }
 
-  const resolved = path.resolve(CODING_WORKSPACE, filePath);
+  // Root every path inside the per-(tenant, request) isolated sandbox dir.
+  const workspace = resolveSandboxDir(tenantId, requestId);
+  const resolved = path.resolve(workspace, filePath);
 
   // Try to resolve symlinks if the path exists
   let realPath: string;
@@ -293,7 +382,7 @@ function safePath(filePath: string): string {
   }
 
   // Normalize path separators for cross-platform comparison
-  const normalizedWorkspace = CODING_WORKSPACE.replace(/\\/g, '/');
+  const normalizedWorkspace = workspace.replace(/\\/g, '/');
   const normalizedReal = realPath.replace(/\\/g, '/');
 
   if (!normalizedReal.startsWith(normalizedWorkspace)) {
@@ -305,7 +394,7 @@ function safePath(filePath: string): string {
 
 export function registerCodingToolHandlers(): void {
   // ---- read_file -----------------------------------------------------------
-  registerToolHandler('read_file', async (args) => {
+  registerToolHandler('read_file', cleanupAfter(async (args, context) => {
     const { path: filePath, offset, limit } = args as {
       path: string;
       offset?: number;
@@ -317,7 +406,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(filePath);
+      const fullPath = safePath(filePath, context?.tenant?.id, context?.requestId);
       const stat = fs.statSync(fullPath);
       if (stat.size > MAX_FILE_SIZE) {
         return { error: `File too large (${stat.size} bytes, max ${MAX_FILE_SIZE})` };
@@ -341,10 +430,10 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  });
+  }));
 
   // ---- write_file ----------------------------------------------------------
-  registerToolHandler('write_file', async (args) => {
+  registerToolHandler('write_file', cleanupAfter(async (args, context) => {
     const { path: filePath, content } = args as {
       path: string;
       content: string;
@@ -358,7 +447,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(filePath);
+      const fullPath = safePath(filePath, context?.tenant?.id, context?.requestId);
       const dir = path.dirname(fullPath);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(fullPath, content, 'utf-8');
@@ -367,10 +456,10 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  });
+  }));
 
   // ---- edit_file -----------------------------------------------------------
-  registerToolHandler('edit_file', async (args) => {
+  registerToolHandler('edit_file', cleanupAfter(async (args, context) => {
     const { path: filePath, oldString, newString } = args as {
       path: string;
       oldString: string;
@@ -388,7 +477,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(filePath);
+      const fullPath = safePath(filePath, context?.tenant?.id, context?.requestId);
       let content = fs.readFileSync(fullPath, 'utf-8');
 
       const count = content.split(oldString).length - 1;
@@ -406,10 +495,10 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  });
+  }));
 
   // ---- list_files ----------------------------------------------------------
-  registerToolHandler('list_files', async (args) => {
+  registerToolHandler('list_files', cleanupAfter(async (args, context) => {
     const { path: dirPath, pattern, recursive } = args as {
       path?: string;
       pattern?: string;
@@ -417,7 +506,7 @@ export function registerCodingToolHandlers(): void {
     };
 
     try {
-      const fullPath = safePath(dirPath || '.');
+      const fullPath = safePath(dirPath || '.', context?.tenant?.id, context?.requestId);
       const results: string[] = [];
 
       function walk(dir: string, prefix: string) {
@@ -441,7 +530,7 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  });
+  }));
 
   // ---- bash ----------------------------------------------------------------
   // Allowlist of safe commands that can be executed via bash tool.
@@ -500,7 +589,7 @@ export function registerCodingToolHandlers(): void {
     return { allowed: true };
   }
 
-  registerToolHandler('bash', async (args) => {
+  registerToolHandler('bash', cleanupAfter(async (args, context) => {
     const { command, timeoutMs, cwd } = args as {
       command: string;
       timeoutMs?: number;
@@ -518,7 +607,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const workDir = cwd ? safePath(cwd) : CODING_WORKSPACE;
+      const workDir = cwd ? safePath(cwd, context?.tenant?.id, context?.requestId) : resolveSandboxDir(context?.tenant?.id, context?.requestId);
       const timeout = timeoutMs ?? SHELL_TIMEOUT_MS;
 
       const { stdout, stderr } = await execAsync(command, {
@@ -543,10 +632,10 @@ export function registerCodingToolHandlers(): void {
         error: err.message,
       };
     }
-  });
+  }));
 
   // ---- search_files --------------------------------------------------------
-  registerToolHandler('search_files', async (args) => {
+  registerToolHandler('search_files', cleanupAfter(async (args, context) => {
     const { pattern: searchPattern, path: dirPath, include } = args as {
       pattern: string;
       path?: string;
@@ -558,7 +647,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(dirPath || '.');
+      const fullPath = safePath(dirPath || '.', context?.tenant?.id, context?.requestId);
       const results: Array<{ file: string; line: number; text: string }> = [];
 
       function walk(dir: string) {
@@ -575,7 +664,7 @@ export function registerCodingToolHandlers(): void {
               const lines = content.split('\n');
               for (let i = 0; i < lines.length; i++) {
                 if (lines[i].includes(searchPattern)) {
-                  const rel = path.relative(CODING_WORKSPACE, fullPath2);
+                  const rel = path.relative(fullPath, fullPath2);
                   results.push({ file: rel, line: i + 1, text: lines[i].trim() });
                   if (results.length >= 100) return;
                 }
@@ -592,7 +681,7 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  });
+  }));
 
   logger.info('Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files');
 }

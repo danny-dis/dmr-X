@@ -168,6 +168,10 @@ export interface DMRXMcpServerConfig {
   };
   /** Federation configuration for multi-instance tool sharing */
   federation?: FederationConfig;
+  /** DMR-X gateway URL used to expose defined subagents as MCP tools */
+  gatewayUrl?: string;
+  /** API key used to list/run DMR-X subagents from the gateway */
+  agentApiKey?: string;
 }
 
 export interface ServerState {
@@ -209,7 +213,7 @@ export interface ServerState {
 // MCP Logging helper
 // ---------------------------------------------------------------------------
 
-type LoggingLevel = 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical' | 'alert' | 'emergency';
+type LoggingLevel = 'debug' | 'info' | 'notice' | 'warning' | 'warn' | 'error' | 'critical' | 'alert' | 'emergency';
 
 /**
  * Sends a logging message to the connected MCP client.
@@ -2920,6 +2924,151 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       }
     }
   );
+
+  // -----------------------------------------------------------------------
+  // DMR-X subagents exposed as MCP tools (dmrx_agent_<slug>)
+  //
+  // Lets an external agent (Claude Code, Cursor, Codex) call a DMR-X defined
+  // subagent directly by name instead of knowing its UUID. The list of
+  // subagents is fetched lazily from the gateway; failures are non-fatal.
+  // -----------------------------------------------------------------------
+  const gatewayUrl =
+    config.gatewayUrl || process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
+  const agentApiKey = config.agentApiKey || process.env.DMRX_MCP_AGENT_API_KEY;
+
+  function slugifyAgentName(name: string): string {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 64);
+  }
+
+  // Tracks live dmrx_agent_* tool handles so we can unregister/update them
+  // without restarting the MCP server when the gateway's subagent set changes.
+  const registeredSubagentTools = new Map<string, any>();
+
+  async function fetchSubagentDefs(): Promise<any[]> {
+    const listRes = await fetch(`${gatewayUrl}/v1/agents`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${agentApiKey}` },
+    });
+    if (!listRes.ok) {
+      mcpLog(server, 'warn', { status: listRes.status }, 'subagent-list-failed');
+      return [];
+    }
+    const listJson: any = await listRes.json();
+    const defs: any[] = Array.isArray(listJson) ? listJson : listJson?.items ?? listJson?.data ?? [];
+    return defs;
+  }
+
+  async function refreshSubagentTools(): Promise<void> {
+    try {
+      const defs = await fetchSubagentDefs();
+      const desired = new Map<string, any>();
+      for (const def of defs) {
+        if (!def?.name) continue;
+        desired.set(`dmrx_agent_${slugifyAgentName(def.name)}`, def);
+      }
+
+      // Unregister tools whose slug no longer exists in the gateway.
+      for (const slug of [...registeredSubagentTools.keys()]) {
+        if (!desired.has(slug)) {
+          try {
+            if (typeof (server as any).unregisterTool === 'function') {
+              (server as any).unregisterTool(slug);
+            } else {
+              registeredSubagentTools.get(slug)?.remove?.();
+            }
+          } catch { /* ignore unregister failures */ }
+          registeredSubagentTools.delete(slug);
+        }
+      }
+
+      // Register or update tools for the current defs.
+      for (const [slug, def] of desired) {
+        const desc =
+          def.description || `Run the DMR-X subagent "${def.name}" with a task.`;
+        try {
+          const existing = registeredSubagentTools.get(slug);
+          if (existing) {
+            existing.update?.({ description: desc });
+            continue;
+          }
+          const handle = server.registerTool(
+            slug,
+            {
+              description: desc,
+              inputSchema: {
+                task: z.string().describe('The task or prompt for the subagent'),
+                run: z.boolean().optional().describe('If true, execute immediately (default true)'),
+              } as any,
+              annotations: { title: `Subagent: ${def.name}`, readOnlyHint: false, destructiveHint: false },
+            },
+            async (params: any) => {
+              try {
+                const runRes = await fetch(`${gatewayUrl}/v1/agentic/dispatch`, {
+                  method: 'POST',
+                  headers: {
+                    'content-type': 'application/json',
+                    authorization: `Bearer ${agentApiKey}`,
+                  },
+                  body: JSON.stringify({ task: params.task, run: params.run ?? true }),
+                });
+                const runJson: any = await runRes.json();
+                if (!runRes.ok) {
+                  return {
+                    content: [
+                      { type: 'text' as const, text: `Error: ${runJson?.error?.message || runRes.statusText}` },
+                    ],
+                    isError: true,
+                  };
+                }
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: JSON.stringify(
+                        {
+                          subagent: def.name,
+                          content: runJson.content,
+                          model: runJson.model,
+                          usage: runJson.usage,
+                        },
+                        null,
+                        2,
+                      ),
+                    },
+                  ],
+                };
+              } catch (err) {
+                return {
+                  content: [
+                    { type: 'text' as const, text: `Error contacting gateway: ${err instanceof Error ? err.message : String(err)}` },
+                  ],
+                  isError: true,
+                };
+              }
+            },
+          );
+          registeredSubagentTools.set(slug, handle);
+        } catch { /* guard against already-registered / update races */ }
+      }
+      mcpLog(server, 'info', { subagentTools: defs.length }, 'routing');
+    } catch (err) {
+      mcpLog(server, 'warn', { message: err instanceof Error ? err.message : String(err) }, 'subagent-list-error');
+    }
+  }
+
+  if (agentApiKey) {
+    // Keep createDMRXMcpServer synchronous so existing callers can still
+    // destructure { server, state } immediately. Registration refreshes
+    // lazily on startup and then on an interval so gateway subagent changes
+    // are picked up without restarting the MCP server.
+    void refreshSubagentTools();
+    const subagentRefreshInterval = setInterval(() => void refreshSubagentTools(), 60_000);
+    void subagentRefreshInterval;
+  }
 
   // -----------------------------------------------------------------------
   // Tool: dmrx_tool_search — Intelligent tool discovery

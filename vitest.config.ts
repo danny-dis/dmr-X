@@ -18,6 +18,11 @@ export default defineConfig({
       '@dmr-x/tokenizers': resolve(__dirname, 'packages/tokenizers/src'),
       '@dmr-x/registry': resolve(__dirname, 'services/registry/src'),
       '@dmr-x/provider-catalog': resolve(__dirname, 'packages/provider-catalog/src'),
+      // gateway-internal workspace packages (needed by routes under test)
+      '@dmr-x/sandbox': resolve(__dirname, 'services/sandbox/src'),
+      '@dmr-x/router': resolve(__dirname, 'services/router/src'),
+      '@dmr-x/agent-registry': resolve(__dirname, 'services/agent-registry/src'),
+      '@dmr-x/agent-runtime': resolve(__dirname, 'services/agent-runtime/src'),
       // fastify — only in apps/gateway, not hoisted to root
       'fastify': resolve(__dirname, 'node_modules/.bun/fastify@5.9.0/node_modules/fastify'),
       '@fastify/compress': resolve(__dirname, 'node_modules/.bun/@fastify+compress@9.0.0/node_modules/@fastify/compress'),

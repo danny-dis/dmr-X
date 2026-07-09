@@ -50,6 +50,8 @@ import { validateRoutes } from './routes/validate.routes.js';
 import { countTokensRoutes } from './routes/count-tokens.routes.js';
 import { agentRoutes } from './routes/agent.routes.js';
 import { agentChatRoutes } from './routes/agent-chat.routes.js';
+import { agentDispatchRoutes } from './routes/agent-dispatch.routes.js';
+import { createAgentConcurrencyGuard } from './middleware/agent-concurrency.middleware.js';
 import { cloudcodeRoutes } from './routes/cloudcode.routes.js';
 import { godmodeRoutes } from './routes/godmode.routes.js';
 import { promptRoutes } from './routes/prompt.routes.js';
@@ -516,6 +518,23 @@ void (async () => {
   // Telemetry hooks (onRequest starts OTel spans, onResponse ends them)
   registerTelemetryHooks(server, telemetry);
 
+  // Per-tenant concurrency cap on agent/agentic/tool endpoints. Returns 429
+  // instead of letting unbounded concurrent subagent requests overload the
+  // provider tier. Chat-completions and provider passthrough are unaffected.
+  const agentConcurrencyGuard = createAgentConcurrencyGuard();
+  server.addHook('preHandler', (request, reply, done) => {
+    const url = (request.routeOptions?.url as string) || request.url || '';
+    if (
+      url.includes('/agents') ||
+      url.includes('/agentic') ||
+      url.includes('/tools/')
+    ) {
+      const admitted = agentConcurrencyGuard.guard(request, reply);
+      if (!admitted) return; // 429 already sent (hijacked)
+    }
+    done();
+  });
+
   // Health endpoints
   registerHealthEndpoints(server, { router, MEMORY_LIMIT });
 
@@ -552,6 +571,8 @@ void (async () => {
     await server.register(agentRoutes, { prefix: '/v1' });
     logger.info('Registering route: agentChatRoutes');
     await server.register(agentChatRoutes, { prefix: '/v1' });
+    logger.info('Registering route: agentDispatchRoutes');
+    await server.register(agentDispatchRoutes, { prefix: '/v1' });
     logger.info('Registering route: cloudcodeRoutes');
     await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
     logger.info('Registering route: godmodeRoutes');

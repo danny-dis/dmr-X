@@ -112,13 +112,63 @@ async function handleTaskSend(req: IncomingMessage, res: ServerResponse): Promis
       },
     });
 
-    // TODO: Process the task asynchronously
-    // For now, just return the task with working status
-    sendJson(res, 200, {
-      id: task.id,
-      status: task.status,
-      sessionId: task.sessionId,
-    });
+    // Forward the task to the DMR-X meta-agent dispatcher, which routes it to
+    // the best matching defined subagent. This bridges A2A callers (other
+    // agents) into DMR-X's subagent fleet.
+    const gatewayUrl = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
+    const agentApiKey = process.env.DMRX_MCP_AGENT_API_KEY || '';
+    let taskText = '';
+    const msg = body.message;
+    if (typeof msg === 'string') {
+      taskText = msg;
+    } else if (msg?.parts && Array.isArray(msg.parts)) {
+      taskText = msg.parts.map((p: any) => (typeof p === 'string' ? p : p?.text ?? '')).join('\n').trim();
+    } else if (typeof msg?.text === 'string') {
+      taskText = msg.text;
+    }
+
+    if (taskText && agentApiKey) {
+      try {
+        const dispatchRes = await fetch(`${gatewayUrl}/v1/agentic/dispatch`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${agentApiKey}` },
+          body: JSON.stringify({ task: taskText, run: true }),
+        });
+        const dispatchJson: any = await dispatchRes.json();
+        if (!dispatchRes.ok) {
+          taskManager.updateTask({
+            id: task.id,
+            status: { state: 'failed', timestamp: new Date().toISOString() },
+            artifacts: [{ id: 'error', name: 'error', parts: [{ type: 'text', text: dispatchJson?.error?.message || 'Dispatch failed' }] }],
+          });
+        } else {
+          const resultText =
+            typeof dispatchJson.content === 'string'
+              ? dispatchJson.content
+              : JSON.stringify(dispatchJson.content ?? dispatchJson);
+          taskManager.updateTask({
+            id: task.id,
+            status: { state: 'completed', timestamp: new Date().toISOString() },
+            artifacts: [{ id: 'result', name: 'result', parts: [{ type: 'text', text: resultText }] }],
+          });
+        }
+      } catch (err) {
+        taskManager.updateTask({
+          id: task.id,
+          status: { state: 'failed', timestamp: new Date().toISOString() },
+          artifacts: [{ id: 'error', name: 'error', parts: [{ type: 'text', text: `Dispatch error: ${err instanceof Error ? err.message : String(err)}` }] }],
+        });
+      }
+    } else {
+      taskManager.updateTask({
+        id: task.id,
+        status: { state: 'failed', timestamp: new Date().toISOString() },
+        artifacts: [{ id: 'error', name: 'error', parts: [{ type: 'text', text: agentApiKey ? 'Empty task message' : 'A2A agent key not configured (DMRX_MCP_AGENT_API_KEY)' }] }],
+      });
+    }
+
+    const finalTask = taskManager.getTask({ id: task.id });
+    sendJson(res, 200, finalTask);
 
     return true;
   } catch (error) {
