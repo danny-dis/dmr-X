@@ -106,6 +106,19 @@ export class AgentRuntimeService {
       }
     }
 
+    // 4.5. Skill Capture nudge (opt-in; purely instructional, non-fatal)
+    if (definition.skillNudgeInterval && definition.skillNudgeInterval > 0) {
+      const ownedSkillNames = this.resolveSkills(definition.tenantId, definition.skills ?? [])
+        .map((s) => s.name);
+      const ownedList = ownedSkillNames.length > 0 ? ownedSkillNames.join(', ') : 'none yet';
+      parts.push(
+        `Skill Capture: Every ${definition.skillNudgeInterval} turns, consider whether anything reusable was ` +
+        `learned that is worth capturing as a skill, or refining an existing one. ` +
+        `Skills you currently possess: ${ownedList}. ` +
+        `You may create new skills via the skill_create tool or refine existing (non-pinned) ones via skill_patch.`,
+      );
+    }
+
     // 5. Tool constraints
     if (definition.allowedTools.length > 0) {
       parts.push(`You have access to these tools: ${definition.allowedTools.join(', ')}. Only use the tools listed here.`);

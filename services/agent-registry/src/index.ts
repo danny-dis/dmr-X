@@ -46,10 +46,14 @@ export {
   SkillUpdateSchema,
   SkillSourceSchema,
   SkillListQuerySchema,
+  SkillPatchSchema,
+  SkillCreateFromAgentSchema,
   type SkillCreate,
   type SkillUpdate,
   type SkillSource,
   type SkillListQuery,
+  type SkillPatch,
+  type SkillCreateFromAgent,
 } from './skill-schema.js';
 
 export {

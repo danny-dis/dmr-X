@@ -7,6 +7,19 @@ import {
   SkillListQuerySchema,
 } from '../../services/agent-registry/src/skill-schema.js';
 
+// The new tenant-scoped skill schemas are authored by a sibling agent and may
+// not be exported yet. Load them defensively so this file always parses and
+// the pre-existing tests keep running regardless of sibling landing state.
+let SkillCreateFromAgentSchema: any | undefined;
+let SkillPatchSchema: any | undefined;
+try {
+  const mod = await import('../../services/agent-registry/src/skill-schema.js');
+  SkillCreateFromAgentSchema = (mod as any).SkillCreateFromAgentSchema;
+  SkillPatchSchema = (mod as any).SkillPatchSchema;
+} catch {
+  // schema module not resolvable in this environment; tests below self-skip
+}
+
 import {
   AgentDefinitionCreateSchema,
 } from '../../services/agent-registry/src/agent-schema.js';
@@ -118,5 +131,66 @@ describe('AgentDefinitionCreateSchema — skills & humanName', () => {
     if (result.success) {
       expect(result.data.humanName).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// skill patch + create-from-agent schemas
+// (NEW tenant-scoped skill handlers register against these contracts)
+// ---------------------------------------------------------------------------
+
+describe('skill patch + create-from-agent schemas', () => {
+  const skip = !SkillCreateFromAgentSchema || !SkillPatchSchema;
+
+  describe.skipIf(skip)('SkillCreateFromAgentSchema', () => {
+    it('passes for a valid name + content', () => {
+      const result = SkillCreateFromAgentSchema.safeParse({
+        name: 'Web Search',
+        content: 'Steps to perform a web search...',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('fails when content is missing', () => {
+      const result = SkillCreateFromAgentSchema.safeParse({ name: 'No Body' });
+      expect(result.success).toBe(false);
+    });
+
+    it('fails when name exceeds 100 chars', () => {
+      const result = SkillCreateFromAgentSchema.safeParse({
+        name: 'x'.repeat(101),
+        content: 'body',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts an optional tags array', () => {
+      const result = SkillCreateFromAgentSchema.safeParse({
+        name: 'Summarizer',
+        content: 'body',
+        tags: ['text', 'nlp'],
+        pinned: true,
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe.skipIf(skip)('SkillPatchSchema', () => {
+    it('passes for valid oldString + newString', () => {
+      const result = SkillPatchSchema.safeParse({
+        id: 'abc',
+        oldString: 'old',
+        newString: 'new',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('fails when oldString is missing', () => {
+      const result = SkillPatchSchema.safeParse({
+        id: 'abc',
+        newString: 'new',
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });

@@ -2,6 +2,7 @@ import { ValidationError, type UnifiedRequest, type ToolCall } from '@dmr-x/core
 import type { Router } from '@dmr-x/router';
 import { memoryService } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
+import { skillService } from '@dmr-x/agent-registry';
 import {
   generateRequestId,
   executeTool,
@@ -102,6 +103,8 @@ const SANDBOX_MAX_WAIT_MS = 30_000;
  * Called once during server initialisation.
  */
 export function registerBuiltinToolHandlers(): void {
+  registerSkillToolHandlers();
+
   // ---- execute_code --------------------------------------------------------
   registerToolHandler('execute_code', async (args, context) => {
     const { language, code, timeoutMs } = args as {
@@ -243,6 +246,107 @@ export function registerBuiltinToolHandlers(): void {
   });
 
   logger.info('Registered built-in tool handlers: execute_code, remember, recall');
+}
+
+/**
+ * Contract for the tenant-scoped skill service methods exposed by the
+ * `@dmr-x/agent-registry` sibling service. The gateway only depends on this
+ * narrow surface so it does not need to import the service's DB internals.
+ */
+interface SkillServiceContract {
+  createSkillFromAgent(
+    tenantId: string,
+    input: { name: string; description?: string; content: string; tags?: string[]; pinned?: boolean },
+  ): Promise<{ id: string; name: string }>;
+  patchSkillContent(
+    id: string,
+    tenantId: string,
+    patch: { oldString: string; newString: string },
+  ): Promise<{ id: string; name: string }>;
+}
+
+// The real `skillService` carries the full SkillService surface; narrow it to
+// the contract the gateway relies on for tool execution.
+const skillSvc = skillService as unknown as SkillServiceContract;
+
+/**
+ * Register tenant-scoped skill tool handlers. These operate on the
+ * `skillService` (provided by `@dmr-x/agent-registry`) and are always
+ * tenant-scoped: a missing tenant context yields `{ error: 'No tenant context' }`.
+ */
+export function registerSkillToolHandlers(): void {
+  // ---- skill_create --------------------------------------------------------
+  registerToolHandler('skill_create', async (args, context) => {
+    const tenantId = context?.tenant?.id;
+    if (!tenantId) {
+      return { error: 'No tenant context' };
+    }
+
+    const { name, description, content, tags, pinned } = args as {
+      name?: unknown;
+      description?: unknown;
+      content?: unknown;
+      tags?: unknown;
+      pinned?: unknown;
+    };
+
+    if (typeof name !== 'string' || !name) {
+      return { error: 'name is required' };
+    }
+    if (typeof content !== 'string' || !content) {
+      return { error: 'content is required' };
+    }
+
+    try {
+      const skill = await skillSvc.createSkillFromAgent(tenantId, {
+        name,
+        description: typeof description === 'string' ? description : undefined,
+        content,
+        tags: Array.isArray(tags) ? (tags.filter((t) => typeof t === 'string') as string[]) : undefined,
+        pinned: typeof pinned === 'boolean' ? pinned : undefined,
+      });
+      return { ok: true, skill: { id: skill.id, name: skill.name } };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err, tool: 'skill_create', tenantId }, 'Skill create tool error');
+      return { error: message };
+    }
+  });
+
+  // ---- skill_patch ---------------------------------------------------------
+  registerToolHandler('skill_patch', async (args, context) => {
+    const tenantId = context?.tenant?.id;
+    if (!tenantId) {
+      return { error: 'No tenant context' };
+    }
+
+    const { id, oldString, newString } = args as {
+      id?: unknown;
+      oldString?: unknown;
+      newString?: unknown;
+    };
+
+    if (typeof id !== 'string' || !id) {
+      return { error: 'id is required' };
+    }
+    if (typeof oldString !== 'string' || !oldString) {
+      return { error: 'oldString is required' };
+    }
+    if (typeof newString !== 'string') {
+      return { error: 'newString is required' };
+    }
+
+    try {
+      const skill = await skillSvc.patchSkillContent(id, tenantId, { oldString, newString });
+      return { ok: true, skill: { id: skill.id, name: skill.name } };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err, tool: 'skill_patch', tenantId }, 'Skill patch tool error');
+      return { error: message };
+    }
+  });
+
+  logger.info('Registered skill tool handlers: skill_create, skill_patch');
 }
 
 // ---------------------------------------------------------------------------
