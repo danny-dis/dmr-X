@@ -40,7 +40,7 @@ import { imagesRoutes } from './routes/images.routes.js';
 import { modelsRoutes } from './routes/models.routes.js';
 import { ocrRoutes } from './routes/ocr.routes.js';
 import { rerankRoutes } from './routes/rerank.routes.js';
-import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers } from './routes/tools.routes.js';
+import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers, sweepStaleSandboxes } from './routes/tools.routes.js';
 import { videoRoutes } from './routes/video.routes.js';
 import { geminiRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
@@ -555,6 +555,7 @@ void (async () => {
    await server.register(toolsRoutes, { prefix: '/v1' });
    registerBuiltinToolHandlers();
    registerCodingToolHandlers();
+   sweepStaleSandboxes();
     logger.info('Registering route: agenticRoutes');
     await server.register(agenticRoutes, { prefix: '/v1' });
     logger.info('Registering route: conversationRoutes');

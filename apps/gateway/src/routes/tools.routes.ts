@@ -263,8 +263,75 @@ const execAsync = promisify(exec);
  * from clobbering each other's files. Falls back to a tmp dir if unset.
  */
 const CODING_SANDBOX_ROOT = process.env.DMRX_CODING_SANDBOX_ROOT || path.join(os.tmpdir(), 'dmrx-coding');
-const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB limit for reads
+const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB limit for reads/writes
+export { MAX_FILE_SIZE };
 const SHELL_TIMEOUT_MS = 30_000; // 30s default for shell commands
+
+/**
+ * Allowlist of executables the `bash` coding tool may invoke. Replaces the
+ * previous blocklist, which was trivially bypassable. Kept at module scope so
+ * it can be unit-tested and shared with `isBashCommandAllowed`.
+ */
+export const ALLOWED_BASH_COMMANDS = new Set([
+  // Version control
+  'git',
+  // Package managers
+  'npm', 'npx', 'yarn', 'pnpm', 'bun',
+  // Runtime execution
+  'node', 'bun', 'deno', 'python', 'python3',
+  // File operations (safe subset)
+  'ls', 'pwd', 'echo', 'cat', 'head', 'tail', 'wc', 'find', 'grep', 'rg',
+  'mkdir', 'cp', 'mv', 'touch',
+  // Build tools
+  'tsc', 'esbuild', 'vite', 'webpack',
+  // Testing
+  'jest', 'vitest', 'mocha',
+  // Process info
+  'ps', 'top', 'uptime', 'date',
+  // Disk info
+  'df', 'du', 'stat',
+]);
+
+/**
+ * Validate that a bash command only invokes allowlisted executables. Every
+ * statement segment (split on ; && || | and newlines) must resolve to an
+ * allowlisted binary; command substitution, backgrounding, and redirects to
+ * system paths are blocked.
+ */
+export function isBashCommandAllowed(command: string): { allowed: boolean; reason?: string } {
+  const trimmed = command.trim();
+
+  // Block command substitution patterns
+  if (/\$\(|`[^`]*`|\$\{/.test(trimmed)) {
+    return { allowed: false, reason: 'Command substitution not allowed' };
+  }
+
+  // Split into statement segments on ; && || | and newlines. Every segment
+  // must validate, otherwise `cmd1; cmd2` or `cmd1 && cmd2` could smuggle a
+  // non-allowlisted second command through.
+  const segments = trimmed
+    .split(/[;\n]|&&|\|\||\|/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const segment of segments) {
+    const firstWord = segment.split(/\s+/)[0]?.split('/').pop() || '';
+    if (!ALLOWED_BASH_COMMANDS.has(firstWord)) {
+      return { allowed: false, reason: `Command '${firstWord}' not in allowlist` };
+    }
+  }
+
+  // Block background execution
+  if (trimmed.endsWith('&')) {
+    return { allowed: false, reason: 'Background execution not allowed' };
+  }
+
+  // Block redirects to sensitive paths
+  if (/[>>]+\s*(\/etc|\/proc|\/sys|\/dev)/.test(trimmed)) {
+    return { allowed: false, reason: 'Redirects to system paths not allowed' };
+  }
+
+  return { allowed: true };
+}
 
 /**
  * Resolve (and create) the per-(tenant, request) isolated sandbox directory.
@@ -448,6 +515,9 @@ export function registerCodingToolHandlers(): void {
 
     try {
       const fullPath = safePath(filePath, context?.tenant?.id, context?.requestId);
+      if (Buffer.byteLength(content, 'utf-8') > MAX_FILE_SIZE) {
+        return { error: `File too large (${Buffer.byteLength(content, 'utf-8')} bytes, max ${MAX_FILE_SIZE})` };
+      }
       const dir = path.dirname(fullPath);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(fullPath, content, 'utf-8');
@@ -533,61 +603,9 @@ export function registerCodingToolHandlers(): void {
   }));
 
   // ---- bash ----------------------------------------------------------------
-  // Allowlist of safe commands that can be executed via bash tool.
-  // This replaces the previous blocklist which was trivially bypassable.
-  const ALLOWED_BASH_COMMANDS = new Set([
-    // Version control
-    'git',
-    // Package managers
-    'npm', 'npx', 'yarn', 'pnpm', 'bun',
-    // Runtime execution
-    'node', 'bun', 'deno', 'python', 'python3',
-    // File operations (safe subset)
-    'ls', 'pwd', 'echo', 'cat', 'head', 'tail', 'wc', 'find', 'grep', 'rg',
-    'mkdir', 'cp', 'mv', 'touch',
-    // Build tools
-    'tsc', 'esbuild', 'vite', 'webpack',
-    // Testing
-    'jest', 'vitest', 'mocha',
-    // Process info
-    'ps', 'top', 'uptime', 'date',
-    // Disk info
-    'df', 'du', 'stat',
-  ]);
-
-  /**
-   * Validate that a bash command only uses allowlisted executables.
-   * Prevents command injection via pipes, subshells, or special characters.
-   */
-  function isBashCommandAllowed(command: string): { allowed: boolean; reason?: string } {
-    const trimmed = command.trim();
-
-    // Block command substitution patterns
-    if (/\$\(|`[^`]*`|\$\{/.test(trimmed)) {
-      return { allowed: false, reason: 'Command substitution not allowed' };
-    }
-
-    // Block piping to dangerous commands
-    const pipeSegments = trimmed.split('|').map(s => s.trim());
-    for (const segment of pipeSegments) {
-      const firstWord = segment.split(/\s+/)[0]?.split('/')[0];
-      if (firstWord && !ALLOWED_BASH_COMMANDS.has(firstWord)) {
-        return { allowed: false, reason: `Command '${firstWord}' not in allowlist` };
-      }
-    }
-
-    // Block background execution
-    if (trimmed.endsWith('&')) {
-      return { allowed: false, reason: 'Background execution not allowed' };
-    }
-
-    // Block redirects to sensitive paths
-    if (/[>>]+\s*(\/etc|\/proc|\/sys|\/dev)/.test(trimmed)) {
-      return { allowed: false, reason: 'Redirects to system paths not allowed' };
-    }
-
-    return { allowed: true };
-  }
+  // Allowlist + validation live at module scope (ALLOWED_BASH_COMMANDS and
+  // isBashCommandAllowed) so they can be unit-tested. Delegating here keeps
+  // the handler body unchanged.
 
   registerToolHandler('bash', cleanupAfter(async (args, context) => {
     const { command, timeoutMs, cwd } = args as {
