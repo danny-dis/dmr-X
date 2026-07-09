@@ -17,6 +17,7 @@ import { getTelemetryService, contentCaptureService } from '@dmr-x/telemetry';
 import { ProviderUnavailableError } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
+import { agentScheduler } from '@dmr-x/agent-runtime';
 import { quotaService, getRateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import Fastify from 'fastify';
@@ -584,6 +585,17 @@ void (async () => {
     logger.info('Registering route: promptRoutes');
     await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
     logger.info('All routes registered');
+
+  // Start the agent scheduler in the background — must not block the listener.
+  // AgentScheduler.start() loads persisted jobs and polls every 30s; its
+  // interval is unref()'d so it never keeps the event loop alive. A failure
+  // here must never prevent the gateway from serving traffic.
+  try {
+    agentScheduler.start();
+    logger.info('Agent scheduler started');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to start agent scheduler — continuing without scheduling');
+  }
 
   // SPA fallback: serve index.html for non-API GET requests.
   // Pre-read index.html at startup so we catch missing UI builds early

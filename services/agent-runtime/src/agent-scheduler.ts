@@ -17,6 +17,8 @@ interface ScheduledJob {
   lastRunAt?: Date;
   timer?: ReturnType<typeof setTimeout>;
   enabled: boolean;
+  prompt?: string;
+  maxSteps?: number;
 }
 
 export class AgentScheduler {
@@ -52,6 +54,7 @@ export class AgentScheduler {
     agentDefinitionId: string,
     tenantId: string,
     cron: string,
+    options?: { prompt?: string; maxSteps?: number },
   ): void {
     const jobId = crypto.randomUUID();
     const nextRunAt = this.calculateNextRun(cron);
@@ -60,9 +63,19 @@ export class AgentScheduler {
     // Persist to SQLite
     const db = getDb();
     db.prepare(`
-      INSERT INTO agent_scheduled_jobs (id, agent_definition_id, tenant_id, trigger_type, trigger_config, next_run_at, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?)
-    `).run(jobId, agentDefinitionId, tenantId, JSON.stringify({ cron }), nextRunAt.toISOString(), now, now);
+      INSERT INTO agent_scheduled_jobs (id, agent_definition_id, tenant_id, trigger_type, trigger_config, next_run_at, enabled, prompt, max_steps, created_at, updated_at)
+      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?, ?, ?)
+    `).run(
+      jobId,
+      agentDefinitionId,
+      tenantId,
+      JSON.stringify({ cron }),
+      nextRunAt.toISOString(),
+      options?.prompt ?? null,
+      options?.maxSteps ?? 5,
+      now,
+      now,
+    );
 
     // Add to in-memory map
     this.jobs.set(jobId, {
@@ -73,6 +86,8 @@ export class AgentScheduler {
       triggerConfig: { cron },
       nextRunAt,
       enabled: true,
+      prompt: options?.prompt,
+      maxSteps: options?.maxSteps ?? 5,
     });
 
     logger.info({ jobId, agentDefinitionId, cron, nextRunAt: nextRunAt.toISOString() }, 'Scheduled agent job registered');
@@ -138,6 +153,8 @@ export class AgentScheduler {
           nextRunAt,
           lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
           enabled: row.enabled === 1,
+          prompt: row.prompt ?? undefined,
+          maxSteps: row.max_steps != null ? Number(row.max_steps) : undefined,
         });
       }
 
@@ -202,17 +219,68 @@ export class AgentScheduler {
       configOverride: { triggeredBy: 'schedule', jobId: job.id },
     });
 
-    if (instance) {
-      await agentRegistryService.recordExecution({
-        agentInstanceId: instance.id,
-        tenantId: job.tenantId,
-        input: JSON.stringify({ trigger: 'schedule', cron: job.triggerConfig.cron }),
-        output: 'Scheduled execution triggered',
-        toolsUsed: [],
-        modelUsed: definition.preferredModel ?? 'auto',
-        status: 'success',
-      });
+    if (!instance) {
+      logger.warn({ jobId: job.id }, 'Failed to create agent instance for scheduled job');
+      return;
     }
+
+    const prompt = job.prompt || `Scheduled run for ${definition.name}`;
+    const maxSteps = job.maxSteps ?? 5;
+    const gatewayUrl = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
+    const internalKey = process.env.DMRX_INTERNAL_API_KEY;
+
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+    if (internalKey) headers['authorization'] = `Bearer ${internalKey}`;
+
+    let output: string;
+    let status: 'success' | 'error' = 'success';
+    let errorMsg: string | undefined;
+
+    try {
+      const res = await fetch(`${gatewayUrl}/v1/agents/${instance.id}/chat`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: prompt }],
+          stream: false,
+          maxSteps,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Gateway returned ${res.status} ${res.statusText}`);
+      }
+
+      const resp = (await res.json()) as any;
+      output =
+        resp?.content ??
+        resp?.output ??
+        resp?.result ??
+        resp?.choices?.[0]?.message?.content ??
+        JSON.stringify(resp);
+      output = String(output).slice(0, 4000);
+    } catch (err) {
+      status = 'error';
+      errorMsg = err instanceof Error ? err.message : String(err);
+      output = errorMsg;
+      logger.warn(
+        { jobId: job.id, instanceId: instance.id, err: errorMsg },
+        'Scheduled agent execution failed; will retry next interval',
+      );
+    }
+
+    await agentRegistryService.recordExecution({
+      agentInstanceId: instance.id,
+      tenantId: job.tenantId,
+      input: prompt,
+      output,
+      toolsUsed: [],
+      modelUsed: definition.preferredModel ?? 'auto',
+      status,
+      error: status === 'error' ? errorMsg : undefined,
+    });
   }
 
   /**
