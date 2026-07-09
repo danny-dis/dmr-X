@@ -16,12 +16,46 @@ import {
 } from '@dmr-x/agent-registry';
 import { getDb } from '@dmr-x/db';
 import type { FastifyInstance } from 'fastify';
+import { agentScheduler } from '@dmr-x/agent-runtime';
 
 import { agentPermissions } from '../middleware/agent-rbac.middleware.js';
 
 // ---------------------------------------------------------------------------
 // Agent Platform Routes
 // ---------------------------------------------------------------------------
+
+/**
+ * Sync an agent definition's `schedule` trigger to the scheduler's job table.
+ * - A `schedule` trigger with a `cron` creates (or leaves) a recurring job.
+ * - Absence of a `schedule` trigger removes any existing job for the agent.
+ * Best-effort and non-fatal: scheduler errors are logged, not thrown.
+ */
+function syncScheduleTrigger(agentId: string, tenantId: string, triggers?: unknown): void {
+  if (!agentScheduler) return;
+  const list = Array.isArray(triggers) ? (triggers as Array<{ type?: string; cron?: string }>) : [];
+  const schedule = list.find((t) => t?.type === 'schedule' && typeof t?.cron === 'string');
+
+  const db = getDb();
+  const existing = db
+    .prepare("SELECT id FROM agent_scheduled_jobs WHERE agent_definition_id = ? AND trigger_type = 'schedule' LIMIT 1")
+    .get(agentId) as { id: string } | undefined;
+
+  if (schedule?.cron) {
+    if (!existing) {
+      try {
+        agentScheduler.registerJob(agentId, tenantId, schedule.cron);
+      } catch (err) {
+        logger.warn({ err, agentId }, 'Failed to register scheduled job from trigger');
+      }
+    }
+  } else if (existing) {
+    try {
+      agentScheduler.unregisterJob(existing.id);
+    } catch (err) {
+      logger.warn({ err, agentId }, 'Failed to unregister scheduled job');
+    }
+  }
+}
 
 export async function agentRoutes(server: FastifyInstance): Promise<void> {
   // ── Agent Definitions ─────────────────────────────────────────────────────
@@ -35,6 +69,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const agent = await agentRegistryService.createDefinition(tenant.id, parsed.data);
+    syncScheduleTrigger(agent.id, tenant.id, parsed.data.triggers);
     return reply.code(201).send(agent);
   });
 
@@ -68,6 +103,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
 
     const agent = await agentRegistryService.updateDefinition(id, tenant.id, parsed.data);
     if (!agent) return reply.code(404).send({ error: { message: 'Agent not found' } });
+    syncScheduleTrigger(id, tenant.id, parsed.data.triggers);
     return reply.send(agent);
   });
 
@@ -77,6 +113,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const deleted = await agentRegistryService.deleteDefinition(id, tenant.id);
     if (!deleted) return reply.code(404).send({ error: { message: 'Agent not found' } });
+    syncScheduleTrigger(id, tenant.id, []);
     return reply.code(204).send();
   });
 

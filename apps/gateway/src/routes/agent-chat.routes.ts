@@ -135,7 +135,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: { message: 'Agent instance not found or inactive' } });
     }
 
-    const systemPrompt = agentRuntimeService.buildSystemPrompt(context.definition, 0);
+    const systemPrompt = await agentRuntimeService.buildSystemPrompt(context.definition, 0);
     const model = agentRuntimeService.resolveModel(context.definition);
     const agentTools = context.definition.allowedTools;
 
@@ -212,7 +212,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           for (let turn = 0; turn < maxSteps; turn++) {
             // Rebuild the system prompt each turn so the skill-capture nudge can
             // become actionable on hard turn-counter multiples of the interval.
-            messages[0] = { role: 'system', content: agentRuntimeService.buildSystemPrompt(context.definition, turn) };
+            messages[0] = { role: 'system', content: await agentRuntimeService.buildSystemPrompt(context.definition, turn) };
 
             const unifiedRequest = toUnifiedRequest(
               {
@@ -371,7 +371,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       for (let turn = 0; turn < maxSteps; turn++) {
         // Rebuild the system prompt each turn so the skill-capture nudge can
         // become actionable on hard turn-counter multiples of the interval.
-        messages[0] = { role: 'system', content: agentRuntimeService.buildSystemPrompt(context.definition, turn) };
+        messages[0] = { role: 'system', content: await agentRuntimeService.buildSystemPrompt(context.definition, turn) };
 
         const unifiedRequest = toUnifiedRequest(
           {

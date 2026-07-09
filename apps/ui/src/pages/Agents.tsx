@@ -13,6 +13,13 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
 import { MultiSelect, type MultiSelectOption } from '@/components/primitives/MultiSelect';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/primitives/Select';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 
@@ -68,6 +75,8 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
   const [skills, setSkills] = React.useState<string[]>([]);
   const [skillNudgeInterval, setSkillNudgeInterval] = React.useState(8);
   const [enableSkillTools, setEnableSkillTools] = React.useState(false);
+  const [scheduleEnabled, setScheduleEnabled] = React.useState(false);
+  const [scheduleCron, setScheduleCron] = React.useState('');
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -95,6 +104,11 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
 
   const handleCreate = async () => {
     if (!name.trim()) return;
+    // Validate the schedule cron if scheduling is enabled.
+    if (scheduleEnabled && !scheduleCron.trim()) {
+      setError('Please enter a cron expression, or set schedule to "None".');
+      return;
+    }
     setSaving(true);
     setError(null);
 
@@ -125,6 +139,13 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
       if (Number.isFinite(skillNudgeInterval) && skillNudgeInterval >= 0) {
         body.skillNudgeInterval = skillNudgeInterval;
       }
+      // Schedule trigger: when enabled and a cron is provided, attach a
+      // `schedule` trigger so the backend scheduler can create the job.
+      if (scheduleEnabled && scheduleCron.trim()) {
+        body.triggers = [{ type: 'schedule', cron: scheduleCron.trim() }];
+      } else {
+        body.triggers = [];
+      }
 
       await Admin.fetch('/v1/agents', {
         method: 'POST',
@@ -141,6 +162,8 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
       setSkills([]);
       setSkillNudgeInterval(8);
       setEnableSkillTools(false);
+      setScheduleEnabled(false);
+      setScheduleCron('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create agent');
     } finally {
@@ -286,6 +309,44 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
           <p className="mt-1 text-[11px] text-muted-foreground">
             Capabilities the agent can draw on. Imported via the same .md / ZIP / GitHub flow.
           </p>
+        </div>
+        <div className="space-y-3 rounded-lg border border-border bg-surface-2/40 p-3">
+          <label className="text-sm font-medium">Schedule (optional)</label>
+          <Field orientation="vertical">
+            <div>
+              <label className="text-xs text-muted-foreground">Run on a schedule?</label>
+              <Select
+                value={scheduleEnabled ? 'scheduled' : 'none'}
+                onValueChange={(v) => setScheduleEnabled(v === 'scheduled')}
+              >
+                <SelectTrigger className="mt-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="scheduled">Scheduled</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <FieldDescription>
+              Run this agent automatically on a recurring cron schedule.
+            </FieldDescription>
+          </Field>
+          {scheduleEnabled && (
+            <div>
+              <label className="text-xs text-muted-foreground">Cron expression</label>
+              <Input
+                value={scheduleCron}
+                onChange={e => setScheduleCron(e.target.value)}
+                placeholder="*/30 or 15"
+                className="mt-1 font-mono"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                e.g. <code className="font-mono">*/30</code> = every 30 min,{' '}
+                <code className="font-mono">15</code> = at minute 15 of every hour.
+              </p>
+            </div>
+          )}
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <Button onClick={handleCreate} disabled={saving || !name.trim()}>

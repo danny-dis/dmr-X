@@ -1,6 +1,7 @@
 import { agentRegistryService, type AgentDefinition, type AgentInstance } from '@dmr-x/agent-registry';
 import { billingService } from '@dmr-x/billing';
 import { getDb } from '@dmr-x/db';
+import { agentMemoryManager } from '@dmr-x/memory';
 import { logger } from '@dmr-x/utils';
 
 // ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ export class AgentRuntimeService {
    * Build the system prompt for an agent, incorporating its definition.
    * Resolves linked skills (tenant-scoped) and inlines their markdown content.
    */
-  buildSystemPrompt(definition: AgentDefinition, turn?: number): string {
+  async buildSystemPrompt(definition: AgentDefinition, turn?: number): Promise<string> {
     const parts: string[] = [];
 
     // 1. Identity block
@@ -133,11 +134,32 @@ export class AgentRuntimeService {
       }
     }
 
+    // 4.75. Relevant memory (non-fatal; fallback to nothing on any failure)
+    try {
+      const memories = await agentMemoryManager.prefetchForPrompt(
+        definition.tenantId,
+        definition.id ?? definition.name,
+      );
+      if (memories && memories.trim().length > 0) {
+        parts.push(`Relevant memory:\n\n${memories}`);
+      }
+    } catch {
+      // Memory prefetch is best-effort; never block the run on it.
+    }
+
     // 5. Tool constraints
     if (definition.allowedTools.length > 0) {
       parts.push(`You have access to these tools: ${definition.allowedTools.join(', ')}. Only use the tools listed here.`);
     } else {
       parts.push('You do not have access to any tools. Respond based on your knowledge alone.');
+    }
+
+    // 6. Verify-on-stop self-check nudge (opt-in)
+    if (definition.verifyOnStop) {
+      parts.push(
+        'Before finishing, perform a self-check: verify your final answer is correct, complete, and free ' +
+        'of errors or unresolved steps. If something is wrong, fix it before responding.',
+      );
     }
 
     return parts.join('\n\n');

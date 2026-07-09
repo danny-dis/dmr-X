@@ -44,6 +44,7 @@ export interface AgentDefinition {
   icon: string | null;
   skills?: string[];
   skillNudgeInterval?: number;
+  verifyOnStop?: boolean;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -121,9 +122,9 @@ export class AgentRegistryService {
         id, tenant_id, name, description, version, system_prompt,
         personality, preferred_model, model_tier, allowed_tools, custom_tools,
         workflow, triggers, visibility, tags, category, icon, skills, human_name,
-        skill_nudge_interval,
+        skill_nudge_interval, verify_on_stop,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tenantId,
@@ -145,6 +146,7 @@ export class AgentRegistryService {
       JSON.stringify(input.skills ?? []),
       input.humanName ?? null,
       input.skillNudgeInterval ?? 8,
+      input.verifyOnStop ? 1 : 0,
       now,
       now,
     );
@@ -228,6 +230,7 @@ export class AgentRegistryService {
     if (input.humanName !== undefined) { updates.push('human_name = ?'); params.push(input.humanName); }
     if (input.skills !== undefined) { updates.push('skills = ?'); params.push(JSON.stringify(input.skills)); }
     if (input.skillNudgeInterval !== undefined) { updates.push('skill_nudge_interval = ?'); params.push(input.skillNudgeInterval); }
+    if (input.verifyOnStop !== undefined) { updates.push('verify_on_stop = ?'); params.push(input.verifyOnStop ? 1 : 0); }
 
     if (updates.length === 0) return existing;
 
@@ -671,6 +674,7 @@ export class AgentRegistryService {
       icon: row.icon,
       skills: row.skills ? JSON.parse(row.skills) : [],
       skillNudgeInterval: row.skill_nudge_interval ?? undefined,
+      verifyOnStop: row.verify_on_stop ? true : false,
       publishedAt: row.published_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

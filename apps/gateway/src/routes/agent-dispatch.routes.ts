@@ -207,7 +207,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
     // run:true → one-shot forward to the chosen subagent.
     const router = (server as any).router as Router;
     const model = agentRuntimeService.resolveModel(definition);
-    const systemPrompt = agentRuntimeService.buildSystemPrompt(definition, 0);
+    const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0);
     const reqId = generateRequestId();
     const userMessages =
       body.messages && body.messages.length > 0

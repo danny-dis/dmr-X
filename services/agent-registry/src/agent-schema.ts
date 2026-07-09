@@ -78,6 +78,7 @@ export const AgentDefinitionCreateSchema = z.object({
   icon: z.string().optional(),
   skills: z.array(z.string()).optional().default([]),
   skillNudgeInterval: z.number().int().min(0).max(100).optional().default(8),
+  verifyOnStop: z.boolean().optional().default(false),
 });
 
 export type AgentDefinitionCreate = z.infer<typeof AgentDefinitionCreateSchema>;

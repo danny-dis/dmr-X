@@ -438,6 +438,32 @@ export function isBashCommandAllowed(command: string): { allowed: boolean; reaso
 }
 
 /**
+ * Content-level deny-list of clearly destructive shell patterns. The allowlist
+ * (above) already restricts which binaries may run; this is a secondary guard
+ * against obviously dangerous arguments/content that slip past the allowlist
+ * (e.g. an allowlisted `curl` piped into `sh`). Non-fatal: returns a reason
+ * string instead of throwing. Keep patterns defensive, not over-broad.
+ */
+const DANGEROUS_BASH_PATTERNS: { pattern: RegExp; reason: string }[] = [
+  { pattern: /\brm\s+-rf\s+\//, reason: 'Recursive delete of filesystem root' },
+  { pattern: /\bmkfs\./, reason: 'Filesystem format command' },
+  { pattern: /\bdd\s+if=/, reason: 'Raw disk write via dd' },
+  { pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, reason: 'Fork bomb' },
+  { pattern: /\bchmod\s+-R\s+0+\s+\//, reason: 'Recursive chmod 000 on root' },
+  { pattern: /\b(curl|wget)\b[^\n|]*\| *[a-z]*sh\b/, reason: 'Piping remote script into shell' },
+  { pattern: />\s*\/dev\/sd[a-z]/, reason: 'Redirect overwrite of block device' },
+  { pattern: /\b(curl|wget)\b.*\s+(--upload-file|--data)\b.*\/etc\//, reason: 'Writing to /etc via curl/wget' },
+];
+
+/** Returns the reason a command is dangerous, or null if it passes. */
+export function isDangerousBashCommand(command: string): string | null {
+  for (const { pattern, reason } of DANGEROUS_BASH_PATTERNS) {
+    if (pattern.test(command)) return reason;
+  }
+  return null;
+}
+
+/**
  * Resolve (and create) the per-(tenant, request) isolated sandbox directory.
  * Each concurrent agent request gets its own workspace so file operations
  * cannot collide across parallel subagent executions.
@@ -726,6 +752,12 @@ export function registerCodingToolHandlers(): void {
     const validation = isBashCommandAllowed(command);
     if (!validation.allowed) {
       return { error: `Command rejected: ${validation.reason}. Use execute_code for unrestricted execution.` };
+    }
+
+    // Secondary content-level guard against clearly destructive patterns.
+    const dangerousReason = isDangerousBashCommand(command);
+    if (dangerousReason) {
+      return { error: `Command blocked by safety policy: ${dangerousReason}` };
     }
 
     try {
