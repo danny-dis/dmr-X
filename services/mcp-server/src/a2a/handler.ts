@@ -122,7 +122,7 @@ async function handleTaskSend(req: IncomingMessage, res: ServerResponse): Promis
     // shared tenant) or a best-effort auto-provisioned key.
     const agentApiKey = resolveGatewayKey(req.headers);
     let taskText = '';
-    const msg = body.message;
+    const msg: any = body.message;
     if (typeof msg === 'string') {
       taskText = msg;
     } else if (msg?.parts && Array.isArray(msg.parts)) {

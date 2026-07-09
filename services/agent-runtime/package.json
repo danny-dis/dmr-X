@@ -21,6 +21,7 @@
     "@dmr-x/billing": "*",
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
+    "@dmr-x/memory": "*",
     "@dmr-x/utils": "*"
   },
   "devDependencies": {

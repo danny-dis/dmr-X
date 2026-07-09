@@ -15,7 +15,7 @@ export const SkillCreateSchema = z.object({
   tags: z.array(z.string().max(50)).optional(),
   source: SkillSourceSchema.optional().default('builtin'),
   externalId: z.string().optional(),
-  pinned: z.boolean().optional().default(false),
+  pinned: z.boolean().optional(),
 });
 
 export type SkillCreate = z.infer<typeof SkillCreateSchema>;
@@ -29,7 +29,7 @@ export type SkillUpdate = z.infer<typeof SkillUpdateSchema>;
 export const SkillListQuerySchema = z.object({
   search: z.string().optional(),
   tag: z.string().optional(),
-  limit: z.number().min(1).max(100).optional().default(20),
+  limit: z.number().min(1).max(100).optional(),
 });
 
 export type SkillListQuery = z.infer<typeof SkillListQuerySchema>;

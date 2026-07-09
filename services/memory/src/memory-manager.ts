@@ -113,7 +113,7 @@ export class AgentMemoryManager {
       FROM agent_memories
       WHERE ${where.join(' AND ')}
       ORDER BY importance DESC, created_at DESC
-    `).all(...params) as AgentMemoryRow[];
+    `).all(...params) as unknown as AgentMemoryRow[];
 
     if (opts.query) {
       const q = opts.query.toLowerCase();

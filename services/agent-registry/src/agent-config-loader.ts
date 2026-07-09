@@ -135,6 +135,9 @@ export function loadAgentFromConfig(filePath: string): AgentConfigFile | null {
       tags: (config.tags ?? []) as string[],
       category: config.category as string | undefined,
       icon: config.icon as string | undefined,
+      skills: (config.skills ?? []) as string[],
+      skillNudgeInterval: (config.skillNudgeInterval ?? 8) as number,
+      verifyOnStop: (config.verifyOnStop ?? false) as boolean,
     };
 
     return { filePath, definition };
@@ -300,6 +303,9 @@ export function parseAgentMdFromString(
             : [],
       category: category ?? undefined,
       icon: (config.emoji ?? config.icon) as string | undefined,
+      skills: (config.skills ?? []) as string[],
+      skillNudgeInterval: (config.skillNudgeInterval ?? 8) as number,
+      verifyOnStop: (config.verifyOnStop ?? false) as boolean,
     };
 
     return { filePath: opts.filePath ?? 'pasted.md', definition };

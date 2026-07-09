@@ -218,7 +218,7 @@ export interface ServerState {
 // MCP Logging helper
 // ---------------------------------------------------------------------------
 
-type LoggingLevel = 'debug' | 'info' | 'notice' | 'warning' | 'warn' | 'error' | 'critical' | 'alert' | 'emergency';
+type LoggingLevel = 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical' | 'alert' | 'emergency';
 
 /**
  * Sends a logging message to the connected MCP client.
@@ -2970,7 +2970,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       headers: { authorization: `Bearer ${key}` },
     });
     if (!listRes.ok) {
-      mcpLog(server, 'warn', { status: listRes.status }, 'subagent-list-failed');
+      mcpLog(server, 'warning', { status: listRes.status }, 'subagent-list-failed');
       return [];
     }
     const listJson: any = await listRes.json();
@@ -3081,7 +3081,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       }
       mcpLog(server, 'info', { subagentTools: defs.length }, 'routing');
     } catch (err) {
-      mcpLog(server, 'warn', { message: err instanceof Error ? err.message : String(err) }, 'subagent-list-error');
+      mcpLog(server, 'warning', { message: err instanceof Error ? err.message : String(err) }, 'subagent-list-error');
     }
   }
 
