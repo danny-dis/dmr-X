@@ -234,7 +234,7 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/v1/godmode/*` | G0DM0D3 integration — `chat`, `ultraplinian`, `consortium`, `autotune`, `parseltongue`, `transform` |
-| `POST` | `/cloudcode/*` | Cloud Code protocol (Antigravity/agy) — **route handler exists but is not yet registered in the gateway** |
+| `POST` | `/v1internal*` | Cloud Code protocol (Antigravity/agy) — registered in the gateway; single wildcard route dispatches `:streamGenerateContent`/`:generateContent`/`:loadCodeAssist`/`:fetchAvailableModels` |
 
 ### Admin
 
