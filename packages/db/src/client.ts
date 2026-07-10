@@ -56,26 +56,40 @@ function splitFt5(sql: string): string[] {
   });
 }
 
+// Serialize saves so two callers never write/rename the same tmpPath at once.
+// Without this, scheduleSave() + flush() can race (TOCTOU on the `saving`
+// flag) and run two concurrent saveDatabase() calls: the first rename deletes
+// the .tmp file, the second rename then throws ENOENT and crashes the process.
+let saveInFlight: Promise<void> | null = null;
 async function saveDatabase(): Promise<void> {
   if (!db || !dbPath) return;
-  await fs.promises.mkdir(path.dirname(dbPath), { recursive: true });
-  const tmpPath = `${dbPath}.tmp`;
-  try {
-    const data = db.export();
-    // Write to a temporary file first to ensure atomic replacement.
-    // This prevents database corruption if the process crashes mid-write.
-    await fs.promises.writeFile(tmpPath, Buffer.from(data));
-    await fs.promises.rename(tmpPath, dbPath);
-  } catch (err) {
-    log.error('Failed to save database:', err);
-    // Best-effort cleanup of the temporary file
+  if (saveInFlight) return saveInFlight;
+  const run = (async () => {
+    await fs.promises.mkdir(path.dirname(dbPath), { recursive: true });
+    const tmpPath = `${dbPath}.tmp`;
     try {
-      if (fs.existsSync(tmpPath)) {
-        await fs.promises.unlink(tmpPath);
+      const data = db.export();
+      // Write to a temporary file first to ensure atomic replacement.
+      // This prevents database corruption if the process crashes mid-write.
+      await fs.promises.writeFile(tmpPath, Buffer.from(data));
+      await fs.promises.rename(tmpPath, dbPath);
+    } catch (err) {
+      log.error('Failed to save database:', err);
+      // Best-effort cleanup of the temporary file
+      try {
+        if (fs.existsSync(tmpPath)) {
+          await fs.promises.unlink(tmpPath);
+        }
+      } catch {
+        // Ignore cleanup errors
       }
-    } catch {
-      // Ignore cleanup errors
     }
+  })();
+  saveInFlight = run;
+  try {
+    await run;
+  } finally {
+    if (saveInFlight === run) saveInFlight = null;
   }
 }
 
