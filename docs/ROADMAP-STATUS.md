@@ -12,16 +12,19 @@
   existing `POST /v1/chat/completions` (OpenAI format). No gateway changes required.
 - **Antigravity (Google Cloud Code / `agy`)** —
   - Outbound `antigravity` adapter: ✅ **Shipped** (in `services/adapters`).
-  - Inbound Cloud Code protocol (`/cloudcode/*`): 🔲 **Implemented** in
-    `apps/gateway/src/routes/cloudcode.routes.ts` but **not registered** in `server.ts`.
-    Not wired as of v0.5.7.
+  - Inbound Cloud Code protocol (`/cloudcode/*`): ✅ **Shipped.** The Antigravity
+    protocol paths contain a literal colon (e.g. `/v1internal:streamGenerateContent`);
+    Fastify's router (find-my-way) hangs on `:` path params, so `cloudcode.routes.ts`
+    registers a single wildcard route (`POST /v1internal*`) and dispatches on the raw
+    URL. Registered in `server.ts`.
 
 ## workweave/router "borrow" plan
 
 - **Semantic response cache** — ✅ **Shipped** (`services/cache` / `SemanticCacheService`).
 - **Install CLI commands (`dmrx setup/off --claude|--opencode|--codex|--cursor`)** — ✅ **Shipped** (`packages/cli`).
-- **Handover summarization** — 🟡 Verify (not confirmed in current tree).
-- **STAY vs SWITCH planner** — 🟡 Verify.
+- **Handover summarization** — ✅ **Shipped** (`services/router/src/handover/handover-summarizer.ts`).
+- **STAY vs SWITCH planner** — ✅ **Shipped** (`services/router/src/planner/ev-planner.ts` +
+  `sticky-session-handler.ts`, wired into `router.service`).
 - **Cluster scorer / multi-binding catalog / training pipeline** — 🔲 Planned (not confirmed in current tree).
 - **Versioned A/B routing** — ✅ **Shipped** (router has versioned A/B strategies: least-busy, usage-based, latency-based, tag-based).
 
@@ -40,7 +43,8 @@
 
 - **Helm chart** — ✅ **Shipped** (`helm/dmr-x`).
 - **Kubernetes Operator** — ✅ **Shipped** (`services/operator`).
-- **Workflow engine (CRDs / Workflow API)** — 🟡 **Partial** — verify against `services/operator` and `helm/`.
+- **Workflow engine (CRDs / Workflow API)** — ✅ **Shipped** (`services/operator`: `WorkflowSpec` +
+  `generateWorkflowManifest()`; CRDs in `helm/`).
 
 ## Wiring verification
 
@@ -49,8 +53,8 @@ The previous `WIRING-VERIFICATION.md` hard-coded `server.ts` line numbers that *
 changes** — treat it as historical. To re-verify, grep `server.ts` for `server.register(...)`
 and confirm each plugin is mounted.
 
-As of v0.5.7 the gateway exposes **200+ live routes**; `prompt.routes` and `cloudcode.routes`
-are implemented in source but **not registered** in the gateway.
+As of v0.5.7 the gateway exposes **200+ live routes**; `prompt.routes`, `cloudcode.routes`,
+and all agent/MCP/federation routes are **registered** in `server.ts`.
 
 ## Quick facts
 
