@@ -677,6 +677,29 @@ export const Admin = {
     cavemanOptions?: Record<string, unknown>;
     commentStripOptions?: Record<string, unknown>;
   }) => apiPost<CompressionPreview>('/v1/compression/preview', body),
+
+  /**
+   * Dry-run routing for the live cascade preview. Calls POST /route with
+   * planOnly:true and returns the resolved primary + fallback chain.
+   * The gateway emits `decision` (primary) at the top level; we remap it to
+   * `selected` so the UI has a stable field name.
+   */
+  previewRoutingPlan: (body: {
+    model: string;
+    messages?: { role: string; content: string }[];
+    providerPreferences?: Record<string, unknown>;
+  }) =>
+    apiPost<{
+      decision: { provider_id: string; model_id: string; adapter_type?: string; score?: number };
+      fallback_chain: { provider_id: string; model_id: string; score?: number }[];
+      timeout_ms: number;
+      max_retries: number;
+    }>('/route', { ...body, planOnly: true }).then((res) => ({
+      selected: res.decision,
+      fallback_chain: res.fallback_chain,
+      timeout_ms: res.timeout_ms,
+      max_retries: res.max_retries,
+    })),
 };
 
 function buildSseUrl(path: string): string {

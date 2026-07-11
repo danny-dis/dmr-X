@@ -2,6 +2,63 @@ import { Modality, IntelligenceLayer, CapabilityTier, QualityTarget, Architectur
 
 export type FreeTierStrategy = 'prioritize' | 'load_balance' | 'fallback' | 'none';
 
+/**
+ * Pipeline-level selection strategies (the engine's real union, mirroring
+ * services/router/src/pipeline/pipeline.ts). The request-level
+ * `RoutingStrategy` in provider-preferences.ts (`auto|direct|free|fallback|pareto`)
+ * is a coarser concern; combos select among these concrete selectors.
+ */
+export type PipelineStrategy =
+  | 'thompson'
+  | 'least-busy'
+  | 'usage-based'
+  | 'latency-based'
+  | 'cost-optimized'
+  | 'round-robin'
+  | 'weighted'
+  | 'headroom'
+  | 'priority'
+  | 'context-optimized'
+  | 'fusion';
+
+/** Human-readable labels for each pipeline strategy — single source of truth for the UI. */
+export const PIPELINE_STRATEGIES: { id: PipelineStrategy; label: string; description: string }[] = [
+  { id: 'thompson', label: 'Adaptive (bandit)', description: 'Thompson-sampling bandit that learns which providers succeed.' },
+  { id: 'least-busy', label: 'Least busy', description: 'Pick the provider with the most available capacity.' },
+  { id: 'usage-based', label: 'Usage balanced', description: 'Spread load by recent usage volume.' },
+  { id: 'latency-based', label: 'Lowest latency', description: 'Prefer the provider with the lowest estimated latency.' },
+  { id: 'cost-optimized', label: 'Lowest cost', description: 'Prefer the cheapest provider per token.' },
+  { id: 'round-robin', label: 'Round robin', description: 'Rotate evenly across healthy candidates.' },
+  { id: 'weighted', label: 'Weighted random', description: 'Sample candidates by a quality/cost weight.' },
+  { id: 'headroom', label: 'Headroom', description: 'Prefer providers with spare rate-limit headroom.' },
+  { id: 'priority', label: 'Priority order', description: 'Follow the explicit provider ordering.' },
+  { id: 'context-optimized', label: 'Context fit', description: 'Prefer the provider whose context window best fits the request.' },
+  { id: 'fusion', label: 'Fusion', description: 'Combine signals (quality, cost, latency) into one score.' },
+];
+
+/**
+ * A named, saveable routing strategy ("combo") surfaced in the UI.
+ * Composes the engine's existing building blocks — no new routing logic.
+ */
+export interface RoutingCombo {
+  id: string;
+  name: string;
+  /** Pipeline selector. */
+  pipelineStrategy: PipelineStrategy;
+  /** How free-tier providers participate. */
+  freeTierStrategy: FreeTierStrategy;
+  /** Target meta-model alias (e.g. 'free-coding') or 'any'. */
+  target: string;
+  /** Relative weights for the composite scorer. */
+  weights: { quality: number; cost: number; latency: number };
+  /** Allow fallback to other providers on failure. */
+  fallbackEnabled: boolean;
+  /** Only use these providers (optional). */
+  only?: string[];
+  /** Exclude these providers (optional). */
+  ignore?: string[];
+}
+
 export type TurnType =
   | 'tool_use'
   | 'code_gen'

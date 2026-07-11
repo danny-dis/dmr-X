@@ -27,6 +27,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitive
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { PIPELINE_STRATEGIES, type RoutingCombo } from '@dmr-x/core';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */
@@ -42,6 +43,9 @@ interface SettingsForm {
   qualityWeight: number;
   costWeight: number;
   latencyWeight: number;
+  // Routing combos ("Combos" UI)
+  routingCombos: RoutingCombo[];
+  activeComboId: string;
   // Defaults
   defaultModel: string;
   maxContextWindow: number;
@@ -89,6 +93,8 @@ const DEFAULTS: SettingsForm = {
   qualityWeight: 0.4,
   costWeight: 0.25,
   latencyWeight: 0.2,
+  routingCombos: [],
+  activeComboId: '',
   defaultModel: 'auto',
   maxContextWindow: 128000,
   defaultTemperature: 0.7,
@@ -138,6 +144,10 @@ function fromServer(s: Record<string, unknown> | null): SettingsForm {
     qualityWeight: num('qualityWeight', DEFAULTS.qualityWeight),
     costWeight: num('costWeight', DEFAULTS.costWeight),
     latencyWeight: num('latencyWeight', DEFAULTS.latencyWeight),
+    routingCombos: Array.isArray(s.routingCombos)
+      ? (s.routingCombos as RoutingCombo[])
+      : DEFAULTS.routingCombos,
+    activeComboId: str('activeComboId', DEFAULTS.activeComboId),
     defaultModel: str('defaultModel', DEFAULTS.defaultModel),
     maxContextWindow: num('maxContextWindow', DEFAULTS.maxContextWindow),
     defaultTemperature: num('defaultTemperature', DEFAULTS.defaultTemperature),
@@ -180,6 +190,8 @@ function toServer(f: SettingsForm): Record<string, unknown> {
     qualityWeight: f.qualityWeight,
     costWeight: f.costWeight,
     latencyWeight: f.latencyWeight,
+    routingCombos: f.routingCombos,
+    activeComboId: f.activeComboId,
     defaultModel: f.defaultModel,
     maxContextWindow: f.maxContextWindow,
     defaultTemperature: f.defaultTemperature,
@@ -210,6 +222,256 @@ function toServer(f: SettingsForm): Record<string, unknown> {
     benchmarkHistoryDays: f.benchmarkHistoryDays,
     logRetention: f.logRetention,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Combos manager ("Combos" UI)                                              */
+/* -------------------------------------------------------------------------- */
+
+const COMBO_TARGETS = [
+  'any',
+  'auto', 'auto-fast', 'auto-smart', 'auto-agentic', 'auto-coding',
+  'auto-reasoning', 'auto-vision', 'auto-eco', 'auto-cheap', 'auto-premium',
+  'auto-long-context', 'auto-free',
+  'free', 'free-fast', 'free-smart', 'free-agentic', 'free-coding',
+];
+
+const FREE_TIER_MODES: { id: string; label: string; description: string }[] = [
+  { id: 'prioritize', label: 'Prioritize', description: 'Try free-tier providers first.' },
+  { id: 'load_balance', label: 'Load balance', description: 'Share load across free-tier providers (2× weight).' },
+  { id: 'fallback', label: 'Fallback', description: 'Use free-tier only as a fallback.' },
+  { id: 'none', label: 'None', description: 'Ignore free-tier entirely.' },
+];
+
+function newCombo(): RoutingCombo {
+  return {
+    id: `combo_${Date.now().toString(36)}`,
+    name: 'New combo',
+    pipelineStrategy: 'thompson',
+    freeTierStrategy: 'prioritize',
+    target: 'any',
+    weights: { quality: 0.4, cost: 0.25, latency: 0.2 },
+    fallbackEnabled: true,
+    only: [],
+    ignore: [],
+  };
+}
+
+function CombosManager({
+  combos,
+  activeComboId,
+  onChange,
+  onActiveChange,
+}: {
+  combos: RoutingCombo[];
+  activeComboId: string;
+  onChange: (next: RoutingCombo[]) => void;
+  onActiveChange: (id: string) => void;
+}) {
+  const [selectedId, setSelectedId] = React.useState<string | null>(combos[0]?.id ?? null);
+  const [preview, setPreview] = React.useState<{
+    selected: { provider_id: string; model_id: string; score?: number };
+    fallback_chain: { provider_id: string; model_id: string }[];
+  } | null>(null);
+  const [previewing, setPreviewing] = React.useState(false);
+
+  const selected = combos.find((c) => c.id === selectedId) ?? null;
+
+  const patch = (patch: Partial<RoutingCombo>) => {
+    if (!selected) return;
+    onChange(combos.map((c) => (c.id === selected.id ? { ...c, ...patch } : c)));
+  };
+
+  const addCombo = () => {
+    const c = newCombo();
+    onChange([...combos, c]);
+    setSelectedId(c.id);
+  };
+
+  const removeCombo = (id: string) => {
+    const next = combos.filter((c) => c.id !== id);
+    onChange(next);
+    if (selectedId === id) setSelectedId(next[0]?.id ?? null);
+    if (activeComboId === id) onActiveChange('');
+  };
+
+  const runPreview = async () => {
+    if (!selected) return;
+    setPreviewing(true);
+    try {
+      const res = await Admin.previewRoutingPlan({
+        model: selected.target === 'any' ? 'auto' : selected.target,
+        messages: [{ role: 'user', content: 'Routing preview test' }],
+        providerPreferences: {
+          strategy: 'direct',
+          order: [],
+          freeTierStrategy: selected.freeTierStrategy,
+          weights: selected.weights,
+        },
+      });
+      setPreview({ selected: res.selected, fallback_chain: res.fallback_chain });
+    } catch (e) {
+      toast.error('Preview failed', { description: (e as Error).message });
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  return (
+    <div className="mt-6 pt-5 border-t border-border">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold">Strategy combos</h3>
+          <p className="text-[10px] text-fg-muted mt-0.5">
+            Compose a routing strategy from the engine&apos;s existing selectors. Active combo is applied to requests.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={addCombo}><span className="hidden sm:inline">New combo</span></Button>
+      </div>
+
+      {combos.length === 0 ? (
+        <p className="text-[11px] text-fg-muted mt-3">No combos yet. Create one to compose a routing strategy.</p>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-3 mt-3">
+          {/* Left rail: combo cards */}
+          <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
+            {combos.map((c) => {
+              const strat = PIPELINE_STRATEGIES.find((s) => s.id === c.pipelineStrategy);
+              const isActive = activeComboId === c.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setSelectedId(c.id)}
+                  className={`text-left rounded-lg border p-2.5 transition-colors ${
+                    selectedId === c.id ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium truncate">{c.name}</span>
+                    {isActive && <Badge variant="default" className="text-[9px] px-1.5 py-0">active</Badge>}
+                  </div>
+                  <p className="text-[10px] text-fg-muted mt-1 truncate">
+                    {strat?.label ?? c.pipelineStrategy} · {c.target}
+                  </p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); onActiveChange(isActive ? '' : c.id); }}
+                      className="text-[10px] text-primary hover:underline"
+                    >
+                      {isActive ? 'deactivate' : 'set active'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); removeCombo(c.id); }}
+                      className="text-[10px] text-danger hover:underline"
+                    >
+                      delete
+                    </button>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Right: editor */}
+          {selected ? (
+            <Card padding="sm" className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={selected.name}
+                  onChange={(e) => patch({ name: e.target.value })}
+                  className="flex-1"
+                  placeholder="Combo name"
+                />
+              </div>
+
+              <SettingRow label="Pipeline strategy" description={PIPELINE_STRATEGIES.find((s) => s.id === selected.pipelineStrategy)?.description}>
+                <Select value={selected.pipelineStrategy} onValueChange={(v) => patch({ pipelineStrategy: v as RoutingCombo['pipelineStrategy'] })}>
+                  <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {PIPELINE_STRATEGIES.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+
+              <SettingRow label="Free-tier mode" description={FREE_TIER_MODES.find((m) => m.id === selected.freeTierStrategy)?.description}>
+                <Select value={selected.freeTierStrategy} onValueChange={(v) => patch({ freeTierStrategy: v as RoutingCombo['freeTierStrategy'] })}>
+                  <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {FREE_TIER_MODES.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+
+              <SettingRow label="Target" description="Meta-model alias this combo routes, or 'any'">
+                <Select value={selected.target} onValueChange={(v) => patch({ target: v })}>
+                  <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {COMBO_TARGETS.map((t) => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+
+              {(['quality', 'cost', 'latency'] as const).map((w) => (
+                <SettingRow key={w} label={`${w} weight`} description={`Weight for ${w} in the composite score (0–1)`}>
+                  <div className="w-48 space-y-2">
+                    <Slider
+                      value={[selected.weights[w]]}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      onValueChange={(v) => patch({ weights: { ...selected.weights, [w]: v[0] ?? 0 } })}
+                    />
+                    <p className="text-[10px] text-fg-muted text-right">{selected.weights[w].toFixed(2)}</p>
+                  </div>
+                </SettingRow>
+              ))}
+
+              <SettingRow label="Auto-fallback" description="Retry on an alternate provider if the first fails">
+                <Switch checked={selected.fallbackEnabled} onCheckedChange={(v) => patch({ fallbackEnabled: v })} />
+              </SettingRow>
+
+              {/* Live cascade preview */}
+              <div className="mt-1 pt-3 border-t border-border">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium">Live cascade preview</span>
+                  <Button size="sm" variant="outline" onClick={runPreview} disabled={previewing}>
+                    {previewing ? 'Resolving…' : 'Preview route'}
+                  </Button>
+                </div>
+                {preview ? (
+                  <div className="mt-2 text-[11px] space-y-1">
+                    <p className="text-fg-muted">
+                      Primary: <span className="text-fg font-mono">{preview.selected.provider_id}/{preview.selected.model_id}</span>
+                      {typeof preview.selected.score === 'number' && <span className="ml-1 text-primary">(score {preview.selected.score.toFixed(2)})</span>}
+                    </p>
+                    {preview.fallback_chain.length > 0 && (
+                      <p className="text-fg-muted">
+                        Fallback:{' '}
+                        {preview.fallback_chain.map((s) => `${s.provider_id}/${s.model_id}`).join(' → ')}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-fg-muted mt-2">Resolve to see the primary provider and fallback chain for this combo.</p>
+                )}
+              </div>
+            </Card>
+          ) : (
+            <Card padding="sm"><p className="text-[11px] text-fg-muted">Select a combo to edit, or create a new one.</p></Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -460,6 +722,13 @@ export function SettingsPage() {
                       </SettingRow>
                     </CardContent>
                   </Card>
+
+                  <CombosManager
+                    combos={form.routingCombos}
+                    activeComboId={form.activeComboId}
+                    onChange={(next) => update('routingCombos', next)}
+                    onActiveChange={(id) => update('activeComboId', id)}
+                  />
                 </TabsContent>
 
                 {/* ==================== DEFAULTS ==================== */}

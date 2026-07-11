@@ -440,6 +440,28 @@ const UpdateSettingsSchema = z.object({
   costWeight: z.union([z.string(), z.number()]).optional(),
   latencyWeight: z.union([z.string(), z.number()]).optional(),
 
+  // Routing strategy combos ("Combos" UI)
+  routingCombos: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        pipelineStrategy: z.string(),
+        freeTierStrategy: z.string(),
+        target: z.string(),
+        weights: z.object({
+          quality: z.union([z.string(), z.number()]),
+          cost: z.union([z.string(), z.number()]),
+          latency: z.union([z.string(), z.number()]),
+        }),
+        fallbackEnabled: z.boolean(),
+        only: z.array(z.string()).optional(),
+        ignore: z.array(z.string()).optional(),
+      })
+    )
+    .optional(),
+  activeComboId: z.string().optional(),
+
   // Model defaults
   defaultModel: z.string().optional(),
   maxContextWindow: z.union([z.string(), z.number()]).optional(),
