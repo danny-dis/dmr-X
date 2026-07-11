@@ -3136,6 +3136,31 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     region: 'cn',
     signupUrl: 'https://www.xfyun.cn/',
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // REMAINING REAL GAPS — verified in feature/omniroute-ux-research
+  // only where an authoritative OpenAI-compatible endpoint exists.
+  // ═══════════════════════════════════════════════════════════
+
+  {
+    id: 'morph',
+    name: 'Morph',
+    category: 'cloud_llm',
+    baseUrl: 'https://api.morphllm.com/v1',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    models: [
+      { id: 'morph-glm52-744b', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use', 'streaming'], specializations: ['coding'] },
+      { id: 'morph-v3-fast', modalities: ['llm'], contextWindow: 128000, capabilities: ['streaming'], specializations: ['fast', 'cheap'] },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'MORPH_API_KEY',
+    description: 'Morph fill-in-middle coding model with an OpenAI-compatible API.',
+    region: 'global',
+    signupUrl: 'https://www.morphllm.com/',
+  },
 ];
 
 // ---------------------------------------------------------------------------
