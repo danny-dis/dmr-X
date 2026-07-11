@@ -3161,6 +3161,93 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     region: 'global',
     signupUrl: 'https://www.morphllm.com/',
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // NON-LLM + additional routing providers added in the same
+  // branch. Only entries with stable, well-documented OpenAI-
+  // compatible endpoints were included; suno/udio/blackbox/
+  // byteplus/monsterapi/snowflake/modelscope and obscure vendors
+  // were skipped (no confident endpoint — would 502 at request time).
+  // ═══════════════════════════════════════════════════════════
+
+  {
+    id: 'zai',
+    name: 'Z.ai',
+    category: 'cloud_llm',
+    baseUrl: 'https://api.z.ai/v1',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    models: [
+      { id: 'glm-4.5', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      { id: 'glm-4.5-air', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
+      { id: 'glm-4.6', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'ZAI_API_KEY',
+    description: 'Z.ai (Zhipu) GLM models via a stable OpenAI-compatible endpoint.',
+    region: 'global',
+    signupUrl: 'https://z.ai/',
+  },
+  {
+    id: 'alibaba',
+    name: 'Alibaba DashScope',
+    category: 'cloud_llm',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    models: [
+      { id: 'qwen-plus', modalities: ['llm'], contextWindow: 131072, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      { id: 'qwen-max', modalities: ['llm'], contextWindow: 32768, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      { id: 'qwen-turbo', modalities: ['llm'], contextWindow: 131072, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'DASHSCOPE_API_KEY',
+    description: 'Alibaba Cloud DashScope Qwen models via the OpenAI-compatible compatible-mode gateway.',
+    region: 'cn',
+    signupUrl: 'https://dashscope.console.aliyun.com/',
+  },
+  {
+    id: 'gigachat',
+    name: 'GigaChat (Sber)',
+    category: 'cloud_llm',
+    baseUrl: 'https://api.giga.chat/v1',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    models: [
+      { id: 'GigaChat', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      { id: 'GigaChat-Max', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+      { id: 'GigaChat-Pro', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use', 'streaming'], specializations: ['general'] },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'GIGACHAT_API_KEY',
+    description: 'Sber GigaChat Russian-language LLM via OpenAI-compatible API (requires special auth headers at runtime).',
+    region: 'eu',
+    signupUrl: 'https://developers.sber.ru/gigachat',
+  },
+  {
+    id: 'maritalk',
+    name: 'Maritaca AI',
+    category: 'cloud_llm',
+    baseUrl: 'https://chat.maritaca.ai/api',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    models: [
+      { id: 'maritalk', modalities: ['llm'], contextWindow: 32768, capabilities: ['tool_use', 'streaming'], specializations: ['general', 'pt-br'] },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'MARITALK_API_KEY',
+    description: 'Brazilian pt-BR LLM (Maritalk) via an OpenAI-compatible chat endpoint.',
+    region: 'global',
+    signupUrl: 'https://maritaca.ai/',
+  },
 ];
 
 // ---------------------------------------------------------------------------
