@@ -156,14 +156,32 @@ export async function initializeAdapters(adapterRegistry: AdapterRegistry): Prom
     }
 
     // ---- Initialize with optional error swallowing ----
+    // Bound each init with a timeout so a single provider whose upstream
+    // hangs indefinitely (unreachable host that ignores connection timeouts)
+    // cannot block the entire gateway boot. A hung provider is logged and
+    // skipped; its health is re-evaluated by the non-blocking HealthChecker.
+    const INIT_TIMEOUT_MS = 15_000;
+    const initWithTimeout = Promise.race([
+      adapterRegistry.initialize(id, config),
+      new Promise<void>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Adapter init for ${id} timed out after ${INIT_TIMEOUT_MS}ms`)),
+          INIT_TIMEOUT_MS,
+        ),
+      ),
+    ]);
     if (swallowError) {
       try {
-        await adapterRegistry.initialize(id, config);
+        await initWithTimeout;
       } catch (err) {
         logger.warn({ err, providerId: id }, swallowErrorMsg || `Skipping ${id} init (will retry in background)`);
       }
     } else {
-      await adapterRegistry.initialize(id, config);
+      try {
+        await initWithTimeout;
+      } catch (err) {
+        logger.warn({ err, providerId: id }, `Adapter ${id} init failed/timed out during boot — continuing without it`);
+      }
     }
   }
 }

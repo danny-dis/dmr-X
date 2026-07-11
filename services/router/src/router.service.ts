@@ -158,18 +158,19 @@ export class Router {
    */
   async route(
     request: UnifiedRequest,
-    options: ClassifyOptions & { requestId?: string }
+    options?: ClassifyOptions & { requestId?: string }
   ): Promise<{ plan: RoutingPlan; response: UnifiedResponse }> {
+    const opts = options ?? ({ path: (request as any).path ?? '' } as ClassifyOptions & { requestId?: string });
     // Check if decomposition is enabled and the prompt is complex enough
     const shouldDecompose = this.config.enableDecomposition !== false &&
       this.isComplexPrompt(request) &&
       this.compositeExecutor;
 
     if (shouldDecompose) {
-      return this.routeComposite(request, options);
+      return this.routeComposite(request, opts);
     }
 
-    return this.routeSimple(request, options);
+    return this.routeSimple(request, opts);
   }
 
   /**
@@ -710,16 +711,64 @@ export class Router {
    *   "qwen/qwen3-coder"                  → { modelId: "qwen/qwen3-coder" }  (qwen is not a provider)
    *   "auto-smart"                        → { modelId: "auto-smart" }
    */
+  /**
+   * Common model-id typo/alias corrections. Applied before provider-prefix
+   * parsing so that malformed ids from the UI/cache never reach an upstream
+   * that would 400 on them. Space-separated "provider model" forms
+   * (e.g. "tencent hy3") are rewritten to the slash form ("tencent/hy3"),
+   * and known-bad bare ids are mapped to their correct upstream equivalents.
+   */
+  private normalizeModelId(model: string): string {
+    if (!model) return model;
+    const trimmed = model.trim();
+    if (trimmed === '' || trimmed === 'auto') return trimmed;
+
+    // Known bare-id corrections (exact match, case-insensitive).
+    const BARE_ALIASES: Record<string, string> = {
+      'codestral': 'codestral-latest',
+      'codestral-large': 'codestral-latest',
+      'codestral-large-latest': 'codestral-latest',
+    };
+    const lower = trimmed.toLowerCase();
+    if (BARE_ALIASES[lower]) return BARE_ALIASES[lower];
+
+    // Space → slash normalization for "provider model" forms where neither
+    // segment contains a slash already (e.g. "tencent hy3", "xiaomi-mimo mimo-v2.5").
+    if (trimmed.includes(' ') && !trimmed.includes('/')) {
+      const [maybeProvider, ...restParts] = trimmed.split(/\s+/);
+      const modelPart = restParts.join(' ').trim();
+      if (maybeProvider && modelPart) {
+        // Only rewrite if the first segment looks like a known provider prefix.
+        const candidate = `${maybeProvider}/${modelPart}`;
+        if (this.candidates.some(c => c.providerName === maybeProvider)) {
+          return candidate;
+        }
+      }
+    }
+    return trimmed;
+  }
+
   private parseModelTarget(model: string | undefined): { providerName?: string; modelId: string } {
     if (!model) return { modelId: '' };
-    const slash = model.indexOf('/');
-    if (slash <= 0) return { modelId: model };
-    const providerName = model.slice(0, slash);
-    const rest = model.slice(slash + 1);
-    if (rest && this.candidates.some(c => c.providerName === providerName)) {
-      return { providerName, modelId: rest };
+    const normalized = this.normalizeModelId(model);
+    if (normalized !== model) {
+      // Re-parse the corrected id through the normal path.
+      const parsed = this.parseModelTarget(normalized);
+      return parsed;
     }
-    return { modelId: model };
+    const slash = normalized.indexOf('/');
+    if (slash <= 0) return { modelId: normalized };
+    const providerName = normalized.slice(0, slash);
+    const rest = normalized.slice(slash + 1);
+    if (rest && this.candidates.some(c => c.providerName === providerName)) {
+      // Also normalize a space-separated id inside the provider-prefixed rest
+      // (e.g. "gitlawb/tencent hy3" -> "gitlawb/tencent/hy3").
+      const restNormalized = rest.includes(' ') && !rest.includes('/')
+        ? rest.replace(/\s+/g, '/')
+        : rest;
+      return { providerName, modelId: restNormalized };
+    }
+    return { modelId: normalized };
   }
 
   /**

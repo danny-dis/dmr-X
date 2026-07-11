@@ -95,38 +95,131 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     return key;
   }
 
+  /**
+   * Resolve the chat/completions URL for an arbitrary OpenAI-compatible
+   * upstream. Some providers expose the endpoint WITH `/v1` already in
+   * their base URL (e.g. `https://opencode.ai/zen/v1`,
+   * `https://codestral.mistral.ai/v1`) while others point at the origin
+   * or a custom path. We append `/chat/completions` when the base already
+   * contains `/v1` (or `/v1beta`), otherwise add `/v1/chat/completions`,
+   * so a single generic adapter works for both shapes.
+   */
+  private getChatCompletionsUrl(): string {
+    const base = (this.config.baseUrl || '').replace(/\/+$/, '');
+    // Already a full chat/completions path → use as-is.
+    if (/\/chat\/completions$/.test(base)) return base;
+    // Base already ends at the OpenAI mount: `/v1`, `/v1beta`, or the
+    // Google OpenAI-compatible mount `/v1beta/openai` (and similar
+    // `.../openai` paths). Append the endpoint directly.
+    if (/\/(v1beta\/openai|v1|v1beta|openai)$/.test(base)) {
+      return `${base}/chat/completions`;
+    }
+    return `${base}/v1/chat/completions`;
+  }
+
+  /**
+   * Build a minimal, well-formed OpenAI chat body.
+   *
+   * Forwards only fields that real OpenAI-compatible APIs expect
+   * (`model`, `messages`, `stream`, `temperature`, `max_tokens`, `top_p`,
+   * `tools`, `tool_choice`, etc.) and DROPS `null`/`undefined`/empty
+   * optional values instead of forwarding them blindly. This matters
+   * because `JSON.stringify` emits `"seed":null` for a `null` seed, and
+   * several strict upstreams (Mistral Codestral, opencode-zen) reject a
+   * stray `seed: null` (and other empty params) with HTTP 400, which
+   * otherwise 502s the whole request. We never strip fields that legit
+   * OpenAI-compatible endpoints rely on, so providers like OpenRouter,
+   * Together, and Groq keep working exactly as before.
+   */
+  private buildChatBody(request: UnifiedRequest, stream: boolean): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: request.model,
+      messages: request.messages,
+      stream,
+    };
+
+    const addIfPresent = (key: string, value: unknown): void => {
+      if (value === undefined || value === null) return;
+      if (typeof value === 'string' && value.trim() === '') return;
+      if (Array.isArray(value) && value.length === 0) return;
+      body[key] = value;
+    };
+
+    addIfPresent('temperature', request.temperature);
+    addIfPresent('max_tokens', request.max_tokens);
+    addIfPresent('top_p', request.top_p);
+    addIfPresent('frequency_penalty', request.frequency_penalty);
+    addIfPresent('presence_penalty', request.presence_penalty);
+    addIfPresent('stop', request.stop);
+    addIfPresent('seed', request.seed);
+    addIfPresent('response_format', request.response_format);
+    addIfPresent('n', request.n);
+
+    // Only send tool calling when tools are actually provided.
+    if (request.tools && request.tools.length > 0) {
+      body['tools'] = request.tools;
+      addIfPresent('tool_choice', request.tool_choice);
+    }
+
+    return body;
+  }
+
   protected async checkHealth(): Promise<void> {
+    // Boot-time health check: lightweight reachability probe only.
+    // A real generation (chat-completion) probe is available via
+    // checkGenerationCapability() and is intended to run on the periodic,
+    // non-blocking HealthChecker — NOT during synchronous adapter init, where
+    // a generation probe per provider would block gateway startup for minutes
+    // when upstreams are slow/unreachable.
     const key = this.getCurrentKey();
     const headers: Record<string, string> = {};
     if (key) {
       headers['Authorization'] = `Bearer ${key}`;
     }
 
+    const res = await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
+      headers,
+      timeoutMs: this.healthCheckTimeoutMs,
+    });
+
+    // 401/403 means the key is invalid/revoked and the provider cannot be
+    // used — fail health. Other statuses (incl. 400/404/429) are tolerated as
+    // reachable. We do NOT fail on a non-200 /models because some providers
+    // (e.g. Google's OpenAI mount) don't expose /models.
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        `Provider ${this.providerId} returned HTTP ${res.status} on /models — invalid or expired API key`,
+      );
+    }
+  }
+
+  /**
+   * Generation-capability probe — performs a tiny chat completion to verify
+   * the key can actually generate (catches revoked keys that still pass a
+   * /models ping). Intended for the periodic, non-blocking HealthChecker,
+   * NOT the synchronous boot checkHealth().
+   */
+  async checkGenerationCapability(): Promise<boolean> {
+    const key = this.getCurrentKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = `Bearer ${key}`;
+
+    const probeModel = (this.config as any)?.model || 'ping';
     try {
-      // Try /models endpoint first
-      await this.fetchWithTimeout(`${this.config.baseUrl}/models`, {
+      const res = await this.fetchWithTimeout(this.getChatCompletionsUrl(), {
+        method: 'POST',
         headers,
+        body: JSON.stringify({
+          model: probeModel,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+        }),
         timeoutMs: this.healthCheckTimeoutMs,
       });
-    } catch (error) {
-      // If /models returns 404, try a minimal chat completion as a fallback
-      if (error instanceof HttpError && error.statusCode === 404) {
-        await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            ...headers,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'ping', // Some providers might ignore the model name for a minimal check
-            messages: [{ role: 'user', content: 'ping' }],
-            max_tokens: 1,
-          }),
-          timeoutMs: this.healthCheckTimeoutMs,
-        });
-      } else {
-        throw error;
-      }
+      // 401/403 = invalid/revoked key => cannot generate.
+      return res.status !== 401 && res.status !== 403;
+    } catch {
+      return false;
     }
   }
 
@@ -163,24 +256,10 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
     let response: Response;
     try {
-      response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
+      response = await this.fetchWithTimeout(this.getChatCompletionsUrl(), {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          model: request.model,
-          messages: request.messages,
-          tools: request.tools,
-          tool_choice: request.tool_choice,
-          temperature: request.temperature,
-          max_tokens: request.max_tokens,
-          top_p: request.top_p,
-          frequency_penalty: request.frequency_penalty,
-          presence_penalty: request.presence_penalty,
-          stop: request.stop,
-          response_format: request.response_format,
-          seed: request.seed,
-          stream: false,
-        }),
+        body: JSON.stringify(this.buildChatBody(request, false)),
         timeoutMs: options?.timeoutMs ?? 60000,
       });
     } catch (error) {
@@ -344,18 +423,10 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
     let response: Response;
     try {
-      response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
+      response = await this.fetchWithTimeout(this.getChatCompletionsUrl(), {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          model: request.model,
-          messages: request.messages,
-          tools: request.tools,
-          tool_choice: request.tool_choice,
-          temperature: request.temperature,
-          max_tokens: request.max_tokens,
-          stream: true,
-        }),
+        body: JSON.stringify(this.buildChatBody(request, true)),
         // Forward the caller's AbortSignal so a client disconnect
         // (e.g. SSE consumer gone) cancels the upstream request.
         signal: options?.signal,

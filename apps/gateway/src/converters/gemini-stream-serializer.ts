@@ -78,10 +78,23 @@ export async function* createGeminiSSEStream(
               p => 'functionCall' in p && p.functionCall.name === tc.function!.name
             );
             if (!existing) {
+              // `arguments` may arrive as a JSON string OR as an already-parsed
+              // object/array depending on the upstream adapter. Parsing a parsed
+              // value throws, turns into an unhandled async rejection, and tears
+              // down the response stream — surfacing as a socket abort.
+              let parsedArgs: Record<string, unknown> = {};
+              try {
+                parsedArgs =
+                  typeof tc.function.arguments === 'string'
+                    ? JSON.parse(tc.function.arguments)
+                    : (tc.function.arguments as Record<string, unknown>);
+              } catch {
+                parsedArgs = {};
+              }
               toolCallParts.push({
                 functionCall: {
                   name: tc.function.name,
-                  args: JSON.parse(tc.function.arguments),
+                  args: parsedArgs,
                 },
               });
             }
@@ -129,6 +142,13 @@ export async function* createGeminiSSEStream(
       parts.push({ text: textParts.join('') });
     }
     parts.push(...toolCallParts);
+
+    // Gemini requires at least one part in a candidate; an empty parts array
+    // yields a malformed response that strict clients abort on. Emit an empty
+    // text part so the final event stays well-formed even with no content.
+    if (parts.length === 0) {
+      parts.push({ text: '' });
+    }
 
     yield formatResponse(parts, true);
   }

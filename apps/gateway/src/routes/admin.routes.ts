@@ -363,6 +363,7 @@ const CreateTenantApiKeySchema = z.object({
 });
 
 const UpdateModelSchema = z.object({
+  model_id: z.string().min(1).optional(),
   display_name: z.string().optional(),
   modality: z.string().optional(),
   context_window: z.number().positive().optional().nullable(),
@@ -511,6 +512,11 @@ const UpdateSettingsSchema = z.object({
   agentIntegrationAntigravity: z.object({
     isEnabled: z.boolean().optional(),
     preferredProviderId: z.string().nullable().optional(),
+  }).strict().optional(),
+  agentIntegrationOpencode: z.object({
+    modelId: z.string().nullable().optional(),
+    providerId: z.string().nullable().optional(),
+    configFormat: z.enum(['toml', 'env']).optional(),
   }).strict().optional(),
 }).refine(
   (obj) => !Object.keys(obj).some((k) => BLOCKED_SETTINGS_KEYS.has(k)),
@@ -2406,22 +2412,30 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     // (see CreateProviderSchema) so we decrypt before forwarding.
     if (!base_url || !api_key) {
       const db = getDb();
-      const row = db.prepare('SELECT base_url, config, oauth_access_token, auth_method FROM providers WHERE id = ?').get(provider_id) as any;
+      const row = db.prepare('SELECT base_url, config, oauth_access_token, auth_method, api_key_ref FROM providers WHERE id = ?').get(provider_id) as any;
       if (!row) {
         throw new ValidationError(`Provider not found: ${provider_id}`);
       }
       if (!base_url) base_url = row.base_url;
       if (!api_key) {
-        const cfg = row.config ? JSON.parse(row.config) : {};
-        const stored = typeof cfg.apiKey === 'string' ? cfg.apiKey : '';
-        api_key = stored ? decrypt(stored) : '';
-        // OAuth tokens are also accepted: they authenticate the same way to
-        // OpenAI-compatible upstreams, so a stored bearer works as well.
-        if (!api_key && row.oauth_access_token) {
-          try {
-            api_key = decrypt(row.oauth_access_token);
-          } catch {
-            api_key = row.oauth_access_token;
+        // A fresh env var (api_key_ref, e.g. MISTRAL_API_KEY) takes
+        // precedence over a persisted/possibly-stale DB key, so an operator
+        // can refresh the key in .env without overwriting the DB value.
+        const envVar = row.api_key_ref ? process.env[row.api_key_ref] : undefined;
+        if (envVar) {
+          api_key = envVar;
+        } else {
+          const cfg = row.config ? JSON.parse(row.config) : {};
+          const stored = typeof cfg.apiKey === 'string' ? cfg.apiKey : '';
+          api_key = stored ? decrypt(stored) : '';
+          // OAuth tokens are also accepted: they authenticate the same way to
+          // OpenAI-compatible upstreams, so a stored bearer works as well.
+          if (!api_key && row.oauth_access_token) {
+            try {
+              api_key = decrypt(row.oauth_access_token);
+            } catch {
+              api_key = row.oauth_access_token;
+            }
           }
         }
       }
@@ -4732,10 +4746,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { display_name, modality, context_window, max_output_tokens, is_active } = parsed.data;
+    const { model_id, display_name, modality, context_window, max_output_tokens, is_active } = parsed.data;
+    // Normalize a space-separated "provider model" id into the slash form
+    // (e.g. "tencent hy3" -> "tencent/hy3") so a manual edit can't recreate
+    // the upstream 400 that the router's alias layer also guards against.
+    const normalizedModelId = model_id?.includes(' ') && !model_id.includes('/')
+      ? model_id.replace(/\s+/g, '/')
+      : model_id;
     const db = getDb();
     db.prepare(
       `UPDATE model_profiles SET
+        model_id = COALESCE(?, model_id),
         display_name = COALESCE(?, display_name),
         modality = COALESCE(?, modality),
         context_window = COALESCE(?, context_window),
@@ -4743,7 +4764,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         is_active = COALESCE(?, is_active),
         updated_at = datetime('now')
       WHERE id = ?`
-    ).run(display_name, modality, context_window, max_output_tokens, is_active != null ? (is_active ? 1 : 0) : null, id);
+    ).run(
+      normalizedModelId ?? null,
+      display_name ?? null,
+      modality ?? null,
+      context_window ?? null,
+      max_output_tokens ?? null,
+      is_active != null ? (is_active ? 1 : 0) : null,
+      id,
+    );
     const updated = db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id);
     if (!updated) {
       reply.status(404);
@@ -4848,8 +4877,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Test agent integration connectivity
   server.post('/admin/integrations/test', async (request) => {
     const { tool } = request.body as { tool: string };
-    if (!tool || !['claude-code', 'codex', 'antigravity'].includes(tool)) {
-      throw new ValidationError('Invalid tool', { errors: [{ message: 'tool must be one of: claude-code, codex, antigravity' }] });
+    if (!tool || !['claude-code', 'codex', 'antigravity', 'opencode'].includes(tool)) {
+      throw new ValidationError('Invalid tool', { errors: [{ message: 'tool must be one of: claude-code, codex, antigravity, opencode' }] });
     }
 
     const port = process.env.PORT || 3000;
@@ -4876,11 +4905,19 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           messages: [{ role: 'user', content: 'ping' }],
           max_tokens: 1,
         };
-      } else {
-        testUrl = `${gatewayUrl}/v1internal:generateContent`;
+      } else if (tool === 'opencode') {
+        testUrl = `${gatewayUrl}/v1/chat/completions`;
         testBody = {
-          contents: [{ parts: [{ text: 'ping' }] }],
+          model: 'auto-coding',
+          messages: [{ role: 'user', content: 'ping' }],
         };
+      } else {
+        // Antigravity (Cloud Code protocol). Antigravity itself pings
+        // :loadCodeAssist on startup to verify connectivity, so we use that
+        // as the connectivity check — it exercises the Cloud Code endpoint
+        // without requiring a live model call (which needs a real Google key).
+        testUrl = `${gatewayUrl}/v1internal:loadCodeAssist`;
+        testBody = {};
       }
 
       const response = await fetch(testUrl, {

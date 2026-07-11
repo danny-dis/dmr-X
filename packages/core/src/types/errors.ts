@@ -50,9 +50,35 @@ export class ProviderError extends DMRXError {
   }
 }
 
+export interface TriedProviderError {
+  provider: string;
+  status?: number;
+  message: string;
+}
+
 export class AllProvidersFailedError extends DMRXError {
-  constructor(public readonly providersTried: string[]) {
-    super('All providers failed', 'ALL_PROVIDERS_FAILED', 502, false, { providersTried });
+  public readonly triedErrors: TriedProviderError[];
+
+  constructor(
+    providersTried: string[],
+    triedErrors?: TriedProviderError[]
+  ) {
+    const errors = triedErrors && triedErrors.length > 0 ? triedErrors : undefined;
+    // Surface the most informative underlying error in dev_message so
+    // local/dev callers can see WHY routing failed (e.g. HTTP 401 from
+    // cohere) instead of just "All providers failed".
+    const last = errors?.[errors.length - 1];
+    const devMessage = errors
+      ? errors
+          .map((e) => `${e.provider}${e.status ? ` (HTTP ${e.status})` : ''}: ${e.message}`)
+          .join('; ')
+      : undefined;
+    super('All providers failed', 'ALL_PROVIDERS_FAILED', 502, false, {
+      providersTried,
+      triedErrors: errors,
+      dev_message: devMessage,
+    });
+    this.triedErrors = errors ?? providersTried.map((p) => ({ provider: p, message: 'no error captured' }));
     this.name = 'AllProvidersFailedError';
   }
 }

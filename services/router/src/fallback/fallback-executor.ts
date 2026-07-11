@@ -193,6 +193,19 @@ export async function executeWithFallback(
   options?: FallbackOptions
 ): Promise<UnifiedResponse> {
   const tried: string[] = [];
+  const triedErrors: { provider: string; status?: number; message: string }[] = [];
+
+  // Capture a per-provider error for root-cause surfacing (F-4).
+  function recordTriedError(providerId: string, error: unknown): void {
+    if (triedErrors.some((e) => e.provider === providerId)) return;
+    if (error instanceof ProviderError) {
+      triedErrors.push({ provider: providerId, status: error.statusCode, message: error.message });
+    } else if (error instanceof Error) {
+      triedErrors.push({ provider: providerId, message: error.message });
+    } else {
+      triedErrors.push({ provider: providerId, message: String(error) });
+    }
+  }
   const rls = options?.rateLimitService;
   const qs = options?.quotaService;
   const tenantId = options?.tenantId;
@@ -257,6 +270,7 @@ export async function executeWithFallback(
     return response;
   } catch (error) {
     primaryErrorRaw = error;
+    recordTriedError(plan.primary.providerId, error);
     // Record circuit breaker failure (wrapped in try/catch to prevent callback errors from breaking fallback chain)
     try { options?.onFailure?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
     if (!isRateLimitError(error)) {
@@ -417,6 +431,7 @@ export async function executeWithFallback(
     } catch (error) {
       // Record circuit breaker failure (wrapped in try/catch)
       try { options?.onFailure?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
+      recordTriedError(step.provider.providerId, error);
       if (!isRateLimitError(error)) {
         anyNonRateLimitError = true;
       }
@@ -472,7 +487,7 @@ export async function executeWithFallback(
   if (!anyNonRateLimitError && tried.length > 0) {
     throw new ProviderUnavailableError(tried, 5000);
   }
-  throw new AllProvidersFailedError(tried);
+  throw new AllProvidersFailedError(tried, triedErrors);
 }
 
 /**

@@ -8,10 +8,10 @@ import { GenericOpenAIAdapter } from '../generic-openai/generic-openai.adapter.j
  * Env: NVIDIA_API_KEY
  */
 export class NVIDIANIMAdapter extends GenericOpenAIAdapter {
-  readonly providerId = 'nvidia_nim';
+  readonly providerId = 'nvidia-nim';
 
   constructor() {
-    super('nvidia_nim');
+    super('nvidia-nim');
   }
 
   async initialize(config: ProviderConfig): Promise<void> {

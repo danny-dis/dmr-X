@@ -98,6 +98,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       stream: body.stream,
       user: body.user,
       metadata: {
+        // Allow callers to pass routing/behavior flags (e.g. strictProvider /
+        // fallback) via the request body's `metadata` field (F-1).
+        ...(body.metadata && typeof body.metadata === 'object' ? body.metadata : {}),
         requestId,
         tenant: (request as any).tenant,
         freeTierStrategy: (request.headers['x-free-tier-strategy'] as string) || undefined,

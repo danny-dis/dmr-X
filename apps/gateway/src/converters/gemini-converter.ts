@@ -263,10 +263,21 @@ export function convertUnifiedResponseToGemini(
   // Add function calls
   if (response.message?.tool_calls) {
     for (const tc of response.message.tool_calls) {
+      // `arguments` may be a JSON string OR an already-parsed object/array.
+      // Parsing an object throws and produces a malformed Gemini response.
+      let args: Record<string, unknown> = {};
+      try {
+        args =
+          typeof tc.function.arguments === 'string'
+            ? JSON.parse(tc.function.arguments)
+            : ((tc.function.arguments as Record<string, unknown>) ?? {});
+      } catch {
+        args = {};
+      }
       parts.push({
         functionCall: {
           name: tc.function.name,
-          args: JSON.parse(tc.function.arguments),
+          args,
         },
       });
     }
@@ -281,6 +292,12 @@ export function convertUnifiedResponseToGemini(
   const thoughtsText = response.message?.content
     ? undefined
     : undefined; // thoughts are in metadata, not in the message
+
+  // Guarantee a well-formed Gemini candidate: an empty parts array is invalid
+  // for the Gemini wire format and strict clients abort reading the response.
+  if (parts.length === 0) {
+    parts.push({ text: '' });
+  }
 
   return {
     candidates: [
