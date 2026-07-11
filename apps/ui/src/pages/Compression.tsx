@@ -1,4 +1,4 @@
-import { Minimize2, Save, RotateCcw, RefreshCw, BarChart3 } from 'lucide-react';
+import { Minimize2, Save, RotateCcw, RefreshCw, BarChart3, Workflow } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitive
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { CompressionStudio } from './CompressionStudio';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */
@@ -169,6 +170,9 @@ export function CompressionPage() {
                 <TabsTrigger value="stats" variant="pills" className="justify-start">
                   <BarChart3 className="size-3" /> Statistics
                 </TabsTrigger>
+                <TabsTrigger value="studio" variant="pills" className="justify-start">
+                  <Workflow className="size-3" /> Studio
+                </TabsTrigger>
               </TabsList>
 
               <div>
@@ -297,6 +301,11 @@ export function CompressionPage() {
                       </div>
                     </CardContent>
                   </Card>
+                </TabsContent>
+
+                {/* ==================== STUDIO ==================== */}
+                <TabsContent value="studio">
+                  <CompressionStudio />
                 </TabsContent>
               </div>
             </div>

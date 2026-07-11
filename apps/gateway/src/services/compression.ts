@@ -31,6 +31,33 @@ export interface CompressionMetadata {
   compressedId?: string;
 }
 
+export interface CompressionStage {
+  /** Human-readable stage label shown in the studio canvas. */
+  name: string;
+  /** Which local engine this stage runs. */
+  engine: CompressionEngine;
+  tokensIn: number;
+  tokensOut: number;
+  dropped: number;
+  kept: number;
+  /** Head of the stage output, for inline diffing. */
+  outputSnippet: string;
+}
+
+export interface CompressionPreview {
+  /** Engine requested (may be 'auto'). */
+  engine: CompressionEngine;
+  /** Concrete engines that ran, in order. */
+  resolvedEngines: CompressionEngine[];
+  stages: CompressionStage[];
+  input: string;
+  output: string;
+  originalTokens: number;
+  compressedTokens: number;
+  saved: number;
+  ratio: number;
+}
+
 const DEFAULT_CONFIG: CompressionConfig = {
   enabled: false,
   proxyUrl: process.env.HEADROOM_PROXY_URL || 'http://localhost:8787',
@@ -216,6 +243,146 @@ export class CompressionService {
       logger.warn({ err, compressedId }, 'Failed to retrieve original content');
       return null;
     }
+  }
+
+  /**
+   * Preview a compression pass over raw text without touching the cache or DB.
+   * Returns a per-stage token breakdown so the UI can render the pipeline
+   * (Input → …stages… → Output) the way OmniRoute's Compression Studio does.
+   * Each engine contributes one stage (or several sub-stages for RTK's
+   * multi-step pass); this is a faithful single-pass model of `compressWithEngine`.
+   */
+  async previewCompression(
+    input: string,
+    options?: {
+      engine?: CompressionEngine;
+      rtkOptions?: RTKOptions;
+      cavemanOptions?: CavemanOptions;
+      commentStripOptions?: CommentStripOptions;
+      minTokensToCompress?: number;
+    }
+  ): Promise<CompressionPreview> {
+    const engine = options?.engine || this.getGlobalConfig().engine || 'auto';
+
+    // Resolve the concrete engine list (auto uses the same heuristics as runtime).
+    const engines = this.resolvePreviewEngines(input, engine, options);
+
+    const stages: CompressionStage[] = [];
+    let current = input;
+
+    const originalTokens = this.estimateTokensFromText(input);
+
+    const minTokens = options?.minTokensToCompress;
+    if (typeof minTokens === 'number' && minTokens > 0 && originalTokens < minTokens) {
+      return {
+        engine,
+        resolvedEngines: [],
+        stages: [],
+        input: input.slice(0, 2000),
+        output: input.slice(0, 2000),
+        originalTokens,
+        compressedTokens: originalTokens,
+        saved: 0,
+        ratio: 0,
+      };
+    }
+
+    for (const eng of engines) {
+      let result: { compressed: string; originalTokens: number; compressedTokens: number; saved: number };
+      switch (eng) {
+        case 'rtk':
+          result = compressRTK(current, options?.rtkOptions);
+          break;
+        case 'caveman':
+          result = compressCaveman(current, options?.cavemanOptions);
+          break;
+        case 'comment-strip':
+          result = stripComments(current, options?.commentStripOptions);
+          break;
+        default:
+          result = compressRTK(current, options?.rtkOptions);
+      }
+
+      const tokensIn = result.originalTokens > 0 ? result.originalTokens : this.estimateTokensFromText(current);
+      const tokensOut = result.compressedTokens;
+      const dropped = Math.max(0, tokensIn - tokensOut);
+      const kept = tokensOut;
+
+      stages.push({
+        name: this.stageLabel(eng),
+        engine: eng,
+        tokensIn,
+        tokensOut,
+        dropped,
+        kept,
+        outputSnippet: result.compressed.slice(0, 400),
+      });
+
+      current = result.compressed;
+    }
+
+    const finalTokens = this.estimateTokensFromText(current);
+    const totalSaved = Math.max(0, originalTokens - finalTokens);
+    const totalOut = finalTokens;
+
+    return {
+      engine,
+      resolvedEngines: engines,
+      stages,
+      input: input.slice(0, 2000),
+      output: current.slice(0, 2000),
+      originalTokens,
+      compressedTokens: totalOut,
+      saved: totalSaved,
+      ratio: originalTokens > 0 ? totalSaved / originalTokens : 0,
+    };
+  }
+
+  private resolvePreviewEngines(
+    input: string,
+    engine: CompressionEngine,
+    options?: { rtkOptions?: RTKOptions; cavemanOptions?: CavemanOptions; commentStripOptions?: CommentStripOptions }
+  ): CompressionEngine[] {
+    const opts = options ?? {};
+    let selected: CompressionEngine[];
+    if (engine === 'auto') {
+      // Reuse the same heuristics as compressWithAutoEngine (without DB/cache side effects).
+      const hasCode = /```[\s\S]*?```/.test(input) || /^\s*(import|export|const|let|var|function|class|def|fn)\s+/m.test(input);
+      const hasJSON = /^\s*[[{]/.test(input) && /[\]}]\s*$/.test(input);
+      const isCommandOutput = /^\s*(total|drwx|dr-x|-rw|npm|git|ls|cat|grep)/m.test(input);
+      if (isCommandOutput || (hasJSON && input.length > 800)) {
+        selected = ['rtk'];
+      } else if (hasCode) {
+        selected = ['comment-strip'];
+      } else {
+        selected = ['caveman'];
+      }
+    } else if (engine === 'headroom') {
+      // Headroom runs server-side; for preview we model it as a single pass so
+      // the canvas still renders. Mark as such so the UI can note it is an estimate.
+      selected = ['rtk', 'caveman'];
+    } else {
+      selected = [engine];
+    }
+    // Filter to only engines we can run locally.
+    return selected.filter((e): e is 'rtk' | 'caveman' | 'comment-strip' => e === 'rtk' || e === 'caveman' || e === 'comment-strip');
+  }
+
+  private stageLabel(engine: CompressionEngine): string {
+    switch (engine) {
+      case 'rtk':
+        return 'RTK · Dedupe + Collapse';
+      case 'caveman':
+        return 'Caveman · Terse';
+      case 'comment-strip':
+        return 'Comment-Strip';
+      default:
+        return engine;
+    }
+  }
+
+  private estimateTokensFromText(text: string): number {
+    return Math.ceil(text.length / 4);
   }
 
   getGlobalConfig(): CompressionConfig {

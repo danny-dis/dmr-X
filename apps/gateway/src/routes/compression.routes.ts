@@ -18,6 +18,35 @@ const CompressionRetrieveSchema = z.object({
   compressedId: z.string().min(1),
 });
 
+const CompressionPreviewSchema = z.object({
+  text: z.string().min(1).max(20000),
+  engine: z.enum(['headroom', 'rtk', 'caveman', 'comment-strip', 'auto']).optional(),
+  rtkOptions: z
+    .object({
+      maxRepeated: z.number().optional(),
+      maxItems: z.number().optional(),
+      trimWhitespace: z.boolean().optional(),
+      collapseBlankLines: z.boolean().optional(),
+    })
+    .optional(),
+  cavemanOptions: z
+    .object({
+      aggressiveness: z.number().optional(),
+      preserveTechnical: z.boolean().optional(),
+      maxLineLength: z.number().optional(),
+    })
+    .optional(),
+  commentStripOptions: z
+    .object({
+      removeSingleLine: z.boolean().optional(),
+      removeMultiLine: z.boolean().optional(),
+      removeDocblocks: z.boolean().optional(),
+      language: z.string().optional(),
+    })
+    .optional(),
+  minTokensToCompress: z.number().int().min(0).max(1000000).optional(),
+});
+
 export async function compressionRoutes(server: FastifyInstance): Promise<void> {
   // Get global compression config
   server.get('/compression/config', async (_request, reply) => {
@@ -49,10 +78,34 @@ export async function compressionRoutes(server: FastifyInstance): Promise<void> 
     }
   });
 
+  // Preview a compression pass over raw sample text (no cache/DB side effects).
+  server.post('/compression/preview', async (request, reply) => {
+    const parsed = CompressionPreviewSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.status(400);
+      return { error: 'Invalid request', details: parsed.error.errors };
+    }
+    try {
+      const preview = await compressionService.previewCompression(parsed.data.text, {
+        engine: parsed.data.engine,
+        rtkOptions: parsed.data.rtkOptions,
+        cavemanOptions: parsed.data.cavemanOptions,
+        commentStripOptions: parsed.data.commentStripOptions as
+          import('../services/engines/comment-stripper').CommentStripOptions,
+        minTokensToCompress: parsed.data.minTokensToCompress,
+      });
+      return preview;
+    } catch (err) {
+      logger.error({ err }, 'Failed to preview compression');
+      reply.status(500);
+      return { error: 'Failed to preview compression' };
+    }
+  });
+
   // Get tenant compression config
   server.get('/compression/tenant/:tenantId', async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    
+  
     try {
       const config = compressionService.getTenantConfig(tenantId);
       return config || compressionService.getGlobalConfig();

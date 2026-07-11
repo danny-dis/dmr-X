@@ -3753,12 +3753,56 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         mc.rate_limit_tpm,
         mc.rate_limit_tpd,
         p.name as provider_name,
-        p.is_healthy
+        p.is_healthy,
+        p.api_key_ref,
+        p.adapter_type
       FROM model_classifications mc
       JOIN providers p ON mc.provider_id = p.id
       WHERE mc.has_free_tier = 1
       ORDER BY mc.monthly_token_budget DESC
     `).all() as any[];
+
+    // Local / self-hosted adapters face no third-party provider ToS, so their
+    // free tier is trusted (ok). Cloud free tiers that require a key are
+    // flagged "caution" because their ToS typically restrict commercial or
+    // automated use. The "avoid" set is reserved for explicitly-curated
+    // providers whose free tier forbids the use cases DMR-X enables; it is
+    // intentionally empty by default to avoid making unverified claims.
+    const LOCAL_ADAPTER_TYPES = new Set([
+      'ollama',
+      'vllm',
+      'llamacpp',
+      'llama.cpp',
+      'local',
+      'lmstudio',
+      'openai-compatible-local',
+    ]);
+    const AVOID_PROVIDER_NAMES = new Set<string>([]);
+
+    function classifyProviderType(
+      apiKeyRef: string | null,
+      adapterType: string,
+      monthlyBudget: number
+    ): 'keyless' | 'uncapped' | 'monthly' {
+      if (!apiKeyRef || apiKeyRef.trim() === '') return 'keyless';
+      if (!monthlyBudget || monthlyBudget <= 0) return 'uncapped';
+      return 'monthly';
+    }
+
+    function classifyTosRisk(
+      adapterType: string,
+      providerName: string
+    ): 'ok' | 'caution' | 'avoid' {
+      if (AVOID_PROVIDER_NAMES.has(providerName)) return 'avoid';
+      if (LOCAL_ADAPTER_TYPES.has(adapterType)) return 'ok';
+      return 'caution';
+    }
+
+    const TOS_RISK_LABEL: Record<'ok' | 'caution' | 'avoid', string> = {
+      ok: 'Self-hosted / no third-party ToS exposure — safe for commercial & automated use.',
+      caution: 'Cloud free tier — provider ToS may restrict commercial or automated use. Review before production.',
+      avoid: 'Free tier explicitly forbids the use cases DMR-X enables. Do not route production traffic here.',
+    };
 
     // Aggregate totals
     let totalMonthlyBudget = 0;
@@ -3766,7 +3810,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const healthyProviders = new Set<string>();
 
     const providerBreakdown: Record<string, {
+      id: string;
       provider_name: string;
+      type: 'keyless' | 'uncapped' | 'monthly';
+      tos_risk: 'ok' | 'caution' | 'avoid';
       models: any[];
       total_monthly_budget: number;
       is_healthy: boolean;
@@ -3781,7 +3828,10 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
       if (!providerBreakdown[model.provider_id]) {
         providerBreakdown[model.provider_id] = {
+          id: model.provider_id,
           provider_name: model.provider_name,
+          type: 'monthly',
+          tos_risk: classifyTosRisk(model.adapter_type, model.provider_name),
           models: [],
           total_monthly_budget: 0,
           is_healthy: model.is_healthy === 1,
@@ -3804,6 +3854,56 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       providerBreakdown[model.provider_id].total_monthly_budget += model.monthly_token_budget || 0;
     }
 
+    // Finalise per-provider type from the realised monthly budget.
+    const providersOut = Object.values(providerBreakdown).map((p) => ({
+      ...p,
+      type: classifyProviderType(
+        freeModels.find((m: any) => m.provider_id === p.id)?.api_key_ref ?? null,
+        freeModels.find((m: any) => m.provider_id === p.id)?.adapter_type ?? '',
+        p.total_monthly_budget
+      ),
+    }));
+
+    // Pool-deduped budget: models that share a provider AND the same rate-limit
+    // tier draw from a single shared token pool, so we collapse them to ONE
+    // segment whose monthly tokens = MAX (not SUM) of the member models. This
+    // keeps the stacked bar at real steady recurring throughput instead of an
+    // inflated rate-limit ceiling that would double-count models in one pool.
+    const poolsById: Record<string, {
+      id: string;
+      name: string;
+      type: 'keyless' | 'uncapped' | 'monthly';
+      tos_risk: 'ok' | 'caution' | 'avoid';
+      monthly_tokens: number;
+    }> = {};
+
+    for (const model of freeModels) {
+      const poolKey = `${model.provider_id}:${model.rate_limit_rpm ?? 0}:${model.rate_limit_tpm ?? 0}`;
+      const tokens = model.monthly_token_budget || 0;
+      if (!poolsById[poolKey]) {
+        poolsById[poolKey] = {
+          id: poolKey,
+          name: model.provider_name,
+          type: classifyProviderType(model.api_key_ref, model.adapter_type, 0),
+          tos_risk: classifyTosRisk(model.adapter_type, model.provider_name),
+          monthly_tokens: 0,
+        };
+      }
+      // Collapse to the pool's MAX — one shared pool, one steady budget.
+      if (tokens > poolsById[poolKey].monthly_tokens) {
+        poolsById[poolKey].monthly_tokens = tokens;
+      }
+    }
+
+    const pools = Object.values(poolsById).map((pool) => ({
+      ...pool,
+      type: classifyProviderType(
+        freeModels.find((m: any) => `${m.provider_id}:${m.rate_limit_rpm ?? 0}:${m.rate_limit_tpm ?? 0}` === pool.id)?.api_key_ref ?? null,
+        freeModels.find((m: any) => `${m.provider_id}:${m.rate_limit_rpm ?? 0}:${m.rate_limit_tpm ?? 0}` === pool.id)?.adapter_type ?? '',
+        pool.monthly_tokens
+      ),
+    }));
+
     // Get actual usage from request logs
     const usage = db.prepare(`
       SELECT
@@ -3819,14 +3919,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       LIMIT 50
     `).all() as any[];
 
+    // Pool-deduped steady monthly token total (equals the stacked bar sum).
+    const pooledMonthlyBudget = pools.reduce((sum: number, p: any) => sum + (p.monthly_tokens || 0), 0);
+
     return {
       summary: {
         total_monthly_budget: totalMonthlyBudget,
+        pooled_monthly_budget: pooledMonthlyBudget,
         total_free_models: totalModels,
+        total_pools: pools.length,
+        total_providers: providersOut.length,
         healthy_free_providers: healthyProviders.size,
         estimated_tokens_saved: usage.reduce((sum: number, u: any) => sum + (u.total_tokens || 0), 0),
       },
-      providers: Object.values(providerBreakdown),
+      providers: providersOut,
+      pools,
+      tos_risk_labels: TOS_RISK_LABEL,
       recent_usage: usage,
     };
   });

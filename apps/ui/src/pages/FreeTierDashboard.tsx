@@ -13,13 +13,19 @@ import { formatNumber } from '@/lib/formatters';
 
 interface FreeTierSummary {
   summary: {
-    total_monthly_budget: number;
-    total_free_models: number;
-    healthy_free_providers: number;
-    estimated_tokens_saved: number;
+    total_monthly_budget?: number;
+    pooled_monthly_budget?: number;
+    total_free_models?: number;
+    total_pools?: number;
+    total_providers?: number;
+    healthy_free_providers?: number;
+    estimated_tokens_saved?: number;
   };
   providers: Array<{
+    id: string;
     provider_name: string;
+    type?: 'keyless' | 'uncapped' | 'monthly';
+    tos_risk?: 'ok' | 'caution' | 'avoid';
     models: Array<{
       model_id: string;
       monthly_token_budget: number;
@@ -35,6 +41,14 @@ interface FreeTierSummary {
     total_monthly_budget: number;
     is_healthy: boolean;
   }>;
+  pools?: Array<{
+    id: string;
+    name: string;
+    type: 'keyless' | 'uncapped' | 'monthly';
+    tos_risk: 'ok' | 'caution' | 'avoid';
+    monthly_tokens: number;
+  }>;
+  tos_risk_labels?: Partial<Record<'ok' | 'caution' | 'avoid', string>>;
   recent_usage: Array<{
     selected_provider: string;
     selected_model: string;
@@ -71,7 +85,12 @@ export function FreeTierDashboardPage() {
       ) : summary ? (
         <div className="space-y-6">
           {/* Budget Overview */}
-          <FreeTierBudgetCard summary={summary.summary} />
+          <FreeTierBudgetCard
+            summary={summary.summary}
+            pools={summary.pools}
+            providers={summary.providers}
+            tosRiskLabels={summary.tos_risk_labels}
+          />
 
           {/* Provider Grid */}
           <div>

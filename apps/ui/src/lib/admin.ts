@@ -39,6 +39,8 @@ import type {
   ApiMcpAggregatedServer,
 } from '@/types/api';
 
+import type { CompressionPreview } from '@/types/compression-studio';
+
 
 // ----------------------------------------------------------------------------
 // Wire-format transforms
@@ -665,6 +667,16 @@ export const Admin = {
       filename: params.filename,
     });
   },
+
+  // ── Compression Studio preview ─────────────────────────────────────────────
+  previewCompression: (body: {
+    text: string;
+    engine?: string;
+    minTokensToCompress?: number;
+    rtkOptions?: Record<string, unknown>;
+    cavemanOptions?: Record<string, unknown>;
+    commentStripOptions?: Record<string, unknown>;
+  }) => apiPost<CompressionPreview>('/v1/compression/preview', body),
 };
 
 function buildSseUrl(path: string): string {

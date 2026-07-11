@@ -193,7 +193,7 @@ export async function createServer() {
       throw new Error('DMRX_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) in production for AES-256-GCM encryption. Generate with: openssl rand -hex 32');
     }
   }
-  
+
   logger.info('Security validation passed for admin key and encryption key');
 
   // Initialize router
@@ -579,14 +579,13 @@ void (async () => {
     logger.info('Registering route: agentDispatchRoutes');
     await server.register(agentDispatchRoutes, { prefix: '/v1' });
     logger.info('Registering route: cloudcodeRoutes');
-    await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
-    logger.info('Registering route: godmodeRoutes');
-    await server.register(godmodeRoutes, { prefix: '/v1' }); // G0DM0D3 integration
-    logger.info('Registering route: promptRoutes');
-    await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
-    logger.info('All routes registered');
+      await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
+      logger.info('Registering route: godmodeRoutes');
+      await server.register(godmodeRoutes, { prefix: '/v1' }); // G0DM0D3 integration
+      logger.info('Registering route: promptRoutes');
+      await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library (encapsulated, like every other /v1 plugin)
+      logger.info('All routes registered');
 
-  // Start the agent scheduler in the background — must not block the listener.
   // AgentScheduler.start() loads persisted jobs and polls every 30s; its
   // interval is unref()'d so it never keeps the event loop alive. A failure
   // here must never prevent the gateway from serving traffic.
