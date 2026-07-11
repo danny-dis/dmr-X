@@ -3250,6 +3250,324 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 ];
 
+// ===========================================================================
+// DEFERRED PROVIDER STUBS — NOT YET ACTIVE
+// These are the remaining "real gaps" from docs/OMNIROUTE_UX_RESEARCH.md
+// (minus alibaba, maritalk, gigachat, morph, zai which were verified + added).
+// They are commented out so the build stays clean and nothing 502s at request
+// time. Each carries a best-guess baseUrl + modality and a TODO(verify) note.
+// To activate: confirm the baseUrl/model ids against official docs, uncomment,
+// then `bun run tsc --noEmit` (must be EXIT 0) and check for id collisions.
+// ===========================================================================
+
+// {
+//   id: 'suno',
+//   name: 'Suno',
+//   category: 'cloud_audio',
+//   baseUrl: 'https://api.suno.com/v1',            // TODO(verify): confirm OpenAI-compatible host/path
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['music'],                          // audio generation, not LLM
+//   models: [
+//     { id: 'suno-v3', modalities: ['music'], capabilities: ['audio'], specializations: ['music'] },
+//   ],
+//   streaming: false,
+//   toolCalling: false,
+//   envKey: 'SUNO_API_KEY',
+//   description: 'Suno music generation (deferred — endpoint unverified).',
+//   region: 'global',
+//   signupUrl: 'https://suno.com/',
+// },
+// {
+//   id: 'udio',
+//   name: 'Udio',
+//   category: 'cloud_audio',
+//   baseUrl: 'https://api.udio.com/v1',             // TODO(verify): confirm OpenAI-compatible host/path
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['music'],
+//   models: [
+//     { id: 'udio-v1', modalities: ['music'], capabilities: ['audio'], specializations: ['music'] },
+//   ],
+//   streaming: false,
+//   toolCalling: false,
+//   envKey: 'UDIO_API_KEY',
+//   description: 'Udio music generation (deferred — endpoint unverified).',
+//   region: 'global',
+//   signupUrl: 'https://udio.com/',
+// },
+// {
+//   id: 'blackbox',
+//   name: 'Blackbox AI',
+//   category: 'cloud_llm',
+//   baseUrl: 'https://api.blackbox.ai/v1',          // TODO(verify): web product, no clean proxy confirmed
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['llm'],
+//   models: [
+//     { id: 'blackboxai', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['coding'] },
+//   ],
+//   streaming: true,
+//   toolCalling: false,
+//   envKey: 'BLACKBOX_API_KEY',
+//   description: 'Blackbox AI coding chat (deferred — endpoint unverified).',
+//   region: 'global',
+//   signupUrl: 'https://www.blackbox.ai/',
+// },
+// {
+//   id: 'snowflake',
+//   name: 'Snowflake Cortex',
+//   category: 'cloud_llm',
+//   baseUrl: 'https://<org>-<acct>.snowflakecomputing.com/api/v2/cortex/inference', // TODO(verify): inside Snowflake platform, not a public HTTP endpoint
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['llm'],
+//   models: [
+//     { id: 'llama3.1-70b', modalities: ['llm'], contextWindow: 8192, capabilities: ['streaming'], specializations: ['general'] },
+//   ],
+//   streaming: true,
+//   toolCalling: false,
+//   envKey: 'SNOWFLAKE_API_KEY',
+//   description: 'Snowflake Cortex LLM inference (deferred — requires Snowflake account host).',
+//   region: 'global',
+//   signupUrl: 'https://www.snowflake.com/',
+// },
+// {
+//   id: 'modelscope',
+//   name: 'ModelScope (DashScope)',
+//   category: 'cloud_llm',
+//   baseUrl: 'https://api.modelscope.cn/v1',        // TODO(verify): requires Alibaba Cloud SDK/region gateway
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['llm'],
+//   models: [
+//     { id: 'qwen2.5-72b-instruct', modalities: ['llm'], contextWindow: 131072, capabilities: ['tool_use','streaming'], specializations: ['general'] },
+//   ],
+//   streaming: true,
+//   toolCalling: true,
+//   envKey: 'MODELSCOPE_API_KEY',
+//   description: 'ModelScope open models (deferred — endpoint unverified).',
+//   region: 'cn',
+//   signupUrl: 'https://modelscope.cn/',
+// },
+// {
+//   id: 'monsterapi',
+//   name: 'MonsterAPI',
+//   category: 'cloud_llm',
+//   baseUrl: 'https://api.monsterapi.ai/v1',        // TODO(verify): docs host unresolvable
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['llm'],
+//   models: [
+//     { id: 'openhermes-2.5-mistral-7b', modalities: ['llm'], contextWindow: 32768, capabilities: ['streaming'], specializations: ['general'] },
+//   ],
+//   streaming: true,
+//   toolCalling: false,
+//   envKey: 'MONSTERAPI_KEY',
+//   description: 'MonsterAPI hosted OSS models (deferred — endpoint unverified).',
+//   region: 'global',
+//   signupUrl: 'https://monsterapi.ai/',
+// },
+// {
+//   id: 'galadriel',
+//   name: 'Galadriel',
+//   category: 'cloud_llm',
+//   baseUrl: 'https://api.galadriel.com/v1',        // TODO(verify): on-chain/agent LLM, confirm host
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['llm'],
+//   models: [
+//     { id: 'galadriel-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['agentic'] },
+//   ],
+//   streaming: true,
+//   toolCalling: true,
+//   envKey: 'GALADRIEL_API_KEY',
+//   description: 'Galadriel on-chain agentic LLM (deferred — endpoint unverified).',
+//   region: 'global',
+//   signupUrl: 'https://www.galadriel.com/',
+// },
+// {
+//   id: 'byteplus',
+//   name: 'BytePlus ModelArk',
+//   category: 'cloud_llm',
+//   baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', // TODO(verify): docs behind auth, confirm exact URL
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['llm'],
+//   models: [
+//     { id: 'doubao-pro', modalities: ['llm'], contextWindow: 128000, capabilities: ['tool_use','streaming'], specializations: ['general'] },
+//   ],
+//   streaming: true,
+//   toolCalling: true,
+//   envKey: 'BYTEPLUS_API_KEY',
+//   description: 'BytePlus ModelArk (Volcengine) LLM (deferred — endpoint unverified).',
+//   region: 'cn',
+//   signupUrl: 'https://www.volcengine.com/',
+// },
+// {
+//   id: 'puter',
+//   name: 'Puter',
+//   category: 'cloud_llm',
+//   baseUrl: 'https://api.puter.com/v1',            // TODO(verify): full platform, not a simple proxy
+//   authMethod: 'bearer',
+//   apiFormat: 'openai',
+//   modalities: ['llm'],
+//   models: [
+//     { id: 'claude-3.5-sonnet', modalities: ['llm'], contextWindow: 200000, capabilities: ['tool_use','streaming'], specializations: ['general'] },
+//   ],
+//   streaming: true,
+//   toolCalling: true,
+//   envKey: 'PUTER_API_KEY',
+//   description: 'Puter AI platform proxy (deferred — endpoint unverified).',
+//   region: 'global',
+//   signupUrl: 'https://puter.com/',
+// },
+// // --- Obscure vendors: no authoritative fetchable endpoint; confirm id + baseUrl before activating ---
+// {
+//   id: 'bytez', name: 'Bytez', category: 'cloud_llm',
+//   baseUrl: 'https://api.bytez.com/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'bytez-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'BYTEZ_API_KEY',
+//   description: 'Bytez (deferred — unverified).', region: 'global', signupUrl: 'https://bytez.com/',
+// },
+// {
+//   id: 'dgrid', name: 'DGrid', category: 'cloud_llm',
+//   baseUrl: 'https://api.dgrid.com/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'dgrid-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'DGRID_API_KEY',
+//   description: 'DGrid (deferred — unverified).', region: 'global', signupUrl: 'https://dgrid.com/',
+// },
+// {
+//   id: 'kenari', name: 'Kenari', category: 'cloud_llm',
+//   baseUrl: 'https://api.kenari.io/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'kenari-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'KENARI_API_KEY',
+//   description: 'Kenari (deferred — unverified).', region: 'global', signupUrl: 'https://kenari.io/',
+// },
+// {
+//   id: 'kie', name: 'Kie', category: 'cloud_llm',
+//   baseUrl: 'https://api.kie.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'kie-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'KIE_API_KEY',
+//   description: 'Kie (deferred — unverified).', region: 'global', signupUrl: 'https://kie.ai/',
+// },
+// {
+//   id: 'liquid', name: 'Liquid', category: 'cloud_llm',
+//   baseUrl: 'https://api.liquid.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'liquid-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'LIQUID_API_KEY',
+//   description: 'Liquid (deferred — unverified).', region: 'global', signupUrl: 'https://liquid.ai/',
+// },
+// {
+//   id: 'llamagate', name: 'LlamaGate', category: 'cloud_llm',
+//   baseUrl: 'https://api.llamagate.com/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'llamagate-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'LLAMAGATE_API_KEY',
+//   description: 'LlamaGate (deferred — unverified).', region: 'global', signupUrl: 'https://llamagate.com/',
+// },
+// {
+//   id: 'longcat', name: 'LongCat', category: 'cloud_llm',
+//   baseUrl: 'https://api.longcat.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'longcat-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'LONGCAT_API_KEY',
+//   description: 'LongCat (deferred — unverified).', region: 'global', signupUrl: 'https://longcat.ai/',
+// },
+// {
+//   id: 'mimocode', name: 'MimoCode', category: 'cloud_llm',
+//   baseUrl: 'https://api.mimocode.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'mimocode-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'MIMOCODE_API_KEY',
+//   description: 'MimoCode (deferred — unverified).', region: 'global', signupUrl: 'https://mimocode.ai/',
+// },
+// {
+//   id: 'nube', name: 'Nube', category: 'cloud_llm',
+//   baseUrl: 'https://api.nube.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'nube-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'NUBE_API_KEY',
+//   description: 'Nube (deferred — unverified).', region: 'global', signupUrl: 'https://nube.ai/',
+// },
+// {
+//   id: 'nscale', name: 'NScale', category: 'cloud_llm',
+//   baseUrl: 'https://api.nscale.com/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'nscale-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'NSCALE_API_KEY',
+//   description: 'NScale (deferred — unverified).', region: 'global', signupUrl: 'https://nscale.com/',
+// },
+// {
+//   id: 'pioneer', name: 'Pioneer', category: 'cloud_llm',
+//   baseUrl: 'https://api.pioneer.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'pioneer-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'PIONEER_API_KEY',
+//   description: 'Pioneer (deferred — unverified).', region: 'global', signupUrl: 'https://pioneer.ai/',
+// },
+// {
+//   id: 'uncloseai', name: 'Unclose AI', category: 'cloud_llm',
+//   baseUrl: 'https://api.unclose.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'unclose-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'UNCLOSEAI_API_KEY',
+//   description: 'Unclose AI (deferred — unverified).', region: 'global', signupUrl: 'https://unclose.ai/',
+// },
+// {
+//   id: 'wafer', name: 'Wafer', category: 'cloud_llm',
+//   baseUrl: 'https://api.wafer.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'wafer-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'WAFER_API_KEY',
+//   description: 'Wafer (deferred — unverified).', region: 'global', signupUrl: 'https://wafer.ai/',
+// },
+// {
+//   id: 'zenmux', name: 'ZenMux', category: 'cloud_llm',
+//   baseUrl: 'https://api.zenmux.com/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'zenmux-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'ZENMUX_API_KEY',
+//   description: 'ZenMux (deferred — unverified).', region: 'global', signupUrl: 'https://zenmux.com/',
+// },
+// {
+//   id: 'hcnsec', name: 'HCN Security', category: 'cloud_llm',
+//   baseUrl: 'https://api.hcnsec.com/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'hcnsec-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'HCNSEC_API_KEY',
+//   description: 'HCN Security (deferred — unverified).', region: 'global', signupUrl: 'https://hcnsec.com/',
+// },
+// {
+//   id: 'inclusionai', name: 'Inclusion AI', category: 'cloud_llm',
+//   baseUrl: 'https://api.inclusion.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'inclusion-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'INCLUSIONAI_API_KEY',
+//   description: 'Inclusion AI (deferred — unverified).', region: 'global', signupUrl: 'https://inclusion.ai/',
+// },
+// {
+//   id: 'agy', name: 'Agy', category: 'cloud_llm',
+//   baseUrl: 'https://api.agy.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'agy-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'AGY_API_KEY',
+//   description: 'Agy (deferred — unverified).', region: 'global', signupUrl: 'https://agy.ai/',
+// },
+// {
+//   id: 'bai', name: 'Bai', category: 'cloud_llm',
+//   baseUrl: 'https://api.bai.ai/v1', // TODO(verify): obscure, no public docs
+//   authMethod: 'bearer', apiFormat: 'openai', modalities: ['llm'],
+//   models: [{ id: 'bai-default', modalities: ['llm'], contextWindow: 32000, capabilities: ['streaming'], specializations: ['general'] }],
+//   streaming: true, toolCalling: false, envKey: 'BAI_API_KEY',
+//   description: 'Bai (deferred — unverified).', region: 'global', signupUrl: 'https://bai.ai/',
+// },
+
 // ---------------------------------------------------------------------------
 // Auto-populate pricingTier for every model.
 // Uses explicit catalog metadata rather than runtime heuristics.
