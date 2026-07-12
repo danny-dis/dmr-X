@@ -22,10 +22,26 @@ export default defineWorkspace([
       include: ['tests/unit/**/*.test.ts'],
       exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude', 'tests/e2e/**',
         // These 2 tests hang when run in the combined vitest fork pool on
-        // Windows due to vitest/bun compatibility. Run individually in CI.
+        // Windows due to vitest/bun compatibility. Run individually in CI
+        // via the dedicated `mcp` project below.
         'tests/unit/mcp-input-validator.test.ts',
         'tests/unit/mcp-policy-engine.test.ts',
       ],
+    },
+  },
+  {
+    extends: './vitest.config.ts',
+    test: {
+      name: 'mcp',
+      // Dedicated project for the two tests excluded from `unit` above
+      // (they blow up the combined fork pool on some platforms). Inherits
+      // the full config so the test environment (alias graph, db mock
+      // setup) is correct, but caps the worker heap BELOW the CI runner's
+      // ~7GB RAM. The base config's 8192MB cap exceeds the runner and gets
+      // OOM-killed by the OS; 4096MB keeps these small tests well within
+      // bounds. Coverage is disabled via the CI flag (--coverage.enabled=false).
+      include: ['tests/unit/mcp-input-validator.test.ts', 'tests/unit/mcp-policy-engine.test.ts'],
+      poolOptions: { forks: { maxForks: 1, execArgv: ['--max-old-space-size=4096'] } },
     },
   },
   {
