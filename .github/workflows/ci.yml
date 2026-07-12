@@ -72,10 +72,11 @@ jobs:
         run: bun run test:unit
       - name: Run MCP isolated tests
         # These 2 tests hang in the combined vitest fork pool on some
-        # platforms. Run individually to ensure they still pass.
+        # platforms (excluded from the `unit` project). Run individually
+        # via the dedicated `mcp` project to ensure they still pass.
         run: |
-          bun vitest run --project unit tests/unit/mcp-input-validator.test.ts
-          bun vitest run --project unit tests/unit/mcp-policy-engine.test.ts
+          bun vitest run --project mcp tests/unit/mcp-input-validator.test.ts
+          bun vitest run --project mcp tests/unit/mcp-policy-engine.test.ts
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
