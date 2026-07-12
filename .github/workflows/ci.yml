@@ -72,13 +72,11 @@ jobs:
         run: bun run test:unit
       - name: Run MCP isolated tests
         # These 2 tests are excluded from the `unit` project (they blow up
-        # the combined fork pool on some platforms). `bun run test:mcp` runs
-        # them by passing the files explicitly, giving them their own isolated
-        # vitest process (no --project flag — vitest 3.x ignores --project
-        # filtering for workspace-declared projects, so `--project mcp` would
-        # re-run the ENTIRE unit suite and OOM the ~7GB runner).
+        # the combined fork pool on some platforms). The dedicated lean
+        # `mcp` workspace project runs them with coverage off and a small
+        # heap to avoid OOMing the ~7GB CI runner.
         run: |
-          bun run test:mcp
+          bun vitest run --project mcp --coverage.enabled=false
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,12 +1,11 @@
 {
   "name": "@dmr-x/gateway",
-  "version": "0.5.7",
+  "version": "0.5.9",
   "private": true,
   "type": "module",
   "main": "./dist/main.js",
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
     "build:exe": "bun build --compile src/main.ts --outfile dist/dmrx.exe && bun run copy-public",
     "build:exe:linux": "bun build --compile --target=bun-linux-x64 src/main.ts --outfile dist/dmrx-linux && bun run copy-public",
     "build:exe:macos": "bun build --compile --target=bun-darwin-x64 src/main.ts --outfile dist/dmrx-darwin && bun run copy-public",
@@ -28,7 +27,6 @@
     "@dmr-x/db": "*",
     "@dmr-x/federation": "*",
     "@dmr-x/godmode": "*",
-    "@dmr-x/server-manager": "*",
     "@dmr-x/memory": "*",
     "@dmr-x/oauth": "*",
     "@dmr-x/policy": "*",
