@@ -582,6 +582,27 @@ void (async () => {
     await server.register(cloudcodeRoutes); // Cloud Code protocol (Antigravity/agy)
     logger.info('Registering route: godmodeRoutes');
     await server.register(godmodeRoutes, { prefix: '/v1' }); // G0DM0D3 integration
+
+    // Rehydrate: if a G0DM0D3 server was left 'running' in server_instances,
+    // point the proxy at it (env-based wiring remains the fallback).
+    try {
+      const { serverManager } = await import('@dmr-x/server-manager');
+      const { setGodmodeConfig } = await import('@dmr-x/godmode');
+      const live = serverManager.getRunningInstance();
+      if (live && live.url) {
+        setGodmodeConfig({
+          baseUrl: live.url,
+          apiKey: live.api_key ?? undefined,
+          openrouterApiKey:
+            live.openrouter_key_ref === 'env:OPENROUTER_API_KEY'
+              ? process.env.OPENROUTER_API_KEY ?? ''
+              : process.env.OPENROUTER_API_KEY ?? '',
+        });
+        logger.info({ url: live.url }, 'Rehydrated G0DM0D3 proxy config from server_instances');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'G0DM0D3 rehydration skipped (no persisted running instance)');
+    }
     logger.info('Registering route: promptRoutes');
     await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
     logger.info('All routes registered');

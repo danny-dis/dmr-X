@@ -16,6 +16,7 @@ export interface GodmodeConfig {
   parseltongueIntensity: 'light' | 'medium' | 'heavy';
   stmModules: string[];
   customSystemPrompt?: string;
+  tier: 'fast' | 'standard' | 'smart' | 'power' | 'ultra';
 }
 
 interface GodmodeSettingsProps {
@@ -53,6 +54,33 @@ export function GodmodeSettings({ config, onChange, disabled }: GodmodeSettingsP
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Tier */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Zap className="size-4 text-amber-500" />
+            <div className="text-sm font-medium">Tier</div>
+          </div>
+          <Select
+            value={config.tier}
+            onValueChange={(value) => onChange({ tier: value as GodmodeConfig['tier'] })}
+            disabled={disabled}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Select tier" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="fast">Fast</SelectItem>
+              <SelectItem value="standard">Standard</SelectItem>
+              <SelectItem value="smart">Smart</SelectItem>
+              <SelectItem value="power">Power</SelectItem>
+              <SelectItem value="ultra">Ultra</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="text-xs text-muted-foreground">
+            Model power for ULTRAPLINIAN races and CONSORTIUM synthesis.
+          </div>
+        </div>
+
         {/* AutoTune */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">

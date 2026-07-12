@@ -1598,7 +1598,7 @@ UPDATE model_profiles SET deployment = 'self_hosted' WHERE deployment = 'cloud' 
 
 -- Backfill task_categories from specializations (basic mapping)
 UPDATE model_profiles SET task_categories = '["reasoning"]' WHERE task_categories = '["general"]' AND supports_reasoning = 1;
-UPDATE model_profiles SET task_categories = '["code"]' WHERE task_categories = '["general"]' AND (model_id LIKE '%codestral%' OR model_id LIKE '%coder%');
+UPDATE model_profiles SET task_categories = '["code"]' WHERE task_categories = '["general"]' AND model_id LIKE '%codestral%' OR model_id LIKE '%coder%';
 UPDATE model_profiles SET task_categories = '["embedding"]' WHERE task_categories = '["general"]' AND modality = 'embedding';
 UPDATE model_profiles SET task_categories = '["tts"]' WHERE task_categories = '["general"]' AND modality = 'audio_tts';
 UPDATE model_profiles SET task_categories = '["stt"]' WHERE task_categories = '["general"]' AND modality = 'audio_stt';
@@ -1611,13 +1611,20 @@ UPDATE model_profiles SET reasoning_mode = 'adaptive' WHERE reasoning_mode = 'fi
 
 -- Backfill agentic_level from capabilities
 UPDATE model_profiles SET agentic_level = 'tool_use' WHERE agentic_level = 'chat' AND supports_tool_use = 1;
+
+-- Log completion
+SELECT 'Backfill complete: ' || changes || ' rows updated' FROM (SELECT COUNT(*) as changes FROM model_profiles WHERE context_tier != 'medium');
 `,
   },
   43: {
     filename: '043_add_architecture_dimension.sql',
     sql: `-- Formalize ModelArchitecture as Dimension 2 of the 9-dimension taxonomy.
 -- The 'architecture' column was added in migration 041 but not typed as a taxonomy dimension.
--- Add index for the existing column to support taxonomy-based queries.
+-- Rename to 'architecture_tier' for consistency with other taxonomy column names.
+
+-- Rename column (SQLite doesn't support ALTER COLUMN, so we need to recreate the table)
+-- Since we can't rename columns in SQLite, we'll just add an index for the existing column
+-- and update the application code to use it as Dimension 2.
 
 CREATE INDEX IF NOT EXISTS idx_model_profiles_architecture ON model_profiles(architecture);
 `,
@@ -1691,6 +1698,132 @@ UPDATE model_profiles SET agentic_level = 'autonomous' WHERE agentic_level = 'ch
   model_id LIKE '%gpt-5%' OR
   model_id LIKE '%gemini%pro%' OR
   model_id LIKE '%grok%4%'
+);
+`,
+  },
+  45: {
+    filename: '045_skills.sql',
+    sql: `-- Skills subsystem
+-- A skill is a reusable markdown document an agent can possess
+-- (similar to a hermes-agent SKILL.md).
+
+CREATE TABLE IF NOT EXISTS skills (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  content TEXT NOT NULL,
+  tags TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT 'builtin',
+  external_id TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+  UNIQUE(tenant_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_tenant ON skills(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_skills_tenant_name ON skills(tenant_id, name);
+`,
+  },
+  46: {
+    filename: '046_agent_skills.sql',
+    sql: `-- Persist the list of skill ids an agent possesses on the agent definition.
+-- Stored as a JSON array (TEXT) to keep the schema simple and avoid a
+-- separate join table / migration of the row shape.
+
+ALTER TABLE agent_definitions ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+`,
+  },
+  47: {
+    filename: '047_agent_humanname.sql',
+    sql: `-- Store an optional human-friendly display name for an agent definition.
+-- "humanName" lets a built agent be addressed by a friendly name rather
+-- than only its machine \`name\` (slug).
+-- personality column was added in 036_agent_platform.sql; this migration
+-- only introduces the optional human_name column.
+
+ALTER TABLE agent_definitions ADD COLUMN human_name TEXT;
+`,
+  },
+  48: {
+    filename: '048_skill_pinned.sql',
+    sql: `-- Skill pinning flag
+-- Pinned skills are curated/safe and CANNOT be auto-patched by the
+-- autonomous agent path (patchSkillContent / createSkillFromAgent).
+-- 0 = false (mutable), 1 = true (pinned, mutation forbidden).
+
+ALTER TABLE skills ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  49: {
+    filename: '049_agent_skill_nudge.sql',
+    sql: `-- Store the optional opt-in interval (in turns) at which an agent is
+-- nudged to capture or refine a reusable skill. 0 disables the nudge.
+-- Default 8 turns. Used only at prompt-construction time (instructional).
+
+ALTER TABLE agent_definitions ADD COLUMN skill_nudge_interval INTEGER NOT NULL DEFAULT 8;
+`,
+  },
+  50: {
+    filename: '050_scheduled_job_prompt.sql',
+    sql: `-- Scheduled job prompt + max steps
+-- Lets each scheduled job carry its own prompt and step limit instead of a
+-- hard-coded default.
+
+ALTER TABLE agent_scheduled_jobs ADD COLUMN prompt TEXT;
+ALTER TABLE agent_scheduled_jobs ADD COLUMN max_steps INTEGER NOT NULL DEFAULT 5;
+`,
+  },
+  51: {
+    filename: '051_agent_memory.sql',
+    sql: `-- Agent memory (Hermes-style session vs long-term memory)
+-- Stores agent memories scoped to tenant + agent, optionally to a session.
+-- session_id IS NULL => long-term / cross-session memory.
+
+CREATE TABLE agent_memories (
+  id         TEXT PRIMARY KEY,
+  tenant_id  TEXT NOT NULL,
+  agent_id   TEXT NOT NULL,
+  session_id TEXT,
+  kind       TEXT NOT NULL DEFAULT 'long_term',
+  content    TEXT NOT NULL,
+  importance INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER,
+  updated_at INTEGER
+);
+
+CREATE INDEX idx_agent_memories_tenant_agent_kind
+  ON agent_memories (tenant_id, agent_id, kind);
+
+CREATE INDEX idx_agent_memories_tenant_agent_session
+  ON agent_memories (tenant_id, agent_id, session_id);
+`,
+  },
+  52: {
+    filename: '052_agent_verify_on_stop.sql',
+    sql: `-- Verify-on-stop safety flag for agent definitions
+-- When enabled, the runtime nudges the agent to self-check its final answer.
+
+ALTER TABLE agent_definitions ADD COLUMN verify_on_stop INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  53: {
+    filename: '053_server_instances.sql',
+    sql: `-- G0DM0D3 auto-install server instances
+-- Tracks locally managed G0DM0D3 servers (cloned + launched by DMR-X).
+
+CREATE TABLE IF NOT EXISTS server_instances (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT 'g0dm0d3',
+  url TEXT,
+  api_key TEXT,
+  openrouter_key_ref TEXT,
+  runtime TEXT,
+  status TEXT NOT NULL DEFAULT 'stopped',
+  pid INTEGER,
+  container_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 `,
   },

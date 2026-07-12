@@ -26,6 +26,9 @@ import type {
   TransformRequest,
   TransformResponse,
   GodmodeTierInfo,
+  GodmodeFeedbackRequest,
+  GodmodeFeedbackResponse,
+  GodmodeFeedbackStats,
 } from './types.js';
 
 export class GodmodeService {
@@ -330,6 +333,53 @@ export class GodmodeService {
   }
 
   /**
+   * Submit feedback to the G0DM0D3 EMA learning loop.
+   */
+  async submitFeedback(request: GodmodeFeedbackRequest): Promise<GodmodeFeedbackResponse> {
+    this.assertInitialized();
+
+    const response = await this.fetchWithTimeout(
+      `${this.config.baseUrl}/v1/feedback`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(request),
+        timeoutMs: 30000,
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(`G0DM0D3 feedback submission failed: ${response.status} ${errorText}`);
+    }
+
+    return response.json() as Promise<GodmodeFeedbackResponse>;
+  }
+
+  /**
+   * Get learning statistics (EMA state) from the G0DM0D3 feedback endpoint.
+   */
+  async getFeedbackStats(): Promise<GodmodeFeedbackStats> {
+    this.assertInitialized();
+
+    const response = await this.fetchWithTimeout(
+      `${this.config.baseUrl}/v1/feedback/stats`,
+      {
+        method: 'GET',
+        headers: this.getHeaders(),
+        timeoutMs: 10000,
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(`G0DM0D3 feedback stats failed: ${response.status} ${errorText}`);
+    }
+
+    return response.json() as Promise<GodmodeFeedbackStats>;
+  }
+
+  /**
    * Health check
    */
   async healthCheck(): Promise<boolean> {
@@ -347,8 +397,140 @@ export class GodmodeService {
     }
   }
 
+  /**
+   * Rebuild the singleton instance's config at runtime. Used when a
+   * dynamically installed G0DM0D3 server becomes available so the proxy
+   * points at the freshly-launched URL instead of the module-load default.
+   */
+  setConfig(config: Partial<GodmodeConfig>): void {
+    this.config = {
+      ...this.config,
+      ...config,
+    };
+    this.initialized = false;
+  }
+
+  /**
+   * ULTRAPLINIAN streaming pass-through (Liquid Response).
+   * POSTs to G0DM0D3 with stream:true, parses the SSE event/data frames,
+   * and yields each parsed event object.
+   */
+  async *ultraplinianStream(request: UltraplinianRequest): AsyncIterable<unknown> {
+    this.assertInitialized();
+
+    const body = {
+      ...request,
+      openrouter_api_key: this.config.openrouterApiKey,
+      tier: request.tier || 'fast',
+      stream: true,
+    };
+
+    const response = await this.fetchWithTimeout(
+      `${this.config.baseUrl}/v1/ultraplinian/completions`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(body),
+        timeoutMs: 180000,
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(`G0DM0D3 ULTRAPLINIAN stream failed: ${response.status} ${errorText}`);
+    }
+
+    yield* this.parseSse(response);
+  }
+
+  /**
+   * CONSORTIUM streaming pass-through (Liquid Response).
+   * POSTs to G0DM0D3 with stream:true, parses the SSE event/data frames,
+   * and yields each parsed event object.
+   */
+  async *consortiumStream(request: ConsortiumRequest): AsyncIterable<unknown> {
+    this.assertInitialized();
+
+    const body = {
+      ...request,
+      openrouter_api_key: this.config.openrouterApiKey,
+      tier: request.tier || 'fast',
+      stream: true,
+    };
+
+    const response = await this.fetchWithTimeout(
+      `${this.config.baseUrl}/v1/consortium/completions`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(body),
+        timeoutMs: 300000,
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(`G0DM0D3 CONSORTIUM stream failed: ${response.status} ${errorText}`);
+    }
+
+    yield* this.parseSse(response);
+  }
+
+  /**
+   * Parse an SSE response body into {event, data} objects.
+   * Honors `event:` / `data:` lines per the SSE spec; a bare `data:` line
+   * is treated as event 'message'. The `data:` payload is JSON-parsed when
+   * possible, otherwise returned as the raw string.
+   */
+  private async *parseSse(response: Response): AsyncIterable<unknown> {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by a blank line.
+      let sep: number;
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+
+        let event = 'message';
+        const dataLines: string[] = [];
+        for (const rawLine of frame.split('\n')) {
+          const line = rawLine.replace(/\r$/, '');
+          if (line.startsWith('event:')) {
+            event = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).replace(/^ /, ''));
+          }
+        }
+        const dataStr = dataLines.join('\n');
+        if (dataStr.length === 0 && event === 'message') continue;
+        let data: unknown = dataStr;
+        try {
+          data = JSON.parse(dataStr);
+        } catch {
+          // Keep raw string when not JSON.
+        }
+        yield { event, data };
+      }
+    }
+  }
+
   dispose(): void {
     this.initialized = false;
+  }
+
+  /** Read-only access to the active config (for diagnostics). */
+  getConfig(): GodmodeConfig {
+    return { ...this.config };
   }
 }
 
@@ -369,5 +551,22 @@ export function getGodmodeService(): GodmodeService {
 
 export function createGodmodeService(config: GodmodeConfig): GodmodeService {
   instance = new GodmodeService(config);
+  return instance;
+}
+
+/**
+ * Live-rewire the singleton instance's config (e.g. after a local
+ * G0DM0D3 server is installed/started). The next call to
+ * getGodmodeService() returns a service pointed at the new URL.
+ */
+export function setGodmodeConfig(config: Partial<GodmodeConfig>): GodmodeService {
+  if (!instance) {
+    return createGodmodeService({
+      baseUrl: config.baseUrl ?? process.env.GODMODE_API_URL ?? 'http://localhost:7860',
+      apiKey: config.apiKey ?? process.env.GODMODE_API_KEY,
+      openrouterApiKey: config.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '',
+    });
+  }
+  instance.setConfig(config);
   return instance;
 }

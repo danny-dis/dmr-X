@@ -8,6 +8,7 @@ import { Card } from '@/components/primitives/Card';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { Switch } from '@/components/primitives/Switch';
 import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
@@ -22,6 +23,7 @@ import { FusionModeSelector, type FusionMode } from '@/components/fusion/FusionM
 import { RaceResults, type RaceRanking } from '@/components/fusion/RaceResults';
 import { SynthesisPanel, type ConsortiumResult } from '@/components/fusion/SynthesisPanel';
 import { GodmodeSettings, type GodmodeConfig } from '@/components/fusion/GodmodeSettings';
+import { GodmodeClassicPanel, LearningStats } from '@/components/fusion';
 
 export function FusionPanelPage() {
   const [panels, setPanels] = React.useState<ApiFusionPanel[]>([]);
@@ -33,12 +35,14 @@ export function FusionPanelPage() {
 
   // G0DM0D3 state
   const [fusionMode, setFusionMode] = React.useState<FusionMode>('parallel');
+  const [streamLiquid, setStreamLiquid] = React.useState(false);
   const [godmodeConfig, setGodmodeConfig] = React.useState<GodmodeConfig>({
     autotune: true,
     parseltongue: true,
     parseltongueTechnique: 'leetspeak',
     parseltongueIntensity: 'medium',
     stmModules: ['hedge_reducer', 'direct_mode'],
+    tier: 'fast',
   });
   const [ultraplinianResults, setUltraplinianResults] = React.useState<{
     rankings: RaceRanking[];
@@ -47,10 +51,12 @@ export function FusionPanelPage() {
     modelsQueried: number;
     modelsSucceeded: number;
     totalDurationMs: number;
+    synthesis?: string;
   } | null>(null);
   const [consortiumResults, setConsortiumResults] = React.useState<ConsortiumResult | null>(null);
   const [isRunningGodmode, setIsRunningGodmode] = React.useState(false);
   const [godmodePrompt, setGodmodePrompt] = React.useState('');
+  const [liveText, setLiveText] = React.useState<string | null>(null);
 
   const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
   const catalog = useApiData<{ entries: ApiCatalogEntry[] }>(
@@ -213,39 +219,161 @@ export function FusionPanelPage() {
     }
   };
 
+  // Parse an SSE stream: yield { event, data } per event block.
+  const parseSseStream = async function* (
+    body: ReadableStream<Uint8Array>
+  ): AsyncGenerator<{ event: string; data: unknown }> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() ?? '';
+        for (const block of blocks) {
+          let event = 'message';
+          let dataStr = '';
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+          }
+          if (!dataStr) continue;
+          let data: unknown;
+          try {
+            data = JSON.parse(dataStr);
+          } catch {
+            data = dataStr;
+          }
+          yield { event, data };
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
   // G0DM0D3 run functions
   const runGodmode = async () => {
     if (!godmodePrompt.trim() || isRunningGodmode) return;
     setIsRunningGodmode(true);
     setUltraplinianResults(null);
     setConsortiumResults(null);
+    setLiveText(null);
+
+    const messages = [{ role: 'user' as const, content: godmodePrompt }];
+    const body = {
+      messages,
+      godmode: true,
+      autotune: godmodeConfig.autotune,
+      parseltongue: godmodeConfig.parseltongue,
+      parseltongue_technique: godmodeConfig.parseltongueTechnique,
+      parseltongue_intensity: godmodeConfig.parseltongueIntensity,
+      stm_modules: godmodeConfig.stmModules,
+      tier: godmodeConfig.tier,
+    };
 
     try {
-      const messages = [{ role: 'user' as const, content: godmodePrompt }];
-      const body = {
-        messages,
-        godmode: true,
-        autotune: godmodeConfig.autotune,
-        parseltongue: godmodeConfig.parseltongue,
-        parseltongue_technique: godmodeConfig.parseltongueTechnique,
-        parseltongue_intensity: godmodeConfig.parseltongueIntensity,
-        stm_modules: godmodeConfig.stmModules,
-      };
-
       if (fusionMode === 'ultraplinian') {
-        const res = await fetchAuthenticated('/v1/godmode/ultraplinian', {
-          method: 'POST',
-          body: JSON.stringify({ ...body, tier: 'fast' }),
-        });
-        const data = await res.json();
-        setUltraplinianResults(data);
+        if (streamLiquid) {
+          const res = await fetchAuthenticated('/v1/godmode/ultraplinian', {
+            method: 'POST',
+            body: JSON.stringify({ ...body, stream: true }),
+          });
+          let leaderText = '';
+          let finalText = '';
+          for await (const { event, data } of parseSseStream(res.body!)) {
+            if (event === 'race:leader') {
+              const d = data as { answer?: string; text?: string };
+              leaderText = d.answer ?? d.text ?? leaderText;
+              setLiveText(leaderText);
+            } else if (event === 'race:complete') {
+              const d = data as { polished_answer?: string; final_answer?: string; answer?: string };
+              finalText = d.polished_answer ?? d.final_answer ?? d.answer ?? finalText;
+              setLiveText(finalText);
+            }
+          }
+          setUltraplinianResults({
+            rankings: [],
+            tier: godmodeConfig.tier,
+            modelsQueried: 0,
+            modelsSucceeded: 0,
+            totalDurationMs: 0,
+            synthesis: finalText || leaderText,
+          });
+        } else {
+          const res = await fetchAuthenticated('/v1/godmode/ultraplinian', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          // Map snake_case service response -> RaceResults camelCase props.
+          setUltraplinianResults({
+            rankings: data.race?.rankings ?? data.rankings ?? [],
+            winner: data.race?.winner ?? data.winner,
+            tier: data.race?.tier ?? data.tier ?? godmodeConfig.tier,
+            modelsQueried: (data.race?.models_queried ?? data.models_queried ?? 0) as number,
+            modelsSucceeded: (data.race?.models_succeeded ?? data.models_succeeded ?? 0) as number,
+            totalDurationMs: (data.race?.total_duration_ms ?? data.total_duration_ms ?? 0) as number,
+          });
+        }
       } else if (fusionMode === 'consortium') {
-        const res = await fetchAuthenticated('/v1/godmode/consortium', {
-          method: 'POST',
-          body: JSON.stringify({ ...body, tier: 'fast' }),
-        });
-        const data = await res.json();
-        setConsortiumResults(data);
+        if (streamLiquid) {
+          const res = await fetchAuthenticated('/v1/godmode/consortium', {
+            method: 'POST',
+            body: JSON.stringify({ ...body, stream: true }),
+          });
+          let deltaText = '';
+          let finalText = '';
+          for await (const { event, data } of parseSseStream(res.body!)) {
+            if (event === 'consortium:synthesis:delta') {
+              const d = data as { delta?: string; text?: string };
+              deltaText += d.delta ?? d.text ?? '';
+              setLiveText(deltaText);
+            } else if (event === 'consortium:complete') {
+              const d = data as { synthesis?: string; final?: string };
+              finalText = d.synthesis ?? d.final ?? finalText;
+              setLiveText(finalText || deltaText);
+            }
+          }
+          setConsortiumResults({
+            synthesis: finalText || deltaText,
+            orchestrator: { model: '', duration_ms: 0 },
+            collection: {
+              tier: godmodeConfig.tier,
+              modelsQueried: 0,
+              modelsSucceeded: 0,
+              collectionDurationMs: 0,
+              totalDurationMs: 0,
+              responses: [],
+            },
+          });
+        } else {
+          const res = await fetchAuthenticated('/v1/godmode/consortium', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          // Map snake_case service response -> SynthesisPanel camelCase props.
+          const collection = data.collection ?? data;
+          setConsortiumResults({
+            synthesis: data.synthesis ?? '',
+            orchestrator: {
+              model: data.orchestrator?.model ?? '',
+              duration_ms: data.orchestrator?.duration_ms ?? 0,
+            },
+            collection: {
+              tier: collection?.tier ?? godmodeConfig.tier,
+              modelsQueried: (collection?.models_queried ?? 0) as number,
+              modelsSucceeded: (collection?.models_succeeded ?? 0) as number,
+              collectionDurationMs: (collection?.collection_duration_ms ?? 0) as number,
+              totalDurationMs: (collection?.total_duration_ms ?? 0) as number,
+              responses: collection?.responses ?? [],
+            },
+          });
+        }
       }
       toast.success(`${fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} completed`);
     } catch (_err) {
@@ -354,15 +482,15 @@ export function FusionPanelPage() {
             />
             <StatTile
               label="Mode"
-              value={fusionMode === 'parallel' ? 'Parallel' : fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'}
+              value={fusionMode === 'parallel' ? 'Parallel' : fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : fusionMode === 'consortium' ? 'CONSORTIUM' : 'CLASSIC'}
               icon={<ArrowUpDown className="size-3.5" />}
               tone="accent"
               hint="execution strategy"
             />
           </div>
 
-          {/* G0DM0D3 Tier Info (when not parallel) */}
-          {fusionMode !== 'parallel' && (
+          {/* G0DM0D3 Tier Info (when not parallel / classic) */}
+          {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
             <div className="mt-4">
               <Card padding="md">
                 <div className="flex items-center justify-between">
@@ -394,8 +522,8 @@ export function FusionPanelPage() {
             </Card>
           </div>
 
-          {/* G0DM0D3 Settings (visible when not parallel) */}
-          {fusionMode !== 'parallel' && (
+          {/* G0DM0D3 Settings (visible when not parallel / classic) */}
+          {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
             <div className="mt-4">
               <Card padding="md">
                 <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
@@ -433,6 +561,14 @@ export function FusionPanelPage() {
                 orchestrator={consortiumResults.orchestrator}
                 collection={consortiumResults.collection}
               />
+            </div>
+          )}
+
+          {/* GODMODE CLASSIC (L1B3RT4S) */}
+          {fusionMode === 'classic' && (
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_320px]">
+              <GodmodeClassicPanel />
+              <LearningStats />
             </div>
           )}
 
@@ -560,8 +696,8 @@ export function FusionPanelPage() {
             </Card>
           </div>
 
-          {/* Godmode Prompt Input (for non-parallel modes) */}
-          {fusionMode !== 'parallel' && (
+          {/* Godmode Prompt Input (for non-parallel, non-classic modes) */}
+          {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
             <div className="mt-4">
               <Card padding="md">
                 <h3 className="text-sm font-semibold text-fg mb-3">
@@ -575,14 +711,35 @@ export function FusionPanelPage() {
                     className="flex-1 min-h-[80px] p-3 rounded-lg border border-border bg-surface-2 text-sm text-fg resize-none focus:border-primary/40 focus:ring-2 focus:ring-primary/20"
                     disabled={isRunningGodmode}
                   />
-                  <Button
-                    onClick={runGodmode}
-                    disabled={!godmodePrompt.trim() || isRunningGodmode}
-                    className="self-end"
-                  >
-                    {isRunningGodmode ? 'Running...' : 'Run'}
-                  </Button>
+                  <div className="flex flex-col items-stretch gap-2 self-end">
+                    <div className="flex items-center gap-2 px-1">
+                      <Switch
+                        checked={streamLiquid}
+                        onCheckedChange={setStreamLiquid}
+                        disabled={isRunningGodmode}
+                      />
+                      <span className="text-xs text-fg-muted whitespace-nowrap">
+                        Stream (Liquid Response)
+                      </span>
+                    </div>
+                    <Button
+                      onClick={runGodmode}
+                      disabled={!godmodePrompt.trim() || isRunningGodmode}
+                    >
+                      {isRunningGodmode ? 'Running...' : (streamLiquid ? 'Stream' : 'Run')}
+                    </Button>
+                  </div>
                 </div>
+
+                {/* Live streaming text */}
+                {liveText && (
+                  <div className="mt-3 rounded-lg border border-border bg-surface-2/50 p-3">
+                    <div className="mb-1 text-xs font-medium text-fg-muted">
+                      Live response
+                    </div>
+                    <div className="whitespace-pre-wrap text-sm text-fg">{liveText}</div>
+                  </div>
+                )}
               </Card>
             </div>
           )}

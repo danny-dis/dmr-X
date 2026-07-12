@@ -10,13 +10,16 @@
  * - POST /v1/godmode/transform — Apply STM modules
  * - GET  /v1/godmode/tier — Get tier information
  * - GET  /v1/godmode/health — Health check
+ * - POST /v1/godmode/feedback — Submit feedback to the EMA learning loop
+ * - GET  /v1/godmode/feedback/stats — Get learning statistics (EMA state)
  */
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ValidationError } from '@dmr-x/core';
 import { logger } from '@dmr-x/utils';
-import { getGodmodeService } from '@dmr-x/godmode';
+import { getGodmodeService, setGodmodeConfig } from '@dmr-x/godmode';
+import { serverManager } from '@dmr-x/server-manager';
 import type {
   GodmodeChatRequest,
   UltraplinianRequest,
@@ -24,6 +27,8 @@ import type {
   AutotuneAnalyzeRequest,
   ParseltongueEncodeRequest,
   TransformRequest,
+  GodmodeConfig,
+  GodmodeFeedbackRequest,
 } from '@dmr-x/godmode';
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
@@ -66,6 +71,7 @@ const UltraplinianSchema = z.object({
   stm_modules: z.array(z.enum(['hedge_reducer', 'direct_mode', 'curiosity_bias', 'casual_mode'])).optional(),
   max_tokens: z.number().positive().optional(),
   contribute_to_dataset: z.boolean().optional().default(false),
+  stream: z.boolean().optional().default(false),
 });
 
 const ConsortiumSchema = UltraplinianSchema.extend({
@@ -91,7 +97,22 @@ const TransformSchema = z.object({
   modules: z.array(z.enum(['hedge_reducer', 'direct_mode', 'curiosity_bias', 'casual_mode'])).optional(),
 });
 
+const FeedbackSchema = z.object({
+  message_id: z.string().min(1),
+  context_type: z.enum(['code', 'creative', 'analytical', 'conversational', 'chaotic']),
+  model: z.string().optional(),
+  persona: z.string().optional(),
+  rating: z.union([z.literal(1), z.literal(-1)]),
+  params: z.record(z.number()),
+  response_text: z.string().optional(),
+});
+
 // ─── Routes ─────────────────────────────────────────────────────────────────
+
+function replyError(err: unknown): { error: string; message: string } {
+  const message = err instanceof Error ? err.message : String(err);
+  return { error: 'server_operation_failed', message };
+}
 
 export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   const service = getGodmodeService();
@@ -143,25 +164,141 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // ULTRAPLINIAN
-  server.post('/godmode/ultraplinian', async (request) => {
+  server.post('/godmode/ultraplinian', async (request, reply) => {
     const parsed = UltraplinianSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
-    const body = parsed.data as UltraplinianRequest;
+    const body = parsed.data as UltraplinianRequest & { stream?: boolean };
+
+    if (body.stream) {
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      try {
+        for await (const evt of service.ultraplinianStream(body)) {
+          const e = evt as { event: string; data: unknown };
+          reply.raw.write(`event: ${e.event}\n`);
+          reply.raw.write(`data: ${JSON.stringify(e.data)}\n\n`);
+        }
+      } catch (err: any) {
+        reply.raw.write(`event: race:error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+      }
+      reply.raw.write('event: done\ndata: [DONE]\n\n');
+      reply.raw.end();
+      return reply;
+    }
+
     return service.ultraplinian(body);
   });
 
   // CONSORTIUM
-  server.post('/godmode/consortium', async (request) => {
+  server.post('/godmode/consortium', async (request, reply) => {
     const parsed = ConsortiumSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
-    const body = parsed.data as ConsortiumRequest;
+    const body = parsed.data as ConsortiumRequest & { stream?: boolean };
+
+    if (body.stream) {
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      try {
+        for await (const evt of service.consortiumStream(body)) {
+          const e = evt as { event: string; data: unknown };
+          reply.raw.write(`event: ${e.event}\n`);
+          reply.raw.write(`data: ${JSON.stringify(e.data)}\n\n`);
+        }
+      } catch (err: any) {
+        reply.raw.write(`event: consortium:error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+      }
+      reply.raw.write('event: done\ndata: [DONE]\n\n');
+      reply.raw.end();
+      return reply;
+    }
+
     return service.consortium(body);
+  });
+
+  // ─── Server management (G0DM0D3 auto-install) ─────────────────────────────
+
+  // Install + clone the pinned G0DM0D3 repo.
+  server.post('/godmode/server/install', async () => {
+    try {
+      const res = await serverManager.install({ openrouterApiKey: process.env.OPENROUTER_API_KEY });
+      // Point the proxy at the freshly-launched server.
+      setGodmodeConfig({
+        baseUrl: res.url ?? 'http://localhost:7860',
+        apiKey: res.api_key ?? undefined,
+        openrouterApiKey: res.openrouter_key_ref ? process.env.OPENROUTER_API_KEY ?? '' : '',
+      });
+      return { status: res.status, url: res.url, runtime: res.runtime, id: res.id };
+    } catch (err: any) {
+      logger.error({ err }, 'G0DM0D3 install/start failed');
+      return replyError(err);
+    }
+  });
+
+  // Start an already-installed server (re-run start for a stopped instance).
+  server.post('/godmode/server/start', async (request) => {
+    try {
+      const body = (request.body ?? {}) as { openrouterApiKey?: string };
+      const res = await serverManager.start({ openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY });
+      setGodmodeConfig({
+        baseUrl: res.url ?? 'http://localhost:7860',
+        apiKey: res.api_key ?? undefined,
+        openrouterApiKey: res.openrouter_key_ref ? process.env.OPENROUTER_API_KEY ?? '' : '',
+      });
+      return { status: res.status, url: res.url, runtime: res.runtime, id: res.id };
+    } catch (err: any) {
+      logger.error({ err }, 'G0DM0D3 start failed');
+      return replyError(err);
+    }
+  });
+
+  // Stop a running server.
+  server.post('/godmode/server/stop', async () => {
+    try {
+      await serverManager.stop();
+      return { status: 'stopped' };
+    } catch (err: any) {
+      logger.error({ err }, 'G0DM0D3 stop failed');
+      return replyError(err);
+    }
+  });
+
+  // Current server status (from persisted server_instances).
+  server.get('/godmode/server/status', async () => {
+    const inst = serverManager.getRunningInstance();
+    if (!inst) {
+      return { status: 'stopped', running: false };
+    }
+    let healthy = false;
+    try {
+      healthy = await serverManager.healthCheck({ url: inst.url ?? '' });
+    } catch {
+      healthy = false;
+    }
+    return { status: healthy ? 'running' : inst.status, running: healthy, runtime: inst.runtime, url: inst.url };
+  });
+
+  // Current config the proxy is pointed at.
+  server.get('/godmode/server/config', async () => {
+    const cfg = service.getConfig();
+    return {
+      baseUrl: cfg?.baseUrl,
+      hasApiKey: Boolean(cfg?.apiKey),
+      openrouterConfigured: Boolean(cfg?.openrouterApiKey),
+    };
   });
 
   // AutoTune analyze
@@ -195,5 +332,40 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
 
     const body = parsed.data as TransformRequest;
     return service.transform(body);
+  });
+
+  // ─── Feedback / EMA learning loop ───────────────────────────────────────
+
+  // Submit feedback for the G0DM0D3 EMA learning loop.
+  server.post('/godmode/feedback', async (request, reply) => {
+    const parsed = FeedbackSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const body = parsed.data as GodmodeFeedbackRequest;
+
+    // Explicit guard: rating must be 1 or -1 (already enforced by schema).
+    if (body.rating !== 1 && body.rating !== -1) {
+      reply.code(400);
+      return { error: 'Invalid request', message: 'rating must be 1 or -1' };
+    }
+
+    try {
+      return await service.submitFeedback(body);
+    } catch (err: any) {
+      logger.error({ err }, 'G0DM0D3 feedback submission failed');
+      return replyError(err);
+    }
+  });
+
+  // Get learning statistics (EMA state) for the feedback loop.
+  server.get('/godmode/feedback/stats', async () => {
+    try {
+      return await service.getFeedbackStats();
+    } catch (err: any) {
+      logger.error({ err }, 'G0DM0D3 feedback stats failed');
+      return replyError(err);
+    }
   });
 }
