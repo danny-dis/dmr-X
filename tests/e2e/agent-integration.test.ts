@@ -42,10 +42,38 @@ describeE2E('Agent Integration (Codex & Antigravity)', () => {
       const models = await client.getModels();
       expect(models.data).toBeDefined();
       // Should have at least one model suitable for coding
-      const codingModels = models.data.filter((m: any) => 
+      const codingModels = models.data.filter((m: any) =>
         m.id.includes('coding') || m.id.includes('code')
       );
       expect(codingModels.length).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('OpenCode Integration (OpenAI-compatible)', () => {
+    it('should accept OpenCode-format chat completions', async () => {
+      // OpenCode uses the standard OpenAI /v1/chat/completions endpoint
+      const response = await client.request('/v1/chat/completions', {
+        model: 'auto-coding',
+        messages: [{ role: 'user', content: 'Say "OpenCode integration verified"' }],
+        max_tokens: 50,
+      });
+      expect(response.choices).toBeDefined();
+      expect(response.choices.length).toBeGreaterThan(0);
+      expect(response.choices[0].message.content).toBeDefined();
+    });
+
+    it('should return streaming for OpenCode requests', async () => {
+      const response = await fetch(`${client.baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'auto-coding',
+          messages: [{ role: 'user', content: 'Count to 5' }],
+          stream: true,
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/event-stream');
     });
   });
 

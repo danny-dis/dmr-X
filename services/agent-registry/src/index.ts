@@ -68,6 +68,13 @@ export {
 } from './agent-config-loader.js';
 
 export {
+  importAgentsWithSkills,
+  type ImportAgentsWithSkillsOptions,
+  type ImportAgentsWithSkillsResult,
+  type IngestSource,
+} from './ingest-artifacts.js';
+
+export {
   AgentPermissionService,
   agentPermissionService,
   AGENT_ROLES,

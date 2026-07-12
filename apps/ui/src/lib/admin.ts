@@ -534,9 +534,10 @@ export const Admin = {
       claudeCode: (s.agentIntegrationClaudeCode as Record<string, unknown>) ?? null,
       codex: (s.agentIntegrationCodex as Record<string, unknown>) ?? null,
       geminiCli: (s.agentIntegrationGeminiCli as Record<string, unknown>) ?? null,
+      opencode: (s.agentIntegrationOpencode as Record<string, unknown>) ?? null,
     })),
   updateAgentIntegrationConfig: (
-    tool: 'claudeCode' | 'codex' | 'gemini-cli',
+    tool: 'claudeCode' | 'codex' | 'gemini-cli' | 'opencode',
     config: Record<string, unknown>,
   ) => {
     const key =
@@ -544,10 +545,12 @@ export const Admin = {
         ? 'agentIntegrationClaudeCode'
         : tool === 'codex'
           ? 'agentIntegrationCodex'
-          : 'agentIntegrationGeminiCli';
+          : tool === 'opencode'
+            ? 'agentIntegrationOpencode'
+            : 'agentIntegrationGeminiCli';
     return apiPut('/admin/settings', { [key]: config });
   },
-  testIntegration: (tool: 'claude-code' | 'codex' | 'gemini-cli') =>
+  testIntegration: (tool: 'claude-code' | 'codex' | 'gemini-cli' | 'opencode') =>
     apiPost<{ success: boolean; latencyMs: number; error?: string }>('/admin/integrations/test', { tool }),
 
   // Security

@@ -12,6 +12,7 @@ import {
   parseAgentMdBatch,
   fetchGitHubRepoMdFiles,
   extractZipMdFiles,
+  importAgentsWithSkills,
   type AgentDefinitionCreate,
 } from '@dmr-x/agent-registry';
 import { getDb } from '@dmr-x/db';
@@ -258,7 +259,10 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     const modelTier = (query.modelTier as 'auto' | 'premium' | 'budget') ?? 'auto';
     const categoryOverride = query.category;
 
-    let definitions: AgentDefinitionCreate[] = [];
+    // Raw .md files keyed by their original path — fed to both the agent
+    // import AND the skill import so a single link populates both stores.
+    let files: Map<string, string> = new Map();
+    let source: 'github' | 'zip' | 'md' = 'md';
 
     try {
       if (contentType.includes('multipart/form-data')) {
@@ -268,8 +272,8 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
           return reply.code(400).send({ error: { message: 'No file uploaded' } });
         }
         const buffer: Buffer = await data.toBuffer();
-        const files = await extractZipMdFiles(buffer);
-        definitions = parseAgentMdBatch(files, categoryOverride).map((a) => a.definition);
+        files = await extractZipMdFiles(buffer);
+        source = 'zip';
       } else {
         const parsed = AgentImportRequestSchema.safeParse(request.body);
         if (!parsed.success) {
@@ -281,20 +285,15 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
           if (!body.githubUrl) {
             return reply.code(400).send({ error: { message: 'githubUrl is required for github source' } });
           }
-          const files = await fetchGitHubRepoMdFiles(body.githubUrl);
-          definitions = parseAgentMdBatch(files, categoryOverride ?? body.category).map((a) => a.definition);
+          files = await fetchGitHubRepoMdFiles(body.githubUrl);
+          source = 'github';
         } else if (body.source === 'text') {
           if (!body.content) {
             return reply.code(400).send({ error: { message: 'content is required for text source' } });
           }
-          const agent = parseAgentMdFromString(body.content, {
-            filePath: body.filename,
-            categoryOverride: categoryOverride ?? body.category,
-          });
-          if (!agent) {
-            return reply.code(400).send({ error: { message: 'Failed to parse agent definition from content' } });
-          }
-          definitions = [agent.definition];
+          // A single pasted definition becomes a one-entry file map.
+          files = new Map([[body.filename || 'pasted.md', body.content]]);
+          source = 'md';
         } else {
           return reply.code(400).send({ error: { message: `Unsupported source: ${body.source}` } });
         }
@@ -305,11 +304,28 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
       return reply.code(502).send({ error: { message: `Import failed: ${message}` } });
     }
 
-    if (definitions.length === 0) {
-      return reply.code(200).send({ imported: 0, skipped: 0, errors: [], agents: [] });
+    if (files.size === 0) {
+      return reply.code(200).send({
+        agents: { imported: 0, skipped: 0, errors: [], agents: [] },
+        skills: { imported: 0, errors: [], skills: [] },
+        artifacts: null,
+      });
     }
 
-    const result = await agentRegistryService.importAgents(tenant.id, definitions, { modelTier });
-    return reply.code(201).send(result);
+    // Single orchestration call: import agents + skills + write .md/.zip artifacts.
+    const result = await importAgentsWithSkills(tenant.id, files, {
+      modelTier,
+      category: categoryOverride,
+      source,
+    });
+
+    return reply.code(201).send({
+      agents: result.agents,
+      skills: result.skills,
+      artifacts: {
+        dir: result.artifactsDir,
+        zip: result.zipPath,
+      },
+    });
   });
 }

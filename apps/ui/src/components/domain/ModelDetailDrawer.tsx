@@ -27,6 +27,7 @@ import {
   DrawerFooter,
 } from '@/components/primitives/Drawer';
 import { Switch } from '@/components/primitives/Switch';
+import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
 import { ModalityBadge } from '@/icons/Modality';
 import { Admin } from '@/lib/admin';
@@ -138,14 +139,22 @@ export function ModelDetailDrawer({
   const [saving, setSaving] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [editingId, setEditingId] = React.useState(false);
+  const [idDraft, setIdDraft] = React.useState('');
 
   React.useEffect(() => {
     if (!open) {
       setSaving(null);
       setDeleting(false);
       setConfirmDelete(false);
+      setEditingId(false);
+      setIdDraft('');
     }
   }, [open]);
+
+  React.useEffect(() => {
+    if (model && editingId) setIdDraft(model.name);
+  }, [model, editingId]);
 
   const updateCapability = async (
     key: CapabilityRow['key'],
@@ -159,6 +168,32 @@ export function ModelDetailDrawer({
       onChanged?.();
     } catch (err) {
       toast.error('Failed to update model', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleSaveId = async () => {
+    if (!model) return;
+    const draft = idDraft.trim();
+    if (!draft) {
+      toast.error('Model ID cannot be empty');
+      return;
+    }
+    if (draft === model.name) {
+      setEditingId(false);
+      return;
+    }
+    setSaving('model_id');
+    try {
+      await Admin.updateModel(model.id, { model_id: draft } as any);
+      toast.success('Model ID updated', { description: draft });
+      setEditingId(false);
+      onChanged?.();
+    } catch (err) {
+      toast.error('Failed to update model ID', {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -258,7 +293,41 @@ export function ModelDetailDrawer({
               Identity
             </h3>
             <div className="rounded-lg border border-border bg-surface-2/40 px-3 divide-y divide-border/0">
-              <MetaRow label="ID" value={model.id} mono />
+              {editingId ? (
+                <div className="flex items-center gap-2 py-2.5">
+                  <span className="text-[11px] text-fg-subtle uppercase tracking-wider shrink-0 w-16">ID</span>
+                  <Input
+                    value={idDraft}
+                    onChange={(e) => setIdDraft(e.target.value)}
+                    className="font-mono text-xs flex-1"
+                    autoFocus
+                  />
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={handleSaveId}
+                    loading={saving === 'model_id'}
+                    disabled={saving === 'model_id'}
+                  >
+                    Save
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditingId(false)} disabled={saving === 'model_id'}>
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3 py-2 group">
+                  <MetaRow label="ID" value={model.id} mono />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={() => setEditingId(true)}
+                  >
+                    Edit
+                  </Button>
+                </div>
+              )}
               <MetaRow label="Provider" value={providerName} />
               <MetaRow label="Provider ID" value={model.providerId} mono />
               <MetaRow label="Modality" value={<code className="text-xs">{model.modality}</code>} mono />

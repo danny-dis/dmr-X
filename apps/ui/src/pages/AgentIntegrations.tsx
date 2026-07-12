@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
 const ClaudeCodeTab = React.lazy(() => import('@/pages/ClaudeCode').then(m => ({ default: m.ClaudeCodePage })));
 const CodexTab = React.lazy(() => import('@/pages/Codex').then(m => ({ default: m.CodexPage })));
 const AntigravityTab = React.lazy(() => import('@/pages/Antigravity').then(m => ({ default: m.AntigravityPage })));
+const OpenCodeTab = React.lazy(() => import('@/pages/OpenCode').then(m => ({ default: m.OpenCodePage })));
 
 function TabLoader() {
   return (
@@ -34,6 +35,7 @@ export function AgentIntegrationsPage() {
     'claude-code': { configured: false, label: 'Claude Code', description: 'Anthropic CLI', icon: <Terminal className="size-4" /> },
     'codex': { configured: false, label: 'Codex', description: 'OpenAI CLI', icon: <Code className="size-4" /> },
     'antigravity': { configured: false, label: 'Antigravity', description: 'Google CLI', icon: <Bot className="size-4" /> },
+    'opencode': { configured: false, label: 'OpenCode', description: 'OpenCode CLI', icon: <Terminal className="size-4" /> },
   });
   const [loading, setLoading] = React.useState(true);
 
@@ -57,6 +59,10 @@ export function AgentIntegrationsPage() {
           'antigravity': {
             ...prev['antigravity'],
             configured: !!(config.antigravity?.isEnabled),
+          },
+          'opencode': {
+            ...prev['opencode'],
+            configured: !!(config.opencode?.modelId && config.opencode?.providerId),
           },
         }));
       })
@@ -151,6 +157,10 @@ export function AgentIntegrationsPage() {
               <Bot className="size-3" />
               Antigravity
             </TabsTrigger>
+            <TabsTrigger value="opencode">
+              <Terminal className="size-3" />
+              OpenCode
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="claude-code">
@@ -168,6 +178,12 @@ export function AgentIntegrationsPage() {
           <TabsContent value="antigravity">
             <React.Suspense fallback={<TabLoader />}>
               <AntigravityTab />
+            </React.Suspense>
+          </TabsContent>
+
+          <TabsContent value="opencode">
+            <React.Suspense fallback={<TabLoader />}>
+              <OpenCodeTab />
             </React.Suspense>
           </TabsContent>
         </Tabs>

@@ -400,6 +400,9 @@ export const TOOL_NAMES = {
   PRESET_CREATE: 'dmrx_preset_create',
   PRESET_UPDATE: 'dmrx_preset_update',
   PRESET_DELETE: 'dmrx_preset_delete',
+  // Gateway import + skill listing tools
+  IMPORT_REPO: 'dmrx_import_repo',
+  LIST_SKILLS: 'dmrx_list_skills',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -907,4 +910,14 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     'Update an existing tool preset. Modify defaults, overrides, priority, or description.',
   dmrx_preset_delete:
     'Delete a tool preset (soft delete). The preset is deactivated but not removed.',
+  dmrx_import_repo:
+    'Import agents and skills from a GitHub repository into DMR-X via the gateway. ' +
+    'Given a public GitHub repo URL, registers any agent definitions (POST /v1/agents/import) ' +
+    'and skill definitions (POST /v1/skills/import) found in the repository. ' +
+    'Returns the number of imported agents and skills plus any errors. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_list_skills:
+    'List skills imported into DMR-X via the gateway (GET /v1/skills). ' +
+    'Supports optional free-text search, tag filter, and result limit. ' +
+    'Returns the skill names and ids. Requires a configured gateway URL and tenant API key.',
 };

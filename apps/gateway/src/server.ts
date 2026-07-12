@@ -720,16 +720,24 @@ void (async () => {
         } catch {
           config = {};
         }
-        // Prefer the new provider_keys table (migration 015). The legacy
-        // config.apiKey column is still used as a fallback so providers
-        // that existed before the migration keep working without an
-        // explicit backfill.
-        const activeCredential = loadActiveProviderCredential(row.id);
-        let apiKey = activeCredential.apiKey;
-        if (!apiKey) {
-          decryptConfigApiKey(config);
-          apiKey =
-            config.apiKey || (row.api_key_ref ? process.env[row.api_key_ref] : undefined);
+        // Resolve the runtime API key with precedence:
+        //   1. A fresh env var referenced by the row (row.api_key_ref, e.g.
+        //      MISTRAL_API_KEY) — overrides any stale stored value.
+        //   2. The new provider_keys table (migration 015).
+        //   3. The legacy config.apiKey column (older providers).
+        // The env var is FIRST so an operator can rotate/refresh a key in
+        // .env without needing to overwrite the persisted (possibly stale
+        // or revoked) DB value.
+        decryptConfigApiKey(config);
+        // Precedence: fresh env var (row.api_key_ref, e.g. MISTRAL_API_KEY)
+        //  > provider_keys table (migration 015) > legacy config.apiKey.
+        // The env var wins so an operator can rotate/refresh a key in .env
+        // without overwriting a persisted (possibly stale/revoked) DB value.
+        const envKey = row.api_key_ref ? process.env[row.api_key_ref] : undefined;
+        let apiKey =
+          envKey || loadActiveProviderCredential(row.id).apiKey || config.apiKey;
+        if (!apiKey && template?.envKey) {
+          apiKey = process.env[template.envKey];
         }
 
         // Register a GenericOpenAIAdapter on demand for OpenAI-compatible rows.
@@ -832,6 +840,17 @@ void (async () => {
 
         // API-key flow
         if (adapter && baseUrl && (apiKey || !template?.envKey)) {
+          if (!apiKey && template?.envKey) {
+            // A provider that REQUIRES a key resolved to none. Surface this
+            // loudly instead of letting requests silently 401/502 upstream.
+            logger.warn(
+              {
+                providerId: row.name,
+                expectedEnvVar: template.envKey,
+              },
+              `No API key resolved for keyed provider — set ${template.envKey} in .env or add a key via the admin UI. Requests will fail auth until then.`,
+            );
+          }
           try {
             await adapterRegistry.initialize(row.name, {
               baseUrl,

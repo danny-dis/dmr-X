@@ -36,7 +36,13 @@ export function registerSkillRoutes(server: FastifyInstance): void {
     preHandler: [agentPermissions.read()],
   }, async (request, reply) => {
     const tenant = (request as any).tenant;
-    const query = SkillListQuerySchema.partial().parse(request.query);
+    const q = request.query as Record<string, unknown>;
+    const coerced = {
+      ...q,
+      limit: q.limit != null ? Number(q.limit) : undefined,
+      offset: q.offset != null ? Number(q.offset) : undefined,
+    };
+    const query = SkillListQuerySchema.partial().parse(coerced);
     const result = await skillService.listSkills(tenant.id, {
       search: query.search,
       tag: query.tag,

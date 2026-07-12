@@ -4,7 +4,6 @@ import { AuthenticationError } from '@dmr-x/core';
 import { getDb, MemoryCache } from '@dmr-x/db';
 import { verifyApiKey, logger } from '@dmr-x/utils';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { setImmediate } from 'node:timers/promises';
 
 // Per-key rate limiting with LRU eviction (100K entry limit)
 const PER_KEY_LIMIT = Math.max(1, parseInt(process.env.DMRX_PER_KEY_RATE_LIMIT || '1000', 10));
@@ -187,15 +186,19 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     if (LOCAL_MODE) {
       logger.warn('LOCAL MODE ACTIVE — tenant API key check is disabled. Do not use in production.');
       const db = getDb();
-      // Yield event loop for DB read
-      const tenant = await new Promise<{ id: string; name: string } | undefined>((resolve) => {
-        setImmediate(() => {
-          resolve(db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as { id: string; name: string } | undefined);
-        });
-      });
+      // sql.js is fully synchronous — no event-loop yield needed. Resolve/reject
+      // directly so a query failure surfaces instead of hanging the request.
+      let tenant: { id: string; name: string } | undefined;
+      try {
+        tenant = db.prepare('SELECT id, name FROM tenants LIMIT 1').get() as
+          { id: string; name: string } | undefined;
+      } catch (err) {
+        logger.error({ err }, 'Local-mode tenant lookup failed');
+      }
       (request as any).tenant = {
         id: tenant?.id ?? 'local',
         name: tenant?.name ?? 'local',
+        role: 'admin',
         apiKeyId: 'local',
       };
       return;
@@ -219,18 +222,13 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // Fetch all active API key hashes for verification
     // This supports both legacy unsalted hashes and new salted hashes
     // Also check expires_at to reject expired keys
-    // Yield event loop for DB read
-    const activeKeys = await new Promise<Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>>((resolve) => {
-      setImmediate(() => {
-        resolve(db.prepare(
-          `SELECT ak.id, ak.key_hash, ak.tenant_id, t.name as tenant_name
-           FROM api_keys ak
-           JOIN tenants t ON t.id = ak.tenant_id
-           WHERE ak.is_active = 1
-             AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
-        ).all() as Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>);
-      });
-    });
+    const activeKeys = db.prepare(
+      `SELECT ak.id, ak.key_hash, ak.tenant_id, t.name as tenant_name
+       FROM api_keys ak
+       JOIN tenants t ON t.id = ak.tenant_id
+       WHERE ak.is_active = 1
+         AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
+    ).all() as Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>;
 
     // Find matching key using constant-time comparison
     let matchedKey: typeof activeKeys[0] | undefined;
@@ -268,15 +266,14 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     const lastUsedStr = lastUsedAtCache.get(matchedKey.id);
     const lastUsed = lastUsedStr ? parseInt(lastUsedStr, 10) : undefined;
     if (!lastUsed || now - lastUsed > 5 * 60 * 1000) {
-      // Yield event loop for DB write
-      await new Promise<void>((resolve) => {
-        setImmediate(() => {
-          db.prepare(
-            "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
-          ).run(matchedKey.id);
-          resolve();
-        });
-      });
+      // sql.js is synchronous; run the write directly (no event-loop yield).
+      try {
+        db.prepare(
+          "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
+        ).run(matchedKey.id);
+      } catch (err) {
+        logger.error({ err }, 'Failed to update api_key last_used_at');
+      }
       lastUsedAtCache.set(matchedKey.id, String(now), LAST_USED_CACHE_TTL);
     }
   });

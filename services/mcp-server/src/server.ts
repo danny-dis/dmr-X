@@ -2978,6 +2978,48 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     return defs;
   }
 
+  // DRY helper for authenticated JSON POSTs to the gateway. Uses the same
+  // key resolution as other outbound calls (per-client tenant header →
+  // DMRX_MCP_AGENT_API_KEY → auto-provisioned key). Returns the parsed JSON
+  // body and status so handlers can surface gateway errors gracefully.
+  async function dmrxPost(path: string, body: unknown): Promise<{ ok: boolean; status: number; json: any }> {
+    const key = resolveGatewayKey();
+    const res = await fetch(`${gatewayUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(540_000),
+    });
+    let json: any;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    return { ok: res.ok, status: res.status, json };
+  }
+
+  async function dmrxGet(path: string): Promise<{ ok: boolean; status: number; json: any }> {
+    const key = resolveGatewayKey();
+    const res = await fetch(`${gatewayUrl}${path}`, {
+      method: 'GET',
+      headers: {
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
+      signal: AbortSignal.timeout(120_000),
+    });
+    let json: any;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    return { ok: res.ok, status: res.status, json };
+  }
+
   async function refreshSubagentTools(): Promise<void> {
     try {
       const defs = await fetchSubagentDefs();
@@ -3833,6 +3875,152 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return toolError(message, 'PRESET_DELETE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_import_repo
+  //
+  // Imports agents + skills from a GitHub repository through the gateway.
+  // Two sequential POSTs: /v1/agents/import then /v1/skills/import.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.IMPORT_REPO,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.IMPORT_REPO],
+      inputSchema: {
+        repoUrl: z.string().describe('Public GitHub repository URL to import agents and skills from'),
+        category: z.string().optional().describe('Optional category to assign to imported agents'),
+        source: z.enum(['github']).optional().default('github').describe('Source type (only github is supported)'),
+      } as any,
+      annotations: { title: 'Import Repository', readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const repoUrl: string = params.repoUrl;
+        if (!repoUrl || typeof repoUrl !== 'string') {
+          return toolError('repoUrl is required', 'INVALID_ARGUMENT', requestId);
+        }
+
+        const agentsRes = await dmrxPost('/v1/agents/import', {
+          source: 'github',
+          githubUrl: repoUrl,
+          ...(params.category ? { category: params.category } : {}),
+        });
+
+        const skillsRes = await dmrxPost('/v1/skills/import', {
+          mode: 'github',
+          githubUrl: repoUrl,
+        });
+
+        if (!agentsRes.ok || !skillsRes.ok) {
+          const detail = {
+            agentsStatus: agentsRes.status,
+            agentsError: agentsRes.json,
+            skillsStatus: skillsRes.status,
+            skillsError: skillsRes.json,
+          };
+          return toolError(
+            'Gateway import failed',
+            'GATEWAY_IMPORT_FAILED',
+            requestId,
+            JSON.stringify(detail)
+          );
+        }
+
+        const agentsJson = agentsRes.json ?? {};
+        const skillsJson = skillsRes.json ?? {};
+        // /v1/agents/import returns a nested wrapper: { agents: {...}, skills: {...}, artifacts }.
+        // /v1/skills/import returns the BulkImportSkillResult directly: { imported, errors, skills }.
+        const agents = agentsJson.agents ?? agentsJson;
+        const agentSkills = agentsJson.skills ?? {};
+        const result = {
+          success: true,
+          repository: repoUrl,
+          agents: {
+            imported: agents.imported ?? 0,
+            skipped: agents.skipped ?? 0,
+            errors: agents.errors ?? [],
+            items: agents.agents ?? [],
+          },
+          skills: {
+            imported: (agentSkills.imported ?? skillsJson.imported) ?? 0,
+            errors: agentSkills.errors ?? skillsJson.errors ?? [],
+            items: agentSkills.skills ?? skillsJson.skills ?? [],
+          },
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'IMPORT_REPO_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_list_skills
+  //
+  // Lists skills imported into DMR-X via the gateway (GET /v1/skills).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.LIST_SKILLS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.LIST_SKILLS],
+      inputSchema: {
+        search: z.string().optional().describe('Optional free-text search query'),
+        tag: z.string().optional().describe('Optional tag filter'),
+        limit: z.number().optional().default(50).describe('Maximum number of skills to return (default 50)'),
+      } as any,
+      annotations: { title: 'List Skills', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const query = new URLSearchParams();
+        if (params.search) query.set('search', String(params.search));
+        if (params.tag) query.set('tag', String(params.tag));
+        query.set('limit', String(params.limit ?? 50));
+
+        const res = await dmrxGet(`/v1/skills?${query.toString()}`);
+        if (!res.ok) {
+          return toolError(
+            'Gateway skills list failed',
+            'GATEWAY_LIST_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const items: any[] = json.items ?? [];
+        const result = {
+          total: json.total ?? items.length,
+          skills: items.map((s: any) => ({ id: s.id ?? s.name, name: s.name })),
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'LIST_SKILLS_ERROR', requestId);
       }
     }
   );

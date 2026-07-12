@@ -78,7 +78,9 @@ export async function promptRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Get prompts for provider
-  server.get('/prompts/:provider', async (request, reply) => {
+  // Namespaced under /by-provider to avoid colliding with GET /prompts/:id
+  // (both are single-param GET routes and Fastify treats them as duplicates).
+  server.get('/prompts/by-provider/:provider', async (request, reply) => {
     await ensureInitialized();
 
     const { provider } = request.params as { provider: string };

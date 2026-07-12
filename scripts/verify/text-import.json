@@ -1,0 +1,5 @@
+{
+  "source": "text",
+  "filename": "test-researcher.md",
+  "content": "---\nname: test-researcher\ndescription: A research agent for testing the import pipeline.\n---\nYou are a meticulous research agent. When given a topic, decompose it into sub-questions, gather evidence, and synthesize a cited answer."
+}
