@@ -26,7 +26,6 @@ DMR-X auto-detection:
 """
 
 import os
-import time
 
 # ── Option 1: Auto-config via environment variables ─────────────
 #

@@ -10,7 +10,7 @@ import time
 from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
 from .callbacks import CallbackManager
-from .errors import DMRXError, map_error
+from .errors import DMRXError
 from .types.shared import (
     DoneStreamChunk,
     ErrorStreamChunk,
@@ -157,8 +157,6 @@ class Stream:
         return self._iter_chunks()
 
     def _iter_chunks(self) -> Iterator[StreamChunk]:
-        buffer = ""
-
         for raw_line in self._lines:
             line = raw_line.strip()
 

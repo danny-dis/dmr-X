@@ -1,7 +1,6 @@
 """Tests for the DMR-X Python SDK."""
 
-import json
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -9,13 +8,11 @@ import pytest
 from dmrx import DMRXClient
 from dmrx.errors import (
     AuthenticationError,
-    DMRXError,
     ProviderError,
     RateLimitError,
 )
 from dmrx.types.chat import ChatCompletionResponse
 from dmrx.types.models import Model, ModelList
-from dmrx.types.shared import TokenUsage
 
 
 def make_mock_response(status_code=200, json_data=None):
@@ -150,7 +147,6 @@ class TestDMRXClient:
 
     def test_authentication_error(self):
         """Test that auth errors raise the correct exception."""
-        error_resp = {"code": "AUTHENTICATION_ERROR", "message": "Invalid API key"}
         self.client._transport.request = Mock(
             side_effect=AuthenticationError("Invalid API key")
         )

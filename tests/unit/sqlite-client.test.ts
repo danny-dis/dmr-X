@@ -51,10 +51,11 @@ describe('sqlite-client', () => {
       const row = wrapper.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
       // NOTE: this asserts the current applied migration version. It is
       // expected to grow as new .sql migrations are added under
-      // packages/db/src/migrations/ (045–052 added skills/agent tables).
+      // packages/db/src/migrations/ (045–053 added skills/agent tables and
+      // server_instances).
       // Bump this number when adding migrations — it verifies the full
       // migration set is applied, not just the schema seed.
-      expect(row.v).toBe(52);
+      expect(row.v).toBe(53);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

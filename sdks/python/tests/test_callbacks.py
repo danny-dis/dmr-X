@@ -1,6 +1,5 @@
 """Tests for the DMR-X SDK observability callback system."""
 
-import json
 import os
 from unittest.mock import Mock, patch
 
