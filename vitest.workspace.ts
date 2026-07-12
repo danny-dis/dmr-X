@@ -11,6 +11,15 @@
 //   DMRX_LOCAL_MODE=true bun run dev:gateway
 //   # in another shell:
 //   DMRX_RUN_E2E=true DMRX_GATEWAY_URL=http://localhost:3000 bun run test:e2e
+//
+// NOTE: the two MCP tests (mcp-input-validator, mcp-policy-engine) are
+// excluded from the `unit` project below. They must run ALONE (not in the
+// combined fork pool) or they hang/OOM on some platforms. CI runs them in a
+// dedicated step via `bun run test:mcp` (see package.json) — passing the
+// files explicitly gives them their own isolated vitest process. We deliberately
+// do NOT model them as a `--project mcp` workspace entry: vitest 3.x ignores
+// `--project` filtering for projects declared in a workspace file, so
+// `vitest run --project mcp` re-runs the ENTIRE unit suite and OOMs the runner.
 
 import { defineWorkspace } from 'vitest/config';
 
@@ -21,27 +30,11 @@ export default defineWorkspace([
       name: 'unit',
       include: ['tests/unit/**/*.test.ts'],
       exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude', 'tests/e2e/**',
-        // These 2 tests hang when run in the combined vitest fork pool on
-        // Windows due to vitest/bun compatibility. Run individually in CI
-        // via the dedicated `mcp` project below.
+        // Excluded from `unit`; run alone via `bun run test:mcp` (CI). See
+        // the workspace note above for why they aren't a `--project` entry.
         'tests/unit/mcp-input-validator.test.ts',
         'tests/unit/mcp-policy-engine.test.ts',
       ],
-    },
-  },
-  {
-    extends: './vitest.config.ts',
-    test: {
-      name: 'mcp',
-      // Dedicated project for the two tests excluded from `unit` above
-      // (they blow up the combined fork pool on some platforms). Inherits
-      // the full config so the test environment (alias graph, db mock
-      // setup) is correct, but caps the worker heap BELOW the CI runner's
-      // ~7GB RAM. The base config's 8192MB cap exceeds the runner and gets
-      // OOM-killed by the OS; 4096MB keeps these small tests well within
-      // bounds. Coverage is disabled via the CI flag (--coverage.enabled=false).
-      include: ['tests/unit/mcp-input-validator.test.ts', 'tests/unit/mcp-policy-engine.test.ts'],
-      poolOptions: { forks: { maxForks: 1, execArgv: ['--max-old-space-size=4096'] } },
     },
   },
   {

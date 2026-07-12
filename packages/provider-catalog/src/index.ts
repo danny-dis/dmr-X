@@ -864,6 +864,33 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     region: 'local',
   },
 
+  // NOTE: this provider is intentionally NOT reachable via auto-agentic (which filters for >=64K context). Use it as a direct pre-router.
+  {
+    id: 'needle-local',
+    name: 'Needle (Local)',
+    category: 'local',
+    baseUrl: 'http://localhost:8011/v1',
+    authMethod: 'none',
+    apiFormat: 'openai',
+    modalities: ['text'],
+    models: [
+      {
+        id: 'needle',
+        modalities: ['text'],
+        contextWindow: 128,
+        maxOutputTokens: 64,
+        capabilities: ['tool_use'],
+        specializations: ['function-calling', 'tool-routing'],
+        freeTier: { rateLimits: { rpm: 60, rpd: 86400, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 2, speedRank: 10 },
+      },
+    ],
+    streaming: false,
+    toolCalling: true,
+    envKey: '',
+    description: 'Local 26M-param tool router (Needle). Used as a cheap first-stage tool/agent pre-filter; NOT selected by auto-agentic (requires >=64K context).',
+    region: 'local',
+  },
+
   {
     id: 'vllm',
     name: 'vLLM (Local)',

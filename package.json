@@ -21,6 +21,7 @@
     "test": "bun run clean:src && bun vitest run",
     "test:unit": "bun run clean:src && bun vitest run --project unit",
     "test:e2e": "bun run clean:src && bun vitest run --project e2e",
+    "test:mcp": "bun run clean:src && bun vitest run --no-coverage tests/unit/mcp-input-validator.test.ts tests/unit/mcp-policy-engine.test.ts",
     "test:watch": "bun vitest",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
