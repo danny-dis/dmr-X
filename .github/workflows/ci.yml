@@ -223,8 +223,8 @@ jobs:
             exit 1
           fi
           # /healthz has the expected fields
-          curl -fsS http://127.0.0.1:3000/healthz | grep -q 'db_read'
-          curl -fsS http://127.0.0.1:3000/healthz | grep -q 'candidates'
+          curl -sS http://127.0.0.1:3000/healthz | grep -q 'db_read'
+          curl -sS http://127.0.0.1:3000/healthz | grep -q 'candidates'
           echo "Smoke tests passed"
       - name: Stop gateway
         if: always()

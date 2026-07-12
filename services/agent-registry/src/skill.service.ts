@@ -91,7 +91,7 @@ export class SkillService {
     return this.rowToSkill(row);
   }
 
-  async listSkills(tenantId: string, query: SkillListQuery = {}): Promise<SkillListResult> {
+  async listSkills(tenantId: string, query: Partial<SkillListQuery> = {}): Promise<SkillListResult> {
     const db = getDb();
     const conditions = ['tenant_id = ?'];
     const params: unknown[] = [tenantId];
@@ -325,7 +325,7 @@ export class SkillService {
    */
   private securityScanSkill(content: string): string | null {
     // (a) path traversal / absolute escape attempts targeting the host fs
-    if (/\.\.[\/\\]/.test(content) || /(^|[\s"'`])\/(?:etc|proc|sys|var|usr|home|root)[\/\\]/.test(content) ||
+    if (/\.\.[\\/]/.test(content) || /(^|[\s"'`])\/(?:etc|proc|sys|var|usr|home|root)[\\/]/.test(content) ||
         /(^|[\s"'`])(?:[a-zA-Z]:\\|\\\\|\/)/.test(content)) {
       return 'Skill content contains path traversal or absolute path escape sequence';
     }

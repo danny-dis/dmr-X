@@ -49,7 +49,12 @@ describe('sqlite-client', () => {
     it('initializes sql.js and applies all migrations', async () => {
       const wrapper = await initDb();
       const row = wrapper.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-      expect(row.v).toBe(44);
+      // NOTE: this asserts the current applied migration version. It is
+      // expected to grow as new .sql migrations are added under
+      // packages/db/src/migrations/ (045–052 added skills/agent tables).
+      // Bump this number when adding migrations — it verifies the full
+      // migration set is applied, not just the schema seed.
+      expect(row.v).toBe(52);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

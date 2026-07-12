@@ -226,8 +226,9 @@ export class FederationManager {
       // Note: mdns package needs to be installed separately if mDNS discovery is needed
       let mdns: any;
       try {
-        // @ts-ignore - mdns is an optional peer dependency
-        mdns = await import('mdns');
+        // mdns is an optional peer dependency, so resolve it dynamically
+        // without static module resolution (casting the specifier to string).
+        mdns = await import('mdns' as string);
       } catch {
         logger.warn('mDNS module not available, falling back to static discovery');
         this.config.discoveryMethod = 'static';

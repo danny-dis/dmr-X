@@ -29,7 +29,7 @@ export type SkillUpdate = z.infer<typeof SkillUpdateSchema>;
 export const SkillListQuerySchema = z.object({
   search: z.string().optional(),
   tag: z.string().optional(),
-  limit: z.number().min(1).max(100).optional(),
+  limit: z.number().min(1).max(100).optional().default(20),
 });
 
 export type SkillListQuery = z.infer<typeof SkillListQuerySchema>;
