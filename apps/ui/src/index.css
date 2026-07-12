@@ -150,65 +150,8 @@
   .text-balance { text-wrap: balance; }
   .text-pretty { text-wrap: pretty; }
 
-  .gradient-primary {
-    background: linear-gradient(135deg, #7C5CFF 0%, #22D3EE 100%);
-  }
-  .gradient-primary-soft {
-    background: linear-gradient(135deg, rgba(124,92,255,0.18) 0%, rgba(34,211,238,0.10) 100%);
-  }
-  .gradient-mesh {
-    background:
-      radial-gradient(at 12% 18%, rgba(124,92,255,0.20) 0px, transparent 50%),
-      radial-gradient(at 88% 12%, rgba(34,211,238,0.16) 0px, transparent 50%),
-      radial-gradient(at 50% 88%, rgba(244,114,182,0.10) 0px, transparent 50%);
-  }
-
-  .glass {
-    background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 85%, transparent) 0%, color-mix(in srgb, var(--surface) 92%, transparent) 100%);
-    border: 1px solid var(--border);
-    backdrop-filter: blur(16px) saturate(140%);
-    -webkit-backdrop-filter: blur(16px) saturate(140%);
-  }
-  .glass-strong {
-    background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 96%, transparent) 0%, color-mix(in srgb, var(--surface) 98%, transparent) 100%);
-    border: 1px solid var(--border-2);
-    backdrop-filter: blur(20px) saturate(160%);
-  }
-
-  .border-gradient {
-    position: relative;
-    background-clip: padding-box;
-  }
-  .border-gradient::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1px;
-    background: linear-gradient(135deg, var(--primary-glow), transparent 60%);
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    pointer-events: none;
-  }
-
-  .ring-glow-primary { box-shadow: 0 0 0 1px var(--primary-glow), 0 0 24px -4px var(--primary-glow); }
-  .ring-glow-accent { box-shadow: 0 0 0 1px var(--accent-glow), 0 0 24px -4px var(--accent-glow); }
-  .ring-glow-success { box-shadow: 0 0 0 1px var(--success-soft), 0 0 24px -4px var(--success-soft); }
-  .ring-glow-warning { box-shadow: 0 0 0 1px var(--warning-soft), 0 0 24px -4px var(--warning-soft); }
-  .ring-glow-danger { box-shadow: 0 0 0 1px var(--danger-soft), 0 0 24px -4px var(--danger-soft); }
-
   .pulse-dot {
     position: relative;
-  }
-  .pulse-dot::after {
-    content: '';
-    position: absolute;
-    inset: -4px;
-    border-radius: 9999px;
-    border: 2px solid currentColor;
-    opacity: 0.5;
-    animation: pulse-ring 2s var(--ease) infinite;
   }
 
   .shimmer {
@@ -312,11 +255,6 @@
     height: 1px;
     background: linear-gradient(90deg, transparent, var(--border-2), transparent);
   }
-}
-
-@keyframes pulse-ring {
-  0%   { transform: scale(0.6); opacity: 0.7; }
-  100% { transform: scale(1.6); opacity: 0; }
 }
 
 @keyframes shimmer {

@@ -77,7 +77,7 @@ export function GodmodePanel({ config, onChange, disabled, collapsed = false }: 
           {/* AutoTune */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Zap className="size-3.5 text-amber-500" />
+              <Zap className="size-3.5 text-warning" />
               <div className="text-xs">
                 <div className="font-medium">AutoTune</div>
                 <div className="text-muted-foreground">Adaptive parameters</div>
@@ -94,7 +94,7 @@ export function GodmodePanel({ config, onChange, disabled, collapsed = false }: 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Shield className="size-3.5 text-green-500" />
+                <Shield className="size-3.5 text-success" />
                 <div className="text-xs">
                   <div className="font-medium">Parseltongue</div>
                   <div className="text-muted-foreground">Obfuscation</div>

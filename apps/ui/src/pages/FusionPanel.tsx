@@ -645,7 +645,11 @@ export function FusionPanelPage() {
                             onClick={() => toggleSlot(slot.id)}
                             title={slot.is_enabled ? 'Disable slot' : 'Enable slot'}
                           >
-                            {slot.is_enabled ? '✓' : '○'}
+                            {slot.is_enabled ? (
+                              <span className="size-2 rounded-full bg-success" aria-label="Enabled" />
+                            ) : (
+                              <span className="size-2 rounded-full border border-fg-subtle" aria-label="Disabled" />
+                            )}
                           </Button>
                           <Button
                             size="icon-sm"

@@ -70,7 +70,7 @@ function ListingCard({ listing, onInstall }: { listing: MarketplaceListing; onIn
         <div className="flex items-center justify-between pt-2 border-t">
           <div className="flex items-center gap-4 text-sm text-muted-foreground">
             <span className="flex items-center gap-1">
-              <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+              <Star className="h-3.5 w-3.5 fill-warning text-warning" />
               {listing.rating > 0 ? listing.rating.toFixed(1) : '—'}
               {listing.ratingCount > 0 && <span>({listing.ratingCount})</span>}
             </span>

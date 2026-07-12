@@ -53,7 +53,7 @@ export function RaceResults({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Trophy className="size-4 text-amber-500" />
+            <Trophy className="size-4 text-warning" />
             ULTRAPLINIAN Race Results
           </CardTitle>
           <Badge tone="primary" size="sm">
@@ -81,10 +81,10 @@ export function RaceResults({
 
         {/* Winner */}
         {winner && (
-          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <div className="p-3 rounded-lg bg-warning/10 border border-warning/20">
             <div className="flex items-center gap-2 mb-1">
-              <Trophy className="size-4 text-amber-500" />
-              <span className="text-sm font-semibold text-amber-600">Winner</span>
+              <Trophy className="size-4 text-warning" />
+              <span className="text-sm font-semibold text-warning">Winner</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="font-mono text-sm">{getModelShortName(winner.model)}</span>
@@ -111,7 +111,7 @@ export function RaceResults({
             >
               <div className={cn(
                 "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold",
-                idx === 0 ? "bg-amber-500 text-white" : "bg-surface-3 text-muted-foreground"
+                idx === 0 ? "bg-warning text-white" : "bg-surface-3 text-muted-foreground"
               )}>
                 {idx + 1}
               </div>
@@ -121,9 +121,9 @@ export function RaceResults({
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
                 <span className="flex items-center gap-1">
                   {ranking.success ? (
-                    <CheckCircle className="size-3 text-green-500" />
+                    <CheckCircle className="size-3 text-success" />
                   ) : (
-                    <XCircle className="size-3 text-red-500" />
+                    <XCircle className="size-3 text-danger" />
                   )}
                   {ranking.score}
                 </span>

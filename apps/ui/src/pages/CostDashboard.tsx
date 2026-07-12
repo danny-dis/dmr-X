@@ -82,7 +82,7 @@ export function CostDashboardPage() {
           {/* Cost Overview */}
           <Card className="p-6">
             <div className="flex items-center gap-2 mb-4">
-              <DollarSign className="h-5 w-5 text-green-500" />
+              <DollarSign className="h-5 w-5 text-success" />
               <h3 className="text-lg font-semibold">Cost Overview</h3>
             </div>
 
@@ -197,7 +197,7 @@ export function CostDashboardPage() {
                     >
                       <div className="w-full flex flex-col">
                         <div
-                          className="w-full bg-green-500 rounded-t"
+                          className="w-full bg-success rounded-t"
                           style={{ height: maxCost > 0 ? (day.freeCost / maxCost) * 100 * (height / 100) : 0 }}
                         />
                         <div

@@ -34,9 +34,9 @@ const CAPABILITY_TIER_CONFIG: Record<string, { label: string; description: strin
 };
 
 const DEPLOYMENT_CONFIG: Record<string, { label: string; icon: string }> = {
-  cloud: { label: 'Cloud', icon: '☁️' },
-  self_hosted: { label: 'Self-hosted', icon: '🏠' },
-  on_device: { label: 'On-device', icon: '📱' },
+  cloud: { label: 'Cloud', icon: 'Cloud' },
+  self_hosted: { label: 'Self-hosted', icon: 'Self' },
+  on_device: { label: 'On-device', icon: 'Device' },
 };
 
 const REASONING_MODE_CONFIG: Record<string, { label: string; description: string }> = {
@@ -242,7 +242,8 @@ export function ModelsPage() {
                     : 'text-fg-muted hover:bg-surface-2 border border-transparent'
                 }`}
               >
-                {config.icon} {config.label}
+                <span className="text-[10px] font-semibold tracking-wide text-fg-dim">{config.icon}</span>
+                <span className="ml-1">{config.label}</span>
               </button>
             ))}
           </div>
@@ -344,18 +345,18 @@ export function ModelsPage() {
                 </div>
                 <div className="flex items-center gap-1.5 text-[9px] text-fg-subtle mt-1">
                   {m.reasoning_mode && m.reasoning_mode !== 'fixed' && (
-                    <span title={REASONING_MODE_CONFIG[m.reasoning_mode]?.description}>
-                      🧠 {REASONING_MODE_CONFIG[m.reasoning_mode]?.label ?? m.reasoning_mode}
+                    <span className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide" title={REASONING_MODE_CONFIG[m.reasoning_mode]?.description}>
+                      {REASONING_MODE_CONFIG[m.reasoning_mode]?.label ?? m.reasoning_mode}
                     </span>
                   )}
                   {m.agentic_level && m.agentic_level !== 'chat' && (
-                    <span title={AGENTIC_LEVEL_CONFIG[m.agentic_level]?.description}>
-                      🤖 {AGENTIC_LEVEL_CONFIG[m.agentic_level]?.label ?? m.agentic_level}
+                    <span className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide" title={AGENTIC_LEVEL_CONFIG[m.agentic_level]?.description}>
+                      {AGENTIC_LEVEL_CONFIG[m.agentic_level]?.label ?? m.agentic_level}
                     </span>
                   )}
                   {m.safety_tier && m.safety_tier !== 'standard' && (
-                    <span title={SAFETY_TIER_CONFIG[m.safety_tier]?.description}>
-                      🛡️ {SAFETY_TIER_CONFIG[m.safety_tier]?.label ?? m.safety_tier}
+                    <span className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide" title={SAFETY_TIER_CONFIG[m.safety_tier]?.description}>
+                      {SAFETY_TIER_CONFIG[m.safety_tier]?.label ?? m.safety_tier}
                     </span>
                   )}
                 </div>

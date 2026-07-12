@@ -330,7 +330,7 @@ export function WorkersPage() {
                       </div>
                       <p className="text-xs text-fg-muted font-mono">{job.id.slice(0, 16)}</p>
                       {job.error && (
-                        <p className="text-xs text-red-500 mt-1">{job.error}</p>
+                        <p className="text-xs text-danger mt-1">{job.error}</p>
                       )}
                       <div className="flex items-center gap-3 mt-1 text-xs text-fg-muted">
                         {job.startedAt && (

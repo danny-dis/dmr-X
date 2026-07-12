@@ -145,7 +145,7 @@ export function CreditsPage() {
           ) : bal ? (
             <div className="flex items-center gap-8">
               <div>
-                <div className="text-3xl font-bold text-green-500">
+                <div className="text-3xl font-bold text-fg">
                   {formatCurrency(bal.balanceCents / 100)}
                 </div>
                 <div className="text-sm text-fg-muted mt-1">Available balance</div>
@@ -159,7 +159,7 @@ export function CreditsPage() {
                     <div className="text-xs text-fg-muted">Total added</div>
                   </div>
                   <div>
-                    <div className="text-lg font-semibold text-red-500">{formatCurrency(bal.totalUsedCents / 100)}</div>
+                    <div className="text-lg font-semibold text-fg">{formatCurrency(bal.totalUsedCents / 100)}</div>
                     <div className="text-xs text-fg-muted">Total spent</div>
                   </div>
                 </div>
@@ -215,7 +215,7 @@ export function CreditsPage() {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className={`font-mono text-sm font-medium ${isPositive ? 'text-green-500' : 'text-red-500'}`}>
+                      <div className={`font-mono text-sm font-medium ${isPositive ? 'text-success' : 'text-danger'}`}>
                         {isPositive ? '+' : '-'}{formatCurrency(Math.abs(tx.amountCents) / 100)}
                       </div>
                       <div className="text-xs text-fg-subtle">
@@ -272,7 +272,7 @@ export function CreditsPage() {
                   {bal && (
                     <div className="flex justify-between mt-1 font-medium border-t border-border pt-1">
                       <span>New balance</span>
-                      <span className="text-green-500">
+                      <span className="text-fg">
                         {formatCurrency((bal.balanceCents / 100) + parseFloat(topupAmount || '0'))}
                       </span>
                     </div>

@@ -120,12 +120,12 @@ export function G0dm0d3ServerCard() {
 
       <CardContent className="space-y-4">
         {/* Prominent third-party code warning */}
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
-          <AlertTriangle className="size-4 shrink-0 text-amber-500 mt-0.5" />
-          <p className="text-xs leading-relaxed text-amber-600 dark:text-amber-400">
+        <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3">
+          <AlertTriangle className="size-4 shrink-0 text-warning mt-0.5" />
+          <p className="text-xs leading-relaxed text-warning">
             <strong>Heads up:</strong> Install clones and runs third-party code
             pinned to{' '}
-            <code className="rounded bg-amber-500/15 px-1 py-0.5 font-mono">
+            <code className="rounded bg-warning/15 px-1 py-0.5 font-mono">
               github.com/elder-plinius/G0DM0D3
             </code>{' '}
             (branch <code className="font-mono">main</code>, depth 1). This is

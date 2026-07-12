@@ -136,7 +136,7 @@ export function McpRbacPolicies() {
                   >
                     <div className="mt-0.5">
                       {p.effect === 'allow' ? (
-                        <Unlock className="size-4 text-green-500" />
+                        <Unlock className="size-4 text-success" />
                       ) : (
                         <Lock className="size-4 text-danger" />
                       )}
@@ -203,7 +203,7 @@ export function McpRbacPolicies() {
                   onClick={() => setPolicyEffect('allow')}
                   className={`p-2 text-xs rounded-lg border transition-colors flex items-center justify-center gap-2 ${
                     policyEffect === 'allow'
-                      ? 'border-green-500 bg-green-500/10 text-green-500'
+                      ? 'border-success bg-success/10 text-success'
                       : 'border-border bg-surface-2 text-fg-muted'
                   }`}
                 >

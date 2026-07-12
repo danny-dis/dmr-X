@@ -160,9 +160,9 @@ export function SynthesisPanel({
                 <div className="flex items-center gap-3 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1">
                     {response.success ? (
-                      <CheckCircle className="size-3 text-green-500" />
+                      <CheckCircle className="size-3 text-success" />
                     ) : (
-                      <XCircle className="size-3 text-red-500" />
+                      <XCircle className="size-3 text-danger" />
                     )}
                     {response.score}
                   </span>
