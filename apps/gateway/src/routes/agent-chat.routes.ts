@@ -11,7 +11,7 @@ import {
 } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 
-import { executeToolCall } from './tools.routes.js';
+import { executeToolCall, getRegisteredToolDefinitions } from './tools.routes.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,18 +85,16 @@ const conversationCleanupTimer = setInterval(() => {
 if (conversationCleanupTimer.unref) conversationCleanupTimer.unref();
 
 // ---------------------------------------------------------------------------
-// Tool filtering: only allow tools in the agent's allowedTools list
-// ---------------------------------------------------------------------------
-
-function filterToolsForAgent(
-  tools: any[] | undefined,
-  allowedTools: string[],
-): any[] | undefined {
-  if (!tools || allowedTools.length === 0) return tools;
-  return tools.filter((tool) => {
-    const name = tool.function?.name ?? tool.name;
-    return allowedTools.includes(name);
-  });
+/**
+ * Build the OpenAI-format `tools` array for a subagent, derived from the
+ * gateway's registered tool definitions and narrowed to the agent's
+ * `allowedTools`. Returns `undefined` when the agent has no allowed tools, so
+ * the model is never handed an empty tool list.
+ */
+function buildAgentTools(allowedTools: string[]): any[] | undefined {
+  if (!allowedTools || allowedTools.length === 0) return undefined;
+  const defs = getRegisteredToolDefinitions(allowedTools);
+  return defs.length > 0 ? defs : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +136,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const systemPrompt = await agentRuntimeService.buildSystemPrompt(context.definition, 0);
     const model = agentRuntimeService.resolveModel(context.definition);
     const agentTools = context.definition.allowedTools;
+    const agentToolDefs = buildAgentTools(agentTools);
 
     // Acquire conversation lock. Key per-conversation (not per-instance) so
     // concurrent external agents can run the same subagent in parallel without
@@ -218,7 +217,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
               {
                 model,
                 messages,
-                tools: agentTools.length > 0 ? filterToolsForAgent(undefined, agentTools) : undefined,
+                tools: agentToolDefs,
                 temperature: body.temperature,
                 max_tokens: body.maxTokens,
                 stream: true,
@@ -377,7 +376,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           {
             model,
             messages,
-            tools: agentTools.length > 0 ? filterToolsForAgent(undefined, agentTools) : undefined,
+            tools: agentToolDefs,
             temperature: body.temperature,
             max_tokens: body.maxTokens,
             stream: false,

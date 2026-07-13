@@ -28,8 +28,72 @@ export type ToolHandler = (
 
 const toolHandlers = new Map<string, ToolHandler>();
 
-export function registerToolHandler(name: string, handler: ToolHandler): void {
+/**
+ * LLM-facing tool definitions (OpenAI `function` schema). Registered alongside
+ * each handler so that callers — such as the subagent chat loop — can present
+ * the model with real tool schemas instead of sending `tools: undefined`.
+ */
+export interface RegisteredToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+const toolDefinitions = new Map<string, RegisteredToolDefinition>();
+
+/**
+ * Register a tool handler together with its LLM-facing schema. The schema is
+ * used to build the `tools` array the model receives; the handler performs the
+ * actual execution when the model emits a tool call.
+ */
+export function registerToolHandler(
+  name: string,
+  handler: ToolHandler,
+  definition?: Partial<RegisteredToolDefinition['function']>,
+): void {
   toolHandlers.set(name, handler);
+  toolDefinitions.set(name, {
+    type: 'function',
+    function: {
+      name,
+      description: definition?.description ?? `Tool: ${name}`,
+      parameters: definition?.parameters ?? { type: 'object', properties: {} },
+    },
+  });
+}
+
+/**
+ * Return LLM-facing tool definitions for the given tool names. Unknown names
+ * are skipped (never fatal). Pass no names to get every registered tool.
+ */
+export function getRegisteredToolDefinitions(names?: string[]): RegisteredToolDefinition[] {
+  const wanted = names ?? [...toolDefinitions.keys()];
+  return wanted
+    .map((n) => toolDefinitions.get(n))
+    .filter((d): d is RegisteredToolDefinition => Boolean(d));
+}
+
+/**
+ * Register only an LLM-facing schema for a tool whose handler was registered
+ * (via `registerToolHandler`) elsewhere. Safe to call multiple times; the last
+ * definition wins. Used by the coding-tool block, which registers handlers and
+ * schemas in separate passes.
+ */
+export function registerToolDefinition(
+  name: string,
+  def: Partial<RegisteredToolDefinition['function']>,
+): void {
+  toolDefinitions.set(name, {
+    type: 'function',
+    function: {
+      name,
+      description: def.description ?? `Tool: ${name}`,
+      parameters: def.parameters ?? { type: 'object', properties: {} },
+    },
+  });
 }
 
 /** Convert registered tool handlers to SDK Tool objects */
@@ -106,7 +170,9 @@ export function registerBuiltinToolHandlers(): void {
   registerSkillToolHandlers();
 
   // ---- execute_code --------------------------------------------------------
-  registerToolHandler('execute_code', async (args, context) => {
+  registerToolHandler(
+    'execute_code',
+    async (args, context) => {
     const { language, code, timeoutMs } = args as {
       language?: string;
       code: string;
@@ -173,10 +239,25 @@ export function registerBuiltinToolHandlers(): void {
       logger.error({ err, tool: 'execute_code' }, 'Sandbox tool error');
       return { error: message };
     }
-  });
+  },
+    {
+      description: 'Execute code in a sandboxed runtime. Supports multiple languages (python, node, bun, deno). Returns stdout, stderr, and exit code.',
+      parameters: {
+        type: 'object',
+        properties: {
+          language: { type: 'string', description: 'Language to execute (python, node, bun, deno). Defaults to python.' },
+          code: { type: 'string', description: 'Source code to execute.' },
+          timeoutMs: { type: 'number', description: 'Optional execution timeout in milliseconds.' },
+        },
+        required: ['code'],
+      },
+    },
+  );
 
   // ---- remember ------------------------------------------------------------
-  registerToolHandler('remember', async (args, context) => {
+  registerToolHandler(
+    'remember',
+    async (args, context) => {
     const { content, namespace, retentionDays, metadata } = args as {
       content: string;
       namespace?: string;
@@ -204,10 +285,26 @@ export function registerBuiltinToolHandlers(): void {
       logger.error({ err, tool: 'remember' }, 'Memory tool error');
       return { error: message };
     }
-  });
+  },
+    {
+      description: 'Persist a memory item for later recall. Useful for storing facts, decisions, or context the agent should remember across turns.',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: 'The content to remember.' },
+          namespace: { type: 'string', description: 'Optional namespace to group related memories.' },
+          retentionDays: { type: 'number', description: 'Optional number of days before the memory expires.' },
+          metadata: { type: 'object', description: 'Optional structured metadata.' },
+        },
+        required: ['content'],
+      },
+    },
+  );
 
   // ---- recall --------------------------------------------------------------
-  registerToolHandler('recall', async (args, context) => {
+  registerToolHandler(
+    'recall',
+    async (args, context) => {
     const { query, namespace, limit, minScore } = args as {
       query: string;
       namespace?: string;
@@ -243,7 +340,21 @@ export function registerBuiltinToolHandlers(): void {
       logger.error({ err, tool: 'recall' }, 'Memory recall error');
       return { error: message };
     }
-  });
+  },
+    {
+      description: 'Search stored memories by semantic similarity to a query. Returns ranked results with content and score.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Natural-language query to search for.' },
+          namespace: { type: 'string', description: 'Optional namespace to restrict the search.' },
+          limit: { type: 'number', description: 'Optional max number of results.' },
+          minScore: { type: 'number', description: 'Optional minimum relevance score (0-1).' },
+        },
+        required: ['query'],
+      },
+    },
+  );
 
   logger.info('Registered built-in tool handlers: execute_code, remember, recall');
 }
@@ -276,7 +387,9 @@ const skillSvc = skillService as unknown as SkillServiceContract;
  */
 export function registerSkillToolHandlers(): void {
   // ---- skill_create --------------------------------------------------------
-  registerToolHandler('skill_create', async (args, context) => {
+  registerToolHandler(
+    'skill_create',
+    async (args, context) => {
     const tenantId = context?.tenant?.id;
     if (!tenantId) {
       return { error: 'No tenant context' };
@@ -311,10 +424,27 @@ export function registerSkillToolHandlers(): void {
       logger.error({ err, tool: 'skill_create', tenantId }, 'Skill create tool error');
       return { error: message };
     }
-  });
+  },
+    {
+      description: 'Capture a reusable skill (procedure/knowledge) for this tenant. Persists the skill so it can be inlined into future agent runs.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Unique skill name.' },
+          description: { type: 'string', description: 'Optional short description.' },
+          content: { type: 'string', description: 'The skill content/markdown body.' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags.' },
+          pinned: { type: 'boolean', description: 'Mark as pinned (protected from auto-patch).' },
+        },
+        required: ['name', 'content'],
+      },
+    },
+  );
 
   // ---- skill_patch ---------------------------------------------------------
-  registerToolHandler('skill_patch', async (args, context) => {
+  registerToolHandler(
+    'skill_patch',
+    async (args, context) => {
     const tenantId = context?.tenant?.id;
     if (!tenantId) {
       return { error: 'No tenant context' };
@@ -344,7 +474,20 @@ export function registerSkillToolHandlers(): void {
       logger.error({ err, tool: 'skill_patch', tenantId }, 'Skill patch tool error');
       return { error: message };
     }
-  });
+  },
+    {
+      description: 'Refine an existing (non-pinned) skill by replacing an exact string in its content.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'The skill id to patch.' },
+          oldString: { type: 'string', description: 'Exact substring to find and replace.' },
+          newString: { type: 'string', description: 'Replacement string.' },
+        },
+        required: ['id', 'oldString', 'newString'],
+      },
+    },
+  );
 
   logger.info('Registered skill tool handlers: skill_create, skill_patch');
 }
@@ -836,6 +979,77 @@ export function registerCodingToolHandlers(): void {
       return { error: err instanceof Error ? err.message : String(err) };
     }
   }));
+
+  registerToolDefinition('read_file', {
+    description: 'Read a text file from the agent sandbox, optionally a slice of lines. Returns content with line offsets.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path to the file.' },
+        offset: { type: 'number', description: '1-based start line (default 1).' },
+        limit: { type: 'number', description: 'Max number of lines to return.' },
+      },
+      required: ['path'],
+    },
+  });
+  registerToolDefinition('write_file', {
+    description: 'Write content to a file in the agent sandbox, creating parent directories as needed. Overwrites existing files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path to the file.' },
+        content: { type: 'string', description: 'Full file content to write.' },
+      },
+      required: ['path', 'content'],
+    },
+  });
+  registerToolDefinition('edit_file', {
+    description: 'Replace the first exact occurrence of a string in a file. The oldString must be unique within the file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path to the file.' },
+        oldString: { type: 'string', description: 'Exact text to find.' },
+        newString: { type: 'string', description: 'Replacement text.' },
+      },
+      required: ['path', 'oldString', 'newString'],
+    },
+  });
+  registerToolDefinition('list_files', {
+    description: 'List files under a directory in the agent sandbox. Optionally filter by name and recurse.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory to list (default ".").' },
+        pattern: { type: 'string', description: 'Optional substring filter on file names.' },
+        recursive: { type: 'boolean', description: 'Recurse into subdirectories.' },
+      },
+    },
+  });
+  registerToolDefinition('bash', {
+    description: 'Run a shell command from an allowlisted set of executables (git, node, python, ls, etc.) in the agent sandbox. Returns stdout/stderr/exitCode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The shell command to run (allowlisted binaries only).' },
+        timeoutMs: { type: 'number', description: 'Optional timeout in ms (default 30000).' },
+        cwd: { type: 'string', description: 'Optional working directory relative to the sandbox.' },
+      },
+      required: ['command'],
+    },
+  });
+  registerToolDefinition('search_files', {
+    description: 'Search file contents for a substring across the agent sandbox. Returns matching file/line/text.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Substring to search for.' },
+        path: { type: 'string', description: 'Directory to search (default ".").' },
+        include: { type: 'string', description: 'Optional file-name filter.' },
+      },
+      required: ['pattern'],
+    },
+  });
 
   logger.info('Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files');
 }

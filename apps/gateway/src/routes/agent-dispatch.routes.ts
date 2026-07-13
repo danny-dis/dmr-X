@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { agentRegistryService } from '@dmr-x/agent-registry';
 import { agentRuntimeService } from '@dmr-x/agent-runtime';
 import { generateRequestId, logger } from '@dmr-x/utils';
+import { getRegisteredToolDefinitions } from './tools.routes.js';
 import type { Router } from '@dmr-x/router';
 
 // ---------------------------------------------------------------------------
@@ -222,6 +223,10 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       temperature: body.temperature,
       max_tokens: body.maxTokens,
       stream: false,
+      tools:
+        definition.allowedTools && definition.allowedTools.length > 0
+          ? getRegisteredToolDefinitions(definition.allowedTools)
+          : undefined,
       metadata: { requestId: reqId, tenant },
     };
 
