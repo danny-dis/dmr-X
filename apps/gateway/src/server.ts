@@ -29,6 +29,7 @@ import { registerOAuthRefresh } from './oauth-refresh.js';
 import { registerTelemetryHooks } from './telemetry-hooks.js';
 import { authMiddleware, DEPLOYMENT_MODE } from './middleware/auth.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
+import { registerSiemForwarding } from './middleware/siem-forward.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
 import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
 import { agenticRoutes } from './routes/agentic.routes.js';
@@ -513,6 +514,9 @@ void (async () => {
   // Middleware
   await server.register(requestIdMiddleware);
   await server.register(authMiddleware);
+
+  // Compliance layer: SIEM audit forwarding (no-op unless DMRX_SIEM_URL set)
+  registerSiemForwarding(server);
 
   // Security headers & error handler (must be set BEFORE route registration)
   registerSecurity(server);

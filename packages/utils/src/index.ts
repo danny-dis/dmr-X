@@ -12,7 +12,7 @@ export {
 } from './retry.js';
 export { withRetry as retry } from './retry.js';
 export { CircuitBreaker, type CircuitBreakerOptions } from './circuit-breaker.js';
-export { generateId, generateRequestId, generateApiKey, hashApiKey, hashApiKeyWithSalt, verifyApiKey, encrypt, decrypt, encryptConfigApiKey, decryptConfigApiKey } from './crypto.js';
+export { generateId, generateRequestId, generateApiKey, hashApiKey, hashApiKeyWithSalt, verifyApiKey, encrypt, decrypt, encryptBytes, decryptBytes, encryptConfigApiKey, decryptConfigApiKey } from './crypto.js';
 export { EventStream, parseOpenAISSE, type SseMessage } from './event-stream.js';
 export { ReusableReadableStream } from './reusable-stream.js';
 export {

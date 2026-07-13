@@ -3,6 +3,7 @@ import type { Router } from '@dmr-x/router';
 import { memoryService } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
 import { skillService } from '@dmr-x/agent-registry';
+import { recordDataAccess, sanitizeArgsSummary } from '@dmr-x/agent-runtime';
 import {
   generateRequestId,
   executeTool,
@@ -133,6 +134,17 @@ async function executeToolCall(
       error: { message: `No handler registered for tool "${tc.function.name}"` },
     };
   }
+
+  // Compliance: record a tamper-evident data-access audit entry. Fire-and-forget
+  // and fully best-effort — audit failure must never break the tool result.
+  void recordDataAccess({
+    tenantId: context.tenant?.id ?? 'anonymous',
+    requestId: context.requestId ?? 'unknown',
+    agentId: (context as any).agentId,
+    tool: tc.function.name,
+    argsSummary: sanitizeArgsSummary(parsedCall.arguments),
+    ts: Date.now(),
+  }).catch(() => { /* audit best-effort */ });
 
   try {
     const result = await executeTool(tool, parsedCall, { ...context, numberOfTurns: 0 });
