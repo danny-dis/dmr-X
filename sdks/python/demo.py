@@ -21,7 +21,7 @@ BASE_URL = os.environ.get("DMRX_BASE_URL", "http://localhost:3000")
 def demo_chat_sync(client):
     """Basic chat completion (sync)."""
     print("\n=== 1. Sync Chat Completion ===")
-    print(f"Model: auto-coding | Messages: 1 (user)")
+    print("Model: auto-coding | Messages: 1 (user)")
 
     response = client.chat.completions.create(
         model="auto-coding",
@@ -92,7 +92,7 @@ def demo_routing_params(client):
     )
 
     content = response.choices[0].message.content
-    print(f"  Quality: frontier")
+    print("  Quality: frontier")
     print(f"  Model:   {response.model}")
     print(f"  Reply:   {content[:100]}...")
 

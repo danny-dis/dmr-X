@@ -3,11 +3,11 @@
  */
 
 import * as React from 'react';
-import { Zap, Brain, Layers } from 'lucide-react';
+import { Zap, Brain, Layers, Flame } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Badge } from '@/components/primitives/Badge';
 
-export type FusionMode = 'parallel' | 'ultraplinian' | 'consortium';
+export type FusionMode = 'parallel' | 'ultraplinian' | 'consortium' | 'classic';
 
 interface FusionModeSelectorProps {
   value: FusionMode;
@@ -33,6 +33,12 @@ const MODES = [
     label: 'CONSORTIUM',
     icon: Brain,
     description: 'Collect all, synthesize ground truth',
+  },
+  {
+    value: 'classic' as const,
+    label: 'GODMODE CLASSIC',
+    icon: Flame,
+    description: 'Race L1B3RT4S Hall of Fame combos',
   },
 ];
 

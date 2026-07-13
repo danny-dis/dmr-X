@@ -221,3 +221,52 @@ export interface GodmodeTierInfo {
     can_download_corpus: boolean;
   };
 }
+
+export type GodmodeFeedbackContextType =
+  | 'code'
+  | 'creative'
+  | 'analytical'
+  | 'conversational'
+  | 'chaotic';
+
+/**
+ * Feedback submission request for the G0DM0D3 EMA learning loop.
+ * The G0DM0D3 server returns a varying, loosely-typed payload, so the
+ * response type is permissive (known fields plus an index signature).
+ */
+export interface GodmodeFeedbackRequest {
+  message_id: string;
+  context_type: GodmodeFeedbackContextType;
+  model?: string;
+  persona?: string;
+  /** 1 = positive, -1 = negative. */
+  rating: 1 | -1;
+  params: Record<string, number>;
+  response_text?: string;
+}
+
+/**
+ * Outcome of a feedback submission (adjusted EMA params / learning state).
+ * Permissive: the server's response shape varies between builds.
+ */
+export interface GodmodeFeedbackResponse {
+  message_id?: string;
+  context_type?: GodmodeFeedbackContextType;
+  rating?: 1 | -1;
+  adjusted_params?: Record<string, number>;
+  ema_state?: Record<string, number>;
+  learned?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Learning statistics (EMA state) returned by the G0DM0D3 feedback stats
+ * endpoint. Permissive: the server's response shape varies.
+ */
+export interface GodmodeFeedbackStats {
+  total_feedback?: number;
+  context_counts?: Partial<Record<GodmodeFeedbackContextType, number>>;
+  ema_state?: Record<string, number>;
+  params?: Record<string, number>;
+  [key: string]: unknown;
+}

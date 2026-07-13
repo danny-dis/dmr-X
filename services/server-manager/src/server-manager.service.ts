@@ -1,0 +1,397 @@
+/**
+ * Server Manager — installs & supervises locally-managed G0DM0D3 servers.
+ *
+ * Responsibilities:
+ *  - cloneIfNeeded(): git clone (pinned repo) of G0DM0D3 into .dmrx-data/servers/g0dm0d3
+ *  - installDeps(): `bun install` in the cloned dir
+ *  - detectRuntime(): 'docker' when inside a container, else 'bun-native'
+ *  - start()/stop(): launch & tear down the managed server (container or child proc)
+ *  - healthCheck(): poll GET {url}/v1/health
+ *  - persist instance state in server_instances (via @dmr-x/db)
+ */
+
+import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { getDb } from '@dmr-x/db';
+import { logger } from '@dmr-x/utils';
+
+const G0DM0D3_REPO = 'https://github.com/elder-plinius/G0DM0D3.git';
+const SERVER_TYPE = 'g0dm0d3';
+const DEFAULT_PORT = 7860;
+const CONTAINER_NAME = 'dmrx-g0dm0d3';
+const IMAGE_TAG = 'dmrx-g0dm0d3';
+
+export type ServerStatus = 'stopped' | 'installing' | 'running' | 'error';
+export type ServerRuntime = 'docker' | 'bun-native';
+
+export interface ServerInstance {
+  id: string;
+  type: string;
+  url: string | null;
+  api_key: string | null;
+  openrouter_key_ref: string | null;
+  runtime: string | null;
+  status: ServerStatus;
+  pid: number | null;
+  container_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StartOptions {
+  /** OpenRouter key to pass through to the managed server. */
+  openrouterApiKey?: string;
+  /** Local port to bind (host + container). */
+  port?: number;
+  id?: string;
+}
+
+/** Process handle — Bun.spawn returns a Subprocess, Node spawn a ChildProcess. */
+type ChildLike = {
+  pid: number | null;
+  kill: (signal?: string) => void;
+} | null;
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+/** Resolve the CWD / repo root that .dmrx-data lives under. */
+function repoRoot(): string {
+  // Prefer DMRX repo root if hinted, else process.cwd().
+  return process.cwd();
+}
+
+function dataDir(): string {
+  return path.join(repoRoot(), '.dmrx-data');
+}
+
+function serversDir(): string {
+  return path.join(dataDir(), 'servers');
+}
+
+function g0dm0d3Dir(): string {
+  return path.join(serversDir(), SERVER_TYPE);
+}
+
+function isBun(): boolean {
+  return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+}
+
+/** Returns true when running inside a Docker/containerd container. */
+export function detectRuntime(): ServerRuntime {
+  if (fs.existsSync('/.dockerenv')) return 'docker';
+  try {
+    const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
+    if (/docker|containerd/.test(cgroup)) return 'docker';
+  } catch {
+    /* not Linux / no cgroup — fall through */
+  }
+  return 'bun-native';
+}
+
+class ServerManagerService {
+  /** In-memory handle to the native child process (Bun.spawn). */
+  private child: ChildLike = null;
+
+  /** Absolute path of the cloned G0DM0D3 source. */
+  get installPath(): string {
+    return g0dm0d3Dir();
+  }
+
+  async cloneIfNeeded(): Promise<{ cloned: boolean; path: string }> {
+    const dir = g0dm0d3Dir();
+    if (fs.existsSync(dir)) {
+      logger.info({ dir }, 'G0DM0D3 already cloned — skipping');
+      return { cloned: false, path: dir };
+    }
+    fs.mkdirSync(serversDir(), { recursive: true });
+    logger.info({ dir, repo: G0DM0D3_REPO }, 'Cloning G0DM0D3');
+    const res = spawnSync(
+      'git',
+      ['clone', '--depth', '1', G0DM0D3_REPO, dir],
+      { stdio: 'inherit' },
+    );
+    if (res.status !== 0) {
+      throw new Error(`git clone failed (exit ${res.status})`);
+    }
+    return { cloned: true, path: dir };
+  }
+
+  async installDeps(): Promise<void> {
+    const dir = g0dm0d3Dir();
+    logger.info({ dir }, 'Running bun install for G0DM0D3');
+    const res = spawnSync('bun', ['install'], { cwd: dir, stdio: 'inherit' });
+    if (res.status !== 0) {
+      throw new Error(`bun install failed (exit ${res.status})`);
+    }
+  }
+
+  // ── Persistence ──────────────────────────────────────────────────────────
+
+  private db() {
+    return getDb();
+  }
+
+  async getOrCreateRow(id: string, type = SERVER_TYPE): Promise<ServerInstance | null> {
+    const row = this.db()
+      .prepare('SELECT * FROM server_instances WHERE id = ?')
+      .get(id) as ServerInstance | undefined;
+    return row ?? null;
+  }
+
+  upsertRow(row: Partial<ServerInstance> & { id: string }): void {
+    const existing = this.getOrCreateRow(row.id) as unknown as ServerInstance | null;
+    const ts = nowIso();
+    if (!existing) {
+      this.db()
+        .prepare(
+          `INSERT INTO server_instances
+             (id, type, url, api_key, openrouter_key_ref, runtime, status, pid, container_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          row.id,
+          row.type ?? SERVER_TYPE,
+          row.url ?? null,
+          row.api_key ?? null,
+          row.openrouter_key_ref ?? null,
+          row.runtime ?? null,
+          row.status ?? 'stopped',
+          row.pid ?? null,
+          row.container_id ?? null,
+          ts,
+          ts,
+        );
+    } else {
+      this.db()
+        .prepare(
+          `UPDATE server_instances SET
+             url = ?, api_key = ?, openrouter_key_ref = ?, runtime = ?,
+             status = ?, pid = ?, container_id = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          row.url ?? existing.url,
+          row.api_key ?? existing.api_key,
+          row.openrouter_key_ref ?? existing.openrouter_key_ref,
+          row.runtime ?? existing.runtime,
+          row.status ?? existing.status,
+          row.pid ?? existing.pid,
+          row.container_id ?? existing.container_id,
+          ts,
+          row.id,
+        );
+    }
+  }
+
+  /** Return the first running instance row, if any. */
+  getRunningInstance(): ServerInstance | null {
+    const row = this.db()
+      .prepare("SELECT * FROM server_instances WHERE status = 'running' ORDER BY updated_at DESC LIMIT 1")
+      .get() as ServerInstance | undefined;
+    return row ?? null;
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────────────────
+
+  /**
+   * install(): clone (pinned repo) + install deps only. Does NOT launch.
+   * Runs the (potentially long) git clone + bun install in the background so
+   * the HTTP request returns immediately; the UI polls /status to follow
+   * progress. DB flips to 'stopped' on success, 'error' on failure.
+   */
+  async install(opts: StartOptions = {}): Promise<ServerInstance> {
+    const id = opts.id ?? SERVER_TYPE;
+    const port = opts.port ?? DEFAULT_PORT;
+    const runtime = detectRuntime();
+    const openrouterKey =
+      opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '';
+    const godmodeKey = crypto.randomBytes(24).toString('hex');
+    const url = `http://localhost:${port}`;
+
+    // Persist an 'installing' row immediately so the UI shows progress.
+    this.upsertRow({
+      id,
+      type: SERVER_TYPE,
+      url,
+      api_key: godmodeKey,
+      openrouter_key_ref: openrouterKey ? 'env:OPENROUTER_API_KEY' : null,
+      runtime,
+      status: 'installing',
+    });
+
+    // Fire-and-forget the slow clone + install (do NOT await in the request).
+    void this.runInstall(id, url, runtime, openrouterKey).catch((err) => {
+      logger.error({ err }, 'G0DM0D3 install failed');
+      this.upsertRow({ id, status: 'error' });
+    });
+
+    return (await this.getOrCreateRow(id))!;
+  }
+
+  /** Background clone + dep install; resolves when the clone is ready. */
+  private async runInstall(
+    id: string,
+    url: string,
+    runtime: ServerRuntime,
+    openrouterKey: string,
+  ): Promise<void> {
+    await this.cloneIfNeeded();
+    await this.installDeps();
+    // Ready to launch; mark stopped (not running — user must press Start).
+    this.upsertRow({ id, url, runtime, status: 'stopped' });
+  }
+
+  /**
+   * start(): launch the (already-installed) server. Clones + installs deps
+   * first if missing. OpenRouter key is reused from the gateway's environment.
+   */
+  async start(opts: StartOptions = {}): Promise<ServerInstance> {
+    const id = opts.id ?? SERVER_TYPE;
+    const port = opts.port ?? DEFAULT_PORT;
+    const runtime = detectRuntime();
+
+    // OpenRouter key: reuse gateway's key passed in, else from environment.
+    const openrouterKey =
+      opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '';
+    const godmodeKey = crypto.randomBytes(24).toString('hex');
+    const url = `http://localhost:${port}`;
+
+    await this.cloneIfNeeded();
+    await this.installDeps();
+
+    this.upsertRow({
+      id,
+      type: SERVER_TYPE,
+      url,
+      api_key: godmodeKey,
+      openrouter_key_ref: openrouterKey ? 'env:OPENROUTER_API_KEY' : null,
+      runtime,
+      status: 'installing',
+    });
+
+    try {
+      if (runtime === 'docker') {
+        await this.startDocker(port, openrouterKey, godmodeKey);
+        this.upsertRow({ id, status: 'running', url, runtime, container_id: CONTAINER_NAME });
+      } else {
+        await this.startNative(port, openrouterKey, godmodeKey);
+        this.upsertRow({ id, status: 'running', url, runtime, pid: this.child?.pid ?? null });
+      }
+    } catch (err) {
+      this.upsertRow({ id, status: 'error' });
+      throw err;
+    }
+
+    await this.healthCheck({ url });
+    return (await this.getOrCreateRow(id))!;
+  }
+
+  private startDocker(port: number, openrouterKey: string, godmodeKey: string): void {
+    const dir = g0dm0d3Dir();
+    // Build (idempotent) then run detached.
+    let build = spawnSync('docker', ['build', '-t', IMAGE_TAG, dir], { stdio: 'inherit' });
+    if (build.status !== 0) {
+      throw new Error(`docker build failed (exit ${build.status})`);
+    }
+    // Remove any stale container first.
+    spawnSync('docker', ['rm', '-f', CONTAINER_NAME], { stdio: 'ignore' });
+    const run = spawnSync(
+      'docker',
+      [
+        'run',
+        '-d',
+        '--name', CONTAINER_NAME,
+        '-p', `${port}:${DEFAULT_PORT}`,
+        '-e', `OPENROUTER_API_KEY=${openrouterKey}`,
+        '-e', `GODMODE_API_KEY=${godmodeKey}`,
+        '-e', `PORT=${DEFAULT_PORT}`,
+        IMAGE_TAG,
+      ],
+      { stdio: 'inherit' },
+    );
+    if (run.status !== 0) {
+      throw new Error(`docker run failed (exit ${run.status})`);
+    }
+  }
+
+  private startNative(port: number, openrouterKey: string, godmodeKey: string): Promise<void> {
+    const dir = g0dm0d3Dir();
+    const env = {
+      ...process.env,
+      OPENROUTER_API_KEY: openrouterKey,
+      GODMODE_API_KEY: godmodeKey,
+      PORT: String(port),
+    };
+
+    if (isBun()) {
+      // Use Bun.spawn for a managed, killable child.
+      const BunCtor = (globalThis as { Bun?: { spawn: (cmd: unknown[], opts: Record<string, unknown>) => ChildLike } }).Bun;
+      if (BunCtor && BunCtor.spawn) {
+        this.child = BunCtor.spawn(['bunx', 'tsx', 'api/server.ts'], {
+          cwd: dir,
+          env,
+          stdout: 'inherit',
+          stderr: 'inherit',
+        });
+        return Promise.resolve();
+      }
+    }
+
+    // Node fallback. Detach + unref so the managed server survives a gateway
+    // restart (otherwise it is reaped when the gateway process exits).
+    const cp = spawn('bunx', ['tsx', 'api/server.ts'], {
+      cwd: dir,
+      env,
+      stdio: 'ignore',
+      detached: true,
+    });
+    cp.unref();
+    this.child = { pid: cp.pid ?? null, kill: (s?: string) => { try { process.kill(-cp.pid!, s as NodeJS.Signals); } catch { /* already gone */ } } } as ChildLike;
+    return Promise.resolve();
+  }
+
+  async stop(id = SERVER_TYPE): Promise<void> {
+    const runtime = detectRuntime();
+    if (runtime === 'docker') {
+      spawnSync('docker', ['stop', CONTAINER_NAME], { stdio: 'ignore' });
+      spawnSync('docker', ['rm', '-f', CONTAINER_NAME], { stdio: 'ignore' });
+    } else if (this.child) {
+      try {
+        this.child.kill();
+      } catch {
+        /* already gone */
+      }
+      this.child = null;
+    }
+    this.upsertRow({ id, status: 'stopped', pid: null, container_id: null });
+  }
+
+  async healthCheck(opts: { url: string; timeoutMs?: number } = { url: '' }): Promise<boolean> {
+    const url = opts.url;
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+    const deadline = Date.now() + timeoutMs;
+    const fetchImpl = (globalThis as { fetch: typeof fetch }).fetch;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetchImpl(`${url}/v1/health`, { method: 'GET' });
+        if (res.ok) return true;
+      } catch {
+        /* not up yet */
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return false;
+  }
+}
+
+export const serverManager = new ServerManagerService();
+export function createServerManager(): ServerManagerService {
+  return new ServerManagerService();
+}
+export { ServerManagerService };

@@ -1,4 +1,4 @@
-import { Settings, Shield } from 'lucide-react';
+import { Settings, Shield, Plug } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -12,6 +12,7 @@ const PoliciesTab = React.lazy(() => import('@/pages/Policies').then(m => ({ def
 const CompressionTab = React.lazy(() => import('@/pages/Compression').then(m => ({ default: m.CompressionPage })));
 const ApiReferenceTab = React.lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
 const ClaudeCodeTab = React.lazy(() => import('@/pages/ClaudeCode').then(m => ({ default: m.ClaudeCodePage })));
+const IntegrationsTab = React.lazy(() => import('@/pages/Integrations').then(m => ({ default: m.IntegrationsPage })));
 
 function TabLoader() {
   return (
@@ -42,6 +43,10 @@ export function SettingsTabsPage() {
             <TabsTrigger value="compression">Compression</TabsTrigger>
             <TabsTrigger value="api-reference">API Reference</TabsTrigger>
             <TabsTrigger value="claude-code">Claude Code</TabsTrigger>
+            <TabsTrigger value="integrations">
+              <Plug className="size-3" />
+              Integrations
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="general">
@@ -71,6 +76,12 @@ export function SettingsTabsPage() {
           <TabsContent value="claude-code">
             <React.Suspense fallback={<TabLoader />}>
               <ClaudeCodeTab />
+            </React.Suspense>
+          </TabsContent>
+
+          <TabsContent value="integrations">
+            <React.Suspense fallback={<TabLoader />}>
+              <IntegrationsTab />
             </React.Suspense>
           </TabsContent>
         </Tabs>

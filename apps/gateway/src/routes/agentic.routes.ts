@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { executeToolCall } from './tools.routes.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { needlePreFilter } from '../lib/needlePreFilter.js';
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -374,6 +375,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             tenant,
           );
 
+          const queryText = (body.messages.find((m: any) => m.role === 'user')?.content ?? '') as string;
+          if (body.tools && body.tools.length > 8) {
+            const narrowed = await needlePreFilter(body.tools, queryText);
+            if (narrowed && narrowed.length > 0) {
+              body.tools = narrowed;
+            }
+          }
+
           const { response } = await router.route(unifiedRequest, {
             path: '/v1/agentic/chat',
             qualityTarget,
@@ -549,6 +558,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     );
 
     for (let turn = 0; turn < maxSteps; turn++) {
+        const queryText = (body.messages.find((m: any) => m.role === 'user')?.content ?? '') as string;
+        if (body.tools && body.tools.length > 8) {
+          const narrowed = await needlePreFilter(body.tools, queryText);
+          if (narrowed && narrowed.length > 0) {
+            body.tools = narrowed;
+          }
+        }
+
         const unifiedRequest = toUnifiedRequest(
           {
             model: body.model,

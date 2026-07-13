@@ -16,7 +16,7 @@ export function FreeTierBudgetCard({ summary }: FreeTierBudgetCardProps) {
   return (
     <Card className="p-6">
       <div className="flex items-center gap-2 mb-4">
-        <Gift className="h-5 w-5 text-green-500" />
+        <Gift className="h-5 w-5 text-success" />
         <h3 className="text-lg font-semibold">Free Tier Budget</h3>
       </div>
 

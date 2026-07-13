@@ -705,8 +705,8 @@ export function AddProviderDialog({
                 {oauth.step === 'error' && (
                   <div className="space-y-2">
                     <div className="flex items-start gap-2">
-                      <AlertCircle className="size-3.5 text-red-500 shrink-0 mt-0.5" />
-                      <p className="text-[11px] text-red-500 leading-relaxed">{oauth.errorMessage}</p>
+                      <AlertCircle className="size-3.5 text-danger shrink-0 mt-0.5" />
+                      <p className="text-[11px] text-danger leading-relaxed">{oauth.errorMessage}</p>
                     </div>
                     <Button
                       type="button"

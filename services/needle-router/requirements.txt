@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+jax
+jaxlib
+flax
+optax
+sentencepiece
+huggingface_hub
+datasets
+# also: pip install git+https://github.com/cactus-compute/needle

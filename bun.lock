@@ -46,6 +46,7 @@
         "@dmr-x/registry": "*",
         "@dmr-x/router": "*",
         "@dmr-x/sandbox": "*",
+        "@dmr-x/server-manager": "*",
         "@dmr-x/telemetry": "*",
         "@dmr-x/tokenizers": "*",
         "@dmr-x/utils": "*",
@@ -484,6 +485,17 @@
         "typescript": "5.9.3",
       },
     },
+    "services/server-manager": {
+      "name": "@dmr-x/server-manager",
+      "version": "0.5.7",
+      "dependencies": {
+        "@dmr-x/db": "workspace:*",
+        "@dmr-x/utils": "workspace:*",
+      },
+      "devDependencies": {
+        "typescript": "^5.4.0",
+      },
+    },
     "services/telemetry": {
       "name": "@dmr-x/telemetry",
       "version": "0.5.7",
@@ -630,6 +642,8 @@
     "@dmr-x/sandbox": ["@dmr-x/sandbox@workspace:services/sandbox"],
 
     "@dmr-x/secrets": ["@dmr-x/secrets@workspace:packages/secrets"],
+
+    "@dmr-x/server-manager": ["@dmr-x/server-manager@workspace:services/server-manager"],
 
     "@dmr-x/telemetry": ["@dmr-x/telemetry@workspace:services/telemetry"],
 

@@ -596,7 +596,7 @@ export function BenchmarksPage() {
                   </Card>
                   <Card>
                     <CardContent className="p-4 text-center">
-                      <p className="text-2xl font-bold text-green-500">{validationStats.agreementRate}%</p>
+                      <p className="text-2xl font-bold text-success">{validationStats.agreementRate}%</p>
                       <p className="text-[10px] text-fg-muted uppercase">Judge Agreement</p>
                     </CardContent>
                   </Card>
@@ -695,12 +695,12 @@ export function BenchmarksPage() {
                   <select value={tournamentCategory} onChange={(e) => setTournamentCategory(e.target.value)}
                     className="w-full text-xs bg-background border border-border rounded-md px-3 py-2 text-fg">
                     <option value="">All categories</option>
-                    <option value="reasoning">🧮 Reasoning</option>
-                    <option value="instruction">📋 Instruction</option>
-                    <option value="creative">🎨 Creative</option>
-                    <option value="coding">💻 Coding</option>
-                    <option value="knowledge">📚 Knowledge</option>
-                    <option value="safety">🛡️ Safety</option>
+                    <option value="reasoning">Reasoning</option>
+                    <option value="instruction">Instruction</option>
+                    <option value="creative">Creative</option>
+                    <option value="coding">Coding</option>
+                    <option value="knowledge">Knowledge</option>
+                    <option value="safety">Safety</option>
                   </select>
                 </div>
                 <div>
@@ -708,9 +708,9 @@ export function BenchmarksPage() {
                   <select value={tournamentDifficulty} onChange={(e) => setTournamentDifficulty(e.target.value)}
                     className="w-full text-xs bg-background border border-border rounded-md px-3 py-2 text-fg">
                     <option value="">Any</option>
-                    <option value="easy">🟢 Easy</option>
-                    <option value="medium">🟡 Medium</option>
-                    <option value="hard">🔴 Hard</option>
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
                   </select>
                 </div>
               </div>
@@ -728,7 +728,7 @@ export function BenchmarksPage() {
               {/* Results */}
               {tournamentResults && (
                 <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg">
-                  <p className="text-xs font-semibold text-primary mb-1">✅ Tournament Complete</p>
+                  <p className="text-xs font-semibold text-primary mb-1">Tournament Complete</p>
                   <p className="text-[10px] text-fg-muted">
                     {tournamentResults.completed}/{tournamentResults.totalBattles} battles · 
                     Category: {tournamentResults.promptCategory} · 
@@ -772,13 +772,13 @@ export function BenchmarksPage() {
                   className="w-full text-xs bg-background border border-border rounded-md px-3 py-2 text-fg"
                 >
                   <option value="">All categories (default)</option>
-                  <option value="reasoning">🧮 Reasoning</option>
-                  <option value="instruction">📋 Instruction Following</option>
-                  <option value="creative">🎨 Creative</option>
-                  <option value="coding">💻 Coding</option>
-                  <option value="knowledge">📚 Knowledge</option>
-                  <option value="multilingual">🌍 Multilingual</option>
-                  <option value="safety">🛡️ Safety</option>
+                  <option value="reasoning">Reasoning</option>
+                  <option value="instruction">Instruction Following</option>
+                  <option value="creative">Creative</option>
+                  <option value="coding">Coding</option>
+                  <option value="knowledge">Knowledge</option>
+                  <option value="multilingual">Multilingual</option>
+                  <option value="safety">Safety</option>
                 </select>
               </div>
             </div>
@@ -881,12 +881,12 @@ export function BenchmarksPage() {
                     className="w-full text-xs bg-background border border-border rounded-md px-3 py-2 text-fg"
                   >
                     <option value="">Random</option>
-                    <option value="reasoning">🧮 Reasoning</option>
-                    <option value="instruction">📋 Instruction</option>
-                    <option value="creative">🎨 Creative</option>
-                    <option value="coding">💻 Coding</option>
-                    <option value="knowledge">📚 Knowledge</option>
-                    <option value="safety">🛡️ Safety</option>
+                    <option value="reasoning">Reasoning</option>
+                    <option value="instruction">Instruction</option>
+                    <option value="creative">Creative</option>
+                    <option value="coding">Coding</option>
+                    <option value="knowledge">Knowledge</option>
+                    <option value="safety">Safety</option>
                   </select>
                 </div>
                 <div>
@@ -897,9 +897,9 @@ export function BenchmarksPage() {
                     className="w-full text-xs bg-background border border-border rounded-md px-3 py-2 text-fg"
                   >
                     <option value="">Random</option>
-                    <option value="easy">🟢 Easy</option>
-                    <option value="medium">🟡 Medium</option>
-                    <option value="hard">🔴 Hard</option>
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
                   </select>
                 </div>
               </div>
