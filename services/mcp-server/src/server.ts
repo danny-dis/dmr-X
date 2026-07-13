@@ -4,7 +4,8 @@
  * Exposes DMR-X routing capabilities as MCP tools.
  * Transport-agnostic: works with stdio, SSE, and Streamable HTTP transports.
  */
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, PollinationsImageAdapter } from '@dmr-x/adapters';
+import { initializeAdapters } from './adapter-init.js';
 import { ReplicateAdapter, StabilityAdapter } from '@dmr-x/adapters';
 import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter, ComfyUIAdapter } from '@dmr-x/adapters';
@@ -29,7 +30,15 @@ import { ToolTemplatesService, getToolTemplatesService } from './templates/tool-
 import type { AgentCardConfig } from './a2a/agent-card.js';
 import type { FederationConfig } from './federation/manager.js';
 import { logger } from '@dmr-x/utils';
-import { persistentContextStore } from '@dmr-x/db';
+import { persistentContextStore, initDb, getDb } from '@dmr-x/db';
+
+// Ensure the shared DB is initialized in this module's @dmr-x/db instance.
+// (The entry point also calls initDb, but under bun the entry and this module
+// can resolve @dmr-x/db to separate instances, so we initialize defensively.)
+void initDb().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error('[mcp-server] DB init (deferred) failed:', err);
+});
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
@@ -273,6 +282,9 @@ function buildAdapterRegistry(): AdapterRegistry {
   registry.register(new FalAdapter());
   registry.register(new VeoAdapter());
   registry.register(new RunwayAdapter());
+  registry.register(new PollinationsImageAdapter());
+  // Provider adapters (keyed by provider UUID) are registered + initialized on
+  // first use via initializeAdapters() inside initAdapters().
   return registry;
 }
 
@@ -1081,6 +1093,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   let adaptersInitialized = false;
   const initAdapters = async () => {
     if (adaptersInitialized) return;
+    // Register + initialize provider adapters keyed by provider UUID from .env
+    // (mirrors the gateway). Must run before any routed request resolves a
+    // candidate's providerId to an adapter.
+    try {
+      await initializeAdapters(adapterRegistry);
+    } catch (envInitErr) {
+      logger.warn({ err: envInitErr }, 'Env-based adapter init failed (some providers unavailable)');
+    }
     for (const [providerId, cfg] of Object.entries(adapterConfigs)) {
       try {
         await adapterRegistry.initialize(providerId, cfg);
@@ -1167,7 +1187,22 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // Wire up adapter executor for fallback
   router.setAdapterExecutor({
     async execute(providerId: string, modelId: string, request: UnifiedRequest) {
-      const adapter = adapterRegistry.get(providerId);
+      // Resolve the provider UUID to its registered adapter. The router's
+      // candidates carry provider UUIDs, but adapters are registered by their
+      // adapter_type / catalog id (e.g. "cohere"). Mirror the gateway's
+      // getAdapter: try the raw id, then fall back to providers.name.
+      let adapter = adapterRegistry.get(providerId);
+      if (!adapter) {
+        try {
+          const db = getDb();
+          const row = db.prepare('SELECT name FROM providers WHERE id = ?').get(providerId) as
+            | { name: string }
+            | undefined;
+          if (row) adapter = adapterRegistry.get(row.name);
+        } catch {
+          /* DB lookup best-effort */
+        }
+      }
       if (!adapter) {
         throw new Error(`Adapter not found: ${providerId}`);
       }
@@ -1347,6 +1382,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE }, 'routing');
 
         const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
+        // Pin diffusion to the dedicated pollinations-image provider. The router
+        // honors a `providerName/modelId` model prefix (scopes candidates to that
+        // provider), and the generic 'pollinations' text adapter rejects the
+        // diffusion modality — so without this pin it throws
+        // "Unsupported modality: diffusion". The PollinationsImageAdapter
+        // (providerName 'pollinations-images') handles diffusion + returns a URL.
+        const imageModel = (params.model as string) || 'flux';
+        request.model = `pollinations-images/${imageModel}`;
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['diffusion'],
           qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
@@ -1603,6 +1646,16 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         }, 'routing');
 
         const structured = JSON.parse(formatted);
+        // The Cohere rerank adapter doesn't always echo the document text back,
+        // so fall back to the caller's input documents (indexed by result.index)
+        // to satisfy the output schema's required `document` field.
+        const inputDocs = (params.documents as string[] | undefined) || [];
+        if (Array.isArray((structured as any).results)) {
+          (structured as any).results = (structured as any).results.map((r: any) => ({
+            ...r,
+            document: r.document ?? inputDocs[r.index] ?? '',
+          }));
+        }
         return {
           content: [{
             type: 'text' as const,

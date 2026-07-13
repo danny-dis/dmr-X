@@ -30,6 +30,7 @@
     "@dmr-x/tool-search": "*",
     "@dmr-x/policy": "*",
     "@dmr-x/utils": "*",
+    "@dmr-x/registry": "*",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "fastify": "^5.0.0",
     "zod": "3.23.0"

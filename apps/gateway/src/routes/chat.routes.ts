@@ -200,17 +200,43 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         }
       }
 
-      const adapter = (server as any).getAdapter(plan.primary.providerId);
-      if (adapter) {
+      // Build the ordered candidate list: primary first, then the fallback chain.
+      // The streaming path previously only tried plan.primary with no fallback, so
+      // any bad primary provider (402/404/etc.) killed the request with "Stream
+      // failed" even though healthy fallbacks existed. We now iterate candidates and
+      // fall back as long as NOTHING has been streamed to the client yet.
+      const streamCandidates = [
+        { providerId: plan.primary.providerId, modelId: plan.primary.modelId, score: plan.primary.score },
+        ...plan.chain.map((step) => ({
+          providerId: step.provider.providerId,
+          modelId: step.provider.modelId,
+          score: step.provider.score,
+        })),
+      ];
+
+      let streamedAnyOutput = false;
+      let succeeded = false;
+      let clientAborted = false;
+      let lastStreamError: unknown;
+      let usedProviderId = plan.primary.providerId;
+
+      for (let attempt = 0; attempt < streamCandidates.length; attempt++) {
+        const candidate = streamCandidates[attempt];
+        const adapter = (server as any).getAdapter(candidate.providerId);
+        if (!adapter) {
+          lastStreamError = new Error(`No adapter available for provider ${candidate.providerId}`);
+          continue;
+        }
+        usedProviderId = candidate.providerId;
         const controller = new AbortController();
         const onClientClose = () => controller.abort();
         request.raw.on('close', onClientClose);
 
         try {
-          const routedRequest = { ...unifiedRequest, model: plan.primary.modelId };
+          const routedRequest = { ...unifiedRequest, model: candidate.modelId };
           (request as any).metrics = {
-            providerId: plan.primary.providerId,
-            modelId: plan.primary.modelId,
+            providerId: candidate.providerId,
+            modelId: candidate.modelId,
             modality: unifiedRequest.modality ?? 'llm',
             tenantId,
             taskProfile: unifiedRequest.modality,
@@ -239,7 +265,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
           const streamStart = Date.now();
           let firstTokenAt: number | undefined;
-          let streamErrorCode: string | undefined;
           let streamPromptTokens = 0;
           let streamCompletionTokens = 0;
           const collectedContent: string[] = [];
@@ -271,18 +296,31 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
               })}\n\n`;
             } else if (chunk.type === 'error') {
-              logger.error({ requestId, chunkError: chunk.data }, 'Adapter stream error chunk');
-              streamErrorCode = (chunk.data as { code?: string } | undefined)?.code ?? 'stream_error';
-              data = `data: ${JSON.stringify({
-                error: { message: 'Stream error', type: 'stream_error' },
-              })}\n\n`;
+              // Funnel in-band adapter error chunks through the same catch/fallback
+              // path as thrown ProviderErrors so a bad provider can fall back to the
+              // next candidate (as long as nothing has been streamed to the client yet).
+              const chunkCode = (chunk.data as { code?: string } | undefined)?.code ?? 'stream_error';
+              const chunkMsg = (chunk.data as { message?: string } | undefined)?.message ?? 'Adapter stream error';
+              const chunkErr = new Error(chunkMsg) as Error & { code?: string; __streamChunkError?: boolean };
+              chunkErr.code = chunkCode;
+              chunkErr.__streamChunkError = true;
+              throw chunkErr;
             } else {
               continue;
             }
             if (!reply.raw.write(data)) {
               await new Promise<void>(resolve => reply.raw.once('drain', resolve));
             }
+            // Once any token/done bytes reach the client, we can no longer fall back.
+            if (chunk.type === 'token' || chunk.type === 'done') {
+              streamedAnyOutput = true;
+            }
           }
+          if (controller.signal.aborted) {
+            clientAborted = true;
+            break;
+          }
+          succeeded = true;
           if (streamPromptTokens || streamCompletionTokens) {
             (request as any).metrics.tokens = {
               prompt: streamPromptTokens,
@@ -290,26 +328,23 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               total: streamPromptTokens + streamCompletionTokens,
             };
           }
-          if (streamErrorCode) {
-            (request as any).metrics.errorCode = streamErrorCode;
-          }
           try {
             if (rls) {
-              await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, streamPromptTokens + streamCompletionTokens);
+              await rls.recordUsage(candidate.providerId, candidate.modelId, streamPromptTokens + streamCompletionTokens);
             }
             if (qs && tenantId) {
-              await qs.recordUsage(tenantId, plan.primary.providerId, streamPromptTokens + streamCompletionTokens, 0);
+              await qs.recordUsage(tenantId, candidate.providerId, streamPromptTokens + streamCompletionTokens, 0);
             }
           } catch (usageErr) {
-            logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record streaming usage');
+            logger.warn({ err: usageErr, provider: candidate.providerId }, 'Failed to record streaming usage');
           }
-          if (collectedContent.length > 0 && !streamErrorCode) {
+          if (collectedContent.length > 0) {
             const { storeRouteCache } = await import('@dmr-x/cache');
             const assembledResponse = {
               id: requestId,
               object: 'chat.completion',
               created: Math.floor(Date.now() / 1000),
-              model: plan.primary.modelId,
+              model: candidate.modelId,
               choices: [{
                 index: 0,
                 message: { role: 'assistant', content: collectedContent.join('') },
@@ -322,34 +357,55 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               storeRouteCache('chat', tenantId, body as Record<string, unknown>, assembledResponse);
             }
           }
+          break;
         } catch (streamError) {
           if (controller.signal.aborted) {
-            logger.debug({ requestId, provider: plan.primary.providerId }, 'Stream aborted by client disconnect');
-          } else {
-            logger.error({ err: streamError, requestId }, 'Streaming error');
-            (server as any).recordTelemetryEvent?.({
-              level: 'error',
-              service: 'gateway',
-              message: streamError instanceof Error ? streamError.message : 'Streaming error',
-              metadata: {
-                path: request.url,
-                providerId: plan.primary.providerId,
-                modelId: plan.primary.modelId,
-                requestId,
-              },
-            });
-            if (!reply.raw.write(`data: ${JSON.stringify({
-              error: { message: 'Stream failed', type: 'stream_error' },
-            })}\n\n`)) {
-              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
-            }
+            clientAborted = true;
+            logger.debug({ requestId, provider: candidate.providerId }, 'Stream aborted by client disconnect');
+            break;
           }
+          lastStreamError = streamError;
+          const moreCandidates = attempt < streamCandidates.length - 1;
+          if (!streamedAnyOutput && moreCandidates) {
+            // Safe to fall back: nothing was sent to the client yet.
+            logger.warn(
+              { err: streamError instanceof Error ? streamError.message : streamError, requestId, provider: candidate.providerId, nextAttempt: attempt + 1 },
+              'Streaming provider failed before any output; falling back to next candidate'
+            );
+            continue;
+          }
+          // Cannot fall back (already streamed output, or no candidates left).
+          logger.error({ err: streamError, requestId, provider: candidate.providerId }, 'Streaming error');
+          (server as any).recordTelemetryEvent?.({
+            level: 'error',
+            service: 'gateway',
+            message: streamError instanceof Error ? streamError.message : 'Streaming error',
+            metadata: {
+              path: request.url,
+              providerId: candidate.providerId,
+              modelId: candidate.modelId,
+              requestId,
+            },
+          });
+          (request as any).metrics = (request as any).metrics || {};
+          (request as any).metrics.errorCode = (streamError as { code?: string })?.code ?? 'stream_error';
+          if (!reply.raw.write(`data: ${JSON.stringify({
+            error: { message: 'Stream failed', type: 'stream_error' },
+          })}\n\n`)) {
+            await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+          }
+          break;
         } finally {
           request.raw.off('close', onClientClose);
         }
-      } else {
+      }
+
+      // No candidate had a usable adapter, and nothing was streamed → emit a routing error.
+      if (!succeeded && !streamedAnyOutput && !clientAborted) {
+        const msg = lastStreamError instanceof Error ? lastStreamError.message : 'No adapter available for provider';
+        logger.error({ requestId, err: lastStreamError, primary: usedProviderId }, 'Streaming request exhausted all candidates');
         reply.raw.write(`data: ${JSON.stringify({
-          error: { message: 'No adapter available for provider', type: 'routing_error' },
+          error: { message: msg, type: 'routing_error' },
         })}\n\n`);
       }
       reply.raw.write('data: [DONE]\n\n');
