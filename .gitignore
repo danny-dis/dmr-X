@@ -90,6 +90,9 @@ debug-*.md
 __pycache__/
 *.pyc
 *.egg-info/
+# needle-router venv + model checkpoints (large, regenerated locally)
+services/needle-router/.venv/
+services/needle-router/checkpoints/
 
 # ─── AI-tool / IDE caches (regenerated on demand) ──────────────────────────
 .claude/

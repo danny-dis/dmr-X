@@ -1,0 +1,36 @@
+# DMR-X one-command demo stack.
+# Build the gateway image first:  docker build -t dmr-x:local .
+# Then:                          docker compose -f docker-compose.demo.yml up -d
+#
+# Shows the self-hosted platform in 60 seconds: gateway + MCP tool aggregation
+# (a sample filesystem server, launched in-process by dmrx-mcp) + a sample agent
+# installed via `dmrx agent install`. No API keys required — set
+# DMRX_FREE_TIER_STRATEGY to run on free providers.
+#
+# dmrx-mcp reads dmrx-mcp.config.json (mounted below) and aggregates the
+# filesystem server's tools into the `<serverId>__<tool>` namespace. Editing
+# that file hot-reloads the aggregation (no restart). See docs/MCP.md.
+
+services:
+  gateway:
+    image: dmr-x:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      DMRX_DATA_DIR: /app/data
+      DMRX_MCP_ENABLED: "true"
+      DMRX_FREE_TIER_STRATEGY: "prioritize"
+      # Add provider keys here (or rely on free-tier + a local Ollama at :11434)
+      # OPENAI_API_KEY: "..."
+    volumes:
+      - dmrx-data:/app/data
+      - ./dmrx-mcp.config.json:/app/dmrx-mcp.config.json:ro
+      - ./examples:/demo-data:ro
+    restart: unless-stopped
+
+volumes:
+  dmrx-data:

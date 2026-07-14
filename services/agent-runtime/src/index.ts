@@ -17,3 +17,12 @@ export {
   AgentScheduler,
   agentScheduler,
 } from './agent-scheduler.js';
+
+export {
+  recordDataAccess,
+  verifyDataAccessLog,
+  sanitizeArgsSummary,
+  type DataAccessEntry,
+  type RecordDataAccessInput,
+  type VerifyResult,
+} from './data-access-audit.js';

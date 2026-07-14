@@ -66,13 +66,25 @@ async function saveDatabase(): Promise<void> {
   if (saveInFlight) return saveInFlight;
   const run = (async () => {
     await fs.promises.mkdir(path.dirname(dbPath), { recursive: true });
-    const tmpPath = `${dbPath}.tmp`;
+    const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
+    const targetPath = keySet ? `${dbPath}.enc` : dbPath;
+    const tmpPath = `${targetPath}.tmp`;
     try {
       const data = db.export();
+      let toWrite: Buffer;
+      if (keySet) {
+        // Encrypt the on-disk database at rest (AES-256-GCM).
+        const { encryptBytes } = await import('@dmr-x/utils');
+        toWrite = Buffer.from(encryptBytes(Buffer.from(data)));
+        // Never leave a plaintext copy behind once encryption is enabled.
+        try { if (fs.existsSync(dbPath)) await fs.promises.unlink(dbPath); } catch { /* best-effort */ }
+      } else {
+        toWrite = Buffer.from(data);
+      }
       // Write to a temporary file first to ensure atomic replacement.
       // This prevents database corruption if the process crashes mid-write.
-      await fs.promises.writeFile(tmpPath, Buffer.from(data));
-      await fs.promises.rename(tmpPath, dbPath);
+      await fs.promises.writeFile(tmpPath, toWrite);
+      await fs.promises.rename(tmpPath, targetPath);
     } catch (err) {
       log.error('Failed to save database:', err);
       // Best-effort cleanup of the temporary file
@@ -588,25 +600,38 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   fs.mkdirSync(dataDir, { recursive: true });
   dbPath = path.join(dataDir, 'data.db');
 
-  if (fs.existsSync(dbPath)) {
+  // When DMRX_ENCRYPTION_KEY is set, the on-disk DB is stored encrypted as
+  // data.db.enc. Otherwise we use the plaintext data.db (dev / local mode).
+  const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
+  const activeDbPath = keySet ? `${dbPath}.enc` : dbPath;
+
+  async function openDbFile(filePath: string): Promise<SqlJsDatabase> {
+    const raw = fs.readFileSync(filePath);
+    if (keySet) {
+      const { decryptBytes } = await import('@dmr-x/utils');
+      return new SQL.Database(decryptBytes(raw.toString('hex')));
+    }
+    return new SQL.Database(raw);
+  }
+
+  if (fs.existsSync(activeDbPath)) {
     try {
-      const buffer = fs.readFileSync(dbPath);
-      db = new SQL.Database(buffer);
+      db = await openDbFile(activeDbPath);
     } catch (openErr) {
       // Log the exact error so operators can diagnose sql.js version
       // mismatches, file truncation, or actual corruption.
       log.error(`Failed to open database: ${openErr instanceof Error ? openErr.message : String(openErr)}`);
 
       // Move the broken file out of the way
-      const backupPath = `${dbPath}.corrupt.${Date.now()}.bak`;
-      try { fs.renameSync(dbPath, backupPath); } catch { /* best-effort */ }
+      const backupPath = `${activeDbPath}.corrupt.${Date.now()}.bak`;
+      try { fs.renameSync(activeDbPath, backupPath); } catch { /* best-effort */ }
 
       // ── Auto-restore from the most recent backup ──────────────────
       // Look for any .bak files produced by previous corruption events,
       // pre-migration snapshots, or manual backups.  Try each from
       // newest to oldest until one opens successfully.
-      const dataDir = path.dirname(dbPath);
-      const basename = path.basename(dbPath); // e.g. "data.db"
+      const dataDir = path.dirname(activeDbPath);
+      const basename = path.basename(activeDbPath); // e.g. "data.db.enc"
       let restored = false;
       try {
         const candidates = fs.readdirSync(dataDir)
@@ -620,9 +645,11 @@ async function doInitDb(): Promise<DatabaseWrapper> {
         for (const cand of candidates) {
           try {
             const candBuf = fs.readFileSync(path.join(dataDir, cand.name));
-            db = new SQL.Database(candBuf);
+            db = keySet
+              ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(candBuf.toString('hex')))
+              : new SQL.Database(candBuf);
             // Restore the good file back to the primary path
-            fs.copyFileSync(path.join(dataDir, cand.name), dbPath);
+            fs.copyFileSync(path.join(dataDir, cand.name), activeDbPath);
             log.warn(`Restored database from backup: ${cand.name}`);
             restored = true;
             break;

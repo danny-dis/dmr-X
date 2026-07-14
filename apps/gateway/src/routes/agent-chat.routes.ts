@@ -1,7 +1,6 @@
-import type { ToolCall, UnifiedRequest } from '@dmr-x/core';
+import type { Router } from '@dmr-x/router';
 import { agentRegistryService, AgentChatRequestSchema } from '@dmr-x/agent-registry';
 import { agentRuntimeService } from '@dmr-x/agent-runtime';
-import type { Router } from '@dmr-x/router';
 import {
   generateRequestId,
   createInitialState,
@@ -11,7 +10,9 @@ import {
 } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 
-import { executeToolCall } from './tools.routes.js';
+import { writeSSE } from '../lib/sse.js';
+import { executeToolCall, getRegisteredToolDefinitions } from './tools.routes.js';
+import { runAgentChatLoop } from './agent-chat-loop.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,37 +32,7 @@ interface AgentChatBody {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function writeSSE(
-  reply: { raw: { write: (data: string) => void } },
-  event: string,
-  data: unknown,
-): void {
-  reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-function toUnifiedRequest(
-  body: {
-    model: string;
-    messages: any[];
-    tools?: any[];
-    temperature?: number;
-    max_tokens?: number;
-    stream?: boolean;
-  },
-  requestId: string,
-  tenant?: { id: string; name: string },
-): UnifiedRequest {
-  return {
-    modality: 'llm',
-    model: body.model,
-    messages: body.messages,
-    tools: body.tools,
-    temperature: body.temperature,
-    max_tokens: body.max_tokens,
-    stream: body.stream ?? false,
-    metadata: { requestId, tenant },
-  };
-}
+// writeSSE is imported from ../lib/sse.js
 
 // ---------------------------------------------------------------------------
 // Conversation state store (per-agent instance)
@@ -85,18 +56,16 @@ const conversationCleanupTimer = setInterval(() => {
 if (conversationCleanupTimer.unref) conversationCleanupTimer.unref();
 
 // ---------------------------------------------------------------------------
-// Tool filtering: only allow tools in the agent's allowedTools list
-// ---------------------------------------------------------------------------
-
-function filterToolsForAgent(
-  tools: any[] | undefined,
-  allowedTools: string[],
-): any[] | undefined {
-  if (!tools || allowedTools.length === 0) return tools;
-  return tools.filter((tool) => {
-    const name = tool.function?.name ?? tool.name;
-    return allowedTools.includes(name);
-  });
+/**
+ * Build the OpenAI-format `tools` array for a subagent, derived from the
+ * gateway's registered tool definitions and narrowed to the agent's
+ * `allowedTools`. Returns `undefined` when the agent has no allowed tools, so
+ * the model is never handed an empty tool list.
+ */
+function buildAgentTools(allowedTools: string[]): any[] | undefined {
+  if (!allowedTools || allowedTools.length === 0) return undefined;
+  const defs = getRegisteredToolDefinitions(allowedTools);
+  return defs.length > 0 ? defs : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +107,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const systemPrompt = await agentRuntimeService.buildSystemPrompt(context.definition, 0);
     const model = agentRuntimeService.resolveModel(context.definition);
     const agentTools = context.definition.allowedTools;
+    const agentToolDefs = buildAgentTools(agentTools);
 
     // Acquire conversation lock. Key per-conversation (not per-instance) so
     // concurrent external agents can run the same subagent in parallel without
@@ -181,350 +151,61 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         agentConversationTimestamps.set(convId, Date.now());
       }
 
-      const messages = [...conversation.messages] as any[];
-      let lastResponseText = '';
-      let totalTokensUsed = 0;
-      let totalCost = 0;
-      const allSteps: Array<{
-        turn: number;
-        message: any;
-        tool_calls: any[];
-        tool_results: any[];
-      }> = [];
+      const result = await runAgentChatLoop({
+        conversation,
+        maxSteps,
+        model,
+        agentTools,
+        agentToolDefs,
+        body,
+        requestId,
+        tenant,
+        router,
+        context,
+        stream: body.stream === true,
+        onStreamEvent: (event, data) => writeSSE(reply, event, data),
+        buildSystemPrompt: (turn) => agentRuntimeService.buildSystemPrompt(context.definition, turn),
+      });
+
+      // Record execution
+      await agentRuntimeService.recordExecution(
+        context,
+        JSON.stringify(body.messages),
+        result.lastResponseText,
+        result.allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
+        model,
+        result.totalTokensUsed,
+        0,
+        Date.now() - startTime,
+      );
 
       if (body.stream) {
-        // ── Streaming path ──────────────────────────────────────────────
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        });
-
-        writeSSE(reply, 'agent_start', {
-          requestId,
-          agentInstanceId: instanceId,
-          agentName: context.definition.name,
-          model,
-          conversationId: conversation.id,
-        });
-
-        try {
-          for (let turn = 0; turn < maxSteps; turn++) {
-            // Rebuild the system prompt each turn so the skill-capture nudge can
-            // become actionable on hard turn-counter multiples of the interval.
-            messages[0] = { role: 'system', content: await agentRuntimeService.buildSystemPrompt(context.definition, turn) };
-
-            const unifiedRequest = toUnifiedRequest(
-              {
-                model,
-                messages,
-                tools: agentTools.length > 0 ? filterToolsForAgent(undefined, agentTools) : undefined,
-                temperature: body.temperature,
-                max_tokens: body.maxTokens,
-                stream: true,
-              },
-              requestId,
-              tenant,
-            );
-
-            const { response } = await router.route(unifiedRequest, {
-              path: '/v1/agents/chat',
-            });
-
-            const toolCalls = response.message?.tool_calls ?? [];
-            const responseText =
-              typeof response.message?.content === 'string'
-                ? response.message.content
-                : '';
-            lastResponseText = responseText;
-
-            if (response.usage) {
-              totalTokensUsed += response.usage.total_tokens ?? 0;
-              const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
-              totalCost += stepCost;
-            }
-
-            // Stop if cost budget exceeded
-            if (body.max_cost_budget && totalCost >= body.max_cost_budget) {
-              if (response.message) messages.push(response.message);
-              conversation = updateState(conversation, { messages, status: 'completed' });
-              writeSSE(reply, 'budget_exceeded', {
-                conversationId: conversation.id,
-                max_cost_budget: body.max_cost_budget,
-                totalCost,
-              });
-              break;
-            }
-
-            writeSSE(reply, 'turn', {
-              turn,
-              conversationId: conversation.id,
-              message: response.message,
-              model: response.modelId,
-              usage: response.usage,
-              finish_reason: response.finishReason,
-            });
-
-            // Stop if no tool calls or at step limit
-            if (toolCalls.length === 0 || turn === maxSteps - 1) {
-              if (response.message) messages.push(response.message);
-              conversation = updateState(conversation, { messages, status: 'completed' });
-              break;
-            }
-
-            // Filter tool calls against agent's allowedTools
-            const allowedCalls = toolCalls.filter((tc: ToolCall) =>
-              agentTools.length === 0 || agentTools.includes(tc.function.name),
-            );
-            const blockedCalls = toolCalls.filter((tc: ToolCall) =>
-              agentTools.length > 0 && !agentTools.includes(tc.function.name),
-            );
-
-            // Notify about blocked calls
-            if (blockedCalls.length > 0) {
-              writeSSE(reply, 'tool_blocked', {
-                turn,
-                blocked: blockedCalls.map((tc: ToolCall) => ({
-                  name: tc.function.name,
-                  reason: 'Not in agent allowedTools',
-                })),
-              });
-            }
-
-            // Stream tool calls
-            writeSSE(reply, 'tool_calls', {
-              turn,
-              tool_calls: allowedCalls.map((tc: ToolCall) => ({
-                id: tc.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              })),
-            });
-
-            // Execute tool calls
-            const assistantMessage = { ...response.message };
-            messages.push(assistantMessage);
-
-            const executionPromises = allowedCalls.map((tc: ToolCall) =>
-              executeToolCall(tc, { requestId, tenant }),
-            );
-
-            const settled = await Promise.allSettled(executionPromises);
-            const stepResults = settled
-              .filter((s): s is PromiseFulfilledResult<Awaited<ReturnType<typeof executeToolCall>>> => s.status === 'fulfilled')
-              .map((s) => s.value);
-
-            writeSSE(reply, 'tool_results', {
-              turn,
-              results: stepResults,
-            });
-
-            allSteps.push({
-              turn,
-              message: response.message,
-              tool_calls: allowedCalls,
-              tool_results: stepResults,
-            });
-
-            // Add tool results to messages
-            for (const tr of stepResults) {
-              messages.push({
-                role: 'tool',
-                tool_call_id: tr.tool_call_id,
-                content: tr.error
-                  ? JSON.stringify({ error: tr.error.message })
-                  : JSON.stringify(tr.result),
-              });
-            }
-          }
-        } catch (error) {
-          logger.error({ err: error, requestId, instanceId }, 'Agent chat streaming error');
-          writeSSE(reply, 'error', { error: { message: 'Request failed' } });
-        }
-
         writeSSE(reply, 'done', {
           status: 'completed',
           conversationId: conversation.id,
           durationMs: Date.now() - startTime,
-          totalTokensUsed,
-          totalCost,
-          budget_exceeded: !!(body.max_cost_budget && totalCost >= body.max_cost_budget),
+          totalTokensUsed: result.totalTokensUsed,
+          totalCost: result.totalCost,
+          budget_exceeded: result.budgetExceeded,
         });
         reply.raw.end();
-
-        // Record execution
-        await agentRuntimeService.recordExecution(
-          context,
-          JSON.stringify(body.messages),
-          lastResponseText,
-          allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
-          model,
-          totalTokensUsed,
-          0,
-          Date.now() - startTime,
-        );
-
         return reply;
       }
-
-      // ── Non-streaming path ────────────────────────────────────────────
-      for (let turn = 0; turn < maxSteps; turn++) {
-        // Rebuild the system prompt each turn so the skill-capture nudge can
-        // become actionable on hard turn-counter multiples of the interval.
-        messages[0] = { role: 'system', content: await agentRuntimeService.buildSystemPrompt(context.definition, turn) };
-
-        const unifiedRequest = toUnifiedRequest(
-          {
-            model,
-            messages,
-            tools: agentTools.length > 0 ? filterToolsForAgent(undefined, agentTools) : undefined,
-            temperature: body.temperature,
-            max_tokens: body.maxTokens,
-            stream: false,
-          },
-          requestId,
-          tenant,
-        );
-
-        const { response } = await router.route(unifiedRequest, {
-          path: '/v1/agents/chat',
-        });
-
-        const toolCalls = response.message?.tool_calls ?? [];
-        const responseText =
-          typeof response.message?.content === 'string'
-            ? response.message.content
-            : '';
-        lastResponseText = responseText;
-
-        if (response.usage) {
-          totalTokensUsed += response.usage.total_tokens ?? 0;
-          const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
-          totalCost += stepCost;
-        }
-
-        // Stop if cost budget exceeded
-        if (body.max_cost_budget && totalCost >= body.max_cost_budget) {
-          if (response.message) messages.push(response.message);
-          conversation = updateState(conversation, { messages, status: 'completed' });
-
-          await agentRuntimeService.recordExecution(
-            context,
-            JSON.stringify(body.messages),
-            lastResponseText,
-            allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
-            model,
-            totalTokensUsed,
-            0,
-            Date.now() - startTime,
-          );
-
-          return reply.send({
-            id: requestId,
-            agentInstanceId: instanceId,
-            agentName: context.definition.name,
-            content: responseText,
-            model: response.modelId,
-            usage: response.usage,
-            conversationId: conversation.id,
-            steps_completed: turn + 1,
-            all_steps: allSteps,
-            durationMs: Date.now() - startTime,
-            budget_exceeded: true,
-            max_cost_budget: body.max_cost_budget,
-            totalCost,
-          });
-        }
-
-        allSteps.push({ turn, message: response.message, tool_calls: toolCalls, tool_results: [] });
-
-        // Stop if no tool calls or at step limit
-        if (toolCalls.length === 0 || turn === maxSteps - 1) {
-          if (response.message) messages.push(response.message);
-          conversation = updateState(conversation, { messages, status: 'completed' });
-
-          // Record execution
-          await agentRuntimeService.recordExecution(
-            context,
-            JSON.stringify(body.messages),
-            lastResponseText,
-            allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
-            model,
-            totalTokensUsed,
-            0,
-            Date.now() - startTime,
-          );
-
-          return reply.send({
-            id: requestId,
-            agentInstanceId: instanceId,
-            agentName: context.definition.name,
-            content: responseText,
-            model: response.modelId,
-            usage: response.usage,
-            conversationId: conversation.id,
-            steps_completed: turn + 1,
-            all_steps: allSteps,
-            durationMs: Date.now() - startTime,
-          });
-        }
-
-        // Filter tool calls against agent's allowedTools
-        const allowedCalls = toolCalls.filter((tc: ToolCall) =>
-          agentTools.length === 0 || agentTools.includes(tc.function.name),
-        );
-
-        // Execute tool calls
-        const assistantMessage = { ...response.message };
-        messages.push(assistantMessage);
-
-        const executionPromises = allowedCalls.map((tc: ToolCall) =>
-          executeToolCall(tc, { requestId, tenant }),
-        );
-
-        const settled = await Promise.allSettled(executionPromises);
-        const stepResults = settled
-          .filter((s): s is PromiseFulfilledResult<Awaited<ReturnType<typeof executeToolCall>>> => s.status === 'fulfilled')
-          .map((s) => s.value);
-
-        const lastStep = allSteps[allSteps.length - 1];
-        if (lastStep) lastStep.tool_results = stepResults;
-
-        for (const tr of stepResults) {
-          messages.push({
-            role: 'tool',
-            tool_call_id: tr.tool_call_id,
-            content: tr.error
-              ? JSON.stringify({ error: tr.error.message })
-              : JSON.stringify(tr.result),
-          });
-        }
-      }
-
-      // Exhausted all steps
-      conversation = updateState(conversation, { messages, status: 'completed' });
-
-      await agentRuntimeService.recordExecution(
-        context,
-        JSON.stringify(body.messages),
-        lastResponseText,
-        allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
-        model,
-        totalTokensUsed,
-        0,
-        Date.now() - startTime,
-      );
 
       return reply.send({
         id: requestId,
         agentInstanceId: instanceId,
         agentName: context.definition.name,
-        content: 'Agent loop reached maximum steps.',
+        content: result.lastResponseText,
         model,
+        usage: result.finalUsage,
         conversationId: conversation.id,
-        steps_completed: maxSteps,
-        all_steps: allSteps,
+        steps_completed: result.stepsCompleted,
+        all_steps: result.allSteps,
         durationMs: Date.now() - startTime,
+        ...(result.budgetExceeded
+          ? { budget_exceeded: true, max_cost_budget: body.max_cost_budget, totalCost: result.totalCost }
+          : {}),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -551,7 +232,6 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       }
     } finally {
       releaseLock();
-      agentRuntimeService.removeContext(requestId);
     }
   });
 

@@ -15,6 +15,12 @@ import { workersService } from '@dmr-x/workers';
 
 import { createServer } from './server.js';
 
+import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import type { Server as HttpServer } from 'node:http';
+import type { Server as HttpsServer } from 'node:https';
+
 const MIN_ADMIN_API_KEY_LENGTH = 32;
 const DEFAULT_BODY_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;          // 60 s
@@ -152,8 +158,44 @@ async function main(): Promise<void> {
   // Start server
   const { server, runBackgroundInit } = await createServer();
 
+  // Compliance layer: Mutual TLS (mTLS) server bootstrap.
+  // If both a server certificate and key are provided, terminate TLS at the
+  // gateway by passing an https.Server into Fastify's listen(). An optional CA
+  // bundle enables client-certificate verification: when DMRX_TLS_CA is set we
+  // request a client cert; rejectUnauthorized is gated on DMRX_TLS_REQUIRE_CLIENT_CERT
+  // so an operator can log/observe client certs before enforcing them.
+  // When TLS env is absent the gateway behaves exactly as before (plain http).
+  let listenOptions: { port: number; host: string; server?: HttpServer | HttpsServer } = {
+    port,
+    host: '0.0.0.0',
+  };
+  const tlsCert = process.env.DMRX_TLS_CERT;
+  const tlsKey = process.env.DMRX_TLS_KEY;
+  if (tlsCert && tlsKey) {
+    const tlsOptions: https.ServerOptions = {
+      cert: fs.readFileSync(tlsCert),
+      key: fs.readFileSync(tlsKey),
+    };
+    const tlsCa = process.env.DMRX_TLS_CA;
+    if (tlsCa) {
+      tlsOptions.ca = fs.readFileSync(tlsCa);
+      tlsOptions.requestCert = true;
+      // When false, a missing/invalid client cert is NOT rejected — useful for
+      // rolling out mTLS in observe-mode before enforcing it.
+      tlsOptions.rejectUnauthorized = !!process.env.DMRX_TLS_REQUIRE_CLIENT_CERT;
+    }
+    const httpsServer = https.createServer(tlsOptions, server.server as any);
+    listenOptions = { port, host: '0.0.0.0', server: httpsServer };
+    logger.info(
+      { ca: !!tlsCa, requireClientCert: !!process.env.DMRX_TLS_REQUIRE_CLIENT_CERT },
+      'Starting DMR-X Gateway with mutual TLS (HTTPS)',
+    );
+  } else {
+    logger.info('Starting DMR-X Gateway (plain HTTP)');
+  }
+
   try {
-    await server.listen({ port, host: '0.0.0.0' });
+    await server.listen(listenOptions);
     logger.info({ port }, 'DMR-X Gateway running');
   } catch (err) {
     logger.error({ err }, 'Failed to start server');

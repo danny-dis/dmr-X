@@ -2,7 +2,21 @@
 
 > **Counts current as of v0.5.7:** the gateway registers **57+ provider adapters** (older entries referencing "18 adapters" reflect earlier releases) and ships **45 SQL migrations**. The full provider catalog lives in `docs/AI_PROVIDER_REFERENCE.md`.
 
-## v0.5.7 — Current (2026-07-06)
+## v0.5.10 — Current (2026-07-14)
+
+### Features
+- **One-command demo + agent install** — `dmrx` now performs a one-command self-install of the DMR-X gateway and G0DM0D3 agent; the MCP proxy validates input schemas before forwarding.
+- **Agent + tool platform positioning** — docs reflect DMR-X as a unified agent/tool routing platform with a dedicated free-tier routing section.
+- **MCP proxy hardening** — schema passthrough, per-server allowlist, and live hot-reload wiring; deduped shared packages/types.
+
+### Fixes
+- **Provider health checks** — hardened health probes, fixed model-insert SQL, generation probe used for periodic health.
+- **Real adapters wired** — image/rerank routing, streaming fallback, `gitlawb` catalog.
+- **Subagent tool schemas** — real tool schemas now passed into subagent requests (fixes `tools: undefined`).
+- **Security hardening** — data-at-rest encryption, signed audit trail, mTLS + SIEM.
+- Bumped all workspace packages to `0.5.10`; updated the Helm `appVersion`.
+
+## v0.5.7 (2026-07-06)
 
 ### Features
 - **Agent import** — import agents from a GitHub repo, a ZIP archive, or a pasted `.md` file (`POST /v1/agents/import`).

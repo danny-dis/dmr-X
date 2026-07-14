@@ -11,7 +11,8 @@ Universal AI routing, orchestration, and **Model Context Protocol (MCP) platform
 - **Zero External Dependencies** — SQLite via sql.js, no Redis/Postgres required
 - **Single Binary Distribution** — compile to standalone executable for Windows, Linux, macOS
 - **Admin UI** — React/Vite dashboard for providers, models, tenants, keys, policies, quotas, and telemetry
-- **MCP Server** — expose DMR-X routing as MCP tools (stdio, SSE, HTTP transports)
+- **MCP Server** — expose DMR-X routing as MCP tools (stdio, SSE, HTTP transports); also **aggregates external MCP servers** into one tool namespace (`<serverId>__<tool>`) with per-server allowlists + live hot-reload
+- **Agent Platform** — define agents as markdown, install from a marketplace / GitHub / ZIP, run them in an isolated, scheduled, billed, audited runtime, and plug external agents in over MCP with per-client tenant keys
 - **Multi-Tenant** — per-tenant API keys, quotas, policies, and billing tracking
 - **Agentic Workflows** — tool execution, multi-turn tool loops, and agentic chat with approval gates
 
@@ -103,8 +104,7 @@ dmr-x/
 │   ├── gateway/          # Fastify HTTP gateway + static UI host
 │   └── ui/               # React/Vite admin dashboard
 ├── packages/
-│   ├── core/             # Shared types re-export (thin shim over @dmr-x/types)
-│   ├── types/            # Central shared TypeScript contracts (source of truth)
+│   ├── core/             # Shared types (single source of truth)
 │   ├── db/               # SQLite client, cache, and migrations
 │   ├── utils/            # Logging, retries, streams, crypto, errors, tool execution
 │   ├── cli/              # CLI tool (dmrx command)
@@ -172,6 +172,19 @@ Instead of hard-coding a model name, use a **meta-model alias** — DMR-X picks 
 | `auto-coding` | Best model for code generation |
 
 Use them exactly like a model name: `"model": "auto-coding"`.
+
+### Free-Tier Routing
+
+DMR-X has a **dedicated free-tier routing layer** so you can run primarily on $0 providers without hand-picking models. Every model carries `freeTierMetadata` (monthly token budget, rate limits, intelligence/speed rank) that the cost/latency scorer uses to keep free providers in the candidate pool. A free-tier strategy is applied *after* the normal filters, before the final selector:
+
+| Strategy | Behavior |
+|----------|----------|
+| `none` (default) | Ignore free-tier status; select by cost/latency/quality |
+| `prioritize` | Prefer free-tier providers when available |
+| `load_balance` | Distribute load across free-tier providers |
+| `fallback` | Use free-tier first, fall back to paid if unavailable |
+
+Set it globally via the `DMRX_FREE_TIER_STRATEGY` env var, or per-request via the `x-free-tier-strategy` header (e.g. `x-free-tier-strategy: prioritize`). A companion catalog of free-only providers lives in `docs/FREE_API_PROVIDERS_REPORT.md`.
 
 See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and SDK integration guides, and [docs/QUICK-START.md](docs/QUICK-START.md) for the single-API-key setup guide.
 

@@ -1071,6 +1071,25 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 
   {
+    id: 'gitlawb',
+    name: 'GitLawb OpenGateway',
+    category: 'hosting',
+    baseUrl: 'https://opengateway.gitlawb.com/v1',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    models: [
+      { id: 'tencent/hy3:free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general', 'coding'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: '',
+    description: 'Self-hosted OpenGateway (gitlawb) OpenAI-compatible endpoint. Tencent Hunyuan 3 free tier.',
+    region: 'global',
+    signupUrl: 'https://opengateway.gitlawb.com',
+  },
+
+  {
     id: 'github-models',
     name: 'GitHub Models',
     category: 'hosting',

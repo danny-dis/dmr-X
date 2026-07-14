@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/benchmark",
-  "version": "0.5.7",
+  "version": "0.5.10",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

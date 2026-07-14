@@ -1,0 +1,17 @@
+{
+  "mcpEnabled": true,
+  "aggregation": {
+    "enabled": true,
+    "servers": [
+      {
+        "id": "filesystem",
+        "name": "Demo Filesystem",
+        "transport": "stdio",
+        "command": "bun",
+        "args": ["x", "@modelcontextprotocol/server-filesystem", "/demo-data"],
+        "timeoutMs": 30000,
+        "maxRetries": 3
+      }
+    ]
+  }
+}

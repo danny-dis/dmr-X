@@ -178,7 +178,6 @@ export class AgentRegistryService {
       params.push(query.category);
     }
     if (query.tag) {
-      conditions.push("json_each.value = ?");
       // SQLite JSON: use LIKE for tag search
       conditions.push("tags LIKE ?");
       params.push(`%${query.tag}%`);
@@ -188,15 +187,18 @@ export class AgentRegistryService {
       params.push(`%${query.search}%`, `%${query.search}%`);
     }
 
+    const limit = query.limit ?? 20;
+    const page = query.page ?? 1;
+    const offset = (page - 1) * limit;
+
     const where = conditions.join(' AND ');
-    const offset = (query.page - 1) * query.limit;
 
     const countRow = db.prepare(`SELECT COUNT(*) as total FROM agent_definitions WHERE ${where}`).get(...params) as any;
     const total = countRow?.total ?? 0;
 
     const rows = db.prepare(
       `SELECT * FROM agent_definitions WHERE ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`
-    ).all(...params, query.limit, offset) as any[];
+    ).all(...params, limit, offset) as any[];
 
     return {
       items: rows.map((r) => this.rowToDefinition(r)),

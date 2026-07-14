@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
-import { logger } from '@dmr-x/utils';
+import { logger, resolveDataDir } from '@dmr-x/utils';
 
 import { agentRegistryService } from './agent-registry.service.js';
 import { skillService } from './skill.service.js';
@@ -40,7 +39,7 @@ export interface ImportAgentsWithSkillsResult {
  * and falling back to the same location the DB layer uses.
  */
 function getDataDir(): string {
-  return process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
+  return resolveDataDir();
 }
 
 /**

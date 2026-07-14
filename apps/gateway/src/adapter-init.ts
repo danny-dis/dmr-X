@@ -47,7 +47,7 @@ export const PROVIDER_INIT_CONFIG: ProviderInitConfig[] = [
   { id: 'novita', envApiKey: 'NOVITA_API_KEY' },
   { id: 'moonshot', envApiKey: 'MOONSHOT_API_KEY' },
   { id: 'minimax', envApiKey: 'MINIMAX_API_KEY' },
-  { id: 'nvidia_nim', envApiKey: 'NVIDIA_API_KEY' },
+  { id: 'nvidia-nim', envApiKey: 'NVIDIA_API_KEY' },
   { id: 'volcengine', envApiKey: 'VOLCENGINE_API_KEY' },
   { id: 'dashscope', envApiKey: 'DASHSCOPE_API_KEY' },
   { id: 'vllm', requireEnv: 'VLLM_API_BASE', envBaseUrl: 'VLLM_API_BASE' },

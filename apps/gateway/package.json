@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/gateway",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "private": true,
   "type": "module",
   "main": "./dist/main.js",
@@ -35,6 +35,7 @@
     "@dmr-x/registry": "*",
     "@dmr-x/router": "*",
     "@dmr-x/sandbox": "*",
+    "@dmr-x/server-manager": "*",
     "@dmr-x/telemetry": "*",
     "@dmr-x/tokenizers": "*",
     "@dmr-x/utils": "*",

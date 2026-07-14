@@ -30,6 +30,8 @@ import { watchFile, readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
+import { initDb } from '@dmr-x/db';
+import { registryService, autoRegisterProviders } from '@dmr-x/registry';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { setLastRequestHeaders } from './tenant-key.js';
@@ -42,6 +44,7 @@ import {
   type McpConfigFile,
 } from './config.js';
 import { createDMRXMcpServer, reconcileExternalTools, type DMRXMcpServerConfig } from './server.js';
+import { reconcileAggregationServers } from './aggregation-reconcile.js';
 
 // Re-export for programmatic use
 export { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
@@ -879,6 +882,31 @@ async function main(): Promise<void> {
     console.log(`Telemetry started — metrics at http://127.0.0.1:${tc.metricsPort}${tc.metricsPath}`);
   } catch (err) {
     console.error('Failed to start telemetry (continuing without):', err);
+  }
+
+  // Initialize the DB (isolated DMRX_DATA_DIR so we don't contend with the
+  // gateway's encrypted DB file lock). This populates the router's candidate
+  // pool and enables DB-backed tools (image generation, policy, context).
+  try {
+    await initDb();
+    console.log('Database initialized for MCP server.');
+    // Seed providers from the local catalog + .env keys into our own DB, then
+    // load the routing candidate pool so the Router can actually route.
+    try {
+      const registered = await autoRegisterProviders();
+      console.log(`Auto-registered ${registered.length} providers for MCP server.`);
+    } catch (regErr) {
+      console.error('Provider auto-register failed (candidates may be empty):', regErr);
+    }
+    try {
+      const candidates = await registryService.getCandidates();
+      mcpConfig.candidates = candidates;
+      console.log(`Loaded ${candidates.length} routing candidates for MCP server.`);
+    } catch (candErr) {
+      console.error('Failed to load routing candidates (routing tools unavailable):', candErr);
+    }
+  } catch (err) {
+    console.error('Failed to initialize database (DB-backed tools unavailable):', err);
   }
 
   if (transport !== 'stdio' && MCP_API_KEYS.length === 0) {

@@ -1,6 +1,6 @@
 {
   "name": "dmr-x",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "private": true,
   "type": "module",
   "description": "Universal AI routing and orchestration platform",
@@ -8,8 +8,7 @@
   "workspaces": [
     "apps/*",
     "services/*",
-    "packages/*",
-    "packages/types"
+    "packages/*"
   ],
   "scripts": {
     "dev": "bun run clean:src && turbo dev",

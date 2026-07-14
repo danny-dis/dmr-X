@@ -4,7 +4,8 @@
  * Exposes DMR-X routing capabilities as MCP tools.
  * Transport-agnostic: works with stdio, SSE, and Streamable HTTP transports.
  */
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, PollinationsImageAdapter } from '@dmr-x/adapters';
+import { initializeAdapters } from './adapter-init.js';
 import { ReplicateAdapter, StabilityAdapter } from '@dmr-x/adapters';
 import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter, ComfyUIAdapter } from '@dmr-x/adapters';
@@ -18,18 +19,27 @@ import type {
   ProviderModel,
 } from '@dmr-x/core';
 import { resolveProviderSlug } from '@dmr-x/core';
-import { MCPClient } from '@dmr-x/mcp-client';
+import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
 import { HybridSearchEngine, type ToolDocument } from '@dmr-x/tool-search';
 import { getRBACEngine, type RBACConfig, type Principal } from '@dmr-x/policy';
 import { InputValidator, type InputValidatorConfig } from './guardrails/input-validator.js';
+import { validateJsonSchema } from './guardrails/json-schema-validate.js';
 import { GuardrailsEngine } from './guardrails/filter-engine.js';
 import { ToolInvocationPolicyEngine, getToolInvocationPolicyEngine } from './policies/tool-invocation-policy.js';
 import { ToolTemplatesService, getToolTemplatesService } from './templates/tool-templates.js';
 import type { AgentCardConfig } from './a2a/agent-card.js';
 import type { FederationConfig } from './federation/manager.js';
 import { logger } from '@dmr-x/utils';
-import { persistentContextStore } from '@dmr-x/db';
+import { persistentContextStore, initDb, getDb } from '@dmr-x/db';
+
+// Ensure the shared DB is initialized in this module's @dmr-x/db instance.
+// (The entry point also calls initDb, but under bun the entry and this module
+// can resolve @dmr-x/db to separate instances, so we initialize defensively.)
+void initDb().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error('[mcp-server] DB init (deferred) failed:', err);
+});
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
@@ -273,6 +283,9 @@ function buildAdapterRegistry(): AdapterRegistry {
   registry.register(new FalAdapter());
   registry.register(new VeoAdapter());
   registry.register(new RunwayAdapter());
+  registry.register(new PollinationsImageAdapter());
+  // Provider adapters (keyed by provider UUID) are registered + initialized on
+  // first use via initializeAdapters() inside initAdapters().
   return registry;
 }
 
@@ -660,6 +673,35 @@ function createExternalToolProxyHandler(
       );
     }
 
+    // Validate args against the upstream tool's JSON Schema before forwarding
+    // (MCP.md #1 follow-up): reject malformed args client-side instead of
+    // letting the upstream fail opaque. Schema lookup is best-effort — if the
+    // registry/tool can't be found, fall through to upstream validation.
+    try {
+      const connected = state.externalMcpClient?.getRegistry().get(serverId);
+      const upstreamSchema = connected?.tools.find((t) => t.name === toolName)?.inputSchema;
+      if (upstreamSchema && typeof upstreamSchema === 'object') {
+        const result = validateJsonSchema(args, upstreamSchema as any);
+        if (!result.valid) {
+          state.lastError = `Invalid arguments for ${namespacedName}: ${result.errors.join('; ')}`;
+          logAuditEvent(state, 'input_validation.deny', namespacedName, {
+            requestId: `external-${serverId}-${toolName}`,
+            errors: result.errors,
+            serverId,
+            upstreamTool: toolName,
+          });
+          return toolError(
+            state.lastError,
+            'INPUT_SCHEMA_INVALID',
+            `external-${serverId}-${toolName}`,
+            'Fix the tool arguments to match the upstream inputSchema, then retry.'
+          );
+        }
+      }
+    } catch {
+      // Schema validation is a best-effort guard; never block on its failure
+    }
+
     // Run input validation for injection detection
     if (state.guardrailsEnabled) {
       const validationResult = state.inputValidator.validateInput(JSON.stringify(args));
@@ -747,15 +789,21 @@ function registerServerToolsOnMcpServer(
 
   for (const tool of connected.tools) {
     const namespacedName = `${serverId}__${tool.name}`;
+    // Global filter (env/legacy) AND per-server opt-in allowlist (MCP.md #3)
     if (!isToolAllowed(namespacedName, allowedTools)) continue;
+    if (!isServerToolAllowed(connected.config, tool.name)) continue;
 
     const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
-    const passthroughSchema = {
-      args: z.record(z.unknown()).optional().describe(
-        `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
-      ),
-    };
+    // Pass upstream inputSchema through verbatim (MCP.md #1). Fall back to the
+    // args-wrapper only when the upstream omits a schema.
+    const passthroughSchema = tool.inputSchema
+      ? { args: z.record(z.unknown()).optional().describe(
+          `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+        ) }
+      : { args: z.record(z.unknown()).optional().describe(
+          `Tool arguments (passed through to ${serverId}/${tool.name}; upstream exposes no inputSchema)`
+        ) };
 
     const registered = server.tool(
       namespacedName,
@@ -851,14 +899,15 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
 
     for (const tool of connected.tools) {
       const namespacedName = `${serverId}__${tool.name}`;
-      if (!isToolAllowed(namespacedName, allowedTools)) {
-        continue;
-      }
+      if (!isToolAllowed(namespacedName, allowedTools)) continue;
+      if (!isServerToolAllowed(connected.config, tool.name)) continue;
       const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
       const passthroughSchema = {
         args: z.record(z.unknown()).optional().describe(
-          `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+          tool.inputSchema
+            ? `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+            : `Tool arguments (passed through to ${serverId}/${tool.name}; upstream exposes no inputSchema)`
         ),
       };
 
@@ -903,6 +952,20 @@ function globToRegex(glob: string): RegExp {
     }
   }
   return new RegExp(`^${regexStr}$`);
+}
+
+/**
+ * Per-server opt-in allowlist gate (MCP.md Limitation #3).
+ * Returns true when the server has no `allowedTools` (open/default) or the
+ * upstream tool name is present in it. Used at aggregated-tool dispatch so a
+ * tool outside the allowlist is rejected without being forwarded upstream.
+ */
+export function isServerToolAllowed(
+  serverConfig: MCPServerConfig | undefined,
+  toolName: string
+): boolean {
+  const allow = serverConfig?.allowedTools;
+  return !allow || allow.includes(toolName);
 }
 
 /**
@@ -1081,6 +1144,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   let adaptersInitialized = false;
   const initAdapters = async () => {
     if (adaptersInitialized) return;
+    // Register + initialize provider adapters keyed by provider UUID from .env
+    // (mirrors the gateway). Must run before any routed request resolves a
+    // candidate's providerId to an adapter.
+    try {
+      await initializeAdapters(adapterRegistry);
+    } catch (envInitErr) {
+      logger.warn({ err: envInitErr }, 'Env-based adapter init failed (some providers unavailable)');
+    }
     for (const [providerId, cfg] of Object.entries(adapterConfigs)) {
       try {
         await adapterRegistry.initialize(providerId, cfg);
@@ -1167,7 +1238,22 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // Wire up adapter executor for fallback
   router.setAdapterExecutor({
     async execute(providerId: string, modelId: string, request: UnifiedRequest) {
-      const adapter = adapterRegistry.get(providerId);
+      // Resolve the provider UUID to its registered adapter. The router's
+      // candidates carry provider UUIDs, but adapters are registered by their
+      // adapter_type / catalog id (e.g. "cohere"). Mirror the gateway's
+      // getAdapter: try the raw id, then fall back to providers.name.
+      let adapter = adapterRegistry.get(providerId);
+      if (!adapter) {
+        try {
+          const db = getDb();
+          const row = db.prepare('SELECT name FROM providers WHERE id = ?').get(providerId) as
+            | { name: string }
+            | undefined;
+          if (row) adapter = adapterRegistry.get(row.name);
+        } catch {
+          /* DB lookup best-effort */
+        }
+      }
       if (!adapter) {
         throw new Error(`Adapter not found: ${providerId}`);
       }
@@ -1347,6 +1433,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE }, 'routing');
 
         const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
+        // Pin diffusion to the dedicated pollinations-image provider. The router
+        // honors a `providerName/modelId` model prefix (scopes candidates to that
+        // provider), and the generic 'pollinations' text adapter rejects the
+        // diffusion modality — so without this pin it throws
+        // "Unsupported modality: diffusion". The PollinationsImageAdapter
+        // (providerName 'pollinations-images') handles diffusion + returns a URL.
+        const imageModel = (params.model as string) || 'flux';
+        request.model = `pollinations-images/${imageModel}`;
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['diffusion'],
           qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
@@ -1603,6 +1697,16 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         }, 'routing');
 
         const structured = JSON.parse(formatted);
+        // The Cohere rerank adapter doesn't always echo the document text back,
+        // so fall back to the caller's input documents (indexed by result.index)
+        // to satisfy the output schema's required `document` field.
+        const inputDocs = (params.documents as string[] | undefined) || [];
+        if (Array.isArray((structured as any).results)) {
+          (structured as any).results = (structured as any).results.map((r: any) => ({
+            ...r,
+            document: r.document ?? inputDocs[r.index] ?? '',
+          }));
+        }
         return {
           content: [{
             type: 'text' as const,
