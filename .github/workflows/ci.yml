@@ -76,7 +76,7 @@ jobs:
         # `mcp` workspace project runs them with coverage off and a small
         # heap to avoid OOMing the ~7GB CI runner.
         run: |
-          bun vitest run --project mcp --coverage.enabled=false
+          bun vitest run --workspace vitest.mcp.workspace.ts --project mcp --coverage.enabled=false
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
