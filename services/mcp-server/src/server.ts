@@ -24,6 +24,7 @@ import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
 import { HybridSearchEngine, type ToolDocument } from '@dmr-x/tool-search';
 import { getRBACEngine, type RBACConfig, type Principal } from '@dmr-x/policy';
 import { InputValidator, type InputValidatorConfig } from './guardrails/input-validator.js';
+import { validateJsonSchema } from './guardrails/json-schema-validate.js';
 import { GuardrailsEngine } from './guardrails/filter-engine.js';
 import { ToolInvocationPolicyEngine, getToolInvocationPolicyEngine } from './policies/tool-invocation-policy.js';
 import { ToolTemplatesService, getToolTemplatesService } from './templates/tool-templates.js';
@@ -670,6 +671,35 @@ function createExternalToolProxyHandler(
         'INPUT_TOO_LARGE',
         `external-${serverId}-${toolName}`
       );
+    }
+
+    // Validate args against the upstream tool's JSON Schema before forwarding
+    // (MCP.md #1 follow-up): reject malformed args client-side instead of
+    // letting the upstream fail opaque. Schema lookup is best-effort — if the
+    // registry/tool can't be found, fall through to upstream validation.
+    try {
+      const connected = state.externalMcpClient?.getRegistry().get(serverId);
+      const upstreamSchema = connected?.tools.find((t) => t.name === toolName)?.inputSchema;
+      if (upstreamSchema && typeof upstreamSchema === 'object') {
+        const result = validateJsonSchema(args, upstreamSchema as any);
+        if (!result.valid) {
+          state.lastError = `Invalid arguments for ${namespacedName}: ${result.errors.join('; ')}`;
+          logAuditEvent(state, 'input_validation.deny', namespacedName, {
+            requestId: `external-${serverId}-${toolName}`,
+            errors: result.errors,
+            serverId,
+            upstreamTool: toolName,
+          });
+          return toolError(
+            state.lastError,
+            'INPUT_SCHEMA_INVALID',
+            `external-${serverId}-${toolName}`,
+            'Fix the tool arguments to match the upstream inputSchema, then retry.'
+          );
+        }
+      }
+    } catch {
+      // Schema validation is a best-effort guard; never block on its failure
     }
 
     // Run input validation for injection detection

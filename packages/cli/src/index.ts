@@ -19,6 +19,7 @@ import chalk from 'chalk';
 import { Command } from 'commander';
 
 import { createAddProviderCommand } from './commands/add-provider.js';
+import { createAgentInstallCommand } from './commands/agent-install.js';
 import { createFreeProvidersCommand } from './commands/free-providers.js';
 import { createInitCommand } from './commands/init.js';
 import { createListProvidersCommand } from './commands/list-providers.js';
@@ -49,6 +50,7 @@ program.addCommand(createStatusCommand());
 program.addCommand(createTestCommand());
 program.addCommand(createSetupCommand());
 program.addCommand(createOffCommand());
+program.addCommand(createAgentInstallCommand());
 
 // Custom help
 program.addHelpText('after', () => {
