@@ -43,8 +43,6 @@ export interface AgentChatOptions {
 // ---------------------------------------------------------------------------
 
 export class AgentRuntimeService {
-  private activeContexts = new Map<string, AgentExecutionContext>();
-
   /**
    * Load an agent execution context from a deployed instance.
    */
@@ -57,18 +55,13 @@ export class AgentRuntimeService {
     const definition = await agentRegistryService.getDefinition(instance.agentDefinitionId);
     if (!definition) return null;
 
-    const requestId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    const context: AgentExecutionContext = {
+    return {
       instanceId,
       definition,
       instance,
-      requestId,
+      requestId: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       tenantId,
     };
-
-    this.activeContexts.set(requestId, context);
-    return context;
   }
 
   /**
@@ -208,18 +201,6 @@ export class AgentRuntimeService {
   }
 
   /**
-   * Get available tools for this agent based on its allowed tools list.
-   */
-  getAvailableTools(definition: AgentDefinition): Array<{ name: string; description: string }> {
-    // For now, return the allowed tool names as-is
-    // In the future, this could filter from the MCP server's tool registry
-    return definition.allowedTools.map((name) => ({
-      name,
-      description: `Tool: ${name}`,
-    }));
-  }
-
-  /**
    * Record an execution result for tracking and billing.
    * Calculates actual cost from model pricing via the billing service.
    */
@@ -295,19 +276,6 @@ export class AgentRuntimeService {
     return model;
   }
 
-  /**
-   * Get the execution context by request ID.
-   */
-  getContext(requestId: string): AgentExecutionContext | undefined {
-    return this.activeContexts.get(requestId);
-  }
-
-  /**
-   * Remove an execution context.
-   */
-  removeContext(requestId: string): void {
-    this.activeContexts.delete(requestId);
-  }
 }
 
 export const agentRuntimeService = new AgentRuntimeService();

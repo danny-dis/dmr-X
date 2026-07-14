@@ -12,6 +12,7 @@ import {
   type StepResult,
   type ConversationState,
 } from '@dmr-x/utils';
+import { writeSSE } from '../lib/sse.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -94,10 +95,68 @@ const conversationCleanupTimer = setInterval(() => {
     if (now - ts > CONVERSATION_TTL_MS) {
       conversations.delete(id);
       conversationTimestamps.delete(id);
+      toolNarrowCache.delete(id);
     }
   }
 }, 60_000);
 if (conversationCleanupTimer.unref) conversationCleanupTimer.unref();
+
+// ---------------------------------------------------------------------------
+// Loop tuning (env-overridable)
+// ---------------------------------------------------------------------------
+
+// Per-turn model-call timeout. Provider hiccups (NIM 120s timeouts, etc.) must
+// not hang the whole run; abort the single turn and surface a recoverable error.
+const TURN_TIMEOUT_MS = Number(process.env.DMRX_AGENTIC_TURN_TIMEOUT_MS) || 120_000;
+// Max consecutive tool-call errors (model calls a bad/missing tool repeatedly)
+// before the loop bails with a signal instead of burning all max_steps.
+const MAX_CONSECUTIVE_ERRORS = Number(process.env.DMRX_AGENTIC_MAX_CONSECUTIVE_ERRORS) || 5;
+
+// Per-conversation narrowed tool set from needlePreFilter. The model's relevant
+// tools rarely change mid-conversation, so cache the first narrowing to avoid a
+// localhost:8011 round-trip every turn. Cleared on conversation eviction above.
+const toolNarrowCache = new Map<string, { tools: any[]; ts: number }>();
+const TOOL_NARROW_TTL_MS = 10 * 60 * 1000;
+
+/** Latest user message content — evolves as the conversation does, unlike the
+ * first message the old code used. */
+function lastUserText(messages: any[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return (messages[i].content ?? '') as string;
+  }
+  return '';
+}
+
+/** Resolve the tool list for a turn: cached narrowed set, else full set. */
+function resolveTools(
+  convId: string,
+  fullTools: any[] | undefined,
+  queryText: string,
+): any[] | undefined {
+  if (!fullTools) return undefined;
+  if (fullTools.length <= 8) return fullTools; // narrow only when there's a lot
+  const cached = toolNarrowCache.get(convId);
+  if (cached && Date.now() - cached.ts < TOOL_NARROW_TTL_MS) return cached.tools;
+  return fullTools; // caller narrows via needlePreFilter and writes back to cache
+}
+
+/** Run router.route with a per-turn timeout. Throws on timeout / transport error. */
+async function routeWithTimeout(
+  router: Router,
+  unifiedRequest: UnifiedRequest,
+  qualityTarget: ReturnType<typeof parseQualityTarget>,
+): Promise<{ response: any }> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TURN_TIMEOUT_MS);
+  try {
+    return await router.route(
+      { ...unifiedRequest, signal: ac.signal } as UnifiedRequest,
+      { path: '/v1/agentic/chat', qualityTarget },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helper: convert to UnifiedRequest
@@ -136,12 +195,8 @@ function toUnifiedRequest(
 }
 
 // ---------------------------------------------------------------------------
-// Helper: write SSE event
+// Helper: write SSE event (imported from ../lib/sse.js)
 // ---------------------------------------------------------------------------
-
-function writeSSE(reply: { raw: { write: (data: string) => void } }, event: string, data: unknown): void {
-  reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
 
 // ---------------------------------------------------------------------------
 // Stop condition evaluation (uses SDK composable stop conditions)
@@ -342,6 +397,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
       // Register abort controller for this conversation
       const abortController = new AbortController();
       conversationAbortControllers.set(convId, abortController);
+      let consecutiveErrors = 0;
 
       // Streaming response
       reply.raw.writeHead(200, {
@@ -362,7 +418,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             {
               model: body.model,
               messages,
-              tools: body.tools,
+              tools: resolveTools(convId, body.tools, lastUserText(messages)),
               tool_choice: body.tool_choice,
               temperature: body.temperature,
               max_tokens: body.max_tokens,
@@ -375,18 +431,32 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             tenant,
           );
 
-          const queryText = (body.messages.find((m: any) => m.role === 'user')?.content ?? '') as string;
-          if (body.tools && body.tools.length > 8) {
+          const queryText = lastUserText(messages);
+          if (body.tools && body.tools.length > 8 && !toolNarrowCache.has(convId)) {
             const narrowed = await needlePreFilter(body.tools, queryText);
             if (narrowed && narrowed.length > 0) {
               body.tools = narrowed;
+              toolNarrowCache.set(convId, { tools: narrowed, ts: Date.now() });
             }
           }
 
-          const { response } = await router.route(unifiedRequest, {
-            path: '/v1/agentic/chat',
-            qualityTarget,
-          });
+          let response: any;
+          try {
+            ({ response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
+          } catch (err) {
+            consecutiveErrors++;
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              writeSSE(reply, 'error', {
+                error: { message: 'Agentic loop aborted: too many consecutive failed turns' },
+              });
+              break;
+            }
+            writeSSE(reply, 'error', {
+              error: { message: 'Turn failed, retrying', detail: err instanceof Error ? err.message : String(err) },
+            });
+            continue;
+          }
+          consecutiveErrors = 0;
 
           const toolCalls = response.message?.tool_calls ?? [];
           const responseText =
@@ -550,6 +620,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     let nonStreamingLastResponseText = '';
     let nonStreamingTotalTokens = 0;
     let nonStreamingTotalCost = 0;
+    let nonStreamingConsecutiveErrors = 0;
     const nonStreamingStopConditions = buildStopConditions(
       stopConditions,
       () => nonStreamingLastResponseText,
@@ -558,11 +629,12 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     );
 
     for (let turn = 0; turn < maxSteps; turn++) {
-        const queryText = (body.messages.find((m: any) => m.role === 'user')?.content ?? '') as string;
-        if (body.tools && body.tools.length > 8) {
+        const queryText = lastUserText(messages);
+        if (body.tools && body.tools.length > 8 && !toolNarrowCache.has(convId)) {
           const narrowed = await needlePreFilter(body.tools, queryText);
           if (narrowed && narrowed.length > 0) {
             body.tools = narrowed;
+            toolNarrowCache.set(convId, { tools: narrowed, ts: Date.now() });
           }
         }
 
@@ -570,7 +642,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           {
             model: body.model,
             messages,
-            tools: body.tools,
+            tools: resolveTools(convId, body.tools, queryText),
             tool_choice: body.tool_choice,
             temperature: body.temperature,
             max_tokens: body.max_tokens,
@@ -583,10 +655,33 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           tenant,
         );
 
-        const { response } = await router.route(unifiedRequest, {
-          path: '/v1/agentic/chat',
-          qualityTarget,
-        });
+        let response: any;
+        try {
+          ({ response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
+        } catch (err) {
+          nonStreamingConsecutiveErrors++;
+          if (nonStreamingConsecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            return {
+              id: requestId,
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: body.model,
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: 'Agentic loop aborted: too many consecutive failed turns.' },
+                  finish_reason: 'stop',
+                },
+              ],
+              conversationId: conversation.id,
+              steps_completed: turn + 1,
+              all_steps: allSteps,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+          continue;
+        }
+        nonStreamingConsecutiveErrors = 0;
 
         const toolCalls = response.message?.tool_calls ?? [];
         const responseText =

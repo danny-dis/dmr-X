@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveDataDir } from '@dmr-x/utils';
 
 // ---------------------------------------------------------------------------
 // Append-only, tamper-evident DATA-ACCESS AUDIT TRAIL
@@ -54,14 +54,10 @@ export interface VerifyResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the directory the audit log lives in. Mirrors how the gateway
- * resolves its `.dmrx-data` base dir: prefer `DMRX_DATA_DIR`, otherwise fall
- * back to a tmp dir so the module is usable in tests / dev.
+ * Resolve the directory the audit log lives in. Uses the shared
+ * `resolveDataDir()` from @dmr-x/utils so every service reads/writes the same
+ * location when DMRX_DATA_DIR is unset.
  */
-function resolveDataDir(): string {
-  return process.env.DMRX_DATA_DIR || path.join(os.tmpdir(), 'dmrx-data');
-}
-
 function auditLogPath(): string {
   return path.join(resolveDataDir(), AUDIT_LOG_FILENAME);
 }

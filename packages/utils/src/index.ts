@@ -28,6 +28,7 @@ export {
   type AfterErrorContext,
 } from './http-hooks.js';
 export { isConnectionError, isTimeoutError, isAbortError } from './error-classifiers.js';
+export { resolveDataDir } from './paths.js';
 export {
   // FP monad types
   OK,

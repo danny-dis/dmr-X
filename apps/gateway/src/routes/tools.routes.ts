@@ -12,6 +12,7 @@ import {
   type ParsedToolCall,
   logger,
 } from '@dmr-x/utils';
+import { writeSSE } from '../lib/sse.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -113,12 +114,24 @@ function getRegisteredSDKTools(): SDKTool[] {
   return tools;
 }
 
+// ponytail: lazily cache the SDK tools array; rebuild only when a handler is
+// added (toolHandlers.size changes). No invalidation needed while tools are
+// only ever added at boot — add a content hash if tools can be removed/replaced.
+let _sdkTools: SDKTool[] | null = null;
+let _sdkToolsLen = -1;
+function getRegisteredSDKToolsCached(): SDKTool[] {
+  if (_sdkTools && toolHandlers.size === _sdkToolsLen) return _sdkTools;
+  _sdkTools = getRegisteredSDKTools();
+  _sdkToolsLen = toolHandlers.size;
+  return _sdkTools;
+}
+
 /** Execute a tool call using the SDK executor with fallback to direct handler lookup */
 async function executeToolCall(
   tc: ToolCall,
   context: { requestId: string; tenant?: { id: string; name: string } },
 ): Promise<{ tool_call_id: string; tool_name: string; result: unknown; error?: { message: string } }> {
-  const tools = getRegisteredSDKTools();
+  const tools = getRegisteredSDKToolsCached();
   const parsedCall: ParsedToolCall = {
     id: tc.id,
     name: tc.function.name,
@@ -1122,14 +1135,6 @@ function toUnifiedRequest(
     stream: body.stream ?? false,
     metadata: { requestId, tenant },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Helper: write SSE event to reply.raw
-// ---------------------------------------------------------------------------
-
-function writeSSE(reply: { raw: { write: (data: string) => void } }, event: string, data: unknown): void {
-  reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 // ---------------------------------------------------------------------------
