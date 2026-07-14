@@ -26,7 +26,7 @@
     },
     "apps/gateway": {
       "name": "@dmr-x/gateway",
-      "version": "0.5.7",
+      "version": "0.5.9",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/agent-registry": "*",
@@ -126,7 +126,7 @@
     },
     "packages/cli": {
       "name": "@dmr-x/cli",
-      "version": "0.5.7",
+      "version": "0.5.9",
       "bin": {
         "dmrx": "./dist/index.js",
       },
@@ -199,10 +199,6 @@
       "devDependencies": {
         "typescript": "5.9.3",
       },
-    },
-    "packages/types": {
-      "name": "@dmr-x/types",
-      "version": "0.5.7",
     },
     "packages/utils": {
       "name": "@dmr-x/utils",
@@ -344,6 +340,7 @@
         "@dmr-x/db": "*",
         "@dmr-x/mcp-client": "*",
         "@dmr-x/policy": "*",
+        "@dmr-x/registry": "*",
         "@dmr-x/router": "*",
         "@dmr-x/telemetry": "*",
         "@dmr-x/tool-search": "*",
@@ -650,8 +647,6 @@
     "@dmr-x/tokenizers": ["@dmr-x/tokenizers@workspace:packages/tokenizers"],
 
     "@dmr-x/tool-search": ["@dmr-x/tool-search@workspace:services/tool-search"],
-
-    "@dmr-x/types": ["@dmr-x/types@workspace:packages/types"],
 
     "@dmr-x/ui": ["@dmr-x/ui@workspace:apps/ui"],
 

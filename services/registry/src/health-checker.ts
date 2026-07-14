@@ -153,13 +153,30 @@ export class HealthChecker {
   private updateProviderHealth(providerId: string, isHealthy: boolean): void {
     try {
       const db = getDb();
-      db.prepare(`
-        UPDATE providers
-        SET is_healthy = ?,
-            consecutive_failures = ?,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(isHealthy ? 1 : 0, isHealthy ? 0 : (this.failureCounts.get(providerId) ?? 0), providerId);
+      if (isHealthy) {
+        // Recovery: persist healthy state so the DB-backed candidate pool
+        // (registry getCandidates() filters is_healthy=1) reflects reachability.
+        db.prepare(`
+          UPDATE providers
+          SET is_healthy = 1,
+              consecutive_failures = 0,
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(providerId);
+      } else {
+        // Failure: persist unhealthy so the DB-backed candidate pool
+        // (registry getCandidates() filters is_healthy=1) stops routing to
+        // genuinely-broken providers. The in-memory circuit breaker + periodic
+        // health re-checks self-heal transient failures (e.g. rate-limit 429s)
+        // by flipping is_healthy back to 1 on recovery.
+        db.prepare(`
+          UPDATE providers
+          SET is_healthy = 0,
+              consecutive_failures = consecutive_failures + 1,
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(providerId);
+      }
     } catch (err) {
       logger.warn({ err, providerId }, 'Failed to update provider health');
     }

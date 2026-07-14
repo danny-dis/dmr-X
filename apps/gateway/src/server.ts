@@ -403,7 +403,18 @@ export async function createServer() {
         const adapter = adapterRegistry.peek(id);
         if (adapter) {
           healthChecker.startProviderCheck(id, async () => {
+            // Use the generation-capability probe (not the boot-time
+            // healthCheck()) for the periodic check. healthCheck() only hits
+            // the /models endpoint and THROWS on any non-200 (404 model
+            // removed, 429 rate-limit, 5xx, network blip). A single transient
+            // 404 would be caught and flip is_healthy=0, poisoning the DB and
+            // excluding the provider from getCandidates() forever. The
+            // generation probe correctly treats only 401/403 (revoked key) as
+            // unhealthy and tolerates 404/429/5xx as "reachable".
             try {
+              if (typeof (adapter as any).checkGenerationCapability === 'function') {
+                return await (adapter as any).checkGenerationCapability();
+              }
               const result = await adapter.healthCheck();
               return result.healthy;
             } catch {
