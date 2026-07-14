@@ -103,8 +103,7 @@ dmr-x/
 │   ├── gateway/          # Fastify HTTP gateway + static UI host
 │   └── ui/               # React/Vite admin dashboard
 ├── packages/
-│   ├── core/             # Shared types re-export (thin shim over @dmr-x/types)
-│   ├── types/            # Central shared TypeScript contracts (source of truth)
+│   ├── core/             # Shared types (single source of truth)
 │   ├── db/               # SQLite client, cache, and migrations
 │   ├── utils/            # Logging, retries, streams, crypto, errors, tool execution
 │   ├── cli/              # CLI tool (dmrx command)

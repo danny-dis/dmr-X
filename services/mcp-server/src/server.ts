@@ -19,7 +19,7 @@ import type {
   ProviderModel,
 } from '@dmr-x/core';
 import { resolveProviderSlug } from '@dmr-x/core';
-import { MCPClient } from '@dmr-x/mcp-client';
+import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
 import { HybridSearchEngine, type ToolDocument } from '@dmr-x/tool-search';
 import { getRBACEngine, type RBACConfig, type Principal } from '@dmr-x/policy';
@@ -759,15 +759,21 @@ function registerServerToolsOnMcpServer(
 
   for (const tool of connected.tools) {
     const namespacedName = `${serverId}__${tool.name}`;
+    // Global filter (env/legacy) AND per-server opt-in allowlist (MCP.md #3)
     if (!isToolAllowed(namespacedName, allowedTools)) continue;
+    if (!isServerToolAllowed(connected.config, tool.name)) continue;
 
     const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
-    const passthroughSchema = {
-      args: z.record(z.unknown()).optional().describe(
-        `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
-      ),
-    };
+    // Pass upstream inputSchema through verbatim (MCP.md #1). Fall back to the
+    // args-wrapper only when the upstream omits a schema.
+    const passthroughSchema = tool.inputSchema
+      ? { args: z.record(z.unknown()).optional().describe(
+          `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+        ) }
+      : { args: z.record(z.unknown()).optional().describe(
+          `Tool arguments (passed through to ${serverId}/${tool.name}; upstream exposes no inputSchema)`
+        ) };
 
     const registered = server.tool(
       namespacedName,
@@ -863,14 +869,15 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
 
     for (const tool of connected.tools) {
       const namespacedName = `${serverId}__${tool.name}`;
-      if (!isToolAllowed(namespacedName, allowedTools)) {
-        continue;
-      }
+      if (!isToolAllowed(namespacedName, allowedTools)) continue;
+      if (!isServerToolAllowed(connected.config, tool.name)) continue;
       const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
       const passthroughSchema = {
         args: z.record(z.unknown()).optional().describe(
-          `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+          tool.inputSchema
+            ? `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
+            : `Tool arguments (passed through to ${serverId}/${tool.name}; upstream exposes no inputSchema)`
         ),
       };
 
@@ -915,6 +922,20 @@ function globToRegex(glob: string): RegExp {
     }
   }
   return new RegExp(`^${regexStr}$`);
+}
+
+/**
+ * Per-server opt-in allowlist gate (MCP.md Limitation #3).
+ * Returns true when the server has no `allowedTools` (open/default) or the
+ * upstream tool name is present in it. Used at aggregated-tool dispatch so a
+ * tool outside the allowlist is rejected without being forwarded upstream.
+ */
+export function isServerToolAllowed(
+  serverConfig: MCPServerConfig | undefined,
+  toolName: string
+): boolean {
+  const allow = serverConfig?.allowedTools;
+  return !allow || allow.includes(toolName);
 }
 
 /**

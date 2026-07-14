@@ -44,6 +44,7 @@ import {
   type McpConfigFile,
 } from './config.js';
 import { createDMRXMcpServer, reconcileExternalTools, type DMRXMcpServerConfig } from './server.js';
+import { reconcileAggregationServers } from './aggregation-reconcile.js';
 
 // Re-export for programmatic use
 export { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';

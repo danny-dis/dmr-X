@@ -301,7 +301,7 @@ For example, a GitHub server's `create_issue` tool is exposed as `github__create
 
 The tool's `description` is prefixed with `[Proxied via MCP server '<id>']` so the source of each aggregated tool is obvious when browsing the tool list.
 
-The `inputSchema` for aggregated tools is a passthrough — DMR-X exposes an empty object schema (`{ type: "object", properties: {} }`) and does not translate upstream JSON Schema into Zod in v1. The upstream MCP server is responsible for validating the real call arguments; the [Example Call](#example-call) section below shows the required argument shape.
+The `inputSchema` for aggregated tools is a passthrough — DMR-X exposes an `args` wrapper (`{ args: <upstream inputSchema> }`) carrying the upstream tool's real JSON Schema. The upstream MCP server is still responsible for validating the real call arguments; the [Example Call](#example-call) section below shows the required argument shape.
 
 ### Example Call
 
@@ -326,7 +326,7 @@ The contents of `args` are forwarded verbatim to the upstream MCP server, which 
 
 - The aggregator connects to all configured external servers at startup. Individual connection failures are logged but do not prevent the DMR-X MCP server from starting.
 - The `dmrx_status` tool reports an `aggregator` object with `enabled`, `externalServerCount`, and `externalToolCount` fields, so operators can verify how many upstream servers connected and how many tools were successfully aggregated.
-- To add or remove external servers, update the `DMRX_MCP_CLIENT_SERVERS` env var and restart the DMR-X MCP server. There is no hot-reload in v1.
+- To add or remove external servers, update the `DMRX_MCP_CLIENT_SERVERS` env var and restart the DMR-X MCP server (env-var-only config has no hot-reload in v1). When aggregation servers are configured via `dmrx-mcp.config.json` (`aggregation.servers`), editing the file live-reconnects/disconnects upstreams and re-registers tools without a restart.
 - There is no per-server authentication or authorization model in v1 — all aggregated tools are exposed to anyone who can talk to DMR-X. When using `sse` or `http` transports, set `DMRX_MCP_API_KEY` to gate access to the DMR-X endpoint as a whole.
 
 ## Usage Examples

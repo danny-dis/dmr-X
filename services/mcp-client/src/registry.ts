@@ -31,6 +31,10 @@ export interface MCPServerConfig {
   timeoutMs?: number;
   /** Max retries for transient failures (default: 3) */
   maxRetries?: number;
+  /** OPTIONAL per-server allowlist of upstream tool names (e.g. ["create_issue","read_file"]).
+   *  When set, any call to a tool on this server not in the list is rejected at dispatch.
+   *  Omit for the default open behavior (all aggregated tools callable). */
+  allowedTools?: string[];
 }
 
 /**

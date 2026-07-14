@@ -8,8 +8,7 @@
   "workspaces": [
     "apps/*",
     "services/*",
-    "packages/*",
-    "packages/types"
+    "packages/*"
   ],
   "scripts": {
     "dev": "bun run clean:src && turbo dev",
