@@ -305,7 +305,7 @@ The `inputSchema` for aggregated tools is a passthrough — DMR-X exposes an `ar
 
 ### Example Call
 
-Invoke an aggregated tool through the standard MCP `callTool` API. Because the proxied `inputSchema` is an empty object, the per-tool arguments must be wrapped in a single `args` field:
+Invoke an aggregated tool through the standard MCP `callTool` API. The proxied `inputSchema` is an `args` wrapper carrying the upstream tool's real JSON Schema; the per-tool arguments must be wrapped in a single `args` field:
 
 ```ts
 const result = await client.callTool({
@@ -327,7 +327,7 @@ The contents of `args` are forwarded verbatim to the upstream MCP server, which 
 - The aggregator connects to all configured external servers at startup. Individual connection failures are logged but do not prevent the DMR-X MCP server from starting.
 - The `dmrx_status` tool reports an `aggregator` object with `enabled`, `externalServerCount`, and `externalToolCount` fields, so operators can verify how many upstream servers connected and how many tools were successfully aggregated.
 - To add or remove external servers, update the `DMRX_MCP_CLIENT_SERVERS` env var and restart the DMR-X MCP server (env-var-only config has no hot-reload in v1). When aggregation servers are configured via `dmrx-mcp.config.json` (`aggregation.servers`), editing the file live-reconnects/disconnects upstreams and re-registers tools without a restart.
-- There is no per-server authentication or authorization model in v1 — all aggregated tools are exposed to anyone who can talk to DMR-X. When using `sse` or `http` transports, set `DMRX_MCP_API_KEY` to gate access to the DMR-X endpoint as a whole.
+- **Per-server authorization is opt-in** — set `allowedTools` (string[]) on a server in `aggregation.servers` to expose only a subset of its tools; a tool outside the allowlist is never registered. Omit `allowedTools` for the default open behavior (all aggregated tools callable). When using `sse` or `http` transports, also set `DMRX_MCP_API_KEY` to gate access to the DMR-X endpoint as a whole.
 
 ## Usage Examples
 

@@ -225,7 +225,7 @@ The router is a multi-stage pipeline that selects the best provider for each req
    - `frontier` — optimize for quality
    - `balanced` — balance quality and cost (default)
    - `economy` — optimize for cost
-9. **Free-Tier Strategy** — applies free-tier routing (prioritize, load_balance, fallback)
+9. **Free-Tier Strategy** — dedicated free-tier routing layer (see README): re-ranks free providers via `DMRX_FREE_TIER_STRATEGY` (none/prioritize/load_balance/fallback) or the per-request `x-free-tier-strategy` header, using each model's `freeTierMetadata` (token budget, rate limits, quality/speed rank)
 10. **Final Selector** — epsilon-greedy selection with Thompson Sampling bandit for exploration/exploitation
 11. **Fallback Chain** — ordered list of candidates for automatic failover
 
