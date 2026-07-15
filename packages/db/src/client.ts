@@ -609,7 +609,10 @@ async function doInitDb(): Promise<DatabaseWrapper> {
     const raw = fs.readFileSync(filePath);
     if (keySet) {
       const { decryptBytes } = await import('@dmr-x/utils');
-      return new SQL.Database(decryptBytes(raw.toString('hex')));
+      // encryptBytes() returns a hex STRING; it is persisted as UTF-8 bytes,
+      // so recover the original hex string with toString('utf8') (NOT 'hex',
+      // which would double-encode and corrupt the ciphertext).
+      return new SQL.Database(decryptBytes(raw.toString('utf8')));
     }
     return new SQL.Database(raw);
   }
@@ -646,7 +649,7 @@ async function doInitDb(): Promise<DatabaseWrapper> {
           try {
             const candBuf = fs.readFileSync(path.join(dataDir, cand.name));
             db = keySet
-              ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(candBuf.toString('hex')))
+              ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(candBuf.toString('utf8')))
               : new SQL.Database(candBuf);
             // Restore the good file back to the primary path
             fs.copyFileSync(path.join(dataDir, cand.name), activeDbPath);

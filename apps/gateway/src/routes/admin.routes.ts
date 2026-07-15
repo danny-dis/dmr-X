@@ -1788,6 +1788,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       return { error: { message: 'Provider has no base_url configured', type: 'validation', code: 'no_base_url' } };
     }
 
+    // 2b. Pick a real model to probe with: prefer the provider's first
+    // active free model (so gateways that only allow specific models, e.g.
+    // gitlawb OpenGateway which rejects the dummy "test" model, are probed
+    // with a model they actually serve). Fall back to "test" if none found.
+    // tier/is_free may be NULL for catalog-inherited rows, so also accept a
+    // model_id that is explicitly a known free model.
+    const probeModelRow = db
+      .prepare(
+        `SELECT model_id FROM model_profiles
+         WHERE provider_id = ? AND is_active = 1
+           AND model_id LIKE '%:free'
+         LIMIT 1`,
+      )
+      .get(id) as { model_id: string } | undefined;
+    const probeModel = probeModelRow?.model_id || 'test';
+
     // 2. Fetch the specific key row
     const keyRow = db.prepare('SELECT * FROM provider_keys WHERE id = ? AND provider_id = ?').get(keyId, id) as
       | ProviderKeyRow
@@ -1844,8 +1860,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         dispatcher: ssrfDispatcher,
       });
 
-      // If /models returns 404, try /chat/completions with a minimal request
-      if (!response.ok && response.status === 404) {
+      // If /models does not succeed (404 path-missing OR 400/403 account-level
+      // errors such as insufficient_quota), fall through to a minimal
+      // /chat/completions probe. Many OpenAI-compatible gateways (e.g. gitlawb
+      // OpenGateway) reject GET /models with a 400 yet serve chat fine, so we
+      // must not treat a non-404 /models failure as a hard failure.
+      if (!response.ok) {
         response = await fetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -1853,7 +1873,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'test',
+            model: probeModel,
             messages: [{ role: 'user', content: 'ping' }],
             max_tokens: 1,
           }),
@@ -2456,6 +2476,19 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     const start = Date.now();
 
+    // Probe with a real model when falling back to chat (gitlawb OpenGateway
+    // rejects the dummy "test" model). Prefer an active free model from
+    // model_profiles; fall back to "test".
+    const probeRow = db
+      .prepare(
+        `SELECT model_id FROM model_profiles
+         WHERE provider_id = ? AND is_active = 1
+           AND model_id LIKE '%:free'
+         LIMIT 1`,
+      )
+      .get(provider_id) as { model_id: string } | undefined;
+    const probeModel = probeRow?.model_id || 'test';
+
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -2478,7 +2511,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'test',
+            model: probeModel,
             messages: [{ role: 'user', content: 'ping' }],
             max_tokens: 1,
           }),
