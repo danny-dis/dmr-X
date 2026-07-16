@@ -14,6 +14,10 @@
     "test": {
       "dependsOn": ["build"]
     },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
     "lint": {
       "dependsOn": ["^build"],
       "outputs": []

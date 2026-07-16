@@ -86,11 +86,32 @@ const MODE_CONFIG: Record<PlaygroundMode, { icon: typeof MessageSquare; title: s
   godmode: { icon: Sparkles, title: 'Run a G0DM0D3 pipeline', description: 'Multi-model chat with ULTRAPLINIAN / CONSORTIUM and prompt-obfuscation pipelines.' },
 };
 
+// Defensive fallback: if a PlaygroundMode is ever added to the type but
+// forgotten here, MODE_CONFIG[mode] would be undefined and the old code
+// threw "Cannot read properties of undefined (reading 'icon')", white-screening
+// the whole Playground. Fall back instead of crashing.
+const MODE_CONFIG_FALLBACK: { icon: typeof MessageSquare; title: string; description: string } = {
+  icon: MessageSquare,
+  title: 'Start a conversation',
+  description: 'Send a message to get started.',
+};
+
+function getModeConfig(mode: PlaygroundMode) {
+  const config = MODE_CONFIG[mode];
+  if (!config) {
+    if (import.meta.env.DEV) {
+      console.error(`[EmptyState] No MODE_CONFIG entry for mode "${mode}" — using fallback.`);
+    }
+    return MODE_CONFIG_FALLBACK;
+  }
+  return config;
+}
+
 function EmptyStateComponent() {
   const mode = usePlaygroundStore(s => s.mode);
   const setPromptSeed = usePlaygroundStore(s => s.setPromptSeed);
 
-  const config = MODE_CONFIG[mode];
+  const config = getModeConfig(mode);
   const Icon = config.icon;
 
   // Clicking a sample-prompt tile seeds the prompt input via the store.
