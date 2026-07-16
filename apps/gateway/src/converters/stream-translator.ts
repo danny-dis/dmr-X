@@ -63,6 +63,31 @@ async function* toOpenAIStream(chunks: AsyncIterable<StreamChunk>, requestId: st
 async function* toAnthropicStream(chunks: AsyncIterable<StreamChunk>, requestId: string, model: string): AsyncGenerator<string> {
   const fmt = (event: string, data: object) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
+  // Build the SSE lines for all accumulated (completed) tool calls. Returns a
+  // string[] so it can be `yield*`-ed without nesting a generator helper
+  // (illegal inside an async generator).
+  const flushToolCalls = (
+    toolCallsByIndex: Map<number, { id?: string; name?: string; args: string }>,
+    state: { nextIndex: number }
+  ): string[] => {
+    const out: string[] = [];
+    for (const [, tc] of toolCallsByIndex) {
+      if (tc.name === undefined) continue;
+      const index = state.nextIndex++;
+      out.push(fmt('content_block_start', {
+        type: 'content_block_start', index,
+        content_block: { type: 'tool_use', id: tc.id ?? `toolu_${index}`, name: tc.name, input: {} },
+      }));
+      out.push(fmt('content_block_delta', {
+        type: 'content_block_delta', index,
+        delta: { type: 'input_json_delta', partial_json: tc.args || '{}' },
+      }));
+      out.push(fmt('content_block_stop', { type: 'content_block_stop', index }));
+    }
+    toolCallsByIndex.clear();
+    return out;
+  };
+
   yield fmt('message_start', {
     type: 'message_start',
     message: {
@@ -78,9 +103,31 @@ async function* toAnthropicStream(chunks: AsyncIterable<StreamChunk>, requestId:
   });
 
   let outputTokens = 0;
+  let textBlockOpen = true;
+  const state = { nextIndex: 1 }; // 0 reserved for the opening text block
+
+  // Accumulated streamed tool calls, keyed by OpenAI tool-call index.
+  const toolCallsByIndex = new Map<number, { id?: string; name?: string; args: string }>();
+
   for await (const chunk of chunks) {
     if (chunk.type === 'token') {
-      const text = (chunk as TokenStreamChunk).data?.content ?? '';
+      const data = (chunk as TokenStreamChunk).data;
+
+      // Tool calls: accumulate so they can be replayed as tool_use blocks.
+      const toolCalls = data?.tool_calls;
+      if (toolCalls && toolCalls.length) {
+        for (const tc of toolCalls) {
+          const idx = tc.index ?? 0;
+          const existing = toolCallsByIndex.get(idx) ?? { args: '' };
+          if (tc.id !== undefined) existing.id = tc.id;
+          if (tc.function?.name !== undefined) existing.name = tc.function.name;
+          if (tc.function?.arguments !== undefined) existing.args += tc.function.arguments;
+          toolCallsByIndex.set(idx, existing);
+        }
+        continue;
+      }
+
+      const text = data?.content ?? '';
       if (text) {
         outputTokens++;
         yield fmt('content_block_delta', {
@@ -89,7 +136,16 @@ async function* toAnthropicStream(chunks: AsyncIterable<StreamChunk>, requestId:
         });
       }
     } else if (chunk.type === 'done') {
-      yield fmt('content_block_stop', { type: 'content_block_stop', index: 0 });
+      if (textBlockOpen) {
+        yield fmt('content_block_stop', { type: 'content_block_stop', index: 0 });
+        textBlockOpen = false;
+      }
+      // Replay accumulated tool calls as tool_use content blocks so a
+      // streaming Anthropic client doesn't hang on a tool_use stop_reason
+      // with no tool_use block.
+      if (toolCallsByIndex.size) {
+        yield* flushToolCalls(toolCallsByIndex, state);
+      }
       yield fmt('message_delta', {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn', stop_sequence: null },

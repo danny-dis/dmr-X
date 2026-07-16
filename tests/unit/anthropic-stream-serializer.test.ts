@@ -222,4 +222,121 @@ describe('createAnthropicSSEStream', () => {
 
     expect(messageDelta!.data.usage.output_tokens).toBe(3);
   });
+
+  it('should emit tool_use content blocks for streamed tool calls (regression: streaming agentic hang)', async () => {
+    // A model that received tools emits tool_calls inside token chunks.
+    // The serializer MUST replay them as tool_use content blocks BEFORE
+    // message_delta, otherwise a streaming Anthropic client gets a
+    // tool_use stop_reason with no block and hangs forever.
+    const chunks: StreamChunk[] = [
+      // tool-call name arrives first
+      {
+        type: 'token',
+        data: {
+          tool_calls: [
+            { index: 0, id: 'call_1', type: 'function', function: { name: 'get_weather' } },
+          ],
+        },
+        index: 0,
+      },
+      // tool-call arguments streamed in fragments
+      {
+        type: 'token',
+        data: { tool_calls: [{ index: 0, function: { arguments: '{"ci' } }] },
+        index: 1,
+      },
+      {
+        type: 'token',
+        data: { tool_calls: [{ index: 0, function: { arguments: 'ty":"SF"}' } }] },
+        index: 2,
+      },
+      {
+        type: 'done',
+        data: { requestId: 'msg_1', modelId: 'm', finishReason: 'tool_calls' },
+        index: 3,
+      },
+    ];
+
+    const lines = await collectStream(chunks);
+    const events = parseEvents(lines);
+
+    // message_start must come first
+    expect(events[0].event).toBe('message_start');
+
+    // Exactly one tool_use content block, with start/delta/stop triplet.
+    const starts = events.filter(e => e.event === 'content_block_start');
+    expect(starts).toHaveLength(1);
+    expect(starts[0].data.content_block.type).toBe('tool_use');
+    expect(starts[0].data.content_block.name).toBe('get_weather');
+    expect(starts[0].data.content_block.id).toBe('call_1');
+
+    const deltas = events.filter(e => e.event === 'content_block_delta');
+    const inputDelta = deltas.find(d => d.data.delta.type === 'input_json_delta');
+    expect(inputDelta).toBeDefined();
+    expect(inputDelta!.data.delta.partial_json).toBe('{"city":"SF"}');
+
+    // message_delta must carry the tool_use stop_reason (not end_turn)
+    const messageDelta = events.find(e => e.event === 'message_delta');
+    expect(messageDelta!.data.delta.stop_reason).toBe('tool_use');
+
+    // Must terminate cleanly with message_stop (the previously-missing block
+    // caused the client to hang at message_start).
+    expect(events[events.length - 1].event).toBe('message_stop');
+  });
+
+  it('should interleave text and tool_use blocks with correct indices', async () => {
+    const chunks: StreamChunk[] = [
+      { type: 'token', data: { content: 'Let me check.' }, index: 0 },
+      {
+        type: 'token',
+        data: {
+          tool_calls: [{ index: 0, id: 'call_2', type: 'function', function: { name: 'lookup', arguments: '{}' } }],
+        },
+        index: 1,
+      },
+      {
+        type: 'done',
+        data: { requestId: 'msg_1', modelId: 'm', finishReason: 'tool_calls' },
+        index: 2,
+      },
+    ];
+
+    const lines = await collectStream(chunks);
+    const events = parseEvents(lines);
+
+    // text block: index 0
+    const textStart = events.find(e => e.event === 'content_block_start' && e.data.content_block.type === 'text');
+    expect(textStart!.data.index).toBe(0);
+    const textDelta = events.find(e => e.event === 'content_block_delta' && e.data.delta.type === 'text_delta');
+    expect(textDelta!.data.index).toBe(0);
+
+    // tool_use block: index 1 (monotonic, after text)
+    const toolStart = events.find(e => e.event === 'content_block_start' && e.data.content_block.type === 'tool_use');
+    expect(toolStart!.data.index).toBe(1);
+    const toolDelta = events.find(e => e.event === 'content_block_delta' && e.data.delta.type === 'input_json_delta');
+    expect(toolDelta!.data.index).toBe(1);
+
+    expect(events[events.length - 1].event).toBe('message_stop');
+  });
+
+  it('should replay streamed tool calls even without a done chunk (graceful close)', async () => {
+    const chunks: StreamChunk[] = [
+      {
+        type: 'token',
+        data: {
+          tool_calls: [{ index: 0, id: 'call_3', type: 'function', function: { name: 'ping', arguments: '{}' } }],
+        },
+        index: 0,
+      },
+      // no done chunk
+    ];
+
+    const lines = await collectStream(chunks);
+    const events = parseEvents(lines);
+
+    const toolStart = events.find(e => e.event === 'content_block_start' && e.data.content_block.type === 'tool_use');
+    expect(toolStart).toBeDefined();
+    expect(toolStart!.data.content_block.name).toBe('ping');
+    expect(events[events.length - 1].event).toBe('message_stop');
+  });
 });
