@@ -19,6 +19,15 @@ for /f "usebackq tokens=1* delims==" %%A in (`findstr /r /v "^#" ".env"`) do (
   )
 )
 
+REM Boot the MCP ("MECP") server alongside DMR-X so the dmrx_* tool surface
+REM (dmrx_context_*, dmrx_batch, dmrx_workflow, aggregated upstream tools) is
+REM available without a separate manual start. Runs detached in its own
+REM crash-restart loop. Set DMRX_SKIP_MCP=1 to boot the gateway alone.
+if not defined DMRX_SKIP_MCP (
+  echo [%date% %time%] Launching DMR-X MCP server (background)... >> "C:\Users\pc\Documents\projects\DMR-X\gateway.log"
+  start "" /min "DMR-X MCP Server" "C:\Users\pc\Documents\projects\DMR-X\scripts\dev\run-mcp-server.bat"
+)
+
 :loop
 echo [%date% %time%] Starting DMR-X gateway on port 47113... >> "C:\Users\pc\Documents\projects\DMR-X\gateway.log"
 "C:\Users\pc\.bun\bin\bun.exe" apps/gateway/src/main.ts >> "C:\Users\pc\Documents\projects\DMR-X\gateway.log" 2>&1

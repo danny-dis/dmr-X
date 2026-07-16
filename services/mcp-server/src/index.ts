@@ -584,6 +584,15 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const http = await import('node:http');
   const { handleA2ARoutes } = await import('./a2a/handler.js');
 
+  // Share ONE McpServer/external-client handle across all SSE sessions so that
+  // hot-reload (config watcher) and the upstream liveness sweeper operate on a
+  // single source of truth — not a throwaway instance per connection.
+  if (!liveHandle) {
+    const built = createDMRXMcpServer(config);
+    liveHandle = { server: built.server, state: built.state };
+  }
+  const sharedHandle = liveHandle;
+
   const configFile = loadConfigFile();
   const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
@@ -593,9 +602,8 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
 
-  // Get tools for Agent Card
-  const { server: tempServer, state: tempState } = createDMRXMcpServer(config);
-  const toolsForAgentCard = tempState.sdkTools.map((t) => ({
+  // Get tools for Agent Card (from the shared handle so it reflects upstream state)
+  const toolsForAgentCard = sharedHandle.state.sdkTools.map((t) => ({
     name: t.name,
     description: t.description,
   }));
@@ -723,6 +731,15 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const http = await import('node:http');
   const { handleA2ARoutes } = await import('./a2a/handler.js');
 
+  // Share ONE McpServer/external-client handle across all streamable sessions
+  // so hot-reload (config watcher) and the upstream liveness sweeper operate
+  // on a single source of truth — not a throwaway instance per connection.
+  if (!liveHandle) {
+    const built = createDMRXMcpServer(config);
+    liveHandle = { server: built.server, state: built.state };
+  }
+  const sharedHandle = liveHandle;
+
   const configFile = loadConfigFile();
   const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
@@ -732,9 +749,8 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
 
-  // Get tools for Agent Card
-  const { server: tempServer, state: tempState } = createDMRXMcpServer(config);
-  const toolsForAgentCard = tempState.sdkTools.map((t) => ({
+  // Get tools for Agent Card (from the shared handle so it reflects upstream state)
+  const toolsForAgentCard = sharedHandle.state.sdkTools.map((t) => ({
     name: t.name,
     description: t.description,
   }));
@@ -951,7 +967,60 @@ async function main(): Promise<void> {
   // Start config file watcher for live aggregation server changes
   if (liveHandle) {
     startConfigWatcher();
+    startUpstreamLivenessWatcher();
   }
+}
+
+/**
+ * Periodically probe every connected upstream (aggregated) MCP server and
+ * auto-reconnect any that dropped. This keeps the dmrx_* tool surface — and
+ * any aggregated upstream tools — available WITHOUT requiring a restart of
+ * DMR-X or the mcp-server process when an upstream cuts out.
+ *
+ * The shared external client lives in liveHandle.state.externalMcpClient; the
+ * registry already implements reconnect()/scheduleReconnect(), but nothing
+ * calls them automatically today, so a dropped upstream stays dead until manual
+ * intervention. This sweeper closes that gap.
+ */
+function startUpstreamLivenessWatcher(): void {
+  const handle = liveHandle;
+  if (!handle) return;
+
+  const client = handle.state.externalMcpClient;
+  if (!client) {
+    console.error('[upstream-watcher] No external MCP client — liveness watcher disabled');
+    return;
+  }
+
+  const LIVENESS_INTERVAL_MS = 15_000; // 15s sweep
+  const registry = client.getRegistry();
+
+  const timer = setInterval(async () => {
+    try {
+      const connectedIds = client.listServers();
+      for (const id of connectedIds) {
+        const server = registry.get(id);
+        if (!server) continue;
+        try {
+          await server.client.listTools();
+        } catch (err) {
+          console.error(`[upstream-watcher] Upstream '${id}' unresponsive, scheduling reconnect:`, err);
+          // Drop it from the live map so reconnect re-adds it, then reconnect.
+          try {
+            await client.disconnectServer(id);
+          } catch { /* best-effort */ }
+          registry.scheduleReconnect(server.config);
+          reconcileExternalTools(handle.server, handle.state);
+        }
+      }
+    } catch (err) {
+      console.error('[upstream-watcher] Sweep error:', err);
+    }
+  }, LIVENESS_INTERVAL_MS);
+
+  process.on('SIGINT', () => clearInterval(timer));
+  process.on('SIGTERM', () => clearInterval(timer));
+  console.error(`[upstream-watcher] Watching upstream MCP servers every ${LIVENESS_INTERVAL_MS}ms`);
 }
 
 /**

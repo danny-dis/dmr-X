@@ -7,7 +7,7 @@ import { ValidationError } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { federationService } from '@dmr-x/federation';
 import { memoryService, retentionManager } from '@dmr-x/memory';
-import { PROVIDER_CATALOG, discoverOpenAIModels } from '@dmr-x/registry';
+import { PROVIDER_CATALOG, discoverOpenAIModels, registryService } from '@dmr-x/registry';
 import { sandboxService } from '@dmr-x/sandbox';
 import { logger, encrypt, decrypt, encryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
 import { workersService } from '@dmr-x/workers';
@@ -2426,12 +2426,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     const { provider_id } = parsed.data;
     let { base_url, api_key } = parsed.data;
+    const db = getDb();
 
     // When the client didn't supply explicit credentials, look them up from
     // the providers table. The API key is stored encrypted in config.apiKey
     // (see CreateProviderSchema) so we decrypt before forwarding.
     if (!base_url || !api_key) {
-      const db = getDb();
       const row = db.prepare('SELECT base_url, config, oauth_access_token, auth_method, api_key_ref FROM providers WHERE id = ?').get(provider_id) as any;
       if (!row) {
         throw new ValidationError(`Provider not found: ${provider_id}`);
@@ -5799,7 +5799,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       }
 
       if (tool === 'dmrx_models') {
-        const allCandidates = [...router.getCandidates()];
+        const allCandidates = [...registryService.getCandidates()];
         const modality = parameters?.modality;
         const provider = parameters?.provider;
         let models = allCandidates;
@@ -5815,7 +5815,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       }
 
       if (tool === 'dmrx_status') {
-        const candidates = router.getCandidates();
+        const candidates = registryService.getCandidates();
         return {
           success: true,
           result: {
