@@ -60,7 +60,40 @@ function splitFt5(sql: string): string[] {
 // Without this, scheduleSave() + flush() can race (TOCTOU on the `saving`
 // flag) and run two concurrent saveDatabase() calls: the first rename deletes
 // the .tmp file, the second rename then throws ENOENT and crashes the process.
+
+/**
+ * Atomically publish `src` as `dest`.
+ *
+ * `fs.rename` on Windows cannot replace a destination that still has an open
+ * handle (live gateway flush, antivirus, search indexer) — it fails with
+ * EPERM. We retry briefly (the lock is usually momentary), then fall back to
+ * `copyFile` which overwrites a locked file. The destination is never deleted
+ * before the new bytes are fully written, so a failed replace only leaves a
+ * stray temp file — it can never truncate or zero the live database.
+ */
+async function atomicReplace(src: string, dest: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await fs.promises.rename(src, dest);
+      return;
+    } catch (err: any) {
+      if (err?.code === 'EPERM' || err?.code === 'EBUSY') {
+        if (attempt < 4) {
+          await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+          continue;
+        }
+        // Last resort: copyFile overwrites an in-use file on Windows.
+        await fs.promises.copyFile(src, dest);
+        try { await fs.promises.unlink(src); } catch { /* best-effort */ }
+        return;
+      }
+      throw err;
+    }
+  }
+}
+
 let saveInFlight: Promise<void> | null = null;
+let tmpCounter = 0;
 async function saveDatabase(): Promise<void> {
   if (!db || !dbPath) return;
   if (saveInFlight) return saveInFlight;
@@ -68,9 +101,22 @@ async function saveDatabase(): Promise<void> {
     await fs.promises.mkdir(path.dirname(dbPath), { recursive: true });
     const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
     const targetPath = keySet ? `${dbPath}.enc` : dbPath;
-    const tmpPath = `${targetPath}.tmp`;
+    const lastGoodPath = `${targetPath}.lastgood`;
+    // Unique temp file per save. A fixed ".tmp" name let two concurrent
+    // saves (e.g. the init-time saveDatabase() and a debounced scheduleSave)
+    // overwrite each other's temp and then fail rename with ENOENT — which
+    // left a corrupt/zeroed on-disk file and forced a fresh DB on reboot.
+    const tmpPath = `${targetPath}.tmp.${process.pid}.${++tmpCounter}`;
     try {
       const data = db.export();
+      // Guard against persisting an empty/invalid export. A mid-crash export
+      // can yield a zero-byte buffer; writing that would clobber the last
+      // good on-disk copy and force a "fresh database" reset on the next
+      // reboot (the root cause of the dashboard resetting to zero).
+      if (!data || data.byteLength === 0) {
+        log.warn('Refusing to persist empty database export — keeping existing on-disk copy');
+        return;
+      }
       let toWrite: Buffer;
       if (keySet) {
         // Encrypt the on-disk database at rest (AES-256-GCM).
@@ -84,7 +130,18 @@ async function saveDatabase(): Promise<void> {
       // Write to a temporary file first to ensure atomic replacement.
       // This prevents database corruption if the process crashes mid-write.
       await fs.promises.writeFile(tmpPath, toWrite);
-      await fs.promises.rename(tmpPath, targetPath);
+      // Atomically publish the new file. On Windows, fs.rename over an
+      // existing target fails with EPERM when the destination still has an
+      // open handle (the live gateway's own flush, an antivirus scan, the
+      // search indexer). Retry with a short backoff, then fall back to
+      // copyFile (which can overwrite a locked file). CRITICAL: the existing
+      // good file is never deleted before the new one is in place, so a
+      // failed replace only leaves a stray temp — it can never zero the DB.
+      await atomicReplace(tmpPath, targetPath);
+      // Keep a rolling "last good" copy. If the live target is ever caught
+      // mid-write during the next crash, recovery prefers this complete
+      // snapshot instead of falling back to a brand-new empty database.
+      try { await fs.promises.copyFile(targetPath, lastGoodPath); } catch { /* best-effort */ }
     } catch (err) {
       log.error('Failed to save database:', err);
       // Best-effort cleanup of the temporary file
@@ -150,7 +207,7 @@ export async function flush(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  if (saving) return; // Already saving; resolvers from the in-progress save will cover this
+  if (saving) return;
   saving = true;
   try {
     const resolvers = pendingSaveResolvers;
@@ -636,6 +693,24 @@ async function doInitDb(): Promise<DatabaseWrapper> {
       const dataDir = path.dirname(activeDbPath);
       const basename = path.basename(activeDbPath); // e.g. "data.db.enc"
       let restored = false;
+      // ── Try the rolling "last good" snapshot first ───────────────
+      // Updated by saveDatabase() after every successful write, so it is
+      // always the most recent complete (non-mid-write) copy. Prefer it
+      // over dated .bak files to avoid losing real data on reboot.
+      const lastGoodPath = `${activeDbPath}.lastgood`;
+      if (!restored && fs.existsSync(lastGoodPath)) {
+        try {
+          const lgBuf = fs.readFileSync(lastGoodPath);
+          db = keySet
+            ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(lgBuf.toString('utf8')))
+            : new SQL.Database(lgBuf);
+          fs.copyFileSync(lastGoodPath, activeDbPath);
+          log.warn(`Restored database from last-good snapshot: ${lastGoodPath}`);
+          restored = true;
+        } catch {
+          // lastgood is also unusable — fall through to .bak candidates
+        }
+      }
       try {
         const candidates = fs.readdirSync(dataDir)
           .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
