@@ -1307,7 +1307,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT],
       inputSchema: chatParams as any,
-      outputSchema: dmrxChatOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CHAT],
     },
     async (params: any) => {
@@ -1410,7 +1409,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE],
       inputSchema: imageParams as any,
-      outputSchema: dmrxImageOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_IMAGE],
     },
     async (params: any) => {
@@ -1488,7 +1486,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.EMBED],
       inputSchema: embedParams as any,
-      outputSchema: dmrxEmbeddingOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.EMBED],
     },
     async (params: any) => {
@@ -1548,7 +1545,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.TRANSCRIBE],
       inputSchema: transcribeParams as any,
-      outputSchema: dmrxTranscribeOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.TRANSCRIBE],
     },
     async (params: any) => {
@@ -1608,7 +1604,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.SPEAK],
       inputSchema: speakParams as any,
-      outputSchema: dmrxSpeakOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.SPEAK],
     },
     async (params: any) => {
@@ -1668,7 +1663,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.RERANK],
       inputSchema: rerankParams as any,
-      outputSchema: dmrxRerankOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.RERANK],
     },
     async (params: any) => {
@@ -1738,7 +1732,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO],
       inputSchema: videoParams as any,
-      outputSchema: dmrxVideoOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_VIDEO],
     },
     async (params: any) => {
@@ -1871,7 +1864,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_MUSIC],
       inputSchema: musicParams as any,
-      outputSchema: dmrxMusicOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_MUSIC],
     },
     async (params: any) => {
@@ -1931,7 +1923,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_3D],
       inputSchema: threeDParams as any,
-      outputSchema: dmrx3DOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.GENERATE_3D],
     },
     async (params: any) => {
@@ -1991,7 +1982,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.MODELS],
       inputSchema: modelsParams as any,
-      outputSchema: dmrxModelsOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.MODELS],
     },
     async (params: any) => {
@@ -2108,7 +2098,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.STATUS],
       inputSchema: statusParams as any,
-      outputSchema: dmrxStatusOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.STATUS],
     },
     async (params: any) => {
@@ -2227,7 +2216,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.BATCH],
       inputSchema: batchParams as any,
-      outputSchema: dmrxBatchOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.BATCH],
     },
     async (params: any) => {
@@ -2290,7 +2278,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SAVE],
       inputSchema: contextSaveParams as any,
-      outputSchema: dmrxContextSaveOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_SAVE],
     },
     async (params: any) => {
@@ -2351,7 +2338,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LOAD],
       inputSchema: contextLoadParams as any,
-      outputSchema: dmrxContextLoadOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_LOAD],
     },
     async (params: any) => {
@@ -2397,7 +2383,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LIST],
       inputSchema: contextListParams as any,
-      outputSchema: dmrxContextListOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_LIST],
     },
     async (params: any) => {
@@ -2459,7 +2444,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SUMMARIZE],
       inputSchema: contextSummarizeParams as any,
-      outputSchema: dmrxContextSummarizeOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_SUMMARIZE],
     },
     async (params: any) => {
@@ -2512,7 +2496,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_COMPRESS],
       inputSchema: contextCompressParams as any,
-      outputSchema: dmrxContextCompressOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.CONTEXT_COMPRESS],
     },
     async (params: any) => {
@@ -2723,7 +2706,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.WORKFLOW],
       inputSchema: workflowParams as any,
-      outputSchema: dmrxWorkflowOutput as any,
       annotations: TOOL_ANNOTATIONS[TOOL_NAMES.WORKFLOW],
     },
     async (params: any) => {
@@ -3251,7 +3233,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.TOOL_SEARCH],
       inputSchema: toolSearchParams as any,
-      outputSchema: dmrxToolSearchOutput as any,
       annotations: { title: 'Search Tools', readOnlyHint: true, openWorldHint: false },
     },
     async (params: any) => {
@@ -3353,7 +3334,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     {
       description: TOOL_DESCRIPTIONS[TOOL_NAMES.TOOL_LIST],
       inputSchema: toolListParams as any,
-      outputSchema: dmrxToolListOutput as any,
       annotations: { title: 'List Tools', readOnlyHint: true, openWorldHint: false },
     },
     async (params: any) => {

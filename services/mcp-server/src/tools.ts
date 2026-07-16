@@ -538,40 +538,51 @@ export const dmrx3DOutput = {
   latency_ms: z.number(),
 } as const;
 
-export const dmrxModelsOutput = {
-  source: z.enum(['registry', 'adapters']),
-  count: z.number(),
-  models: z.array(z.object({
-    provider: z.string(),
-    model: z.string(),
-    modality: z.string(),
-    capabilities: z.array(z.string()).optional(),
-    qualityScore: z.number().optional(),
-    healthy: z.boolean().optional(),
-  })),
-} as const;
+export const dmrxModelsOutput = z
+  .object({
+    source: z.enum(['registry', 'adapters']),
+    count: z.number(),
+    models: z
+      .array(
+        z
+          .object({
+            provider: z.string(),
+            model: z.string(),
+            modality: z.string(),
+            capabilities: z.array(z.string()).optional(),
+            qualityScore: z.number().optional(),
+            healthy: z.boolean().optional(),
+          })
+          .passthrough(),
+      ),
+  })
+  .passthrough();
 
-export const dmrxStatusOutput = {
-  status: z.literal('ok'),
-  version: z.string(),
-  uptime: z.string(),
-  uptimeMs: z.number(),
-  requestsHandled: z.number(),
-  lastError: z.string().nullable(),
-  router: z.object({
-    candidateCount: z.number(),
-    config: z.object({
-      epsilon: z.number(),
-      defaultQualityTarget: z.string(),
-      enableDecomposition: z.boolean(),
+export const dmrxStatusOutput = z
+  .object({
+    status: z.literal('ok'),
+    version: z.string(),
+    uptime: z.string(),
+    uptimeMs: z.number(),
+    requestsHandled: z.number(),
+    lastError: z.string().nullable(),
+    router: z.object({
+      candidateCount: z.number(),
+      config: z.object({
+        epsilon: z.number(),
+        defaultQualityTarget: z.string(),
+        enableDecomposition: z.boolean(),
+      }),
     }),
-  }),
-  aggregator: z.object({
-    enabled: z.boolean(),
-    externalServerCount: z.number(),
-    externalToolCount: z.number(),
-  }).optional(),
-} as const;
+    aggregator: z
+      .object({
+        enabled: z.boolean(),
+        externalServerCount: z.number(),
+        externalToolCount: z.number(),
+      })
+      .optional(),
+  })
+  .passthrough();
 
 export const dmrxBatchOutput = {
   success: z.boolean(),
