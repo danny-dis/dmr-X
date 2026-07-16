@@ -43,9 +43,12 @@ function MultiSelectTrigger({
       {...props}
     >
       {children}
-      <PopoverPrimitive.Icon asChild>
-        <ChevronDown className="size-3.5 shrink-0 text-fg-muted" />
-      </PopoverPrimitive.Icon>
+      {/* NOTE: @radix-ui/react-popover exposes no `Icon` part (unlike
+          react-select), so the chevron is rendered directly. Wrapping it
+          in a non-existent `PopoverPrimitive.Icon` element was a hard
+          build-breaking import error that prevented the entire UI bundle
+          from compiling. */}
+      <ChevronDown className="size-3.5 shrink-0 text-fg-muted" />
     </PopoverPrimitive.Trigger>
   );
 }
