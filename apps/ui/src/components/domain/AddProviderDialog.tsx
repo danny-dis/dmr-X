@@ -24,6 +24,11 @@ export interface AddProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   template?: ApiCatalogEntry | null;
+  /** Pre-filled unique name (e.g. `google-2`) so a second account of
+   * the same provider type becomes its own instance instead of
+   * upserting the existing one. The gateway keys provider rows by
+   * `name`, so distinct names coexist. */
+  suggestedName?: string | null;
   onCreated?: () => void;
   /** Force the key tier. When set, all keys added through this dialog
    * will be tagged with this tier instead of relying on the backend
@@ -100,6 +105,7 @@ export function AddProviderDialog({
   open,
   onOpenChange,
   template,
+  suggestedName,
   onCreated,
   forceTier,
 }: AddProviderDialogProps) {
@@ -157,7 +163,7 @@ export function AddProviderDialog({
           (p) => p.id === template.id || p.label.toLowerCase() === template.name.toLowerCase(),
         );
         setForm({
-          name: template.name,
+          name: suggestedName && suggestedName !== template.name ? suggestedName : template.name,
           adapterType: preset?.id ?? template.id,
           baseUrl: template.baseUrl ?? preset?.baseUrl ?? '',
           apiKey: '',
@@ -170,7 +176,7 @@ export function AddProviderDialog({
         setForm(EMPTY);
       }
     }
-  }, [open, template]);
+  }, [open, template, suggestedName]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -485,6 +491,12 @@ export function AddProviderDialog({
                 autoFocus
               />
               {errors.name && <FieldError>{errors.name}</FieldError>}
+              <FieldDescription>
+                A unique name becomes its own provider instance. Reusing an
+                existing name overwrites that connection — give a second
+                account of the same provider an explicit name (e.g.{' '}
+                <span className="font-mono">google-2</span>).
+              </FieldDescription>
             </Field>
 
             {!template && (

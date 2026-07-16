@@ -11,11 +11,12 @@
 // verbatim so the test environment (db mock setup via the alias graph)
 // stays correct.
 //
-// NOTE: `mcp-input-validator.test.ts` is intentionally excluded here —
-// it spins/OOMs unbounded (verified: OOMs at the 2GB default ceiling,
-// times out even at a 7GB cap / 120s) due to an import-chain memory
-// blow-up, independent of any release bump. It is quarantined until that
-// leak is fixed. See the CI step comment in .github/workflows/ci.yml.
+// `mcp-input-validator.test.ts` was previously quarantined here because the
+// `@dmr-x/utils` alias resolves to the full `packages/utils/src` barrel, and
+// loading that whole graph inside the fork worker blew the heap. It is now
+// re-enabled: the test mocks `@dmr-x/utils` with a lightweight stub logger
+// (the InputValidator only runtime-uses `createLogger`), so the test runs
+// within a bounded heap with all assertions intact.
 
 import { defineWorkspace } from 'vitest/config';
 import { resolve } from 'node:path';
@@ -52,7 +53,7 @@ export default defineWorkspace([
       name: 'mcp',
       globals: true,
       environment: 'node',
-      include: ['tests/unit/mcp-policy-engine.test.ts'],
+      include: ['tests/unit/mcp-policy-engine.test.ts', 'tests/unit/mcp-input-validator.test.ts'],
       exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
       pool: 'forks',
       poolOptions: { forks: { singleFork: true } },

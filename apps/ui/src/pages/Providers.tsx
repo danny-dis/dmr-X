@@ -29,6 +29,7 @@ export function ProvidersPage() {
   const [selectedProvider, setSelectedProvider] = React.useState<ApiProvider | null>(null);
   const [addDialogOpen, setAddDialogOpen] = React.useState(false);
   const [selectedTemplate, setSelectedTemplate] = React.useState<ApiCatalogEntry | null>(null);
+  const [suggestedName, setSuggestedName] = React.useState<string | null>(null);
   const [showAllCatalog, setShowAllCatalog] = React.useState(false);
   const [currentPage, setCurrentPage] = React.useState(1);
   const debounced = React.useDeferredValue(query);
@@ -208,6 +209,16 @@ export function ProvidersPage() {
                     key={e.id ?? e.name}
                     onClick={() => {
                       setSelectedTemplate(e);
+                      // Suggest a unique name so a second account of the same
+                      // provider type becomes its OWN instance instead of
+                      // upserting (and clobbering) the existing row. The
+                      // activate route keys rows by `name`, so `google-2`
+                      // coexists with `google`.
+                      const base = e.id ?? e.name ?? 'provider';
+                      const existing = new Set((providers.data ?? []).map((p) => p.name));
+                      let suggested = base;
+                      for (let n = 2; existing.has(suggested); n++) suggested = `${base}-${n}`;
+                      setSuggestedName(suggested);
                       setAddDialogOpen(true);
                     }}
                     className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 hover:border-border-strong hover:bg-surface-3 transition-colors text-left"
@@ -248,7 +259,11 @@ export function ProvidersPage() {
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
         template={selectedTemplate}
-        onCreated={() => void providers.refetch()}
+        suggestedName={suggestedName}
+        onCreated={() => {
+          setSuggestedName(null);
+          void providers.refetch();
+        }}
       />
 
           </TabsContent>

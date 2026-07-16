@@ -232,6 +232,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         const onClientClose = () => controller.abort();
         request.raw.on('close', onClientClose);
 
+        // Upstream stream deadline: bound every candidate's stream so a slow/hung
+        // provider cannot stall the gateway indefinitely (which previously surfaced
+        // as pi "Connection error" / client timeouts with no gateway log output).
+        // On deadline fire we abort the candidate controller; the catch block then
+        // falls back to the next candidate (if nothing has been streamed yet) or
+        // emits a clean "Stream failed" error.
+        const upstreamTimeoutMs = Number(process.env.DMRX_UPSTREAM_STREAM_TIMEOUT_MS ?? 60000);
+        let deadlineFired = false;
+        const deadline = setTimeout(() => { deadlineFired = true; controller.abort(); }, upstreamTimeoutMs);
+
         try {
           const routedRequest = { ...unifiedRequest, model: candidate.modelId };
           (request as any).metrics = {
@@ -317,6 +327,14 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             }
           }
           if (controller.signal.aborted) {
+            if (deadlineFired) {
+              // Upstream stream exceeded the deadline: treat as a stream error so the
+              // fallback path (next candidate, if nothing streamed yet) engages.
+              lastStreamError = new Error(`Upstream stream exceeded ${upstreamTimeoutMs}ms deadline`);
+              (request as any).metrics = (request as any).metrics || {};
+              (request as any).metrics.errorCode = 'upstream_stream_timeout';
+              break;
+            }
             clientAborted = true;
             break;
           }
@@ -396,6 +414,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           }
           break;
         } finally {
+          clearTimeout(deadline);
           request.raw.off('close', onClientClose);
         }
       }

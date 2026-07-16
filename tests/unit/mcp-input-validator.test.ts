@@ -1,4 +1,21 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Mock the heavy `@dmr-x/utils` barrel. Under the isolated `mcp` vitest
+// workspace the alias resolves `@dmr-x/utils` to `packages/utils/src`
+// (the entire ~30-module barrel: tool-executor, model-result,
+// tool-orchestrator, ... plus pino + zod). Transforming that whole graph
+// inside the fork worker blows past even a multi-GB heap cap and times out.
+// The InputValidator under test only runtime-uses `createLogger` (the other
+// two imports from `@dmr-x/utils` are erased `import type`s), so a lightweight
+// stub logger is sufficient and keeps every assertion meaningful.
+vi.mock('@dmr-x/utils', () => {
+  const noop = () => {};
+  const stubLogger = { trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop, child: () => stubLogger };
+  return {
+    createLogger: () => stubLogger,
+    logger: stubLogger,
+  };
+});
 
 import { InputValidator } from '../../services/mcp-server/src/guardrails/input-validator.js';
 

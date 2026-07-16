@@ -68,10 +68,14 @@ export abstract class BaseAdapter implements ProviderAdapter {
   protected retryConfig: RetryConfig = {
     strategy: 'backoff',
     backoff: {
-      initialInterval: 1000,
-      maxInterval: 10000,
+      initialInterval: 800,
+      maxInterval: 4000,
       exponent: 2,
-      maxElapsedTime: 30000,
+      // Trimmed from 30s so a dead/hanging provider fails fast and the
+      // fallback executor can select a healthy provider within a few
+      // seconds — keeps end clients (e.g. the pi agent) from timing out
+      // while DMR-X smooths over provider failures.
+      maxElapsedTime: 8000,
     },
     retryConnectionErrors: true,
   };

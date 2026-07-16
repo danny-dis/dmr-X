@@ -19,8 +19,9 @@ export default defineWorkspace([
             name: 'unit',
             include: ['tests/unit/**/*.test.ts'],
             exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude', 'tests/e2e/**',
-                // These 2 tests hang when run in the combined vitest fork pool on
-                // Windows due to vitest/bun compatibility. Run individually in CI.
+                // These 2 tests are run in the dedicated `mcp` workspace project
+                // (isolated fork) — they hang in the combined vitest fork pool on
+                // Windows due to vitest/bun compatibility. See vitest.mcp.workspace.ts.
                 'tests/unit/mcp-input-validator.test.ts',
                 'tests/unit/mcp-policy-engine.test.ts',
             ],

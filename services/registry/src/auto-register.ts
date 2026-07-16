@@ -442,12 +442,24 @@ export async function autoRegisterProviders(): Promise<string[]> {
     ).get(template.id);
 
     if (existing) {
-      // If provider exists but now has a key, activate it and its models
-      if (hasKey && template.envKey) {
-        const currentConfig = db.prepare('SELECT config FROM providers WHERE id = ?').get(existing.id) as { config: string } | undefined;
-        const cfg = JSON.parse(currentConfig?.config || '{}');
-        if (!cfg.hasKey) {
-          // Key was just added — activate provider and its models
+      // Backfill api_key_ref for providers seeded before that column existed
+      // (or seeded while the env var was unset). Without it, server.ts cannot
+      // resolve the runtime env key, so the periodic probe sends an
+      // unauthenticated request, upstream returns 401, and the provider gets
+      // poisoned to is_healthy=0 — starving the candidate pool. (DMR-X §14)
+      const exRow = db
+        .prepare('SELECT api_key_ref, is_healthy FROM providers WHERE id = ?')
+        .get(existing.id) as { api_key_ref: string | null; is_healthy: number } | undefined;
+      const needsRefBackfill = !!template.envKey && !exRow?.api_key_ref;
+      const needsHealthReset = hasKey && Number(exRow?.is_healthy) === 0 && !needsRefBackfill;
+      const currentConfig = db.prepare('SELECT config FROM providers WHERE id = ?').get(existing.id) as { config: string } | undefined;
+      const cfg = JSON.parse(currentConfig?.config || '{}');
+      const keyJustAdded = hasKey && template.envKey && !cfg.hasKey;
+      if (needsRefBackfill || needsHealthReset || keyJustAdded) {
+        if (needsRefBackfill) {
+          db.prepare(`UPDATE providers SET api_key_ref = ? WHERE id = ?`).run(template.envKey, existing.id);
+        }
+        if (hasKey) {
           cfg.hasKey = true;
           db.prepare(
             `UPDATE providers SET is_healthy = 1, config = ?, updated_at = datetime('now') WHERE id = ?`
@@ -455,7 +467,7 @@ export async function autoRegisterProviders(): Promise<string[]> {
           db.prepare(
             `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now') WHERE provider_id = ?`
           ).run(existing.id);
-          logger.info({ provider: template.id }, 'Activated provider — API key now available');
+          logger.info({ provider: template.id }, 'Re-activated provider — api_key_ref/env key now available');
         }
       }
       continue;

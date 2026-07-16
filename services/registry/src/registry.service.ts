@@ -30,6 +30,16 @@ export class RegistryService {
 
   getCandidates(modality?: string): CandidateSet {
     const db = getDb();
+    // Optional allowlist: when DMRX_PROVIDER_ALLOWLIST is set (comma-separated
+    // provider names), only those providers become routing candidates. This is
+    // the deployment's "known-good" set — e.g. providers the operator has
+    // valid keys for. It keeps DMR-X from wasting its retry/backoff budget on
+    // dead/unkeyed catalog providers, which is what makes inference smoothing
+    // actually fast for downstream clients (the pi agent, etc.).
+    const allowlist = (process.env.DMRX_PROVIDER_ALLOWLIST ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const query = `
       SELECT
         p.id as "providerId",
@@ -73,13 +83,20 @@ export class RegistryService {
       JOIN providers p ON p.id = mp.provider_id
       WHERE mp.is_active = 1 AND p.is_healthy = 1
         AND (mp.subscription_only = 0 OR p.auth_method = 'oauth')
+        -- Only route to providers that actually have an active key. Unkeyed
+        -- catalog providers can never serve a completion, so including them
+        -- just wastes the retry/backoff budget and trips client timeouts
+        -- (e.g. the pi agent). This is what makes DMR-X "smooth" failures
+        -- instead of hanging on dead providers.
+        AND EXISTS (SELECT 1 FROM provider_keys pk WHERE pk.provider_id = p.id AND pk.is_active = 1)
+        ${allowlist.length ? 'AND p.name IN (' + allowlist.map(() => '?').join(',') + ')' : ''}
       ${modality ? 'AND mp.modality = ?' : ''}
       ORDER BY mp.quality_score DESC
     `;
 
-    const rows = modality
-      ? db.prepare(query).all(modality)
-      : db.prepare(query).all();
+    const params: any[] = [...allowlist];
+    if (modality) params.push(modality);
+    const rows = db.prepare(query).all(...params);
 
     return rows.map((row: any) => {
       // Resolve pricing from models.dev for all providers
