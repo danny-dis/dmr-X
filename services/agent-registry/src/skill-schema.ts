@@ -4,7 +4,7 @@ import { z } from 'zod';
 // Skill Schema
 // ---------------------------------------------------------------------------
 
-export const SkillSourceSchema = z.enum(['builtin', 'md', 'zip', 'github', 'agent']);
+export const SkillSourceSchema = z.enum(['builtin', 'md', 'zip', 'github', 'agent', 'eve']);
 
 export type SkillSource = z.infer<typeof SkillSourceSchema>;
 

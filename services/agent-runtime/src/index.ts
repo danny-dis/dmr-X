@@ -19,6 +19,21 @@ export {
 } from './agent-scheduler.js';
 
 export {
+  AgentSessionStore,
+  agentSessionStore,
+  type PersistedSession,
+  type SessionStatus,
+} from './agent-session.store.js';
+
+export { SkillLoader, skillLoader, type SkillAdvert } from './skill-loader.js';
+
+export {
+  resolveSubagent,
+  runSubagent,
+  type DelegateResult,
+} from './agent-delegate.js';
+
+export {
   recordDataAccess,
   verifyDataAccessLog,
   sanitizeArgsSummary,

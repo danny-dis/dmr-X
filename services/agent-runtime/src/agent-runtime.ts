@@ -3,6 +3,7 @@ import { billingService } from '@dmr-x/billing';
 import { getDb } from '@dmr-x/db';
 import { agentMemoryManager } from '@dmr-x/memory';
 import { logger } from '@dmr-x/utils';
+import { skillLoader } from './skill-loader.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,9 +67,19 @@ export class AgentRuntimeService {
 
   /**
    * Build the system prompt for an agent, incorporating its definition.
-   * Resolves linked skills (tenant-scoped) and inlines their markdown content.
+   *
+   * Skills use PROGRESSIVE DISCLOSURE (borrowed from Vercel EVE): each
+   * declared skill's *description* is always advertised as a one-line hint,
+   * but only the bodies of skills in `loadedSkillIds` are inlined into the
+   * prompt. The model calls the `load_skill` tool to add a skill's body to
+   * `loadedSkillIds` mid-run. This avoids bloating every turn with every
+   * skill's full content.
    */
-  async buildSystemPrompt(definition: AgentDefinition, turn?: number): Promise<string> {
+  async buildSystemPrompt(
+    definition: AgentDefinition,
+    turn?: number,
+    loadedSkillIds: string[] = [],
+  ): Promise<string> {
     const parts: string[] = [];
 
     // 1. Identity block
@@ -88,15 +99,30 @@ export class AgentRuntimeService {
       parts.push(definition.systemPrompt);
     }
 
-    // 4. Skills (tenant-scoped, content inlined)
+    // 4. Skills — progressive disclosure
     const skillIds: string[] = (definition.skills ?? []).filter(Boolean);
     if (skillIds.length > 0) {
-      const skillBlocks = this.resolveSkills(definition.tenantId, skillIds);
-      if (skillBlocks.length > 0) {
-        const skillSection = skillBlocks
-          .map((s) => `## Skill: ${s.name}\n${s.description ? s.description + '\n' : ''}${s.content}`)
-          .join('\n\n');
-        parts.push(`Skills:\n\n${skillSection}`);
+      // 4a. Always advertise each skill's description as a hint.
+      const adverts = skillLoader.advertise(definition.tenantId, skillIds);
+      const advertSection = skillLoader.advertismentSection(adverts);
+      if (advertSection) parts.push(advertSection);
+
+      // 4b. Inline ONLY the bodies of skills that have been explicitly loaded.
+      const loaded = skillIds.filter((id) =>
+        loadedSkillIds.includes(id) || loadedSkillIds.includes(id.toLowerCase()),
+      );
+      if (loaded.length > 0) {
+        const skillBlocks = skillLoader.resolveBody
+          ? loaded
+              .map((id) => {
+                const s = skillLoader.resolveBody(definition.tenantId, id);
+                return s ? `## Skill: ${s.name}\n${s.description ? s.description + '\n' : ''}${s.content}` : null;
+              })
+              .filter(Boolean as unknown as (x: string | null) => x is string)
+          : [];
+        if (skillBlocks.length > 0) {
+          parts.push(`Loaded skills:\n\n${skillBlocks.join('\n\n')}`);
+        }
       }
     }
 
@@ -160,28 +186,14 @@ export class AgentRuntimeService {
 
   /**
    * Resolve an agent's linked skills by id or name, scoped to its tenant.
-   * Returns resolved skills with their markdown content. Unresolvable skill
-   * references are skipped (never fatal to a run). Db access is synchronous.
+   * Thin wrapper over the shared SkillLoader (progressive disclosure).
    */
   private resolveSkills(tenantId: string, skillRefs: string[]): { name: string; description: string; content: string }[] {
-    try {
-      const db = getDb();
-      const placeholders = skillRefs.map(() => '?').join(', ');
-      const rows = db
-        .prepare(
-          `SELECT name, description, content FROM skills
-           WHERE tenant_id = ? AND (id IN (${placeholders}) OR name IN (${placeholders}))`,
-        )
-        .all(tenantId, ...skillRefs, ...skillRefs) as Array<{ name: string; description: string | null; content: string | null }>;
-      return rows.map((r) => ({
-        name: r.name,
-        description: r.description ?? '',
-        content: r.content ?? '',
-      }));
-    } catch (err) {
-      logger.warn({ tenantId, skillRefs, err }, 'Failed to resolve agent skills; skipping');
-      return [];
-    }
+    return skillRefs.map((ref) => skillLoader.resolveBody(tenantId, ref)).filter(Boolean) as {
+      name: string;
+      description: string;
+      content: string;
+    }[];
   }
 
   /**

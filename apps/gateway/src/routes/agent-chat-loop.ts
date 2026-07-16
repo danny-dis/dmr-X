@@ -54,6 +54,15 @@ interface RunAgentChatLoopArgs {
   onStreamEvent: (event: string, data: unknown) => void;
   /** Rebuilds the system prompt for a given turn (skill-capture nudge support). */
   buildSystemPrompt: (turn: number) => Promise<string>;
+  /** Agent definition, threaded into tool execution for the `delegate` tool. */
+  agentDefinition: {
+    id: string;
+    name: string;
+    tenantId: string;
+    allowedTools: string[];
+  };
+  /** Mutable list of skill ids loaded via `load_skill` this session. */
+  loadedSkillIds: string[];
 }
 
 function toUnifiedRequest(
@@ -95,6 +104,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     stream,
     onStreamEvent,
     buildSystemPrompt,
+    agentDefinition,
+    loadedSkillIds,
   } = args;
 
   const messages = [...conversation.messages] as any[];
@@ -223,7 +234,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     messages.push(assistantMessage);
 
     const executionPromises = allowedCalls.map((tc: ToolCall) =>
-      executeToolCall(tc, { requestId, tenant }),
+      executeToolCall(tc, { requestId, tenant, agentDefinition, router, loadedSkills: loadedSkillIds }),
     );
 
     const settled = await Promise.allSettled(executionPromises);

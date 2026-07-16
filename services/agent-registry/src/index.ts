@@ -61,6 +61,7 @@ export {
   loadAgentsFromDirectory,
   parseAgentMdFromString,
   parseAgentMdBatch,
+  parseEveProject,
   fetchGitHubRepoMdFiles,
   extractZipMdFiles,
   type AgentConfigFile,

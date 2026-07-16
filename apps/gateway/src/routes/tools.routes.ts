@@ -3,7 +3,8 @@ import type { Router } from '@dmr-x/router';
 import { memoryService } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
 import { skillService } from '@dmr-x/agent-registry';
-import { recordDataAccess, sanitizeArgsSummary } from '@dmr-x/agent-runtime';
+import { recordDataAccess, sanitizeArgsSummary, agentRuntimeService, skillLoader } from '@dmr-x/agent-runtime';
+import { resolveSubagent, runSubagent } from '@dmr-x/agent-runtime';
 import {
   generateRequestId,
   executeTool,
@@ -129,7 +130,13 @@ function getRegisteredSDKToolsCached(): SDKTool[] {
 /** Execute a tool call using the SDK executor with fallback to direct handler lookup */
 async function executeToolCall(
   tc: ToolCall,
-  context: { requestId: string; tenant?: { id: string; name: string } },
+  context: {
+    requestId: string;
+    tenant?: { id: string; name: string };
+    agentDefinition?: { id: string; name: string; tenantId: string; allowedTools: string[] };
+    router?: any;
+    loadedSkills?: string[];
+  },
 ): Promise<{ tool_call_id: string; tool_name: string; result: unknown; error?: { message: string } }> {
   const tools = getRegisteredSDKToolsCached();
   const parsedCall: ParsedToolCall = {
@@ -193,6 +200,8 @@ const SANDBOX_MAX_WAIT_MS = 30_000;
  */
 export function registerBuiltinToolHandlers(): void {
   registerSkillToolHandlers();
+  registerLoadSkillToolHandler();
+  registerDelegateToolHandler();
 
   // ---- execute_code --------------------------------------------------------
   registerToolHandler(
@@ -404,6 +413,143 @@ interface SkillServiceContract {
 // The real `skillService` carries the full SkillService surface; narrow it to
 // the contract the gateway relies on for tool execution.
 const skillSvc = skillService as unknown as SkillServiceContract;
+
+/**
+ * Register the `delegate` tool (subagent isolation boundary).
+ *
+ * Borrowed from Vercel EVE's declared-subagent model. When the model
+ * calls `delegate`, the named subagent runs in a FRESH, ISOLATED
+ * session: its own conversation (parent history NOT visible), its own
+ * narrowed tool surface (`allowedTools`), and its own system prompt.
+ * Result is returned to the parent; the parent never sees the child's
+ * intermediate steps. Enforces a hard isolation boundary.
+ *
+ * Requires the running agent's definition + the router in the tool context
+ * (`context.agentDefinition`, `context.router`); an agentic loop that
+ * supports delegation must supply them (the agent chat loop does).
+ */
+export function registerDelegateToolHandler(): void {
+  registerToolHandler(
+    'delegate',
+    async (args, context) => {
+      const tenantId = context?.tenant?.id;
+      if (!tenantId) return { error: 'No tenant context' };
+      const parent = (context as any).agentDefinition as
+        | { id: string; name: string; tenantId: string; allowedTools: string[] }
+        | undefined;
+      const router = (context as any).router as Router | undefined;
+      if (!parent) return { error: 'delegate requires an agent context (parent definition)' };
+      if (!router) return { error: 'delegate requires a router in the tool context' };
+
+      const { agent, message, output_schema } = args as {
+        agent?: unknown;
+        message?: unknown;
+        output_schema?: Record<string, unknown>;
+      };
+      if (typeof agent !== 'string' || !agent) return { error: 'agent (subagent name/id) is required' };
+      if (typeof message !== 'string' || !message) return { error: 'message is required' };
+
+      const subagent = await resolveSubagent(tenantId, parent as any, agent);
+      if (!subagent) {
+        return { error: `No subagent found matching "${agent}"` };
+      }
+
+      // Hard isolation: child runs with its OWN tool surface, never the parent's.
+      if ((subagent.allowedTools ?? []).length === 0) {
+        // A subagent with no declared tools still runs, but cannot call tools.
+      }
+
+      try {
+        const result = await runSubagent({
+          parent: parent as any,
+          subagent,
+          message,
+          tenantId,
+          router,
+          runtime: agentRuntimeService,
+          outputSchema: output_schema,
+        });
+        if (!result.ok) return { error: result.error ?? 'subagent failed' };
+        return {
+          name: result.name,
+          output: result.output,
+          model: result.model,
+        };
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        logger.error({ err: m, tool: 'delegate', subagent: subagent.name }, 'delegate tool error');
+        return { error: m };
+      }
+    },
+    {
+      description:
+        'Delegate a self-contained task to a named subagent. The subagent runs in an isolated session with its own tools and system prompt; it cannot see this conversation. Returns the subagent\'s final answer. Use for independent, parallelizable specialist work.',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'Name or id of the subagent to delegate to.' },
+          message: { type: 'string', description: 'The complete task description for the subagent. Do not include sensitive data the child should not see.' },
+          output_schema: { type: 'object', description: 'Optional JSON schema the subagent\'s answer should conform to.' },
+        },
+        required: ['agent', 'message'],
+      },
+    },
+  );
+}
+
+/**
+ * Register the `load_skill` tool (progressive disclosure).
+ *
+ * Borrowed from Vercel EVE's SKILL.md / load_skill model. The agent's
+ * skill *descriptions* are always advertised in the system prompt as hints,
+ * but their *bodies* are only pulled in when the model calls this tool
+ * by skill name. The body is returned in the tool result (so it enters
+ * context for the current turn) and the skill id is appended to
+ * `context.loadedSkills` so subsequent turns re-inline it from the
+ * skill store rather than re-fetching.
+ */
+export function registerLoadSkillToolHandler(): void {
+  registerToolHandler(
+    'load_skill',
+    async (args, context) => {
+      const tenantId = context?.tenant?.id;
+      if (!tenantId) return { error: 'No tenant context' };
+      const { skill } = args as { skill?: unknown };
+      if (typeof skill !== 'string' || !skill) {
+        return { error: 'skill (name or id) is required' };
+      }
+      try {
+        const resolved = skillLoader.resolveBody(tenantId, skill);
+        if (!resolved) return { error: `No skill found matching "${skill}"` };
+        // Record for subsequent-turn re-inlining (progressive disclosure).
+        if (Array.isArray((context as any).loadedSkills) &&
+            !(context as any).loadedSkills.includes(resolved.name)) {
+          (context as any).loadedSkills.push(resolved.name);
+        }
+        return {
+          name: resolved.name,
+          description: resolved.description,
+          content: resolved.content,
+        };
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        logger.error({ err: m, tool: 'load_skill' }, 'load_skill error');
+        return { error: m };
+      }
+    },
+    {
+      description:
+        'Load a skill\'s full procedure into context by name. Skills are advertised as hints; call this when a task matches one to read its complete instructions. The body is returned for the current turn.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'Name or id of the skill to load.' },
+        },
+        required: ['skill'],
+      },
+    },
+  );
+}
 
 /**
  * Register tenant-scoped skill tool handlers. These operate on the

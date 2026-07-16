@@ -1,6 +1,6 @@
 import type { Router } from '@dmr-x/router';
 import { agentRegistryService, AgentChatRequestSchema } from '@dmr-x/agent-registry';
-import { agentRuntimeService } from '@dmr-x/agent-runtime';
+import { agentRuntimeService, agentSessionStore } from '@dmr-x/agent-runtime';
 import {
   generateRequestId,
   createInitialState,
@@ -35,27 +35,6 @@ interface AgentChatBody {
 // writeSSE is imported from ../lib/sse.js
 
 // ---------------------------------------------------------------------------
-// Conversation state store (per-agent instance)
-// ---------------------------------------------------------------------------
-
-const agentConversations = new Map<string, ConversationState>();
-const agentConversationLocks = new Map<string, Promise<void>>();
-const CONVERSATION_TTL_MS = 30 * 60 * 1000;
-const agentConversationTimestamps = new Map<string, number>();
-
-const conversationCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [id, ts] of agentConversationTimestamps) {
-    if (agentConversationLocks.has(id)) continue;
-    if (now - ts > CONVERSATION_TTL_MS) {
-      agentConversations.delete(id);
-      agentConversationTimestamps.delete(id);
-    }
-  }
-}, 60_000);
-if (conversationCleanupTimer.unref) conversationCleanupTimer.unref();
-
-// ---------------------------------------------------------------------------
 /**
  * Build the OpenAI-format `tools` array for a subagent, derived from the
  * gateway's registered tool definitions and narrowed to the agent's
@@ -78,8 +57,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
    *
    * Full agentic loop for agent instances:
    * - Multi-turn tool calling with automatic execution
-   * - Approval gates for sensitive tool calls
-   * - Conversation state persistence via conversationId
+   * - Conversation state persisted durably (survives restarts / crashes)
+   * - Load-on-demand skills (progressive disclosure via `load_skill`)
+   * - Subagent delegation (isolated sessions via the `delegate` tool)
    * - Streaming and non-streaming responses
    * - Tool access filtered by agent's allowedTools
    */
@@ -104,9 +84,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: { message: 'Agent instance not found or inactive' } });
     }
 
-    const systemPrompt = await agentRuntimeService.buildSystemPrompt(context.definition, 0);
-    const model = agentRuntimeService.resolveModel(context.definition);
-    const agentTools = context.definition.allowedTools;
+    const definition = context.definition;
+    const model = agentRuntimeService.resolveModel(definition);
+    const agentTools = definition.allowedTools;
     const agentToolDefs = buildAgentTools(agentTools);
 
     // Acquire conversation lock. Key per-conversation (not per-instance) so
@@ -117,38 +97,41 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       body.conversationId && body.conversationId.length > 0
         ? body.conversationId
         : `${instanceId}:${requestId}`;
-    while (true) {
-      const existingLock = agentConversationLocks.get(convId);
-      if (!existingLock) break;
-      await existingLock;
+    const locks = agentSessionStore.locks;
+    while (locks.has(convId)) {
+      await locks.get(convId)!;
     }
     let lockResolver: (() => void) | undefined;
     const lockPromise = new Promise<void>((resolve) => { lockResolver = resolve; });
-    agentConversationLocks.set(convId, lockPromise);
+    locks.set(convId, lockPromise);
     const releaseLock = () => {
       lockResolver?.();
-      if (agentConversationLocks.get(convId) === lockPromise) agentConversationLocks.delete(convId);
+      if (locks.get(convId) === lockPromise) locks.delete(convId);
     };
 
     const startTime = Date.now();
 
     try {
-      // Load or create conversation state
+      // Load or create the DURABLE conversation state. This is the heart of
+      // feature #1 (crash-safe, resumable agent sessions): the state lives in
+      // SQLite, keyed by conversationId + tenant, not in a process Map.
       let conversation: ConversationState;
-      const existingConv = agentConversations.get(convId);
-      if (existingConv) {
-        conversation = updateState(existingConv, {
-          messages: [...existingConv.messages, ...body.messages],
+      let loadedSkillIds: string[];
+      const persisted = agentSessionStore.get(tenant.id, convId);
+      if (persisted) {
+        conversation = persisted.state as ConversationState;
+        loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');
+        conversation = updateState(conversation, {
+          messages: [...conversation.messages, ...body.messages],
         });
-        agentConversationTimestamps.set(convId, Date.now());
       } else {
+        const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0, []);
         conversation = createInitialState(convId);
         conversation.messages = [
           { role: 'system', content: systemPrompt },
           ...body.messages,
         ];
-        agentConversations.set(convId, conversation);
-        agentConversationTimestamps.set(convId, Date.now());
+        loadedSkillIds = [];
       }
 
       const result = await runAgentChatLoop({
@@ -164,7 +147,30 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         context,
         stream: body.stream === true,
         onStreamEvent: (event, data) => writeSSE(reply, event, data),
-        buildSystemPrompt: (turn) => agentRuntimeService.buildSystemPrompt(context.definition, turn),
+        buildSystemPrompt: (turn) =>
+          agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds),
+        agentDefinition: {
+          id: definition.id,
+          name: definition.name,
+          tenantId: definition.tenantId,
+          allowedTools: definition.allowedTools,
+        },
+        loadedSkillIds,
+      });
+
+      // Persist the durable session (feature #1) so it can be resumed later.
+      agentSessionStore.upsert({
+        tenantId: tenant.id,
+        conversationId: convId,
+        instanceId,
+        agentDefinitionId: definition.id,
+        state: conversation,
+        status: result.budgetExceeded ? 'interrupted' : conversation.status,
+        metadata: {
+          lastResponseText: result.lastResponseText,
+          totalTokensUsed: result.totalTokensUsed,
+          loadedSkillIds: JSON.stringify(loadedSkillIds),
+        },
       });
 
       // Record execution
@@ -195,7 +201,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       return reply.send({
         id: requestId,
         agentInstanceId: instanceId,
-        agentName: context.definition.name,
+        agentName: definition.name,
         content: result.lastResponseText,
         model,
         usage: result.finalUsage,
@@ -206,6 +212,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         ...(result.budgetExceeded
           ? { budget_exceeded: true, max_cost_budget: body.max_cost_budget, totalCost: result.totalCost }
           : {}),
+        ...(loadedSkillIds.length ? { loadedSkills: loadedSkillIds } : {}),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -236,16 +243,145 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
   });
 
   /**
+   * POST /agents/:instanceId/chat/:conversationId/resume
+   *
+   * Resume a durable, interrupted, or paused agent session (feature #1).
+   * Pushes the provided `messages` into the persisted conversation and runs
+   * the loop again from where it left off. Used after an approval gate, a
+   * human answer, or a crash recovery.
+   */
+  server.post('/agents/:instanceId/chat/:conversationId/resume', async (request, reply) => {
+    const tenant = (request as any).tenant;
+    if (!tenant) return reply.code(401).send({ error: { message: 'Unauthorized' } });
+
+    const { instanceId, conversationId } = request.params as {
+      instanceId: string;
+      conversationId: string;
+    };
+    const body = parsedResumeBody(request.body);
+    const requestId = generateRequestId();
+    const router = (server as any).router as Router;
+    const maxSteps = body.maxSteps ?? 10;
+    const startTime = Date.now();
+
+    const context = await agentRuntimeService.loadContext(instanceId, tenant.id);
+    if (!context) {
+      return reply.code(404).send({ error: { message: 'Agent instance not found or inactive' } });
+    }
+    const persisted = agentSessionStore.get(tenant.id, conversationId);
+    if (!persisted) {
+      return reply.code(404).send({ error: { message: 'No durable session to resume' } });
+    }
+    const loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');
+
+    const conversation = updateState(persisted.state as ConversationState, {
+      messages: [...persisted.state.messages, ...body.messages],
+      status: 'in_progress',
+    });
+
+    const definition = context.definition;
+    const model = agentRuntimeService.resolveModel(definition);
+    const agentTools = definition.allowedTools;
+    const agentToolDefs = buildAgentTools(agentTools);
+
+    const result = await runAgentChatLoop({
+      conversation,
+      maxSteps,
+      model,
+      agentTools,
+      agentToolDefs,
+      body,
+      requestId,
+      tenant,
+      router,
+      context,
+      stream: false,
+      onStreamEvent: () => {},
+      buildSystemPrompt: (turn) =>
+        agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds),
+      agentDefinition: {
+        id: definition.id,
+        name: definition.name,
+        tenantId: definition.tenantId,
+        allowedTools: definition.allowedTools,
+      },
+      loadedSkillIds,
+    });
+
+    agentSessionStore.upsert({
+      tenantId: tenant.id,
+      conversationId,
+      instanceId,
+      agentDefinitionId: definition.id,
+      state: conversation,
+      status: result.budgetExceeded ? 'interrupted' : conversation.status,
+      metadata: {
+        lastResponseText: result.lastResponseText,
+        totalTokensUsed: result.totalTokensUsed,
+        loadedSkillIds: JSON.stringify(loadedSkillIds),
+      },
+    });
+
+    return reply.send({
+      id: requestId,
+      agentInstanceId: instanceId,
+      agentName: definition.name,
+      content: result.lastResponseText,
+      model,
+      usage: result.finalUsage,
+      conversationId,
+      steps_completed: result.stepsCompleted,
+      durationMs: Date.now() - startTime,
+      loadedSkills: loadedSkillIds,
+      resumed: true,
+    });
+  });
+
+  /**
+   * GET /agents/:instanceId/sessions
+   *
+   * List durable sessions for an agent instance (feature #1). Lets clients
+   * see which conversations can be resumed.
+   */
+  server.get('/agents/:instanceId/sessions', async (request, reply) => {
+    const tenant = (request as any).tenant;
+    if (!tenant) return reply.code(401).send({ error: { message: 'Unauthorized' } });
+    const { instanceId } = request.params as { instanceId: string };
+    const sessions = agentSessionStore.listForInstance(tenant.id, instanceId);
+    return reply.send({ instanceId, sessions });
+  });
+
+  /**
+   * DELETE /agents/:instanceId/chat/:conversationId
+   *
+   * Forget a durable session.
+   */
+  server.delete('/agents/:instanceId/chat/:conversationId', async (request, reply) => {
+    const tenant = (request as any).tenant;
+    if (!tenant) return reply.code(401).send({ error: { message: 'Unauthorized' } });
+    const { conversationId } = request.params as { conversationId: string };
+    agentSessionStore.delete(conversationId);
+    return reply.send({ status: 'deleted', conversationId });
+  });
+
+  /**
    * POST /agents/:instanceId/chat/:conversationId/cancel
    */
   server.post('/agents/:instanceId/chat/:conversationId/cancel', async (request, reply) => {
     const { conversationId } = request.params as { conversationId: string };
-    const conversation = agentConversations.get(conversationId);
-    if (!conversation) {
+    const persisted = agentSessionStore.get((request as any).tenant?.id, conversationId);
+    if (!persisted) {
       return reply.code(404).send({ error: 'Conversation not found' });
     }
-    conversation.status = 'completed';
-    agentConversations.delete(conversationId);
+    agentSessionStore.upsert({
+      tenantId: (request as any).tenant.id,
+      conversationId,
+      instanceId: (persisted as any).agentInstanceId,
+      agentDefinitionId: (persisted as any).agentDefinitionId,
+      state: updateState(persisted.state as ConversationState, { status: 'completed' }),
+      status: 'completed',
+      metadata: (persisted as any).metadata ?? {},
+    });
     return { status: 'cancelled', conversationId };
   });
 
@@ -272,4 +408,12 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const executions = await agentRegistryService.listExecutions(instanceId, tenant.id);
     return reply.send(executions);
   });
+}
+
+function parsedResumeBody(body: unknown): AgentChatBody {
+  const b = (body ?? {}) as Record<string, unknown>;
+  return {
+    messages: (b.messages as AgentChatBody['messages']) ?? [],
+    maxSteps: (b.maxSteps as number) ?? undefined,
+  } as AgentChatBody;
 }

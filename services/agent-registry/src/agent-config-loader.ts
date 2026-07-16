@@ -406,6 +406,130 @@ export async function fetchGitHubRepoMdFiles(repoUrl: string): Promise<Map<strin
 }
 
 // ---------------------------------------------------------------------------
+// Vercel EVE project import
+//
+// Lets an agent authored in the EVE framework (a directory with
+// `agent/instructions.md`, `agent/agent.ts`, `agent/tools/*.ts`, …)
+// be imported directly into DMR-X as an AgentDefinition. This is the
+// bridge the AaaS-evaluation recommended: author agents in EVE's pleasant
+// filesystem-first layout, deploy them on DMR-X's multi-tenant runtime.
+//
+// Supported layout:
+//   <root>/agent/instructions.md   → system prompt body
+//   <root>/agent/agent.ts          → defineAgent({ model })
+//   <root>/agent/tools/*.ts        → defineTool({ description })
+//   <root>/agent/skills/*.md        → skill hints (folded into tags)
+// ---------------------------------------------------------------------------
+
+const EVE_AGENT_DIR = 'agent';
+
+/**
+ * Extract the model string from a `defineAgent({ model: "…" })` call.
+ * Handles quoted string literals and the `anthropic/claude-…` gateway ids.
+ */
+function extractEveModel(source: string): string | undefined {
+  const m = source.match(/defineAgent\s*\(\s*\{[^}]*?model\s*:\s*['"`]([^'"`]+)['"`]/s);
+  if (m) return m[1];
+  // Also accept `model: anthropic("claude-…")` → keep the bare model id
+  const m2 = source.match(/defineAgent\s*\(\s*\{[^}]*?model\s*:\s*\w+\(\s*['"`]([^'"`]+)['"`]/s);
+  if (m2) return m2[1];
+  return undefined;
+}
+
+/**
+ * Extract every `defineTool({ description: "…", name?: … })` description
+ * from a tool .ts source. We only need the human description to seed the
+ * agent's `allowedTools`/metadata; the actual tool implementation stays in
+ * EVE's runtime and is not executed by DMR-X.
+ */
+function extractEveToolDescriptions(source: string): Array<{ name: string; description: string }> {
+  const out: Array<{ name: string; description: string }> = [];
+  const re = /defineTool\s*\(\s*\{[\s\S]*?description\s*:\s*['"`]([^'"`]+)['"`]/g;
+  let mm: RegExpExecArray | null;
+  while ((mm = re.exec(source)) !== null) {
+    out.push({ name: `eve:${out.length}`, description: mm[1] });
+  }
+  return out;
+}
+
+/**
+ * Parse an in-memory EVE project (a Map of path → file content) into a
+ * single AgentDefinitionCreate. Returns null when no `agent/instructions.md`
+ * is present.
+ */
+export function parseEveProject(files: Map<string, string>): AgentConfigFile | null {
+  try {
+    const norm = new Map<string, string>();
+    for (const [p, c] of files) {
+      norm.set(p.replace(/\\/g, '/'), c);
+    }
+
+    const instrKey = [...norm.keys()].find((k) => k.endsWith('agent/instructions.md') || k.endsWith('agent/instructions.mdx'));
+    if (!instrKey) {
+      logger.warn({}, 'EVE project has no agent/instructions.md, skipping');
+      return null;
+    }
+    const instructions = norm.get(instrKey)!.trim();
+
+    // Model from agent.ts
+    let preferredModel: string | undefined;
+    const agentTs = [...norm.keys()].find((k) => k.endsWith('agent/agent.ts'));
+    if (agentTs) {
+      preferredModel = extractEveModel(norm.get(agentTs)!);
+    }
+
+    // Tools + skills
+    const toolDescs: Array<{ name: string; description: string }> = [];
+    const skillHints: string[] = [];
+    for (const [k, c] of norm) {
+      if (/\/agent\/tools\/[^/]+\.ts$/.test(k)) {
+        toolDescs.push(...extractEveToolDescriptions(c));
+      }
+      if (/\/agent\/skills\/[^/]+\.mdx?$/.test(k)) {
+        const head = c.split('\n').slice(0, 3).join(' ');
+        const fm = head.match(/description\s*[:\-]\s*(.+)/i);
+        if (fm) skillHints.push(fm[1].trim());
+      }
+    }
+
+    const definition: AgentDefinitionCreate = {
+      name: inferEveName(instrKey),
+      description: `Imported from a Vercel EVE project (${toolDescs.length} tool(s) declared).`,
+      version: '1.0.0',
+      systemPrompt: instructions,
+      preferredModel,
+      modelTier: 'auto',
+      allowedTools: toolDescs.map((t) => t.name),
+      customTools: toolDescs.map((t) => ({ name: t.name, description: t.description })),
+      triggers: [],
+      skills: [],
+      visibility: 'public',
+      tags: ['eve', ...skillHints.map((h) => h.slice(0, 50))].slice(0, 20),
+      category: 'Engineering',
+      skillNudgeInterval: 8,
+      verifyOnStop: false,
+    };
+
+    return { filePath: instrKey, definition };
+  } catch (error) {
+    logger.error({ error }, 'Failed to parse EVE project');
+    return null;
+  }
+}
+
+/** Derive a sensible agent name from its EVE path. */
+function inferEveName(instructionsPath: string): string {
+  const parts = instructionsPath.split('/');
+  // Prefer the project parent dir of /agent/
+  const idx = parts.findIndex((p) => p === EVE_AGENT_DIR);
+  if (idx > 0) {
+    const candidate = parts[idx - 1].replace(/[-_]/g, ' ');
+    if (candidate) return candidate.replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 100);
+  }
+  return 'EVE Agent';
+}
+
+// ---------------------------------------------------------------------------
 // ZIP extraction
 // ---------------------------------------------------------------------------
 
