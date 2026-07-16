@@ -217,7 +217,7 @@ export type AgentCategory = (typeof AGENT_CATEGORIES)[number];
  * Visibility is forced to 'public' on import regardless of input, per policy.
  */
 export const AgentImportRequestSchema = z.object({
-  source: z.enum(['github', 'zip', 'text', 'eve']),
+  source: z.enum(['github', 'zip', 'text']),
   githubUrl: z.string().url().optional(),
   content: z.string().optional(),
   filename: z.string().optional(),

@@ -6,7 +6,7 @@ import { logger, resolveDataDir } from '@dmr-x/utils';
 
 import { agentRegistryService } from './agent-registry.service.js';
 import { skillService } from './skill.service.js';
-import { parseAgentMdBatch, parseEveProject } from './agent-config-loader.js';
+import { parseAgentMdBatch } from './agent-config-loader.js';
 import type { AgentDefinitionCreate, AgentImportResult } from './agent-schema.js';
 import type { SkillSource } from './skill-schema.js';
 import type { BulkImportSkillResult } from './skill.service.js';
@@ -15,7 +15,7 @@ import type { BulkImportSkillResult } from './skill.service.js';
 // Types
 // ---------------------------------------------------------------------------
 
-export type IngestSource = 'github' | 'zip' | 'md' | 'eve';
+export type IngestSource = 'github' | 'zip' | 'md';
 
 export interface ImportAgentsWithSkillsOptions {
   modelTier?: 'auto' | 'premium' | 'budget';
@@ -59,7 +59,6 @@ const SOURCE_TO_SKILL: Record<IngestSource, SkillSource> = {
   github: 'github',
   zip: 'zip',
   md: 'md',
-  eve: 'eve',
 };
 
 // ---------------------------------------------------------------------------
@@ -87,13 +86,7 @@ export async function importAgentsWithSkills(
 ): Promise<ImportAgentsWithSkillsResult> {
   // 1. Parse + import agents
   const definitions: AgentDefinitionCreate[] =
-    opts.source === 'eve'
-      ? // EVE project: a directory tree, parsed into a single definition.
-        (() => {
-          const eve = parseEveProject(files);
-          return eve ? [eve.definition] : [];
-        })()
-      : parseAgentMdBatch(files, opts.category).map((a) => a.definition);
+    parseAgentMdBatch(files, opts.category).map((a) => a.definition);
   const agents = await agentRegistryService.importAgents(tenantId, definitions, {
     modelTier: opts.modelTier,
   });

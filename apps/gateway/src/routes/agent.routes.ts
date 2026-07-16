@@ -262,7 +262,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     // Raw .md files keyed by their original path — fed to both the agent
     // import AND the skill import so a single link populates both stores.
     let files: Map<string, string> = new Map();
-    let source: 'github' | 'zip' | 'md' | 'eve' = 'md';
+    let source: 'github' | 'zip' | 'md' = 'md';
 
     try {
       if (contentType.includes('multipart/form-data')) {
@@ -287,21 +287,6 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
           }
           files = await fetchGitHubRepoMdFiles(body.githubUrl);
           source = 'github';
-        } else if (body.source === 'eve') {
-          if (!body.content) {
-            return reply.code(400).send({ error: { message: 'content is required for eve source (a .zip or pasted agent/ directory)' } });
-          }
-          // An EVE project is supplied as a .zip (or a single pasted
-          // instructions.md). We normalize to a file map the importer
-          // understands. If content looks like a zip (starts with PK),
-          // extract it; otherwise treat the paste as agent/instructions.md.
-          if (body.content.startsWith('PK') || /^\x50\x4b/.test(body.content)) {
-            const buf = Buffer.from(body.content, 'base64');
-            files = await extractZipMdFiles(buf);
-          } else {
-            files = new Map([['agent/instructions.md', body.content]]);
-          }
-          source = 'eve';
         } else if (body.source === 'text') {
           if (!body.content) {
             return reply.code(400).send({ error: { message: 'content is required for text source' } });

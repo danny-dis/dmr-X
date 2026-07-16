@@ -1,8 +1,7 @@
-// Unit tests for the four EVE-inspired AaaS improvements:
+// Unit tests for three DMR-X AaaS capability improvements (Vercel-free):
 //   1. Durable / resumable agent sessions (agent-session.store)
 //   2. Load-on-demand skills (skill-loader + progressive disclosure prompt)
-//   3. EVE-project importer (agent-config-loader.parseEveProject)
-//   4. Subagent isolation model (agent-delegate.resolveSubagent / runSubagent)
+//   3. Subagent isolation model (agent-delegate.resolveSubagent / runSubagent)
 //
 // The session store and skill loader exercise the real SQLite path (no mocks),
 // matching the repo's "test against real sql.js" convention.
@@ -19,7 +18,6 @@ import {
   resolveSubagent,
   type SkillAdvert,
 } from '@dmr-x/agent-runtime';
-import { parseEveProject } from '@dmr-x/agent-registry';
 import { AgentRuntimeService } from '@dmr-x/agent-runtime';
 
 // Mirror the repo convention (conversation-routes-tenant-isolation.test.ts):
@@ -208,38 +206,7 @@ describe('buildSystemPrompt progressive disclosure', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. EVE-project importer
-// ---------------------------------------------------------------------------
-describe('parseEveProject (EVE importer)', () => {
-  it('parses an agent/ directory into a definition', () => {
-    const files = new Map<string, string>([
-      ['my-agent/agent/instructions.md', '# My Agent\nYou are a helpful coding agent.'],
-      [
-        'my-agent/agent/agent.ts',
-        `import { defineAgent } from "@vercel/eve";\nexport default defineAgent({ model: "anthropic/claude-3-7-sonnet", })`,
-      ],
-      [
-        'my-agent/agent/tools/search.ts',
-        `import { defineTool } from "@vercel/eve";\nexport const search = defineTool({ description: "Search the codebase", handler: async () => {} });`,
-      ],
-    ]);
-
-    const parsed = parseEveProject(files);
-    expect(parsed).not.toBeNull();
-    expect(parsed!.definition.systemPrompt).toContain('helpful coding agent');
-    expect(parsed!.definition.preferredModel).toBe('anthropic/claude-3-7-sonnet');
-    expect(parsed!.definition.allowedTools).toContain('eve:0');
-    expect(parsed!.definition.name).toContain('My Agent');
-  });
-
-  it('returns null when there is no agent/instructions.md', () => {
-    const files = new Map<string, string>([['readme.md', 'nope']]);
-    expect(parseEveProject(files)).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 4. Subagent isolation model
+// 3. Subagent isolation model
 // ---------------------------------------------------------------------------
 describe('resolveSubagent (isolation boundary)', () => {
   const parent = {
