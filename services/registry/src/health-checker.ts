@@ -120,8 +120,22 @@ export class HealthChecker {
         this.handleFailure(providerId, 'Health check returned false');
       }
     } catch (err) {
+      // A thrown/rejected probe (timeout, TLS blip, DNS hiccup, transient
+      // network error) is UNKNOWN — NOT proof the provider is dead. Treating
+      // it as a failure lets a concurrent health-check sweep (dozens of
+      // providers probed at once) poison otherwise-reachable providers via
+      // the failureThreshold, collapsing the candidate pool down to one or
+      // two survivors and forcing all `auto` traffic onto a single backend.
+      // Only a *definitive* false (revoked key / 401-403 from the probe)
+      // should mark a provider unhealthy. Genuinely-dead providers are still
+      // caught at request time by the router's circuit breaker + fallback
+      // chain, so skipping the poison here does not hide outages — it just
+      // stops transient blips from starving the pool.
       const latencyMs = Date.now() - startTime;
-      this.handleFailure(providerId, err instanceof Error ? err.message : 'Unknown error');
+      logger.debug(
+        { providerId, latencyMs, err: err instanceof Error ? err.message : 'Unknown error' },
+        'Health check probe errored (unknown — not marking unhealthy)',
+      );
     }
   }
 

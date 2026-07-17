@@ -3,12 +3,26 @@ import type { CandidateSet } from '@dmr-x/core';
 /**
  * Helper function to filter free candidates.
  * Uses unified pricing tier if available, falls back to cost-based check.
+ *
+ * A provider is treated as free when ANY of:
+ *  - its unified pricingTier is free / free_with_limits,
+ *  - the catalog exposes free-tier metadata (intelligenceRank/speedRank),
+ *  - its effective per-token cost is zero, or
+ *  - the operator explicitly declares it free via DMRX_FREE_PROVIDERS
+ *    (the common case where every configured API key is a free-tier key,
+ *    so the catalog's nominal "paid" tier is irrelevant to actual usage).
  */
+const FREE_PROVIDERS_ENV = (process.env.DMRX_FREE_PROVIDERS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const isFree = (c: any) => {
-  if (c.pricingTier) {
-    return c.pricingTier === 'free' || c.pricingTier === 'free_with_limits';
-  }
-  return (c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0;
+  if (c.pricingTier === 'free' || c.pricingTier === 'free_with_limits') return true;
+  if (c.freeTierMetadata) return true;
+  if ((c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0) return true;
+  if (FREE_PROVIDERS_ENV.includes(c.providerName) || FREE_PROVIDERS_ENV.includes(c.providerId)) return true;
+  return false;
 };
 
 /**
@@ -134,20 +148,24 @@ export const META_MODELS: MetaModelDefinition[] = [
   },
   {
     alias: 'auto-reasoning',
-    description: 'Best model for reasoning, math, and chain-of-thought tasks. Routes through all providers by default (use costFilter=free for free-only). Requires reasoning capability and 32K+ context. Scores by quality (45%) + reasoning (30%) + context (15%) + speed (10%).',
+    description: 'Best model for reasoning, math, and chain-of-thought tasks. Routes through all providers by default (use costFilter=free for free-only). Prefers reasoning-capable models; falls back to the full capable pool if none are tagged. Scores by quality (45%) + reasoning (30%) + context (15%) + speed (10%).',
     costFilter: 'all',
     ranker: (candidates, costFilterOverride) => {
       const filter = costFilterOverride ?? 'all';
       const MIN_CONTEXT = 32000;
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      const scored = pool
-        .filter(c =>
-          c.capabilities.includes('reasoning') &&
-          (c.contextLength ?? 0) >= MIN_CONTEXT
-        )
+      // Prefer reasoning-capable models, but never return an empty pool: some
+      // model is always better at reasoning than another, so fall back to the
+      // full context-qualified pool when the catalog has no reasoning tags.
+      const reasoned = pool.filter(c =>
+        c.capabilities.includes('reasoning') &&
+        (c.contextLength ?? 0) >= MIN_CONTEXT
+      );
+      const effectivePool = reasoned.length > 0 ? reasoned : pool.filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT);
+      const scored = effectivePool
         .map(c => {
           const qualityComponent = (c.qualityScore ?? 0) * 0.45;
-          const reasoningComponent = 1 * 0.3; // Already filtered, so reward full weight
+          const reasoningComponent = (c.capabilities.includes('reasoning') ? 1 : 0.6) * 0.3;
           const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.15;
           const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.1;
           return { ...c, reasoningScore: qualityComponent + reasoningComponent + contextComponent + speedComponent };

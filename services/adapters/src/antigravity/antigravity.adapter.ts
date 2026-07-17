@@ -4,6 +4,7 @@ import type {
   UnifiedResponse,
   StreamChunk,
 } from '@dmr-x/core';
+import { ProviderError } from '@dmr-x/core';
 
 import type {
   ProviderConfig,
@@ -260,7 +261,24 @@ export class AntigravityAdapter extends BaseAdapter {
         },
       );
     } catch (error) {
+      // ROOT-CAUSE FIX: fetchWithTimeout wraps 4xx (e.g. 404 "resource does not
+      // exist") as PermanentError/HttpError and throws it. Surface it as a typed
+      // ProviderError with the real status code so the gateway's streaming
+      // fallback + model-error cooldown (model_not_found / auth_error) can evict
+      // this dead endpoint instead of letting a raw provider 404 reach the client.
       throw this.handleAdapterError(error, 'stream');
+    }
+
+    // Defensive: some transports return a Response without throwing on 4xx. Catch
+    // it explicitly so the status code is preserved for classification.
+    if (!response.ok) {
+      let bodyText = '';
+      try { bodyText = await response.text(); } catch { /* ignore */ }
+      throw new ProviderError(
+        `antigravity stream: HTTP ${response.status} ${bodyText.slice(0, 200)}`,
+        this.providerId,
+        response.status,
+      );
     }
 
     const body = response.body;

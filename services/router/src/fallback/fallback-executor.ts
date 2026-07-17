@@ -4,9 +4,12 @@ import type { RateLimitService, QuotaService, KeyRotationService } from '@dmr-x/
 import { logger } from '@dmr-x/utils';
 
 // Model error tracking: temporarily skip models that returned 404/410
-// TTL: 1 hour for deprecated models, 5 minutes for other errors
+// TTL: a 404 "model not found" means the model was removed upstream and will
+// NOT come back on its own — skipping it for a year (effectively permanent)
+// prevents the router from re-selecting a dead model and burning a fallback
+// slot every hour. `auth_error` (bad/expired key) may recover, so 24h. Others 5m.
 const MODEL_ERROR_TTL: Record<string, number> = {
-  'model_not_found': 60 * 60_000,     // 1 hour
+  'model_not_found': 365 * 24 * 60 * 60_000,  // ~1 year (permanent skip for removed models)
   'auth_error': 24 * 60 * 60_000,     // 24 hours
   'provider_overloaded': 5 * 60_000,  // 5 minutes
 };
@@ -72,7 +75,23 @@ function isProviderOverloadedError(error: unknown): boolean {
 }
 
 function isModelNotFoundError(error: unknown): boolean {
-  if (!(error instanceof ProviderError)) return false;
+  if (!(error instanceof ProviderError)) {
+    // Some adapters surface model-not-found as a plain Error/NotFoundError
+    // without a ProviderError wrapper. Catch the well-known Google/OpenAI
+    // "The requested resource does not exist" / "model not found" phrasing
+    // so broken model IDs get evicted from the candidate pool instead of
+    // being retried on every turn (which exhausts the fallback chain and
+    // makes `auto` report "All providers currently unavailable").
+    const msg = String((error as any)?.message ?? '').toLowerCase();
+    return (
+      msg.includes('requested resource does not exist') ||
+      msg.includes('model not found') ||
+      msg.includes('model_not_found') ||
+      msg.includes('model does not exist') ||
+      msg.includes('unknown model') ||
+      msg.includes('the model') && msg.includes('does not exist')
+    );
+  }
   if (error.statusCode === 404 || error.statusCode === 410) return true;
   if (error.statusCode === 400) {
     const msg = error.message.toLowerCase();
@@ -82,7 +101,8 @@ function isModelNotFoundError(error: unknown): boolean {
       msg.includes('model not supported') ||
       msg.includes('model_required') ||
       msg.includes('unknown model') ||
-      msg.includes('model does not exist')
+      msg.includes('model does not exist') ||
+      msg.includes('requested resource does not exist')
     );
   }
   return false;

@@ -929,12 +929,23 @@ void (async () => {
           const cfg = JSON.parse(p.config || '{}');
           const template = PROVIDER_CATALOG.find((t) => t.id === p.name);
           const needsNoKey = template?.envKey === '';
+          // A provider has a usable key if its envKey resolves to a non-empty
+          // value (set in process.env) or it is keyless by design.
+          const hasKey = !!template?.envKey && !!process.env[template.envKey];
+          const keyConfigured = needsNoKey || hasKey;
 
-          if (needsNoKey && !p.is_healthy) {
+          // Re-activate providers that are intended to be used (keyless or
+          // keyed) but were previously marked unhealthy by transient
+          // health-check timeouts. Keeping them healthy preserves a large
+          // candidate pool so meta-models like `auto` can spread traffic
+          // across backends instead of funnelling onto a single survivor.
+          // Genuinely-dead providers (revoked keys, hard network failures)
+          // are still caught at request time by the circuit breaker + fallback.
+          if (keyConfigured && !p.is_healthy) {
             db.prepare(
               `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`,
             ).run(p.id);
-            logger.info({ provider: p.name }, 'Re-activated keyless provider');
+            logger.info({ provider: p.name, hasKey }, 'Re-activated provider (was transiently unhealthy)');
           }
         }
       } catch (err) {

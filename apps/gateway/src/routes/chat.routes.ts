@@ -9,6 +9,7 @@ import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
 import { semanticCacheService } from '@dmr-x/cache';
+import { hashConversation, breakStickySession } from '@dmr-x/router';
 
 const ChatRequestSchema = z.object({
   model: z.string(),
@@ -205,7 +206,15 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // any bad primary provider (402/404/etc.) killed the request with "Stream
       // failed" even though healthy fallbacks existed. We now iterate candidates and
       // fall back as long as NOTHING has been streamed to the client yet.
-      const streamCandidates = [
+      //
+      // ROOT-CAUSE FIX (smooth-flow guarantee): the `auto`/balanced meta-model
+      // selection can yield an EMPTY plan.chain, leaving a failed primary with no
+      // fallback and surfacing a raw provider error to the client. When the chain is
+      // empty (or has only the primary), we FORCE healthy candidates from the
+      // router's full pool so there is always somewhere to fall back to *before*
+      // any token reaches the client. This is what keeps DMR-X's "no raw provider
+      // errors reach the client" contract intact for streaming.
+      const streamCandidates: Array<{ providerId: string; modelId: string; score: number }> = [
         { providerId: plan.primary.providerId, modelId: plan.primary.modelId, score: plan.primary.score },
         ...plan.chain.map((step) => ({
           providerId: step.provider.providerId,
@@ -213,6 +222,28 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           score: step.provider.score,
         })),
       ];
+
+      // Force-inject healthy fallbacks from the router's candidate pool when the
+      // chain is too short to survive a primary failure. This is the core fix:
+      // a 404 on the primary must never reach the client as "Stream failed".
+      try {
+        const routerAny = router as unknown as { getCandidates?: () => Array<{ providerId: string; modelId: string; score: number; isHealthy?: boolean; providerName?: string }> };
+        const allCandidates = routerAny.getCandidates?.();
+        if (allCandidates && allCandidates.length) {
+          const seen = new Set(streamCandidates.map((c) => `${c.providerId}:${c.modelId}`));
+          // Prefer healthy candidates; if none healthy, still include others so the
+          // request does not die with an empty chain (better a degraded answer than
+          // a raw provider error to the client).
+          const healthy = allCandidates.filter((c) => c.isHealthy && !seen.has(`${c.providerId}:${c.modelId}`));
+          const unhealthy = allCandidates.filter((c) => !c.isHealthy && !seen.has(`${c.providerId}:${c.modelId}`));
+          for (const c of [...healthy, ...unhealthy]) {
+            seen.add(`${c.providerId}:${c.modelId}`);
+            streamCandidates.push({ providerId: c.providerId, modelId: c.modelId, score: c.score });
+          }
+        }
+      } catch (candErr) {
+        logger.warn({ err: candErr, requestId }, 'Failed to augment stream candidates from router pool');
+      }
 
       let streamedAnyOutput = false;
       let succeeded = false;
@@ -241,6 +272,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         const upstreamTimeoutMs = Number(process.env.DMRX_UPSTREAM_STREAM_TIMEOUT_MS ?? 60000);
         let deadlineFired = false;
         const deadline = setTimeout(() => { deadlineFired = true; controller.abort(); }, upstreamTimeoutMs);
+        // Declared OUTSIDE the try so the catch block (benign-error + fallback paths) can read them.
+        let collectedToolCalls = false;
+        let firstTokenAt: number | undefined;
+        let streamPromptTokens = 0;
+        let streamCompletionTokens = 0;
+        const collectedContent: string[] = [];
 
         try {
           const routedRequest = { ...unifiedRequest, model: candidate.modelId };
@@ -274,10 +311,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           };
           const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
           const streamStart = Date.now();
-          let firstTokenAt: number | undefined;
-          let streamPromptTokens = 0;
-          let streamCompletionTokens = 0;
-          const collectedContent: string[] = [];
           for await (const chunk of stream) {
             if (controller.signal.aborted) break;
             if (chunk.type === 'token' && firstTokenAt === undefined) {
@@ -292,7 +325,13 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             if (chunk.type === 'token' && chunk.data?.content) {
               collectedContent.push(chunk.data.content);
             }
-            let data: string;
+            // Track tool-call deltas so the empty-content reliability guard
+            // (below) does not wrongly abort legitimate tool-use turns, which
+            // carry zero *text* content by design.
+            if (chunk.type === 'token' && (chunk.data as { tool_calls?: unknown[] } | undefined)?.tool_calls?.length) {
+              collectedToolCalls = true;
+            }
+            let data: string | null = null;
             if (chunk.type === 'token') {
               data = `data: ${JSON.stringify({
                 id: requestId,
@@ -300,10 +339,26 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 choices: [{ index: 0, delta: chunk.data, finish_reason: null }],
               })}\n\n`;
             } else if (chunk.type === 'done') {
+              // ROOT-CAUSE FIX (empty-content reliability): a stream that ends
+              // with `done` but zero content tokens AND no tool calls is a
+              // silent free-tier failure (e.g. gemini-3.5-flash returning an
+              // empty body). Treat it as a retryable error so the existing
+              // fallback path (next healthy candidate, since no bytes were sent
+              // to the client yet) engages instead of delivering an empty
+              // "Stream failed". Tool-use turns legitimately have no text
+              // content, so they are exempt from this guard.
+              if (collectedContent.length === 0 && !collectedToolCalls) {
+                throw new Error('Upstream stream completed with zero content tokens');
+              }
               data = `data: ${JSON.stringify({
                 id: requestId,
                 object: 'chat.completion.chunk',
-                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+                choices: [{ index: 0, delta: {}, finish_reason: collectedToolCalls ? 'tool_calls' : 'stop' }],
+                usage: {
+                  prompt_tokens: streamPromptTokens,
+                  completion_tokens: streamCompletionTokens,
+                  total_tokens: streamPromptTokens + streamCompletionTokens,
+                },
               })}\n\n`;
             } else if (chunk.type === 'error') {
               // Funnel in-band adapter error chunks through the same catch/fallback
@@ -392,7 +447,56 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             );
             continue;
           }
+          // SMOOTH-FLOW FIX (benign trailing error): free-tier providers
+          // sometimes emit a trailing error chunk AFTER successfully streaming
+          // valid content / tool calls (e.g. gemini ending a tool-call stream
+          // with an error frame). If we have already delivered real output, the
+          // turn is effectively complete — emitting "Stream failed" here would
+          // make the client (pi) abort a turn whose tool calls it already has.
+          // Treat a post-output error as benign: close cleanly with [DONE] and
+          // mark success so no raw provider error reaches the client.
+          if (streamedAnyOutput) {
+            logger.warn(
+              { err: streamError instanceof Error ? streamError.message : streamError, requestId, provider: candidate.providerId },
+              'Stream error after output already sent; treating as benign and closing stream'
+            );
+            // Emit a clean terminal frame so clients (pi) see a properly
+            // finished stream with the correct finish_reason, then succeed.
+            const finishReason = collectedToolCalls ? 'tool_calls' : 'stop';
+            const doneFrame = `data: ${JSON.stringify({
+              id: requestId,
+              object: 'chat.completion.chunk',
+              choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+              usage: {
+                prompt_tokens: streamPromptTokens,
+                completion_tokens: streamCompletionTokens,
+                total_tokens: streamPromptTokens + streamCompletionTokens,
+              },
+            })}\n\n`;
+            if (!reply.raw.write(doneFrame)) {
+              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+            }
+            succeeded = true;
+            break;
+          }
           // Cannot fall back (already streamed output, or no candidates left).
+          // ROOT-CAUSE FIX (smooth-flow / sticky self-healing): if the provider
+          // failed with a definitive 401/403/404 (auth / model-not-found / forbidden),
+          // evict it from the sticky session so the SAME dead endpoint is not
+          // re-pinned for the rest of this conversation. The non-streaming path does
+          // this inside executeWithFallback, but the streaming loop here bypasses it.
+          const status = (streamError as { statusCode?: number })?.statusCode;
+          if (status === 401 || status === 403 || status === 404) {
+            try {
+              const hash = hashConversation(body.messages as any);
+              if (hash) {
+                await breakStickySession(hash, `Streaming provider ${candidate.providerId} returned HTTP ${status}`);
+                logger.info({ requestId, provider: candidate.providerId, status }, 'Broke sticky session after definitive streaming failure');
+              }
+            } catch (stickyErr) {
+              logger.warn({ err: stickyErr, requestId }, 'Failed to break sticky session after streaming failure');
+            }
+          }
           logger.error({ err: streamError, requestId, provider: candidate.providerId }, 'Streaming error');
           (server as any).recordTelemetryEvent?.({
             level: 'error',

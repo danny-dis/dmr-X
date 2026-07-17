@@ -110,6 +110,16 @@ export class Router {
     this.candidates = candidates;
   }
 
+  /**
+   * Return the current candidate set. Used by the streaming chat route to
+   * force-inject healthy fallbacks when a meta-model selection yields an empty
+   * fallback chain — guarantees a failed primary always has somewhere to fall
+   * back to before any token reaches the client (DMR-X smooth-flow contract).
+   */
+  getCandidates(): CandidateSet {
+    return this.candidates;
+  }
+
   getCandidateCount(): number {
     return this.candidates.length;
   }
@@ -397,25 +407,56 @@ export class Router {
             thompsonSampler: this.thompsonSampler,
           });
         } catch (error) {
-          if (error instanceof ProviderUnavailableError && error.retryAfter) {
-            const waitMs = Math.min(error.retryAfter, 3000);
-            logger.info({ waitMs }, 'All providers temporarily unavailable, retrying after wait');
-            span.addEvent('router.retry_after_wait', { 'wait_ms': waitMs });
-            await new Promise(resolve => setTimeout(resolve, waitMs));
-            result = await runPipeline({
-              taskProfile,
-              candidates: pipelineCandidates,
-              epsilon: this.config.epsilon ?? 0.05,
-              rateLimitService: this.config.rateLimitService,
-              quotaService: this.config.quotaService,
-              policyService: this.config.policyService,
-              tenantId,
-              estimatedTokens: this.estimateTokens(request),
-              freeTierStrategy: effectiveFreeTierStrategy,
-              providerPreferences,
-              metaModelFilteredFree,
-              thompsonSampler: this.thompsonSampler,
-            });
+          if (error instanceof ProviderUnavailableError) {
+            // (a) Transient rate-limit cooldown: brief wait then retry the same pool.
+            if (error.retryAfter) {
+              const waitMs = Math.min(error.retryAfter, 3000);
+              logger.info({ waitMs }, 'All providers temporarily unavailable, retrying after wait');
+              span.addEvent('router.retry_after_wait', { 'wait_ms': waitMs });
+              await new Promise(resolve => setTimeout(resolve, waitMs));
+              result = await runPipeline({
+                taskProfile,
+                candidates: pipelineCandidates,
+                epsilon: this.config.epsilon ?? 0.05,
+                rateLimitService: this.config.rateLimitService,
+                quotaService: this.config.quotaService,
+                policyService: this.config.policyService,
+                tenantId,
+                estimatedTokens: this.estimateTokens(request),
+                freeTierStrategy: effectiveFreeTierStrategy,
+                providerPreferences,
+                metaModelFilteredFree,
+                thompsonSampler: this.thompsonSampler,
+              });
+            } else if (isMetaModel(modelTarget.modelId ?? '') && !metaModelFilteredFree) {
+              // (b) Cross-pool degradation: a meta-model's preferred pool is empty
+              // (every preferred provider is flapping / cooldowned / circuit-open).
+              // Retry once over the full healthy candidate set so a healthy
+              // alternative with matching capabilities can still serve inference
+              // instead of erroring. Free-only meta-models keep their contract
+              // (no paid fallback). This is the DMR-X smooth-flow guarantee.
+              logger.warn(
+                { metaModel: modelTarget.modelId, totalCandidates: this.candidates.length },
+                'Meta-model preferred pool empty; degrading to full candidate pool'
+              );
+              span.addEvent('router.cross_pool_fallback', { meta_model: modelTarget.modelId });
+              result = await runPipeline({
+                taskProfile,
+                candidates: this.candidates,
+                epsilon: this.config.epsilon ?? 0.05,
+                rateLimitService: this.config.rateLimitService,
+                quotaService: this.config.quotaService,
+                policyService: this.config.policyService,
+                tenantId,
+                estimatedTokens: this.estimateTokens(request),
+                freeTierStrategy: effectiveFreeTierStrategy,
+                providerPreferences,
+                metaModelFilteredFree: false,
+                thompsonSampler: this.thompsonSampler,
+              });
+            } else {
+              throw error;
+            }
           } else {
             throw error;
           }

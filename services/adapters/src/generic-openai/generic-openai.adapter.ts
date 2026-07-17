@@ -219,7 +219,15 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       // 401/403 = invalid/revoked key => cannot generate.
       return res.status !== 401 && res.status !== 403;
     } catch {
-      return false;
+      // A thrown probe (timeout, TLS blip, DNS hiccup, transient network
+      // error) is UNKNOWN — NOT proof the provider is dead. Returning `false`
+      // here would let a concurrent health-check sweep poison otherwise
+      // reachable providers, collapsing the candidate pool and forcing all
+      // `auto` traffic onto a single surviving backend. Genuinely-dead
+      // providers are still caught at request time by the router's circuit
+      // breaker + fallback chain. Only a definitive 401/403 (revoked key)
+      // means "unhealthy".
+      return true;
     }
   }
 

@@ -1,17 +1,38 @@
 {
   "mcpEnabled": true,
   "aggregation": {
-    "enabled": true,
+    "enabled": false,
     "servers": [
       {
         "id": "filesystem",
         "name": "Demo Filesystem",
         "transport": "stdio",
         "command": "bun",
-        "args": ["x", "@modelcontextprotocol/server-filesystem", "/demo-data"],
+        "args": [
+          "x",
+          "@modelcontextprotocol/server-filesystem",
+          "/demo-data"
+        ],
         "timeoutMs": 30000,
         "maxRetries": 3
       }
     ]
+  },
+  "guardrails": {
+    "enabled": true,
+    "pii": {
+      "enabled": true,
+      "maskChar": "*"
+    },
+    "contentFilter": {
+      "enabled": true,
+      "blockedPatterns": []
+    }
+  },
+  "audit": {
+    "enabled": true,
+    "backend": "sqlite",
+    "retentionDays": 30,
+    "logBodies": false
   }
 }
