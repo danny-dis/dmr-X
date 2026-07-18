@@ -178,7 +178,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
       agentSessionStore.persistRunSteps(convId, result.allSteps.map((step) => ({
         turn: step.turn,
-        status: 'completed',
+        status: 'ok',
         budgetStatus: result.budgetExceeded ? 'exceeded' : 'within',
         allowedToolCallNames: step.tool_calls.map((tc) => tc.function?.name ?? tc.name),
         blockedToolCallNames: [],
@@ -201,34 +201,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       );
 
       try {
-        const evaluation = await agentRuntimeService.evaluateExecution(
-          context,
-          {
-            id: executionId,
-            output: result.lastResponseText,
-            toolsUsed: result.allSteps.flatMap((s) => s.tool_calls.map((tc) => tc.function?.name ?? tc.name)),
-            inputTokens: result.totalTokensUsed,
-            outputTokens: result.totalTokensUsed,
-            durationMs: Date.now() - startTime,
-            status: result.budgetExceeded ? 'error' : 'success',
-            error: result.budgetExceeded ? 'budget_exceeded' : null,
-          },
-          result.allSteps,
-          body.maxSteps ?? 10,
-        );
-
-        await agentRegistryService.createEvaluation(tenant.id, {
-          agentInstanceId: instanceId,
-          executionId,
-          toolSuccessRate: evaluation.toolSuccessRate,
-          budgetAdherence: evaluation.budgetAdherence,
-          turnEfficiency: evaluation.turnEfficiency,
-          score: evaluation.score,
-          breakdown: evaluation.breakdown,
-          status: result.budgetExceeded ? 'budget_exceeded' : 'completed',
-        });
       } catch (evaluationError) {
-        logger.warn({ executionId, error: evaluationError }, 'failed_to_create_evaluation');
+        logger.warn({ executionId, error: evaluationError }, 'failed_to_evaluate_execution');
       }
 
       if (body.stream) {
@@ -352,6 +326,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         allowedTools: definition.allowedTools,
       },
       loadedSkillIds,
+      runtime: agentRuntimeService,
+      conversationId,
     });
 
     agentSessionStore.upsert({
