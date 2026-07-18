@@ -1337,6 +1337,52 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT, requestId }, 'routing');
 
+        // Reuse the gateway for routing when configured. This makes the MCP
+        // server a thin proxy to DMR-X's already-healthy candidate pool instead
+        // of maintaining its own isolated DB (which may lack provider_keys and
+        // therefore report "All providers currently unavailable"). Single source
+        // of truth for provider health + routing.
+        const gwUrl = config.gatewayUrl || process.env.DMRX_GATEWAY_URL;
+        if (gwUrl) {
+          try {
+            const gwKey = resolveGatewayKey();
+            const gwRes = await fetch(`${gwUrl}/v1/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                ...(gwKey ? { Authorization: `Bearer ${gwKey}` } : {}),
+              },
+              body: JSON.stringify({
+                model: (params.model as string) || 'auto',
+                messages: params.messages,
+                max_tokens: params.max_tokens,
+                temperature: params.temperature,
+                top_p: params.top_p,
+                stream: false,
+              }),
+            });
+            const gwData: any = await gwRes.json().catch(() => ({}));
+            if (!gwRes.ok) {
+              return toolError(
+                gwData?.error?.message || `Gateway returned ${gwRes.status}`,
+                'GATEWAY_ERROR',
+                requestId,
+              );
+            }
+            const text =
+              typeof gwData?.choices?.[0]?.message?.content === 'string'
+                ? gwData.choices[0].message.content
+                : JSON.stringify(gwData);
+            return {
+              content: [{ type: 'text' as const, text }],
+              structuredContent: gwData,
+            };
+          } catch (gwErr) {
+            // Gateway unreachable — fall through to in-process routing.
+            mcpLog(server, 'warning', { tool: TOOL_NAMES.CHAT, requestId, err: String(gwErr) }, 'gateway-proxy');
+          }
+        }
+
         const request = toUnifiedRequest('llm', params as unknown as Record<string, unknown>);
         const classifyOptions: ClassifyOptions = {
           path: MODALITY_TO_PATH['llm'],
