@@ -187,8 +187,6 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         costDelta: (step.message as any)?.usage?.cost ?? (step.message as any)?.usage?.total_cost ?? 0,
       })));
 
-      const executionId = crypto.randomUUID();
-
       await agentRuntimeService.recordExecution(
         context,
         JSON.stringify(body.messages),
@@ -199,11 +197,6 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         0,
         Date.now() - startTime,
       );
-
-      try {
-      } catch (evaluationError) {
-        logger.warn({ executionId, error: evaluationError }, 'failed_to_evaluate_execution');
-      }
 
       if (body.stream) {
         writeSSE(reply, 'done', {
