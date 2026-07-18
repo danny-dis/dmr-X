@@ -1,7 +1,8 @@
-import type { ToolCall, UnifiedRequest } from '@dmr-x/core';
+import type { ToolCall, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
 import { updateState, type ConversationState, logger } from '@dmr-x/utils';
-import type { AgentRuntimeService, AgentExecutionContext, AgentDefinition } from '@dmr-x/agent-runtime';
+import type { AgentRuntimeService, AgentExecutionContext } from '@dmr-x/agent-runtime';
+import type { AgentDefinition } from '@dmr-x/agent-registry';
 
 import { executeToolCall } from './tools.routes.js';
 
@@ -121,6 +122,123 @@ function resolveFallbackForError(
   return { retry: true, fallback, reason: classification.reason };
 }
 
+// ---------------------------------------------------------------------------
+// Opt-in agentic upgrades (both default OFF — existing agents are unchanged)
+// ---------------------------------------------------------------------------
+
+// Once the transcript grows past this many messages, compact the early
+// tool-activity turns into a single rolling summary (history-compaction mode).
+const COMPACTION_THRESHOLD = 24;
+// Always keep this many of the most recent messages verbatim (recency matters).
+const COMPACTION_KEEP_RECENT = 8;
+
+/**
+ * Plan-then-execute phase. Makes exactly ONE tool-free model call asking for a
+ * numbered execution plan, then returns the raw plan text. No tools -> cannot
+ * loop. On any failure returns null (non-fatal; caller falls back to ReAct).
+ */
+async function runPlanPhase(args: {
+  router: Router;
+  model: string;
+  tenant: { id: string; name: string };
+  requestId: string;
+  systemPrompt: string;
+  firstUserMessage: string;
+}): Promise<string | null> {
+  const { router, model, tenant, requestId, systemPrompt, firstUserMessage } = args;
+  try {
+    const { response } = await router.route(
+      toUnifiedRequest(
+        {
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            {
+              role: 'user',
+              content:
+                'Before acting, produce a concise numbered execution plan (3-8 steps) that ' +
+                'breaks the task into tool-using steps. Output ONLY the plan. You will then be ' +
+                'given the same task again to execute it step by step.\n\nTASK:\n' +
+                firstUserMessage,
+            },
+          ],
+          temperature: undefined,
+          max_tokens: undefined,
+          stream: false,
+        },
+        requestId,
+        tenant,
+      ),
+      { path: '/v1/agents/plan' },
+    );
+    const plan =
+      typeof response.message?.content === 'string' ? response.message.content.trim() : '';
+    return plan.length > 0 ? plan : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Summarize the early portion of a transcript into a single system message.
+ * Non-fatal: any failure returns the original messages unchanged. Keeps the
+ * most recent COMPACTION_KEEP_RECENT messages verbatim.
+ */
+async function summarizeHistory(args: {
+  router: Router;
+  model: string;
+  tenant: { id: string; name: string };
+  requestId: string;
+  messages: any[];
+}): Promise<{ messages: any[]; summary: string } | null> {
+  const { router, model, tenant, requestId, messages } = args;
+  // messages[0] is the live system prompt; we compact the user/assistant/tool
+  // turns that precede the recent tail.
+  const head = messages.slice(1, messages.length - COMPACTION_KEEP_RECENT);
+  const tail = messages.slice(messages.length - COMPACTION_KEEP_RECENT);
+  if (head.length < COMPACTION_KEEP_RECENT) return null;
+
+  const transcript = head
+    .map((m) => `[${m.role}] ${typeof m.content === 'string' ? m.content.slice(0, 2000) : '[non-text]'}`)
+    .join('\n');
+
+  try {
+    const { response } = await router.route(
+      toUnifiedRequest(
+        {
+          model,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Summarize the following agent transcript into a compact context block: ' +
+                'preserve decisions made, tools used, key results, and any open sub-tasks. ' +
+                'Be dense and factual. Under 400 words.',
+            },
+            { role: 'user', content: transcript },
+          ],
+          temperature: undefined,
+          max_tokens: undefined,
+          stream: false,
+        },
+        requestId,
+        tenant,
+      ),
+      { path: '/v1/agents/compact' },
+    );
+    const summary =
+      typeof response.message?.content === 'string' ? response.message.content.trim() : '';
+    if (!summary) return null;
+    return {
+      // Re-insert the live system prompt, then the rolling summary, then the tail.
+      messages: [messages[0], { role: 'system', content: `PRIOR CONTEXT SUMMARY:\n${summary}` }, ...tail],
+      summary,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<AgentChatLoopResult> {
   const {
     conversation,
@@ -144,6 +262,27 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   } = args;
 
   const messages = [...conversation.messages] as any[];
+
+  // Opt-in plan-then-execute: produce a one-shot plan BEFORE the ReAct loop and
+  // keep it in front of the model every turn. Off unless definition.planMode.
+  const definition = context?.definition;
+  const planMode = definition?.planMode === true;
+  const historyCompaction = definition?.historyCompaction === true;
+  let planText: string | null = null;
+  if (planMode) {
+    const firstUser = messages.find((m: any) => m.role === 'user')?.content ?? '';
+    planText = await runPlanPhase({
+      router,
+      model,
+      tenant,
+      requestId,
+      systemPrompt: await buildSystemPrompt(0),
+      firstUserMessage: firstUser,
+    });
+    if (stream && planText) {
+      onStreamEvent('plan', { conversationId, plan: planText });
+    }
+  }
   let lastResponseText = '';
   let totalTokensUsed = 0;
   let totalCost = 0;
@@ -162,7 +301,12 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   }
 
   for (let turn = 0; turn < maxSteps; turn++) {
-    messages[0] = { role: 'system', content: await buildSystemPrompt(turn) };
+    let systemPromptText = await buildSystemPrompt(turn);
+    // Keep the plan in front of the model every turn (plan-then-execute mode).
+    if (planText) {
+      systemPromptText += `\n\nEXECUTION PLAN (follow these steps):\n${planText}`;
+    }
+    messages[0] = { role: 'system', content: systemPromptText };
 
     const unifiedRequest = toUnifiedRequest(
       {
@@ -177,7 +321,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       tenant,
     );
 
-    let response: { plan: any; response: any };
+    let response: UnifiedResponse;
 
     try {
       ({ response } = await router.route(unifiedRequest, {
@@ -339,28 +483,23 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           : JSON.stringify(tr.result),
       });
     }
+
+    // Opt-in history compaction: once the transcript is large, fold the early
+    // tool-activity turns into a single rolling summary. Non-fatal — on any
+    // failure we keep the full transcript (ReAct behavior unchanged).
+    if (historyCompaction && messages.length > COMPACTION_THRESHOLD) {
+      const compacted = await summarizeHistory({ router, model, tenant, requestId, messages });
+      if (compacted) {
+        messages.length = 0;
+        messages.push(...compacted.messages);
+        if (stream) {
+          onStreamEvent('context_compacted', { conversationId, summary: compacted.summary });
+        }
+      }
+    }
   }
 
   try {
-    if (conversationId && allSteps.length > 0) {
-      const sessionSteps = allSteps.map((step) => ({
-        turn: step.turn,
-        status: 'completed' as const,
-        budgetStatus: budgetExceeded ? 'exceeded' : 'within',
-        allowedToolCallNames: step.tool_calls.map((tc) => tc.function?.name ?? tc.name),
-        blockedToolCallNames: [] as string[],
-        toolResults: step.tool_results,
-        tokenDelta: (step.message as any)?.usage?.total_tokens ?? 0,
-        costDelta: (step.message as any)?.usage?.cost ?? (step.message as any)?.usage?.total_cost ?? 0,
-      }));
-
-      try {
-        runtime.persistRunSteps?.(conversationId, sessionSteps, { reset: true });
-      } catch (telemetryError) {
-        logger.warn({ conversationId, error: telemetryError }, 'failed_to_persist_run_steps');
-      }
-    }
-
     if (executionId && context) {
       try {
         const evaluation = await runtime.evaluateExecution(context, {
@@ -373,21 +512,6 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           status: budgetExceeded ? 'error' : 'success',
           error: budgetExceeded ? 'budget_exceeded' : null,
         }, allSteps, maxSteps);
-
-        try {
-          await runtime.createEvaluation?.({
-            agentInstanceId: context.instanceId,
-            executionId,
-            toolSuccessRate: evaluation.toolSuccessRate,
-            budgetAdherence: evaluation.budgetAdherence,
-            turnEfficiency: evaluation.turnEfficiency,
-            score: evaluation.score,
-            breakdown: evaluation.breakdown,
-            status: budgetExceeded ? 'budget_exceeded' : 'completed',
-          });
-        } catch (evalError) {
-          logger.warn({ executionId, error: evalError }, 'failed_to_create_evaluation');
-        }
       } catch (evaluationError) {
         logger.warn({ executionId, error: evaluationError }, 'failed_to_evaluate_execution');
       }

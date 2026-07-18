@@ -138,6 +138,8 @@ export function loadAgentFromConfig(filePath: string): AgentConfigFile | null {
       skills: (config.skills ?? []) as string[],
       skillNudgeInterval: (config.skillNudgeInterval ?? 8) as number,
       verifyOnStop: (config.verifyOnStop ?? false) as boolean,
+      planMode: (config.planMode ?? false) as boolean,
+      historyCompaction: (config.historyCompaction ?? false) as boolean,
     };
 
     return { filePath, definition };
@@ -306,6 +308,8 @@ export function parseAgentMdFromString(
       skills: (config.skills ?? []) as string[],
       skillNudgeInterval: (config.skillNudgeInterval ?? 8) as number,
       verifyOnStop: (config.verifyOnStop ?? false) as boolean,
+      planMode: (config.planMode ?? false) as boolean,
+      historyCompaction: (config.historyCompaction ?? false) as boolean,
     };
 
     return { filePath: opts.filePath ?? 'pasted.md', definition };

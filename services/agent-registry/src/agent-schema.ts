@@ -79,6 +79,10 @@ export const AgentDefinitionCreateSchema = z.object({
   skills: z.array(z.string()).optional().default([]),
   skillNudgeInterval: z.number().int().min(0).max(100).optional().default(8),
   verifyOnStop: z.boolean().optional().default(false),
+  // Opt-in: emit a structured plan before the first ReAct turn (plan-then-execute).
+  planMode: z.boolean().optional().default(false),
+  // Opt-in: compact early tool-activity turns once the transcript grows large.
+  historyCompaction: z.boolean().optional().default(false),
 });
 
 export type AgentDefinitionCreate = z.infer<typeof AgentDefinitionCreateSchema>;

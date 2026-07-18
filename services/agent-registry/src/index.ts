@@ -9,12 +9,10 @@ export {
   type AgentEvaluation,
 } from './agent-registry.service.js';
 
-export {
-  createEvaluation,
-  listEvaluations,
-  getEvaluation,
-  deleteEvaluation,
-} from './agent-registry.service.js';
+// NOTE: createEvaluation / listEvaluations / getEvaluation / deleteEvaluation are
+// methods on the AgentRegistryService class, not top-level exports. Re-exporting
+// them as named module exports breaks bun's ESM linker at runtime. Callers should
+// use the `agentRegistryService` instance instead.
 
 export {
   AgentDefinitionCreateSchema,

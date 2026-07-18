@@ -377,7 +377,12 @@ export class AgentRuntimeService {
     const toolResults = steps.flatMap((s) => s.tool_results ?? []);
     const successfulToolResults = toolResults.filter((tr) => !tr.error);
     const toolSuccessRate = toolCalls.length > 0 ? successfulToolResults.length / toolCalls.length : 1;
-    const budgetAdherence = execution.status === 'success' && maxSteps > 0 ? Math.min(steps.length / maxSteps, 1) : 0;
+    // ponytail: budget adherence rewards finishing UNDER the step budget,
+    // not consuming all of it. Mirror turnEfficiency's shape.
+    const budgetAdherence =
+      execution.status === 'success' && maxSteps > 0
+        ? Math.max(0, 1 - steps.length / maxSteps)
+        : 0;
     const turnEfficiency = maxSteps > 0 ? Math.max(0, 1 - steps.length / maxSteps) : 0;
     const score = Number(
       (

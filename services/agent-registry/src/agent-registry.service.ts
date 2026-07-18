@@ -45,6 +45,8 @@ export interface AgentDefinition {
   skills?: string[];
   skillNudgeInterval?: number;
   verifyOnStop?: boolean;
+  planMode?: boolean;
+  historyCompaction?: boolean;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -136,9 +138,9 @@ export class AgentRegistryService {
         id, tenant_id, name, description, version, system_prompt,
         personality, preferred_model, model_tier, allowed_tools, custom_tools,
         workflow, triggers, visibility, tags, category, icon, skills, human_name,
-        skill_nudge_interval, verify_on_stop,
+        skill_nudge_interval, verify_on_stop, plan_mode, history_compaction,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tenantId,
@@ -161,6 +163,8 @@ export class AgentRegistryService {
       input.humanName ?? null,
       input.skillNudgeInterval ?? 8,
       input.verifyOnStop ? 1 : 0,
+      input.planMode ? 1 : 0,
+      input.historyCompaction ? 1 : 0,
       now,
       now,
     );
@@ -247,6 +251,8 @@ export class AgentRegistryService {
     if (input.skills !== undefined) { updates.push('skills = ?'); params.push(JSON.stringify(input.skills)); }
     if (input.skillNudgeInterval !== undefined) { updates.push('skill_nudge_interval = ?'); params.push(input.skillNudgeInterval); }
     if (input.verifyOnStop !== undefined) { updates.push('verify_on_stop = ?'); params.push(input.verifyOnStop ? 1 : 0); }
+    if (input.planMode !== undefined) { updates.push('plan_mode = ?'); params.push(input.planMode ? 1 : 0); }
+    if (input.historyCompaction !== undefined) { updates.push('history_compaction = ?'); params.push(input.historyCompaction ? 1 : 0); }
 
     if (updates.length === 0) return existing;
 
@@ -630,13 +636,15 @@ export class AgentRegistryService {
 
     // Record install
     const installId = crypto.randomUUID();
-    db.prepare(`
+    const installDb = getDb();
+    installDb.prepare(`
       INSERT INTO agent_installs (id, listing_id, tenant_id, agent_instance_id, installed_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(installId, listingId, tenantId, instance.id, new Date().toISOString());
 
     // Increment install count
-    db.prepare('UPDATE agent_listings SET install_count = install_count + 1, updated_at = ? WHERE id = ?')
+    const installCountDb = getDb();
+    installCountDb.prepare('UPDATE agent_listings SET install_count = install_count + 1, updated_at = ? WHERE id = ?')
       .run(new Date().toISOString(), listingId);
 
     logger.info({ listingId, tenantId, instanceId: instance.id }, 'Agent installed from marketplace');
@@ -647,6 +655,8 @@ export class AgentRegistryService {
   async rateListing(listingId: string, tenantId: string, input: AgentRatingCreate): Promise<void> {
     const listing = await this.getListing(listingId);
     if (!listing) return;
+
+    const db = getDb();
 
     const id = crypto.randomUUID();
     db.prepare(`
@@ -752,6 +762,8 @@ export class AgentRegistryService {
       skills: row.skills ? JSON.parse(row.skills) : [],
       skillNudgeInterval: row.skill_nudge_interval ?? undefined,
       verifyOnStop: row.verify_on_stop ? true : false,
+      planMode: row.plan_mode ? true : false,
+      historyCompaction: row.history_compaction ? true : false,
       publishedAt: row.published_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

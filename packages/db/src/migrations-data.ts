@@ -1827,6 +1827,58 @@ CREATE TABLE IF NOT EXISTS server_instances (
 );
 `,
   },
+  54: {
+    filename: '054_agent_sessions.sql',
+    sql: `-- Agent Sessions (durable, resumable agent conversations)
+-- Persists a ConversationState so a running agent can pause (e.g. for an
+-- approval gate or a human answer) and be resumed after the event arrives,
+-- surviving process restarts. Mirrors the in-memory ConversationState shape.
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_instance_id TEXT NOT NULL REFERENCES agent_instances(id) ON DELETE CASCADE,
+  -- Full ConversationState serialized as JSON
+  state TEXT NOT NULL,
+  -- Optional owning definition (for subagent sessions)
+  agent_definition_id TEXT,
+  -- Arbitrary metadata (last response, loaded skills, token counts)
+  metadata TEXT,
+  -- Machine status, indexed for "what is paused / ready to resume"
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  -- Free-text reason for an interrupted/awaiting state (e.g. "approval: bash")
+  status_reason TEXT,
+  -- Which agent turn was last executed (for skill-nudge accounting)
+  last_turn INTEGER NOT NULL DEFAULT 0,
+  -- Skills loaded into context this session (progressive disclosure)
+  loaded_skills TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Optional hard expiry; NULL = live until completed/cancelled
+  expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_tenant
+ON agent_sessions(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_instance
+ON agent_sessions(agent_instance_id);
+
+-- "What is paused / awaiting input?" — the resume queue
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status
+ON agent_sessions(tenant_id, status)
+WHERE status IN ('awaiting_approval', 'interrupted', 'in_progress');
+
+-- Parent link for declared subagents (isolation boundary: a subagent
+-- belongs to a parent agent definition but inherits nothing else).
+ALTER TABLE agent_definitions ADD COLUMN subagent_of TEXT REFERENCES agent_definitions(id) ON DELETE CASCADE;
+ALTER TABLE agent_definitions ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_agent_definitions_subagent_of
+ON agent_definitions(subagent_of)
+WHERE subagent_of IS NOT NULL;
+`,
+  },
   55: {
     filename: '055_session_steps.sql',
     sql: `-- Per-run agent session step telemetry
@@ -1872,6 +1924,28 @@ CREATE TABLE IF NOT EXISTS agent_evaluations (
 
 CREATE INDEX IF NOT EXISTS idx_agent_evaluations_instance
   ON agent_evaluations(tenant_id, agent_instance_id, created_at);
+`,
+  },
+  57: {
+    filename: '057_agent_plan_mode.sql',
+    sql: `-- Opt-in plan-then-execute mode for agent definitions.
+-- When enabled, before the first ReAct turn the runtime asks the model to emit
+-- a structured plan (steps + tool intent) so weak models get an explicit roadmap.
+-- Off by default -> existing agents keep the baseline ReAct behavior.
+
+ALTER TABLE agent_definitions ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  58: {
+    filename: '058_agent_compaction.sql',
+    sql: `-- Opt-in conversation-history compaction for long agent runs.
+-- When enabled, the runtime summarizes the early tool-activity turns into a
+-- single rolling context block once the transcript passes the configured
+-- threshold, preventing context-window blowup on weak local models.
+-- Stored as a boolean flag (1/0); the compaction threshold itself lives in the
+-- loop engine. Off by default -> existing agents keep unbounded history.
+
+ALTER TABLE agent_definitions ADD COLUMN history_compaction INTEGER NOT NULL DEFAULT 0;
 `,
   },
 };

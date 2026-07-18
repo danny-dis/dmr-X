@@ -319,17 +319,6 @@ export class AgentSessionStore {
     this.deleteRunSteps(conversationId);
   }
 
-  /** Hard-delete expired (non-permanent) sessions. Returns count removed. */
-  cleanupExpired(): number {
-    const db = getDb();
-    const result = db
-      .prepare(
-        `DELETE FROM agent_sessions
-         WHERE expires_at IS NOT NULL AND expires_at < datetime('now')`,
-      )
-      .run();
-    return result.changes;
-  }
 }
 
 function safeJson(raw: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
