@@ -10,6 +10,8 @@ import {
 } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 
+import crypto from 'crypto';
+
 import { writeSSE } from '../lib/sse.js';
 import { executeToolCall, getRegisteredToolDefinitions } from './tools.routes.js';
 import { runAgentChatLoop } from './agent-chat-loop.js';
@@ -156,9 +158,10 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           allowedTools: definition.allowedTools,
         },
         loadedSkillIds,
+        runtime: agentRuntimeService,
+        conversationId: convId,
       });
 
-      // Persist the durable session (feature #1) so it can be resumed later.
       agentSessionStore.upsert({
         tenantId: tenant.id,
         conversationId: convId,
@@ -173,7 +176,19 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         },
       });
 
-      // Record execution
+      agentSessionStore.persistRunSteps(convId, result.allSteps.map((step) => ({
+        turn: step.turn,
+        status: 'completed',
+        budgetStatus: result.budgetExceeded ? 'exceeded' : 'within',
+        allowedToolCallNames: step.tool_calls.map((tc) => tc.function?.name ?? tc.name),
+        blockedToolCallNames: [],
+        toolResults: step.tool_results,
+        tokenDelta: (step.message as any)?.usage?.total_tokens ?? 0,
+        costDelta: (step.message as any)?.usage?.cost ?? (step.message as any)?.usage?.total_cost ?? 0,
+      })));
+
+      const executionId = crypto.randomUUID();
+
       await agentRuntimeService.recordExecution(
         context,
         JSON.stringify(body.messages),
@@ -184,6 +199,37 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         0,
         Date.now() - startTime,
       );
+
+      try {
+        const evaluation = await agentRuntimeService.evaluateExecution(
+          context,
+          {
+            id: executionId,
+            output: result.lastResponseText,
+            toolsUsed: result.allSteps.flatMap((s) => s.tool_calls.map((tc) => tc.function?.name ?? tc.name)),
+            inputTokens: result.totalTokensUsed,
+            outputTokens: result.totalTokensUsed,
+            durationMs: Date.now() - startTime,
+            status: result.budgetExceeded ? 'error' : 'success',
+            error: result.budgetExceeded ? 'budget_exceeded' : null,
+          },
+          result.allSteps,
+          body.maxSteps ?? 10,
+        );
+
+        await agentRegistryService.createEvaluation(tenant.id, {
+          agentInstanceId: instanceId,
+          executionId,
+          toolSuccessRate: evaluation.toolSuccessRate,
+          budgetAdherence: evaluation.budgetAdherence,
+          turnEfficiency: evaluation.turnEfficiency,
+          score: evaluation.score,
+          breakdown: evaluation.breakdown,
+          status: result.budgetExceeded ? 'budget_exceeded' : 'completed',
+        });
+      } catch (evaluationError) {
+        logger.warn({ executionId, error: evaluationError }, 'failed_to_create_evaluation');
+      }
 
       if (body.stream) {
         writeSSE(reply, 'done', {

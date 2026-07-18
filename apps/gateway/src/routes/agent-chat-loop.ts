@@ -1,17 +1,12 @@
 import type { ToolCall, UnifiedRequest } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
-import { updateState, type ConversationState } from '@dmr-x/utils';
-import type { AgentRuntimeService } from '@dmr-x/agent-runtime';
+import { updateState, type ConversationState, logger } from '@dmr-x/utils';
+import type { AgentRuntimeService, AgentExecutionContext, AgentDefinition } from '@dmr-x/agent-runtime';
 
 import { executeToolCall } from './tools.routes.js';
 
 // ---------------------------------------------------------------------------
 // Shared agentic loop engine for the /agents/:instanceId/chat route.
-//
-// `agent-chat` previously duplicated this loop verbatim for its streaming and
-// non-streaming responses. The only divergence was the I/O sink (SSE events vs
-// a collected payload), so the loop is extracted here and the sink is injected
-// via `onStreamEvent`. Behavior is preserved 1:1 with the prior two copies.
 // ---------------------------------------------------------------------------
 
 export interface AgentChatLoopBody {
@@ -49,7 +44,8 @@ interface RunAgentChatLoopArgs {
   requestId: string;
   tenant: { id: string; name: string };
   router: Router;
-  context: Awaited<ReturnType<AgentRuntimeService['loadContext']>>;
+  context: AgentExecutionContext;
+  runtime: AgentRuntimeService;
   stream: boolean;
   onStreamEvent: (event: string, data: unknown) => void;
   /** Rebuilds the system prompt for a given turn (skill-capture nudge support). */
@@ -63,7 +59,13 @@ interface RunAgentChatLoopArgs {
   };
   /** Mutable list of skill ids loaded via `load_skill` this session. */
   loadedSkillIds: string[];
+  /** Execution record id returned by recordExecution, for evaluation linkage. */
+  executionId?: string;
+  /** Conversation id for durable session linkage. */
+  conversationId: string;
 }
+
+const MAX_TURN_RETRIES = 2;
 
 function toUnifiedRequest(
   body: {
@@ -89,6 +91,36 @@ function toUnifiedRequest(
   };
 }
 
+function classifyRouteError(
+  runtime: AgentRuntimeService,
+  error: unknown,
+): { retryable: boolean; reason: string } {
+  try {
+    return runtime.classifyProviderError(error);
+  } catch {
+    return { retryable: false, reason: 'classification_failed' };
+  }
+}
+
+function resolveFallbackForError(
+  runtime: AgentRuntimeService,
+  error: unknown,
+  definition: AgentDefinition,
+  currentModel: string,
+): { retry: boolean; fallback: string | null; reason: string } {
+  const classification = classifyRouteError(runtime, error);
+  if (!classification.retryable) {
+    return { retry: false, fallback: null, reason: classification.reason };
+  }
+
+  const fallback = runtime.resolveFallbackModel(definition, currentModel);
+  if (!fallback) {
+    return { retry: false, fallback: null, reason: 'no_fallback_model' };
+  }
+
+  return { retry: true, fallback, reason: classification.reason };
+}
+
 export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<AgentChatLoopResult> {
   const {
     conversation,
@@ -106,6 +138,9 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     buildSystemPrompt,
     agentDefinition,
     loadedSkillIds,
+    runtime,
+    executionId,
+    conversationId,
   } = args;
 
   const messages = [...conversation.messages] as any[];
@@ -122,13 +157,11 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       agentInstanceId: context?.instanceId,
       agentName: context?.definition?.name,
       model,
-      conversationId: conversation.id,
+      conversationId,
     });
   }
 
   for (let turn = 0; turn < maxSteps; turn++) {
-    // Rebuild the system prompt each turn so the skill-capture nudge can
-    // become actionable on hard turn-counter multiples of the interval.
     messages[0] = { role: 'system', content: await buildSystemPrompt(turn) };
 
     const unifiedRequest = toUnifiedRequest(
@@ -144,9 +177,49 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       tenant,
     );
 
-    const { response } = await router.route(unifiedRequest, {
-      path: '/v1/agents/chat',
-    });
+    let response: { plan: any; response: any };
+
+    try {
+      ({ response } = await router.route(unifiedRequest, {
+        path: '/v1/agents/chat',
+      }));
+    } catch (error) {
+      const decision = resolveFallbackForError(runtime, error, context.definition, model);
+
+      if (!decision.retry) {
+        throw error;
+      }
+
+      logger.warn(
+        { requestId, conversationId, reason: decision.reason, fallback: decision.fallback },
+        'agent_run_retry',
+      );
+
+      if (stream) {
+        onStreamEvent('model_retry', {
+          conversationId,
+          reason: decision.reason,
+          fallbackModel: decision.fallback,
+        });
+      }
+
+      const retryRequest = toUnifiedRequest(
+        {
+          model: decision.fallback ?? model,
+          messages,
+          tools: agentToolDefs,
+          temperature: body.temperature,
+          max_tokens: body.maxTokens,
+          stream,
+        },
+        requestId,
+        tenant,
+      );
+
+      ({ response } = await router.route(retryRequest, {
+        path: '/v1/agents/chat',
+      }));
+    }
 
     const toolCalls = response.message?.tool_calls ?? [];
     const responseText =
@@ -167,7 +240,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       budgetExceeded = true;
       if (stream) {
         onStreamEvent('budget_exceeded', {
-          conversationId: conversation.id,
+          conversationId,
           max_cost_budget: body.max_cost_budget,
           totalCost,
         });
@@ -178,7 +251,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     if (stream) {
       onStreamEvent('turn', {
         turn,
-        conversationId: conversation.id,
+        conversationId,
         message: response.message,
         model: response.modelId,
         usage: response.usage,
@@ -266,6 +339,61 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           : JSON.stringify(tr.result),
       });
     }
+  }
+
+  try {
+    if (conversationId && allSteps.length > 0) {
+      const sessionSteps = allSteps.map((step) => ({
+        turn: step.turn,
+        status: 'completed' as const,
+        budgetStatus: budgetExceeded ? 'exceeded' : 'within',
+        allowedToolCallNames: step.tool_calls.map((tc) => tc.function?.name ?? tc.name),
+        blockedToolCallNames: [] as string[],
+        toolResults: step.tool_results,
+        tokenDelta: (step.message as any)?.usage?.total_tokens ?? 0,
+        costDelta: (step.message as any)?.usage?.cost ?? (step.message as any)?.usage?.total_cost ?? 0,
+      }));
+
+      try {
+        runtime.persistRunSteps?.(conversationId, sessionSteps, { reset: true });
+      } catch (telemetryError) {
+        logger.warn({ conversationId, error: telemetryError }, 'failed_to_persist_run_steps');
+      }
+    }
+
+    if (executionId && context) {
+      try {
+        const evaluation = await runtime.evaluateExecution(context, {
+          id: executionId,
+          output: lastResponseText,
+          toolsUsed: allSteps.flatMap((s) => s.tool_calls.map((tc) => tc.function?.name ?? tc.name)),
+          inputTokens: totalTokensUsed,
+          outputTokens: totalTokensUsed,
+          durationMs: Date.now(),
+          status: budgetExceeded ? 'error' : 'success',
+          error: budgetExceeded ? 'budget_exceeded' : null,
+        }, allSteps, maxSteps);
+
+        try {
+          await runtime.createEvaluation?.({
+            agentInstanceId: context.instanceId,
+            executionId,
+            toolSuccessRate: evaluation.toolSuccessRate,
+            budgetAdherence: evaluation.budgetAdherence,
+            turnEfficiency: evaluation.turnEfficiency,
+            score: evaluation.score,
+            breakdown: evaluation.breakdown,
+            status: budgetExceeded ? 'budget_exceeded' : 'completed',
+          });
+        } catch (evalError) {
+          logger.warn({ executionId, error: evalError }, 'failed_to_create_evaluation');
+        }
+      } catch (evaluationError) {
+        logger.warn({ executionId, error: evaluationError }, 'failed_to_evaluate_execution');
+      }
+    }
+  } catch (persistenceError) {
+    logger.warn({ conversationId, executionId, error: persistenceError }, 'failed_to_persist_telemetry');
   }
 
   return {

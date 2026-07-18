@@ -77,6 +77,20 @@ export interface AgentExecution {
   createdAt: string;
 }
 
+export interface AgentEvaluation {
+  id: string;
+  agentInstanceId: string;
+  tenantId: string;
+  executionId: string;
+  status: string;
+  toolSuccessRate: number;
+  budgetAdherence: number;
+  turnEfficiency: number;
+  score: number;
+  breakdown: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface AgentListing {
   id: string;
   agentDefinitionId: string;
@@ -631,7 +645,6 @@ export class AgentRegistryService {
   }
 
   async rateListing(listingId: string, tenantId: string, input: AgentRatingCreate): Promise<void> {
-    const db = getDb();
     const listing = await this.getListing(listingId);
     if (!listing) return;
 
@@ -643,13 +656,75 @@ export class AgentRegistryService {
     `).run(id, listingId, tenantId, input.rating, input.review ?? null, new Date().toISOString(),
       input.rating, input.review ?? null, new Date().toISOString());
 
-    // Update listing average rating
     const avgRow = db.prepare(
       'SELECT AVG(rating) as avg_rating, COUNT(*) as count FROM agent_ratings WHERE listing_id = ?'
     ).get(listingId) as any;
 
-    db.prepare('UPDATE agent_listings SET rating = ?, rating_count = ?, updated_at = ? WHERE id = ?')
+    db.prepare('UPDATE agent_listings SET rating = ?, rating_count = ?, updated_at = ? WHERE listing_id = ?')
       .run(Math.round((avgRow?.avg_rating ?? 0) * 10) / 10, avgRow?.count ?? 0, new Date().toISOString(), listingId);
+  }
+
+  // ── Agent Evaluations ─────────────────────────────────────────────────────
+
+  async createEvaluation(tenantId: string, input: {
+    agentInstanceId: string;
+    executionId: string;
+    toolSuccessRate?: number;
+    budgetAdherence?: number;
+    turnEfficiency?: number;
+    score?: number;
+    breakdown?: Record<string, unknown>;
+    status?: string;
+  }): Promise<AgentEvaluation> {
+    const db = getDb();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO agent_evaluations (
+        id, agent_instance_id, tenant_id, execution_id, status,
+        tool_success_rate, budget_adherence, turn_efficiency, score,
+        breakdown, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.agentInstanceId,
+      tenantId,
+      input.executionId,
+      input.status ?? 'completed',
+      input.toolSuccessRate ?? 0,
+      input.budgetAdherence ?? 0,
+      input.turnEfficiency ?? 0,
+      input.score ?? 0,
+      JSON.stringify(input.breakdown ?? {}),
+      now,
+    );
+
+    const row = db.prepare('SELECT * FROM agent_evaluations WHERE id = ?').get(id) as any;
+    return this.rowToEvaluation(row);
+  }
+
+  async listEvaluations(agentInstanceId: string, tenantId: string, limit = 50): Promise<AgentEvaluation[]> {
+    const db = getDb();
+    const rows = db.prepare(
+      'SELECT * FROM agent_evaluations WHERE agent_instance_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ?'
+    ).all(agentInstanceId, tenantId, limit) as any[];
+    return rows.map((r) => this.rowToEvaluation(r));
+  }
+
+  async getEvaluation(id: string, tenantId: string): Promise<AgentEvaluation | null> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM agent_evaluations WHERE id = ? AND tenant_id = ?').get(id, tenantId) as any;
+    if (!row) return null;
+    return this.rowToEvaluation(row);
+  }
+
+  async deleteEvaluation(id: string, tenantId: string): Promise<boolean> {
+    const db = getDb();
+    const existing = db.prepare('SELECT id FROM agent_evaluations WHERE id = ? AND tenant_id = ?').get(id, tenantId) as any;
+    if (!existing) return false;
+    db.prepare('DELETE FROM agent_evaluations WHERE id = ?').run(id);
+    return true;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -710,6 +785,22 @@ export class AgentRegistryService {
       durationMs: row.duration_ms,
       status: row.status,
       error: row.error,
+      createdAt: row.created_at,
+    };
+  }
+
+  private rowToEvaluation(row: any): AgentEvaluation {
+    return {
+      id: row.id,
+      agentInstanceId: row.agent_instance_id,
+      tenantId: row.tenant_id,
+      executionId: row.execution_id,
+      status: row.status,
+      toolSuccessRate: Number(row.tool_success_rate ?? 0),
+      budgetAdherence: Number(row.budget_adherence ?? 0),
+      turnEfficiency: Number(row.turn_efficiency ?? 0),
+      score: Number(row.score ?? 0),
+      breakdown: row.breakdown ? JSON.parse(row.breakdown) : {},
       createdAt: row.created_at,
     };
   }

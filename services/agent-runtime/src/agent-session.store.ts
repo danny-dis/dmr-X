@@ -36,6 +36,30 @@ export interface SessionMetadata {
   [key: string]: unknown;
 }
 
+/**
+ * Compact per-run step artifact stored alongside conversation state.
+ *
+ * Stored in `session_steps` keyed by `conversationId + turn`, keeping the
+ * durable payload minimal while still surfacing tool execution shape and
+ * budget status.
+ */
+export interface SessionStep {
+  turn: number;
+  status: 'ok' | 'error' | 'blocked';
+  budgetStatus: 'within' | 'exceeded';
+  allowedToolCallNames?: string[];
+  blockedToolCallNames?: string[];
+  toolResults?: Array<{
+    toolCallId?: string;
+    name?: string;
+    ok?: boolean;
+    error?: string | null;
+    truncated?: boolean;
+  }>;
+  tokenDelta?: number;
+  costDelta?: number;
+}
+
 export interface PersistedSession {
   id: string;
   tenantId: string;
@@ -69,6 +93,98 @@ export interface UpsertInput {
 export class AgentSessionStore {
   /** In-process per-conversation mutex (not persisted). */
   readonly locks = new Map<string, Promise<void>>();
+
+  /**
+   * Append durable step-level telemetry for a finished conversation run.
+   *
+   * Caller-visible contract:
+   * - Always persists the step list alongside the conversation row once
+   *   `persistSessionArtifacts` is enabled.
+   * - Does not mutate previous step history by default; use `reset` only
+   *   for explicit rerun semantics.
+   * - Returns the stored step count for verification/testing.
+   */
+  persistRunSteps(
+    conversationId: string,
+    steps: SessionStep[],
+    options?: { reset?: boolean; budgetStatus?: SessionStep['budgetStatus'] },
+  ): number {
+    const normalized = steps.map((step) => ({
+      ...step,
+      budgetStatus: step.budgetStatus ?? options?.budgetStatus ?? 'within',
+    }));
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    if (options?.reset) {
+      db.prepare('DELETE FROM session_steps WHERE conversation_id = ?')
+        .run(conversationId);
+    }
+
+    const insert = db.prepare(
+      `INSERT INTO session_steps (
+         conversation_id, turn, status, budget_status, allowed_tool_calls,
+         blocked_tool_calls, tool_results, token_delta, cost_delta, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    let lastInserted = 0;
+    for (const step of normalized) {
+      insert.run(
+        conversationId,
+        step.turn,
+        step.status,
+        step.budgetStatus,
+        step.allowedToolCallNames ? JSON.stringify(step.allowedToolCallNames) : null,
+        step.blockedToolCallNames ? JSON.stringify(step.blockedToolCallNames) : null,
+        step.toolResults?.length ? JSON.stringify(step.toolResults) : null,
+        step.tokenDelta ?? null,
+        step.costDelta ?? null,
+        now,
+      );
+      lastInserted++;
+    }
+
+    return lastInserted;
+  }
+
+  /**
+   * Load durable step-level artifacts for a conversation, oldest-first.
+   * Returns empty array when none are present.
+   */
+  loadRunSteps(conversationId: string): SessionStep[] {
+    const db = getDb();
+    const rows = db
+      .prepare(
+        `SELECT turn, status, budget_status, allowed_tool_calls,
+                blocked_tool_calls, tool_results, token_delta, cost_delta
+         FROM session_steps
+         WHERE conversation_id = ?
+         ORDER BY turn ASC`,
+      )
+      .all(conversationId) as any[];
+
+    return rows.map((row) => ({
+      turn: row.turn,
+      status: row.status,
+      budgetStatus: row.budget_status,
+      allowedToolCallNames: row.allowed_tool_calls ? JSON.parse(row.allowed_tool_calls) : undefined,
+      blockedToolCallNames: row.blocked_tool_calls ? JSON.parse(row.blocked_tool_calls) : undefined,
+      toolResults: row.tool_results ? JSON.parse(row.tool_results) : undefined,
+      tokenDelta: row.token_delta ?? undefined,
+      costDelta: row.cost_delta ?? undefined,
+    }));
+  }
+
+  /**
+   * Hard-delete step artifacts for a conversation.
+   * Does not remove the main `agent_sessions` row; the public `delete`
+   * method still owns that lifecycle contract.
+   */
+  deleteRunSteps(conversationId: string): void {
+    const db = getDb();
+    db.prepare('DELETE FROM session_steps WHERE conversation_id = ?').run(conversationId);
+  }
 
   /**
    * Persist a session (insert or update). `state` is serialized whole;
@@ -200,6 +316,7 @@ export class AgentSessionStore {
   delete(conversationId: string): void {
     const db = getDb();
     db.prepare('DELETE FROM agent_sessions WHERE id = ?').run(conversationId);
+    this.deleteRunSteps(conversationId);
   }
 
   /** Hard-delete expired (non-permanent) sessions. Returns count removed. */

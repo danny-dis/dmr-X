@@ -1827,4 +1827,51 @@ CREATE TABLE IF NOT EXISTS server_instances (
 );
 `,
   },
+  55: {
+    filename: '055_session_steps.sql',
+    sql: `-- Per-run agent session step telemetry
+-- Stores each turn in an agent chat run for auditing/debugging.
+
+CREATE TABLE IF NOT EXISTS session_steps (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  conversation_id TEXT NOT NULL,
+  turn INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'completed',
+  budget_status TEXT NOT NULL DEFAULT 'within',
+  allowed_tool_call_names TEXT NOT NULL DEFAULT '[]',
+  blocked_tool_call_names TEXT NOT NULL DEFAULT '[]',
+  tool_results TEXT NOT NULL DEFAULT '[]',
+  token_delta INTEGER NOT NULL DEFAULT 0,
+  cost_delta REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_steps_conversation
+  ON session_steps(tenant_id, conversation_id, turn);
+`,
+  },
+  56: {
+    filename: '056_agent_evaluations.sql',
+    sql: `-- Lightweight built-in agent evaluation records
+-- Stores evaluation outcomes produced by the agent runtime after chat runs.
+
+CREATE TABLE IF NOT EXISTS agent_evaluations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_instance_id TEXT NOT NULL REFERENCES agent_instances(id) ON DELETE CASCADE,
+  execution_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'completed',
+  tool_success_rate REAL NOT NULL DEFAULT 0,
+  budget_adherence REAL NOT NULL DEFAULT 0,
+  turn_efficiency REAL NOT NULL DEFAULT 0,
+  score REAL NOT NULL DEFAULT 0,
+  breakdown TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_evaluations_instance
+  ON agent_evaluations(tenant_id, agent_instance_id, created_at);
+`,
+  },
 };

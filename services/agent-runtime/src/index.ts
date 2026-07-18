@@ -1,6 +1,7 @@
 export {
   AgentRuntimeService,
   agentRuntimeService,
+  evaluateExecution,
   type AgentExecutionContext,
   type AgentTurnResult,
   type AgentChatOptions,

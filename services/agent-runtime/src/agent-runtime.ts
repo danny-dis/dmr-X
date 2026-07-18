@@ -213,6 +213,74 @@ export class AgentRuntimeService {
   }
 
   /**
+   * Whether the current request targets an exact provider/model beyond the
+   * agent's resolved alias. If so, the agent layer must NOT silently retry
+   * with a different model, because the caller explicitly demanded this model.
+   */
+  isExplicitlyPinned(bodyModel: string, resolvedModel: string): boolean {
+    const trimmed = bodyModel.trim();
+    if (trimmed !== resolvedModel && trimmed.length > 0) return true;
+    return trimmed.includes('/');
+  }
+
+  /**
+   * Heuristic retry classification for provider/model errors raised by
+   * `router.route(...)`. Retryable errors are transient/overloaded/5xx-ish
+   * upstream failures. Non-retryable errors include context/protocol/budget
+   * refusals and explicit provider-model pins handled elsewhere.
+   */
+  classifyProviderError(error: unknown): { retryable: boolean; reason: string } {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (/context length|token limit|too many tokens|prompt too long/i.test(message)) {
+      return { retryable: false, reason: 'context_length_exceeded' };
+    }
+    if (/budget|quota exceeded|insufficient quota|billing|payment/i.test(message)) {
+      return { retryable: false, reason: 'quota_or_budget_failure' };
+    }
+    if (/invalid request|bad request|unsupported|invalid api key|auth|401|403/i.test(message)) {
+      return { retryable: false, reason: 'auth_or_request_invalid' };
+    }
+    if (/timed out|timeout|503|502|500|rate limit|overloaded|unavailable|temporarily/i.test(message)) {
+      return { retryable: true, reason: 'provider_502_or_overload' };
+    }
+    if (error instanceof Error && error.name === 'ProviderUnavailableError') {
+      return { retryable: true, reason: 'provider_unavailable' };
+    }
+
+    // Conservative default: do not retry unknown error shapes, because they
+    // may reflect prompt/guardrail/tool-block rejections that should bubble
+    // through unchanged.
+    return { retryable: false, reason: 'unknown_error_shape' };
+  }
+
+  /**
+   * Ask the router to resolve a fallback alias for the current agent model.
+   * This intentionally reuses `resolveModel()` as the selector heuristic
+   * because it is already the shared source-of-truth for agent model naming.
+   * It returns `null` when no fallback should be attempted.
+   */
+  resolveFallbackModel(definition: AgentDefinition, currentModel: string): string | null {
+    if (!currentModel || currentModel === 'auto') {
+      // Already a generic alias: try the next tier down to avoid retrying the
+      // same meta-model against the same primary candidate set when the
+      // primary is likely unhealthy.
+      if (definition.modelTier === 'premium') return 'auto';
+      if (definition.modelTier === 'auto') return 'auto-fast';
+      return null;
+    }
+
+    if (currentModel === 'auto-smart') return 'auto';
+    if (currentModel === 'auto') return 'auto-fast';
+    if (currentModel === 'auto-fast') return null;
+
+    // Unknown alias/prefix convention; do not guess another provider/model
+    // string — safer to fall through by returning null and letting the error
+    // surface naturally.
+    return null;
+  }
+
+  /**
    * Record an execution result for tracking and billing.
    * Calculates actual cost from model pricing via the billing service.
    */
@@ -281,11 +349,57 @@ export class AgentRuntimeService {
   /**
    * Extract model ID from a model string like "openai/gpt-4o" or "gpt-4o".
    */
-  private extractModel(model: string): string {
+  extractModel(model: string): string {
     if (model.includes('/')) {
       return model.split('/').slice(1).join('/');
     }
     return model;
+  }
+
+  /** Summarize a completed execution into a lightweight evaluation record. */
+  async evaluateExecution(context: AgentExecutionContext, execution: {
+    id: string;
+    output: string | null;
+    toolsUsed: string[];
+    inputTokens: number;
+    outputTokens: number;
+    durationMs: number;
+    status: string;
+    error: string | null;
+  }, steps: Array<{ tool_calls: any[]; tool_results: any[] }>, maxSteps: number): Promise<{
+    toolSuccessRate: number;
+    budgetAdherence: number;
+    turnEfficiency: number;
+    score: number;
+    breakdown: Record<string, unknown>;
+  }> {
+    const toolCalls = steps.flatMap((s) => s.tool_calls ?? []);
+    const toolResults = steps.flatMap((s) => s.tool_results ?? []);
+    const successfulToolResults = toolResults.filter((tr) => !tr.error);
+    const toolSuccessRate = toolCalls.length > 0 ? successfulToolResults.length / toolCalls.length : 1;
+    const budgetAdherence = execution.status === 'success' && maxSteps > 0 ? Math.min(steps.length / maxSteps, 1) : 0;
+    const turnEfficiency = maxSteps > 0 ? Math.max(0, 1 - steps.length / maxSteps) : 0;
+    const score = Number(
+      (
+        toolSuccessRate * 0.5 +
+        budgetAdherence * 0.25 +
+        turnEfficiency * 0.25
+      ).toFixed(4),
+    );
+
+    return {
+      toolSuccessRate: Number(toolSuccessRate.toFixed(4)),
+      budgetAdherence: Number(budgetAdherence.toFixed(4)),
+      turnEfficiency: Number(turnEfficiency.toFixed(4)),
+      score: Number(score.toFixed(4)),
+      breakdown: {
+        steps,
+        toolCallCount: toolCalls.length,
+        toolResultCount: toolResults.length,
+        successfulToolResults: successfulToolResults.length,
+        maxSteps,
+      },
+    };
   }
 
 }

@@ -6,6 +6,14 @@ export {
   type AgentExecution,
   type AgentListing,
   type AgentInstall,
+  type AgentEvaluation,
+} from './agent-registry.service.js';
+
+export {
+  createEvaluation,
+  listEvaluations,
+  getEvaluation,
+  deleteEvaluation,
 } from './agent-registry.service.js';
 
 export {
