@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/plugin-loader-bootstrap",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "Bootstrap for DMR-X plugin loader",
   "type": "module",
   "main": "dist/index.js",
