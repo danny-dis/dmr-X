@@ -75,9 +75,10 @@ jobs:
         # NOTE: `mcp-input-validator.test.ts` is intentionally NOT run in CI —
         # it spins/OOMs unbounded (verified: OOMs at 2GB, times out even at
         # 7GB/120s) due to an import-chain memory blow-up, independent of the
-        # release bump. It is quarantined until that leak is fixed; the
-        # InputValidator behavior is still covered by the broader unit suite
-        # and mcp-policy-engine. Tracked as a test-infra TODO.
+        # release bump. It is quarantined in vitest.mcp.workspace.ts (excluded
+        # from `include`) until that leak is fixed; the InputValidator behavior
+        # is still covered by mcp-policy-engine and the broader unit suite.
+        # Tracked as a test-infra TODO.
         run: |
           bun vitest run --workspace vitest.mcp.workspace.ts --project mcp --coverage.enabled=false
       - name: Upload coverage
