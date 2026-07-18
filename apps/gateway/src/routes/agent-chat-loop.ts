@@ -16,7 +16,7 @@ export interface AgentChatLoopBody {
   maxTokens?: number;
   temperature?: number;
   maxSteps?: number;
-  conversationId?: string;
+  resolvedConversationId?: string;
   max_cost_budget?: number;
 }
 
@@ -62,8 +62,8 @@ interface RunAgentChatLoopArgs {
   loadedSkillIds: string[];
   /** Execution record id returned by recordExecution, for evaluation linkage. */
   executionId?: string;
-  /** Conversation id for durable session linkage. */
-  conversationId: string;
+  /** Conversation id for durable session linkage. Defaults to conversation.id. */
+  conversationId?: string;
 }
 
 const MAX_TURN_RETRIES = 2;
@@ -261,6 +261,10 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     conversationId,
   } = args;
 
+  // conversationId is optional; fall back to the conversation's own id so
+  // callers that don't thread it still persist telemetry correctly.
+  const resolvedConversationId = conversationId ?? conversation.id;
+
   const messages = [...conversation.messages] as any[];
 
   // Opt-in plan-then-execute: produce a one-shot plan BEFORE the ReAct loop and
@@ -280,7 +284,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       firstUserMessage: firstUser,
     });
     if (stream && planText) {
-      onStreamEvent('plan', { conversationId, plan: planText });
+      onStreamEvent('plan', { resolvedConversationId, plan: planText });
     }
   }
   let lastResponseText = '';
@@ -296,7 +300,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       agentInstanceId: context?.instanceId,
       agentName: context?.definition?.name,
       model,
-      conversationId,
+      resolvedConversationId,
     });
   }
 
@@ -335,13 +339,13 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       }
 
       logger.warn(
-        { requestId, conversationId, reason: decision.reason, fallback: decision.fallback },
+        { requestId, resolvedConversationId, reason: decision.reason, fallback: decision.fallback },
         'agent_run_retry',
       );
 
       if (stream) {
         onStreamEvent('model_retry', {
-          conversationId,
+          resolvedConversationId,
           reason: decision.reason,
           fallbackModel: decision.fallback,
         });
@@ -384,7 +388,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       budgetExceeded = true;
       if (stream) {
         onStreamEvent('budget_exceeded', {
-          conversationId,
+          resolvedConversationId,
           max_cost_budget: body.max_cost_budget,
           totalCost,
         });
@@ -395,7 +399,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     if (stream) {
       onStreamEvent('turn', {
         turn,
-        conversationId,
+        resolvedConversationId,
         message: response.message,
         model: response.modelId,
         usage: response.usage,
@@ -493,7 +497,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         messages.length = 0;
         messages.push(...compacted.messages);
         if (stream) {
-          onStreamEvent('context_compacted', { conversationId, summary: compacted.summary });
+          onStreamEvent('context_compacted', { resolvedConversationId, summary: compacted.summary });
         }
       }
     }
@@ -517,7 +521,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       }
     }
   } catch (persistenceError) {
-    logger.warn({ conversationId, executionId, error: persistenceError }, 'failed_to_persist_telemetry');
+    logger.warn({ resolvedConversationId, executionId, error: persistenceError }, 'failed_to_persist_telemetry');
   }
 
   return {

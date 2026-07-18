@@ -45,7 +45,7 @@ export interface SessionMetadata {
  */
 export interface SessionStep {
   turn: number;
-  status: 'ok' | 'error' | 'blocked';
+  status: 'ok' | 'error' | 'blocked' | 'completed';
   budgetStatus: 'within' | 'exceeded';
   allowedToolCallNames?: string[];
   blockedToolCallNames?: string[];
