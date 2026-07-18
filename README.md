@@ -2,6 +2,10 @@
 
 Universal AI routing, orchestration, and **Model Context Protocol (MCP) platform**. A single gateway that accepts requests in **OpenAI**, **Anthropic**, and **Google Gemini** wire formats, routes them to the best available provider, and returns responses in the same format. Also includes a full-featured MCP server for seamless agent integration.
 
+## Agent Platform (AaaS)
+
+DMR-X is also an **Agent-as-a-Service (AaaS) runtime**. Define agents as markdown, provision them from the marketplace, ZIP, GitHub, or direct import, and run them with durable execution: sessions persist across restarts with **resume/retry**, executions are billed and audited by tenant, and every run is observable through evaluation metrics and telemetry. Agents can dispatch **subagents in isolation** per tenant, and skills are available on-demand from a universal registry. The platform exposes an MCP-native surface so external MCP clients can create, list, run, and inspect agents without forking DMR-X.
+
 ## Key Features
 
 - **Multi-Format API** — native OpenAI, Anthropic, and Gemini endpoints from one gateway
@@ -12,7 +16,7 @@ Universal AI routing, orchestration, and **Model Context Protocol (MCP) platform
 - **Single Binary Distribution** — compile to standalone executable for Windows, Linux, macOS
 - **Admin UI** — React/Vite dashboard for providers, models, tenants, keys, policies, quotas, and telemetry
 - **MCP Server** — expose DMR-X routing as MCP tools (stdio, SSE, HTTP transports); also **aggregates external MCP servers** into one tool namespace (`<serverId>__<tool>`) with per-server allowlists + live hot-reload
-- **Agent Platform** — define agents as markdown, install from a marketplace / GitHub / ZIP, run them in an isolated, scheduled, billed, audited runtime, and plug external agents in over MCP with per-client tenant keys
+- **Agent Platform (AaaS)** — durable agent sessions with resume/retry, on-demand skills, subagent isolation/delegation, evaluation/telemetry for executions, and MCP plugin compatibility; provision agents from the marketplace, ZIP, GitHub, or direct import, with end-to-end billing and audit logging
 - **Multi-Tenant** — per-tenant API keys, quotas, policies, and billing tracking
 - **Agentic Workflows** — tool execution, multi-turn tool loops, and agentic chat with approval gates
 
@@ -151,9 +155,9 @@ DMR-X natively serves three API wire formats from a single gateway. Send request
 
 | Format | Chat Endpoint | Streaming | Auth Header |
 |--------|--------------|-----------|-------------|
-| **OpenAI** | `POST /v1/chat/completions` | SSE with `data: [DONE]` | `Authorization: Bearer <key>` |
-| **Anthropic** | `POST /v1/messages` | SSE with `event:` types | `x-api-key: <key>` |
-| **Google Gemini** | `POST /v1/gemini/generateContent` | SSE with `data:` lines | `x-api-key: <key>` |
+| **OpenAI** | `POST /v1/chat/completions` | SSE with `data: [DONE]` | `Authorization: Bearer *** |
+| **Anthropic** | `POST /v1/messages` | SSE with `event:` types | `x-api-key: *** |
+| **Google Gemini** | `POST /v1/gemini/generateContent` | SSE with `data:` lines | `x-api-key: *** |
 
 All three formats support streaming, tool/function calling, vision (image inputs), JSON mode, and temperature/top_p/top_k/max_tokens/stop parameters.
 
@@ -232,6 +236,17 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 | `POST` | `/v1/marketplace/:id/install` | Install a marketplace agent |
 | `POST` | `/v1/agents/import` | Import agent (GitHub repo, ZIP, or pasted `.md`) |
 | `POST/GET` | `/v1/agent-chat` | Agent chat (streaming) + stats/executions/cancel |
+| `GET/POST/PUT/DELETE` | `/v1/skills` | On-demand skill registry (list, install, enable, version) |
+
+### Agent Platform Runtime
+
+The AaaS runtime adds durable execution controls on top of agent definitions:
+
+- **Durable sessions** — conversations and execution state are persisted in SQLite and survive gateway restarts.
+- **Resume / retry** — in-flight and completed agent runs can be resumed or retried from the last checkpoint instead of restarted.
+- **Subagent isolation** — child agents inherit tenant boundaries and run in a separate execution scope so tenants cannot see or modify each other's state.
+- **Evaluation & observability** — each agent execution emits telemetry plus evaluator metrics (throughput, latency, success, quality score, and tool-call breakdowns) accessible via admin telemetry/audit endpoints.
+- **Billing & auditing** — token usage, wall-clock time, and tool calls are tracked per tenant and per agent instance in the billing service; audit events capture creation, execution, and policy actions.
 
 ### Utilities
 
@@ -261,7 +276,8 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 | `GET/PUT` + sub-routes | `/v1/admin/models` | Model management (classifications, free-tier, verify-free) |
 | `GET/POST/DELETE` | `/v1/admin/organizations` | Organizations + members |
 | `GET` | `/v1/admin/benchmarks/*` | Benchmark leaderboard, battles, tournaments, runs, validations |
-| `GET` | `/v1/admin/billing/*`, `/v1/admin/credits/*` | Usage history, billing summary, credit wallet |
+| `GET` | `/v1/admin/billing/*`, `/v1/admin/credits/*` | Billing summary, credit wallet, usage history |
+| `GET` | `/v1/admin/agents/*`, `/v1/admin/marketplace/*` | Agent management, marketplace installs, runtime controls |
 | `GET` | `/v1/admin/dashboard/*` | Dashboard stats + live stream |
 | `GET` | `/v1/admin/routing/*` | Routing decisions + performance-by-mode |
 | `GET` | `/v1/admin/free-tier/summary`, `/v1/admin/cost/dashboard` | Free-tier & cost dashboards |
@@ -288,6 +304,28 @@ See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and
 | `GET` | `/ready` | Readiness probe |
 | `GET` | `/livez` | Liveness probe |
 
+## Agent Provisioning & Marketplace
+
+Agents can be provisioned from multiple sources so operators and developers can choose workflow over copy/paste:
+
+- **Marketplace** — browse and install published agents via `/v1/marketplace` and `/v1/marketplace/:id/install`.
+- **GitHub** — import directly from a public or private repo via `/v1/agents/import`.
+- **ZIP** — upload a packaged agent bundle for offline or airgapped installs.
+- **Pasted Markdown** — paste a `.agent.md` / `.md` definition through `/v1/agents/import` for quick iteration.
+
+Each install path records the source, version, and installing tenant in the agent registry and emits an audit event.
+
+## MCP Compatibility
+
+DMR-X is both an MCP host and an MCP aggregator:
+
+- **Host:** DMR-X's built-in MCP server exposes `dmrx_*` tools over stdio, SSE, and Streamable HTTP. External MCP clients (Claude Desktop, Cursor, Continue, Codex, custom clients) connect to DMR-X without code changes.
+- **Aggregator:** DMR-X connects to upstream MCP servers and re-exposes their tools under `<serverId>__<toolName>`. Per-server allowlists restrict tool visibility. Config can live in the environment (`DMRX_MCP_CLIENT_SERVERS`) or in a config file (`dmrx-mcp.config.json`) with live hot-reload.
+- **Tenant isolation:** Inbound MCP requests resolve a tenant key from `X-DMR-Tenant-Key`, `DMRX_MCP_AGENT_API_KEY`, or auto-provisioning, so external MCP clients stay tenant-scoped.
+- **Plugins:** MCP servers can be contributed as plugins via the plugin loader, with manifest, transport, tool, and permission declarations.
+
+See [docs/MCP.md](docs/MCP.md) for transports, security, and advanced server configuration, and [docs/AGENTS_PLUGANDPLAY.md](docs/AGENTS_PLUGANDPLAY.md) for plug-and-play connectivity guidance.
+
 ## Configuration
 
 All environment variables are documented in `.env.example` and [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
@@ -302,6 +340,8 @@ Key variables:
 | `DMRX_ENCRYPTION_KEY` | — | AES-256-GCM key for provider key encryption |
 | `DMRX_CORS_ORIGIN` | `http://localhost:4200` | Allowed CORS origins |
 | `DMRX_FREE_TIER_STRATEGY` | `none` | Free-tier routing: none/prioritize/load_balance/fallback |
+| `DMRX_MCP_API_KEY` | — | API key for MCP SSE/HTTP transports |
+| `DMRX_MCP_TRANSPORT` | `stdio` | MCP transport: stdio, sse, or http |
 
 ## Development
 
@@ -372,6 +412,8 @@ CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that build
 | [docs/TRANSPARENCY-VERIFICATION.md](docs/TRANSPARENCY-VERIFICATION.md) | Provider transparency verification |
 | [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Canonical all-models provider reference (57+ adapters / 100+ providers) |
 | [docs/FREE_API_PROVIDERS_REPORT.md](docs/FREE_API_PROVIDERS_REPORT.md) | Free-tier provider report |
+| [docs/AGENTS_PLUGANDPLAY.md](docs/AGENTS_PLUGANDPLAY.md) | External MCP client connectivity and agent key resolution |
+| [docs/ROADMAP-STATUS.md](docs/ROADMAP-STATUS.md) | Agent/runtime/wiring verification status |
 
 ## Contributing
 
