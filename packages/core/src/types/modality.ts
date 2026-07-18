@@ -111,6 +111,15 @@ export type QualityTarget = 'frontier' | 'balanced' | 'economy';
 export const MODALITY_ENDPOINTS: Record<string, Modality> = {
   '/v1/chat/completions': 'llm',
   '/v1/agentic/chat': 'llm',
+  // Internal agent-runtime paths used by the AaaS chat loop, planning,
+  // history compaction, and subagent delegation. These are routed by the
+  // same Router as inbound client traffic, so they MUST be present here or
+  // detectModality() throws "Unknown API path" and every agent run 500s on
+  // its first model call. They are modality 'llm' (they are LLM completions).
+  '/v1/agents/chat': 'llm',
+  '/v1/agents/delegate': 'llm',
+  '/v1/agents/plan': 'llm',
+  '/v1/agents/compact': 'llm',
   '/v1/tools/loop': 'llm',
   '/v1/messages': 'llm',
   '/v1/gemini/generateContent': 'llm',

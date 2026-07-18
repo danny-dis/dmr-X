@@ -1948,4 +1948,38 @@ ALTER TABLE agent_definitions ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE agent_definitions ADD COLUMN history_compaction INTEGER NOT NULL DEFAULT 0;
 `,
   },
+  59: {
+    filename: '059_session_steps_tool_calls.sql',
+    sql: `-- Fix session_steps audit table: the agent execution recorder
+-- (agent-session.store.ts) inserts into \`allowed_tool_calls\` and
+-- \`blocked_tool_calls\`, but migration 055 omitted these columns, so every
+-- agent run 500s on the first telemetry write. Add them now.
+-- Idempotent: guarded by IF NOT EXISTS semantics via PRAGMA column checks
+-- performed by the runner, but ALTER TABLE ADD COLUMN is itself safe to
+-- re-run only if the column is missing — wrap defensively.
+
+-- SQLite has no "ADD COLUMN IF NOT EXISTS", so the runner's tableHasColumn
+-- guard is what makes this idempotent. The columns below mirror the
+-- SessionStep interface (allowedToolCallNames / blockedToolCallNames).
+ALTER TABLE session_steps ADD COLUMN allowed_tool_calls TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE session_steps ADD COLUMN blocked_tool_calls TEXT NOT NULL DEFAULT '[]';
+`,
+  },
+  60: {
+    filename: '060_server_instances_llm_base_url.sql',
+    sql: `-- G0DM0D3 relay mode: persist the OpenAI-compatible relay gateway URL
+-- (usually DMR-X itself) so the managed G0DM0D3 server can route LLM calls
+-- through the host's provider vault without an OpenRouter key. Idempotent:
+-- the migration runner skips "duplicate column name" if already present.
+ALTER TABLE server_instances ADD COLUMN llm_base_url TEXT;
+`,
+  },
+  61: {
+    filename: '061_server_instances_llm_api_key.sql',
+    sql: `-- G0DM0D3 relay mode: persist the optional API key for the relay gateway
+-- (DMR-X LOCAL MODE needs none). Idempotent via the runner's
+-- "duplicate column name" skip.
+ALTER TABLE server_instances ADD COLUMN llm_api_key TEXT;
+`,
+  },
 };

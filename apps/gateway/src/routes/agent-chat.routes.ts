@@ -176,7 +176,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         },
       });
 
-      agentSessionStore.persistRunSteps(convId, result.allSteps.map((step) => ({
+      agentSessionStore.persistRunSteps(tenant.id, convId, result.allSteps.map((step) => ({
         turn: step.turn,
         status: 'ok',
         budgetStatus: result.budgetExceeded ? 'exceeded' : 'within',

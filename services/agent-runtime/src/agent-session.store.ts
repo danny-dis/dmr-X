@@ -105,6 +105,7 @@ export class AgentSessionStore {
    * - Returns the stored step count for verification/testing.
    */
   persistRunSteps(
+    tenantId: string,
     conversationId: string,
     steps: SessionStep[],
     options?: { reset?: boolean; budgetStatus?: SessionStep['budgetStatus'] },
@@ -123,23 +124,24 @@ export class AgentSessionStore {
 
     const insert = db.prepare(
       `INSERT INTO session_steps (
-         conversation_id, turn, status, budget_status, allowed_tool_calls,
+         tenant_id, conversation_id, turn, status, budget_status, allowed_tool_calls,
          blocked_tool_calls, tool_results, token_delta, cost_delta, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     let lastInserted = 0;
     for (const step of normalized) {
       insert.run(
+        tenantId,
         conversationId,
         step.turn,
         step.status,
         step.budgetStatus,
-        step.allowedToolCallNames ? JSON.stringify(step.allowedToolCallNames) : null,
-        step.blockedToolCallNames ? JSON.stringify(step.blockedToolCallNames) : null,
-        step.toolResults?.length ? JSON.stringify(step.toolResults) : null,
-        step.tokenDelta ?? null,
-        step.costDelta ?? null,
+        step.allowedToolCallNames ? JSON.stringify(step.allowedToolCallNames) : '[]',
+        step.blockedToolCallNames ? JSON.stringify(step.blockedToolCallNames) : '[]',
+        step.toolResults?.length ? JSON.stringify(step.toolResults) : '[]',
+        step.tokenDelta ?? 0,
+        step.costDelta ?? 0,
         now,
       );
       lastInserted++;

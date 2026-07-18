@@ -369,8 +369,16 @@ export async function executeWithFallback(
 
   // Classify the primary error for smart fallback selection
   const errorCategory = classifyError(primaryErrorRaw);
-  // Track model-level errors so we skip them on subsequent attempts
-  if (errorCategory === 'model_not_found' || errorCategory === 'auth_error') {
+  // Track model-level errors so we skip them on subsequent attempts.
+  // Previously only model_not_found / auth_error were tracked; a provider
+  // returning a generic transient error (5xx, timeout, connection reset — e.g.
+  // a temporarily dead candidate like gemini-2.5-flash) was retried on EVERY
+  // turn, burning a fallback slot and surfacing "All providers failed" even
+  // when healthy candidates existed. Now we also track provider_overloaded and
+  // generic 'error' with a short cooldown (default 5m) so the meta-router
+  // self-heals by skipping the dead candidate instead of re-hitting it.
+  if (errorCategory === 'model_not_found' || errorCategory === 'auth_error' ||
+      errorCategory === 'provider_overloaded' || errorCategory === 'error') {
     trackModelError(plan.primary.providerId, plan.primary.modelId, errorCategory);
   }
 
@@ -496,9 +504,13 @@ export async function executeWithFallback(
           'Provider overloaded — applying 5-minute cooldown'
         );
       }
-      // Track model-level errors so we skip them on subsequent attempts
+      // Track model-level errors so we skip them on subsequent attempts.
+      // Mirror the primary-provider handling: also track provider_overloaded
+      // and generic transient 'error' (not just model_not_found / auth_error)
+      // so a dead candidate is skipped instead of retried every turn.
       const fallbackErrorCategory = classifyError(error);
-      if (fallbackErrorCategory === 'model_not_found' || fallbackErrorCategory === 'auth_error') {
+      if (fallbackErrorCategory === 'model_not_found' || fallbackErrorCategory === 'auth_error' ||
+          fallbackErrorCategory === 'provider_overloaded' || fallbackErrorCategory === 'error') {
         trackModelError(step.provider.providerId, step.provider.modelId, fallbackErrorCategory);
       }
     }
