@@ -841,3 +841,15 @@ export class AgentRegistryService {
 }
 
 export const agentRegistryService = new AgentRegistryService();
+
+// Module-level delegates for the evaluation methods. The barrel (index.ts)
+// re-exports these names because agent.routes.ts imports them from the package
+// root. They simply forward to the singleton instance.
+export const createEvaluation = (tenantId: string, input: Parameters<AgentRegistryService['createEvaluation']>[1]) =>
+  agentRegistryService.createEvaluation(tenantId, input);
+export const listEvaluations = (agentInstanceId: string, tenantId: string, limit?: number) =>
+  agentRegistryService.listEvaluations(agentInstanceId, tenantId, limit);
+export const getEvaluation = (id: string, tenantId: string) =>
+  agentRegistryService.getEvaluation(id, tenantId);
+export const deleteEvaluation = (id: string, tenantId: string) =>
+  agentRegistryService.deleteEvaluation(id, tenantId);
