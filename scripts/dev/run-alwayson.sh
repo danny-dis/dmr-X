@@ -13,15 +13,15 @@ cd "$ROOT" || exit 1
 # spawn children. Without this, every restart/launch leaves an orphaned loop
 # that fights the new one for :47113/:3100 and SIGTERMs the gateway (flapping).
 LOCK="$ROOT/.dmrx-alwayson.pid"
-if [ -f "$LOCK" ]; then
-  OLD="$(cat "$LOCK" 2>/dev/null)"
-  if [ -n "$OLD" ] && tasklist /fi "PID eq $OLD" 2>/dev/null | grep -q "$OLD"; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Killing previous alwayson instance (PID $OLD)..."
-    taskkill /PID "$OLD" /F >/dev/null 2>&1 || true
-    sleep 1
-  fi
+# Never run two supervisors. If a gateway is already listening on :47113,
+# another supervisor owns it — yield instead of starting a competing loop
+# (two loops clearing each other's ports is what caused the crash/restart flap).
+if netstat -ano 2>/dev/null | grep -E ":47113 " | grep -q LISTEN; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gateway already listening on :47113 — another supervisor owns it. Exiting to avoid conflict."
+  exit 0
 fi
-# Also clear any process still bound to our ports (defensive).
+# Defensive: clear any stale process still bound to our ports (e.g. a dead
+# loop's orphaned child), then take ownership.
 for port in 47113 3100; do
   for p in $(netstat -ano 2>/dev/null | grep -E ":$port " | grep LISTEN | awk '{print $5}' | sort -u); do
     [ "$p" != "0" ] && taskkill /PID "$p" /F >/dev/null 2>&1 || true
@@ -67,6 +67,12 @@ start_mcp() {
 # Gateway
 start_gateway() {
   while true; do
+    # Don't spawn a competing gateway if one is already up (e.g. a sibling
+    # supervisor brought it back during a crash window). Just wait.
+    if netstat -ano 2>/dev/null | grep -E ":47113 " | grep -q LISTEN; then
+      sleep 3
+      continue
+    fi
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting DMR-X gateway on :47113..."
     # Run via `bun run start` from apps/gateway so .env loads through --env-file
     # (provider keys resolve) and the G0DM0D3 child spawns the same way as a
