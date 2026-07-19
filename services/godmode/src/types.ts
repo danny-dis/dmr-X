@@ -8,8 +8,19 @@ export interface GodmodeConfig {
   baseUrl: string;
   /** API key for G0DM0D3 auth (optional) */
   apiKey?: string;
-  /** OpenRouter API key (required for G0DM0D3 to route to models) */
-  openrouterApiKey: string;
+  /**
+   * OpenRouter API key (one of two auth paths):
+   *  - present → G0DM0D3 calls OpenRouter directly; OR
+   *  - omitted but `llmBaseUrl` set → G0DM0D3 relays through that
+   *    OpenAI-compatible gateway (e.g. DMR-X itself), reusing the host's
+   *    provider vault. At least one of `openrouterApiKey` / `llmBaseUrl`
+   *    must be supplied.
+   */
+  openrouterApiKey?: string;
+  /** OpenAI-compatible base URL G0DM0D3 should relay LLM calls through. */
+  llmBaseUrl?: string;
+  /** API key for the relay gateway (optional; DMR-X LOCAL MODE needs none). */
+  llmApiKey?: string;
 }
 
 export type UltraplinianTier = 'fast' | 'standard' | 'smart' | 'power' | 'ultra';

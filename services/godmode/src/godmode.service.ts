@@ -42,16 +42,20 @@ export class GodmodeService {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Validate config
+    // Validate config: need a base URL and at least one LLM path
+    // (OpenRouter directly, or an OpenAI-compatible relay gateway).
     if (!this.config.baseUrl) {
       throw new Error('GodmodeService: baseUrl is required');
     }
-    if (!this.config.openrouterApiKey) {
-      throw new Error('GodmodeService: openrouterApiKey is required');
+    if (!this.config.openrouterApiKey && !this.config.llmBaseUrl) {
+      throw new Error(
+        'GodmodeService: either openrouterApiKey or llmBaseUrl (relay gateway) is required',
+      );
     }
 
     this.initialized = true;
-    logger.info({ baseUrl: this.config.baseUrl }, 'GodmodeService initialized');
+    logger.info({ baseUrl: this.config.baseUrl, relay: Boolean(this.config.llmBaseUrl) },
+      'GodmodeService initialized');
   }
 
   private assertInitialized(): void {
@@ -60,9 +64,19 @@ export class GodmodeService {
     }
   }
 
+  /** Public read-only accessor for the private `initialized` flag. */
+  isInitialized(): boolean {
+    return this.initialized;
+  }
+
   private getHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      // Loop-breaker: marks requests originating from the DMR-X godmode proxy
+      // so the gateway's /v1/chat/completions handler routes the meta-model
+      // normally (with its own fallback) instead of re-entering the godmode
+      // branch and infinitely recursing.
+      'X-DMRX-Godmode-Proxy': '1',
     };
     if (this.config.apiKey) {
       headers['Authorization'] = `Bearer ${this.config.apiKey}`;
@@ -534,24 +548,40 @@ export class GodmodeService {
   }
 }
 
-// Singleton instance
+// Singleton instance — stored on globalThis so that multiple bun
+// workspace copies of this module (e.g. gateway's chat.routes vs godmode.routes)
+// share the SAME initialized service.
+interface GodmodeGlobal extends Record<string, unknown> {
+  __dmrxGodmode?: GodmodeService | null;
+}
+const gGod = globalThis as GodmodeGlobal;
+function getGodmodeInstance(): GodmodeService | null {
+  return gGod.__dmrxGodmode ?? null;
+}
+function setGodmodeInstance(v: GodmodeService | null): void {
+  gGod.__dmrxGodmode = v;
+}
+
 let instance: GodmodeService | null = null;
 
 export function getGodmodeService(): GodmodeService {
-  if (!instance) {
+  let inst = getGodmodeInstance();
+  if (!inst) {
     const config: GodmodeConfig = {
       baseUrl: process.env.GODMODE_API_URL || 'http://localhost:7860',
       apiKey: process.env.GODMODE_API_KEY,
       openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     };
-    instance = new GodmodeService(config);
+    inst = new GodmodeService(config);
+    setGodmodeInstance(inst);
   }
-  return instance;
+  return inst;
 }
 
 export function createGodmodeService(config: GodmodeConfig): GodmodeService {
-  instance = new GodmodeService(config);
-  return instance;
+  const inst = new GodmodeService(config);
+  setGodmodeInstance(inst);
+  return inst;
 }
 
 /**
@@ -560,13 +590,14 @@ export function createGodmodeService(config: GodmodeConfig): GodmodeService {
  * getGodmodeService() returns a service pointed at the new URL.
  */
 export function setGodmodeConfig(config: Partial<GodmodeConfig>): GodmodeService {
-  if (!instance) {
+  let inst = getGodmodeInstance();
+  if (!inst) {
     return createGodmodeService({
       baseUrl: config.baseUrl ?? process.env.GODMODE_API_URL ?? 'http://localhost:7860',
       apiKey: config.apiKey ?? process.env.GODMODE_API_KEY,
       openrouterApiKey: config.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '',
     });
   }
-  instance.setConfig(config);
-  return instance;
+  inst.setConfig(config);
+  return inst;
 }

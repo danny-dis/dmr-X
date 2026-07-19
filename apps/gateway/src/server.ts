@@ -605,19 +605,62 @@ void (async () => {
       const { setGodmodeConfig } = await import('@dmr-x/godmode');
       const live = serverManager.getRunningInstance();
       if (live && live.url) {
+        // Relay mode (no OpenRouter key) if the instance was started that way.
+        const relayMatch = live.openrouter_key_ref?.startsWith('relay:')
+          ? live.openrouter_key_ref.slice('relay:'.length)
+          : null;
         setGodmodeConfig({
           baseUrl: live.url,
           apiKey: live.api_key ?? undefined,
-          openrouterApiKey:
-            live.openrouter_key_ref === 'env:OPENROUTER_API_KEY'
-              ? process.env.OPENROUTER_API_KEY ?? ''
-              : process.env.OPENROUTER_API_KEY ?? '',
+          openrouterApiKey: relayMatch ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
+          llmBaseUrl: relayMatch ?? undefined,
+          llmApiKey: relayMatch ? live.llm_api_key ?? undefined : undefined,
         });
-        logger.info({ url: live.url }, 'Rehydrated G0DM0D3 proxy config from server_instances');
+        logger.info({ url: live.url, relay: Boolean(relayMatch) }, 'Rehydrated G0DM0D3 proxy config from server_instances');
       }
     } catch (err) {
       logger.warn({ err }, 'G0DM0D3 rehydration skipped (no persisted running instance)');
     }
+
+    // Auto-boot G0DM0D3 in relay mode on startup so `auto-free` works
+    // immediately without a manual /godmode/server/start. Reuses DMR-X's own
+    // provider vault (no OpenRouter key required). Skipped when the proxy is
+    // already initialized or disabled via DMRX_GODMODE_AUTOSTART=false.
+    try {
+      const { getGodmodeService } = await import('@dmr-x/godmode');
+      const { setGodmodeConfig } = await import('@dmr-x/godmode');
+      if ((process.env.DMRX_GODMODE_AUTOSTART ?? 'true') !== 'false' && !getGodmodeService().isInitialized()) {
+        const { serverManager } = await import('@dmr-x/server-manager');
+        const live = serverManager.getRunningInstance();
+        const liveHealthy = live?.url
+          ? await serverManager.healthCheck({ url: live.url, timeoutMs: 2500 }).catch(() => false)
+          : false;
+        if (liveHealthy) {
+          logger.info({ url: live!.url }, 'G0DM0D3 already running and healthy — proxy ready');
+        } else {
+          const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+          // Always relay through DMR-X's own provider vault (no separate
+          // OpenRouter key required). Pass an empty openrouterApiKey so the
+          // child never tries to route through openrouter.ai, and force
+          // llmBaseUrl so it runs in LOCAL/relay mode (auth disabled).
+          const started = await serverManager.start({
+            openrouterApiKey: '',
+            llmBaseUrl: `${gatewayUrl}/v1`,
+          });
+          setGodmodeConfig({
+            baseUrl: started.url ?? 'http://localhost:7860',
+            openrouterApiKey: '',
+            llmBaseUrl: started.llm_base_url ?? `${gatewayUrl}/v1`,
+            llmApiKey: started.llm_api_key ?? undefined,
+          });
+          await getGodmodeService().initialize();
+          logger.info({ url: started.url, relay: true }, 'Auto-booted G0DM0D3 proxy (relay mode → DMR-X vault)');
+        }
+      }
+    } catch (bootErr) {
+      logger.warn({ err: bootErr }, 'G0DM0D3 auto-boot failed; auto-free will fall back to a concrete model until /godmode/server/start');
+    }
+
     logger.info('Registering route: promptRoutes');
     await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
     logger.info('All routes registered');
@@ -690,6 +733,60 @@ void (async () => {
   // boot path is what gets the gateway from "5+ minutes to /health" to
   // "sub-second to /health" on a cold start.
   // ---------------------------------------------------------------------------
+  //
+  // Seed provider_keys rows from .env on boot.
+  //
+  // The router only routes to providers that have an *active* row in the
+  // provider_keys table (migration 015), but nothing previously persisted the
+  // .env keys into that table on startup — so a fresh/provisioned DB (or one
+  // wiped by a corruption-recovery backup) left every provider keyless, which
+  // cascaded into zero routable candidates and a permanent 503. Operators
+  // expect keys in .env to "just work"; this step makes that true by
+  // upserting a Default key row for every provider whose catalog envKey is set.
+  // Idempotent: it leaves existing active keys (and manually-added ones) alone.
+  const seedEnvKeysToProviderKeys = (db: ReturnType<typeof getDb>): number => {
+    let seeded = 0;
+    for (const template of PROVIDER_CATALOG) {
+      const envKey = template.envKey;
+      if (!envKey) continue; // keyless provider (e.g. pollinations) — skip
+      const apiKey = process.env[envKey];
+      if (!apiKey) continue; // no key present in env for this provider
+      const provider = db
+        .prepare('SELECT id, name FROM providers WHERE name = ?')
+        .get(template.id) as { id: string; name: string } | undefined;
+      if (!provider) continue; // provider not registered in DB yet
+      const hasActive = db
+        .prepare(
+          'SELECT 1 FROM provider_keys WHERE provider_id = ? AND is_active = 1 LIMIT 1',
+        )
+        .get(provider.id);
+      if (hasActive) continue; // already keyed — don't overwrite
+      db.prepare(
+        `INSERT INTO provider_keys (
+          id, provider_id, label, tier,
+          api_key_encrypted, auth_method, priority, is_active,
+          created_at, updated_at
+        ) VALUES (?, ?, 'Default', ?, ?, 'api_key', 0, 1, datetime('now'), datetime('now'))`,
+      ).run(
+        `${provider.id}-default`,
+        provider.id,
+        // Keyless providers are labelled free; keyed ones default to paid.
+        template.models.length > 0 && template.models.every((m) => !!m.freeTier)
+          ? 'free'
+          : 'paid',
+        encrypt(apiKey),
+      );
+      // A fresh key means the provider can route — clear the poisoned
+      // is_healthy=0 that a prior failed health sweep may have left behind.
+      db.prepare(
+        `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`,
+      ).run(provider.id);
+      seeded++;
+      logger.info({ provider: provider.name, envKey }, 'Seeded provider key from .env');
+    }
+    return seeded;
+  };
+
   const runBackgroundInit = (): void => {
     const initStart = Date.now();
     logger.info('Background initialisation started');
@@ -706,6 +803,17 @@ void (async () => {
         }
       } catch (err) {
         logger.warn({ err }, 'Failed to auto-register providers');
+      }
+
+      // 1.2) Seed provider_keys from .env so keyed providers are routable
+      //      even after a fresh/provisioned/recovered DB wipe. Idempotent.
+      try {
+        const seeded = seedEnvKeysToProviderKeys(db);
+        if (seeded > 0) {
+          logger.info({ count: seeded }, 'Seeded provider keys from .env on boot');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to seed provider keys from .env');
       }
 
       // 1.5) Sync model classifications (pricing tiers)

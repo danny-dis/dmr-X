@@ -38,6 +38,19 @@ export interface MetaModelDefinition {
   costFilter: 'free' | 'all';
   /** Function that ranks candidates for this meta-model */
   ranker: (candidates: CandidateSet, costFilter?: 'free' | 'all') => CandidateSet;
+  /**
+   * When true, the resolved model is sent through the G0DM0D3 "godmode" proxy
+   * (GODMODE/persona wrapping) instead of being called directly. The router
+   * still picks the concrete model normally — only the call path changes.
+   */
+  godmode?: boolean;
+}
+
+/**
+ * Look up a meta-model definition by alias (including its behavioral flags).
+ */
+export function getMetaModel(alias: string): MetaModelDefinition | undefined {
+  return META_MODELS.find((m) => m.alias === alias);
 }
 
 export const META_MODELS: MetaModelDefinition[] = [
@@ -198,12 +211,11 @@ export const META_MODELS: MetaModelDefinition[] = [
   },
   {
     alias: 'auto-eco',
-    description: 'Cheapest possible model (eco profile). Routes through all providers by default (use costFilter=free for free-only). Requires 0.3+ quality baseline. Prioritizes free models first, then cheapest paid models, with quality as tiebreaker.',
-    costFilter: 'all',
-    ranker: (candidates, costFilterOverride) => {
-      const filter = costFilterOverride ?? 'all';
+    description: 'Cheapest possible model (eco profile). Always routes through zero-cost providers only (free models first, then quality as tiebreaker). costFilter override ignored.',
+    costFilter: 'free',
+    ranker: (candidates) => {
       const MIN_QUALITY = 0.3;
-      const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
+      const pool = candidates.filter(isFree);
       return pool
         .filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY)
         .sort((a, b) => {
@@ -281,9 +293,22 @@ export const META_MODELS: MetaModelDefinition[] = [
   },
   {
     alias: 'auto-free',
-    description: 'Best free model. Always routes through zero-cost providers only (costFilter override ignored). Preserves original order — the pipeline scoring decides the best choice.',
-    costFilter: 'free',
-    ranker: (candidates) => candidates.filter(isFree),
+    description: 'Auto freedom: the router resolves the best model normally (paid or free, standard scoring), then the chosen model is sent through the G0DM0D3 "godmode" proxy for persona wrapping. costFilter override is honored like any auto-* alias.',
+    costFilter: 'all',
+    godmode: true,
+    ranker: (candidates, costFilterOverride) => {
+      const filter = costFilterOverride ?? 'all';
+      const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
+      const scored = pool.map(c => {
+        const qualityComponent = (c.qualityScore ?? 0) * 0.35;
+        const totalCost = (c.costPerInputToken ?? 0) + (c.costPerOutputToken ?? 0);
+        const costComponent = Math.max(0, 1 - Math.min(totalCost * 1000, 1)) * 0.30;
+        const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 2000) / 5000) * 0.20;
+        const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.15;
+        return { ...c, autoScore: qualityComponent + costComponent + speedComponent + contextComponent };
+      });
+      return scored.sort((a, b) => b.autoScore - a.autoScore).map(({ autoScore: _, ...rest }) => rest);
+    },
   },
   // --- Free Models (backward compatibility - same as auto-* but always free) ---
   {
@@ -380,7 +405,7 @@ export function resolveMetaModel(
   model: string,
   candidates: CandidateSet,
   costFilterOverride?: 'free' | 'all'
-): { resolved: CandidateSet; metaModel: MetaModelDefinition; costFilter: 'free' | 'all' } | null {
+): { resolved: CandidateSet; metaModel: MetaModelDefinition; costFilter: 'free' | 'all'; godmode: boolean } | null {
   const metaModel = META_MODELS.find(m => m.alias === model);
   if (!metaModel) return null;
 
@@ -388,5 +413,5 @@ export function resolveMetaModel(
   const ranked = metaModel.ranker(candidates, effectiveFilter);
   if (ranked.length === 0) return null;
 
-  return { resolved: ranked, metaModel, costFilter: effectiveFilter };
+  return { resolved: ranked, metaModel, costFilter: effectiveFilter, godmode: Boolean(metaModel.godmode) };
 }

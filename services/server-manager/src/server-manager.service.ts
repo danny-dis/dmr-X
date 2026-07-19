@@ -34,6 +34,10 @@ export interface ServerInstance {
   url: string | null;
   api_key: string | null;
   openrouter_key_ref: string | null;
+  /** OpenAI-compatible relay gateway URL (no OpenRouter key needed). */
+  llm_base_url?: string | null;
+  /** API key for the relay gateway (optional). */
+  llm_api_key?: string | null;
   runtime: string | null;
   status: ServerStatus;
   pid: number | null;
@@ -45,6 +49,14 @@ export interface ServerInstance {
 export interface StartOptions {
   /** OpenRouter key to pass through to the managed server. */
   openrouterApiKey?: string;
+  /**
+   * OpenAI-compatible relay base URL. When set (and no OpenRouter key is
+   * available), the managed G0DM0D3 server routes LLM calls through this
+   * gateway instead of openrouter.ai — reusing the host's provider vault.
+   */
+  llmBaseUrl?: string;
+  /** API key for the relay gateway (optional; DMR-X LOCAL MODE needs none). */
+  llmApiKey?: string;
   /** Local port to bind (host + container). */
   port?: number;
   id?: string;
@@ -151,8 +163,8 @@ class ServerManagerService {
       this.db()
         .prepare(
           `INSERT INTO server_instances
-             (id, type, url, api_key, openrouter_key_ref, runtime, status, pid, container_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, type, url, api_key, openrouter_key_ref, llm_base_url, llm_api_key, runtime, status, pid, container_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.id,
@@ -160,6 +172,8 @@ class ServerManagerService {
           row.url ?? null,
           row.api_key ?? null,
           row.openrouter_key_ref ?? null,
+          row.llm_base_url ?? null,
+          row.llm_api_key ?? null,
           row.runtime ?? null,
           row.status ?? 'stopped',
           row.pid ?? null,
@@ -171,18 +185,20 @@ class ServerManagerService {
       this.db()
         .prepare(
           `UPDATE server_instances SET
-             url = ?, api_key = ?, openrouter_key_ref = ?, runtime = ?,
+             url = ?, api_key = ?, openrouter_key_ref = ?, llm_base_url = ?, llm_api_key = ?, runtime = ?,
              status = ?, pid = ?, container_id = ?, updated_at = ?
            WHERE id = ?`,
         )
         .run(
-          row.url ?? existing.url,
-          row.api_key ?? existing.api_key,
-          row.openrouter_key_ref ?? existing.openrouter_key_ref,
-          row.runtime ?? existing.runtime,
-          row.status ?? existing.status,
-          row.pid ?? existing.pid,
-          row.container_id ?? existing.container_id,
+          row.url ?? existing.url ?? null,
+          row.api_key ?? existing.api_key ?? null,
+          row.openrouter_key_ref ?? existing.openrouter_key_ref ?? null,
+          row.llm_base_url ?? existing.llm_base_url ?? null,
+          row.llm_api_key ?? existing.llm_api_key ?? null,
+          row.runtime ?? existing.runtime ?? null,
+          row.status ?? existing.status ?? null,
+          row.pid ?? existing.pid ?? null,
+          row.container_id ?? existing.container_id ?? null,
           ts,
           row.id,
         );
@@ -248,17 +264,36 @@ class ServerManagerService {
   }
 
   /**
+   * Resolve the LLM credentials/env for the managed G0DM0D3 server using a
+   * 3-tier fallback so an OpenRouter key is NOT required:
+   *   1. explicit opts.openrouterApiKey / process.env.OPENROUTER_API_KEY
+   *   2. a key resolved from the host's provider vault (opts.llmApiKey)
+   *   3. otherwise relay mode: point G0DM0D3 at opts.llmBaseUrl (an
+   *      OpenAI-compatible gateway) — usually DMR-X itself.
+   * Returns the env map to merge into the child process.
+   */
+  private resolveGodmodeEnv(opts: StartOptions): {
+    openrouterKey: string;
+    llmBaseUrl: string;
+    llmApiKey: string;
+  } {
+    const openrouterKey = opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '';
+    const llmBaseUrl = opts.llmBaseUrl ?? '';
+    const llmApiKey = opts.llmApiKey ?? '';
+    return { openrouterKey, llmBaseUrl, llmApiKey };
+  }
+
+  /**
    * start(): launch the (already-installed) server. Clones + installs deps
-   * first if missing. OpenRouter key is reused from the gateway's environment.
+   * first if missing. OpenRouter key is reused from the gateway's environment,
+   * otherwise G0DM0D3 relays through an OpenAI-compatible gateway.
    */
   async start(opts: StartOptions = {}): Promise<ServerInstance> {
     const id = opts.id ?? SERVER_TYPE;
     const port = opts.port ?? DEFAULT_PORT;
     const runtime = detectRuntime();
 
-    // OpenRouter key: reuse gateway's key passed in, else from environment.
-    const openrouterKey =
-      opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '';
+    const { openrouterKey, llmBaseUrl, llmApiKey } = this.resolveGodmodeEnv(opts);
     const godmodeKey = crypto.randomBytes(24).toString('hex');
     const url = `http://localhost:${port}`;
 
@@ -270,17 +305,23 @@ class ServerManagerService {
       type: SERVER_TYPE,
       url,
       api_key: godmodeKey,
-      openrouter_key_ref: openrouterKey ? 'env:OPENROUTER_API_KEY' : null,
+      openrouter_key_ref: openrouterKey
+        ? 'env:OPENROUTER_API_KEY'
+        : llmBaseUrl
+          ? `relay:${llmBaseUrl}`
+          : null,
+      llm_base_url: llmBaseUrl || null,
+      llm_api_key: llmApiKey || null,
       runtime,
       status: 'installing',
     });
 
     try {
       if (runtime === 'docker') {
-        await this.startDocker(port, openrouterKey, godmodeKey);
+        await this.startDocker(port, openrouterKey, godmodeKey, llmBaseUrl, llmApiKey);
         this.upsertRow({ id, status: 'running', url, runtime, container_id: CONTAINER_NAME });
       } else {
-        await this.startNative(port, openrouterKey, godmodeKey);
+        await this.startNative(port, openrouterKey, godmodeKey, llmBaseUrl, llmApiKey);
         this.upsertRow({ id, status: 'running', url, runtime, pid: this.child?.pid ?? null });
       }
     } catch (err) {
@@ -289,10 +330,40 @@ class ServerManagerService {
     }
 
     await this.healthCheck({ url });
-    return (await this.getOrCreateRow(id))!;
+
+    // Return the instance we just wrote. We construct it directly rather than
+    // re-reading via getOrCreateRow, because under sql.js the read-back can be
+    // inconsistent with the just-performed write in the same tick.
+    const finalPid = runtime === 'docker' ? null : this.child?.pid ?? null;
+    const finalContainerId = runtime === 'docker' ? CONTAINER_NAME : null;
+    return {
+      id,
+      type: SERVER_TYPE,
+      url,
+      api_key: godmodeKey,
+      openrouter_key_ref: openrouterKey
+        ? 'env:OPENROUTER_API_KEY'
+        : llmBaseUrl
+          ? `relay:${llmBaseUrl}`
+          : null,
+      llm_base_url: llmBaseUrl || null,
+      llm_api_key: llmApiKey || null,
+      runtime,
+      status: 'running',
+      pid: finalPid,
+      container_id: finalContainerId,
+      created_at: '',
+      updated_at: '',
+    } as ServerInstance;
   }
 
-  private startDocker(port: number, openrouterKey: string, godmodeKey: string): void {
+  private startDocker(
+    port: number,
+    openrouterKey: string,
+    godmodeKey: string,
+    llmBaseUrl: string,
+    llmApiKey: string,
+  ): void {
     const dir = g0dm0d3Dir();
     // Build (idempotent) then run detached.
     let build = spawnSync('docker', ['build', '-t', IMAGE_TAG, dir], { stdio: 'inherit' });
@@ -301,6 +372,15 @@ class ServerManagerService {
     }
     // Remove any stale container first.
     spawnSync('docker', ['rm', '-f', CONTAINER_NAME], { stdio: 'ignore' });
+    const runEnv = [
+      '-e', `OPENROUTER_API_KEY=${openrouterKey}`,
+      '-e', `GODMODE_API_KEY=${godmodeKey}`,
+      '-e', `PORT=${DEFAULT_PORT}`,
+    ];
+    if (llmBaseUrl) {
+      runEnv.push('-e', `G0DM0D3_LLM_BASE_URL=${llmBaseUrl}`);
+      runEnv.push('-e', `G0DM0D3_LLM_API_KEY=${llmApiKey}`);
+    }
     const run = spawnSync(
       'docker',
       [
@@ -308,9 +388,7 @@ class ServerManagerService {
         '-d',
         '--name', CONTAINER_NAME,
         '-p', `${port}:${DEFAULT_PORT}`,
-        '-e', `OPENROUTER_API_KEY=${openrouterKey}`,
-        '-e', `GODMODE_API_KEY=${godmodeKey}`,
-        '-e', `PORT=${DEFAULT_PORT}`,
+        ...runEnv,
         IMAGE_TAG,
       ],
       { stdio: 'inherit' },
@@ -320,14 +398,33 @@ class ServerManagerService {
     }
   }
 
-  private startNative(port: number, openrouterKey: string, godmodeKey: string): Promise<void> {
+  private startNative(
+    port: number,
+    openrouterKey: string,
+    godmodeKey: string,
+    llmBaseUrl: string,
+    llmApiKey: string,
+  ): Promise<void> {
     const dir = g0dm0d3Dir();
-    const env = {
+    const env: Record<string, string> = {
       ...process.env,
       OPENROUTER_API_KEY: openrouterKey,
-      GODMODE_API_KEY: godmodeKey,
       PORT: String(port),
     };
+    // Only set GODMODE_API_KEY when non-empty AND not in relay mode. An empty
+    // string (or relay mode) turns AUTH ON (the server requires a Bearer key);
+    // leaving it UNSET disables auth in relay/local mode so the proxy can talk
+    // to the child without a shared secret. The gateway proxy injects its own
+    // key via getHeaders() when one is configured.
+    if (godmodeKey && !llmBaseUrl) env.GODMODE_API_KEY = godmodeKey;
+    if (llmBaseUrl) {
+      env.G0DM0D3_LLM_BASE_URL = llmBaseUrl;
+      env.G0DM0D3_LLM_API_KEY = llmApiKey;
+      // Signals the child it's running as DMR-X's internal relay proxy.
+      // The rate-limit middleware skips limiting in this mode (single-tenant,
+      // no external API key to protect).
+      env.GODMODE_RELAY = '1';
+    }
 
     if (isBun()) {
       // Use Bun.spawn for a managed, killable child.

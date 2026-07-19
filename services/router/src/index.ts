@@ -10,7 +10,7 @@ export { finalSelector, type ThompsonSamplerLike } from './pipeline/final-select
 export { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
 export { TaskDecomposer, SpecialistRouter, CompositeExecutor, type SubTask, type DecomposedTask, type CompositeResult } from './decomposer/index.js';
 export { ThompsonSampler, calculateReward } from './bandit/thompson-sampler.js';
-export { META_MODELS, isMetaModel, resolveMetaModel, type MetaModelDefinition } from './meta-models.js';
+export { META_MODELS, isMetaModel, getMetaModel, resolveMetaModel, type MetaModelDefinition } from './meta-models.js';
 export { hashConversation, breakStickySession } from './sticky/sticky-session.js';
 
 // Routing strategies
