@@ -75,6 +75,56 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             // the meta-model's fallback; retrying with a concrete model that the
             // vault reliably serves keeps the godmode WRAP intact instead of
             // dropping to an unwrapped response.
+            if (body.stream) {
+              // Streaming: pipe godmode.chatStream SSE frames back to the client.
+              reply.header('Content-Type', 'text/event-stream');
+              reply.header('Cache-Control', 'no-cache');
+              reply.header('Connection', 'keep-alive');
+              reply.raw.writeHead(200);
+              for (const wrapModel of ['auto-free', 'codestral-latest', 'gemini-3.1-flash-lite']) {
+                try {
+                  let sent = false;
+                  for await (const chunk of godmode.chatStream({
+                    messages: body.messages as any,
+                    model: wrapModel,
+                    temperature: body.temperature,
+                    max_tokens: body.max_tokens,
+                    top_p: body.top_p,
+                  })) {
+                    if (chunk) {
+                      reply.raw.write(
+                        `data: ${JSON.stringify({
+                          id: `gm-${requestId}`,
+                          object: 'chat.completion.chunk',
+                          model: wrapModel,
+                          choices: [{ index: 0, delta: { role: 'assistant', content: chunk }, finish_reason: null }],
+                        })}\n\n`,
+                      );
+                      sent = true;
+                    }
+                  }
+                  if (sent) {
+                    reply.raw.write(
+                      `data: ${JSON.stringify({
+                        id: `gm-${requestId}`,
+                        object: 'chat.completion.chunk',
+                        model: wrapModel,
+                        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+                      })}\n\n`,
+                    );
+                    reply.raw.write('data: [DONE]\n\n');
+                    reply.raw.end();
+                    return;
+                  }
+                } catch (e) {
+                  logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next model');
+                }
+              }
+              reply.raw.write(`data: ${JSON.stringify({ error: { message: 'all godmode stream attempts failed' } })}\n\n`);
+              reply.raw.end();
+              return;
+            }
+            // Non-streaming: collect the wrapped completion.
             const wrapOrder = ['auto-free', 'codestral-latest', 'gemini-3.1-flash-lite'];
             let gm: any;
             let wrapErr: unknown;
@@ -83,7 +133,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 gm = await godmode.chat({
                   messages: body.messages as any,
                   model: wrapModel,
-                  stream: body.stream,
                   temperature: body.temperature,
                   max_tokens: body.max_tokens,
                   top_p: body.top_p,
@@ -97,15 +146,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             }
             if (wrapErr || !gm) {
               throw wrapErr instanceof Error ? wrapErr : new Error('all godmode wrap attempts failed');
-            }
-            if (body.stream) {
-              reply.header('Content-Type', 'text/event-stream');
-              reply.header('Cache-Control', 'no-cache');
-              reply.raw.writeHead(200);
-              const streamBody = typeof gm === 'string' ? gm : JSON.stringify(gm);
-              reply.raw.write(streamBody);
-              reply.raw.end();
-              return;
             }
             const gmContent = Array.isArray(gm.choices) && gm.choices[0]?.message?.content
               ? gm.choices[0].message.content

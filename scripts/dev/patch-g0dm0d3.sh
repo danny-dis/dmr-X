@@ -74,4 +74,17 @@ if ! grep -q "X-DMRX-Godmode-Proxy" "$OR"; then
   echo "[patch-g0dm0d3] WARNING: X-DMRX-Godmode-Proxy header missing in openrouter.ts — manual check needed." >&2
 fi
 
+# ── 4. chat.ts: forward loop-breaker header in streaming relay fetch ──
+# The streaming branch (raw fetch at ~line 667) relays to the gateway WITHOUT
+# the X-DMRX-Godmode-Proxy header, so the gateway re-enters the godmode branch
+# and recurses infinitely (58s hang). The non-streaming path uses sendMessage
+# which already forwards it. Mirror that here.
+if ! grep -q "relayMode ? { 'X-DMRX-Godmode-Proxy'" "$CHAT"; then
+  perl -0pi -e "s/\\.\\.\\.\\(relayMode \\? \\{\\} : \\{ 'HTTP-Referer'/...(relayMode ? { 'X-DMRX-Godmode-Proxy': '1' } : { 'HTTP-Referer'/" "$CHAT"
+  echo "[patch-g0dm0d3] 4/4 chat.ts streaming relay header patched"
+  applied=$((applied+1))
+else
+  echo "[patch-g0dm0d3] 4/4 chat.ts streaming relay header already patched — skip"
+fi
+
 echo "[patch-g0dm0d3] done. $applied patch(es) applied."
