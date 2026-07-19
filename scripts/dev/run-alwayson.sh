@@ -8,6 +8,28 @@ set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT" || exit 1
 
+# ── Single-instance guard ──────────────────────────────────────────────────
+# Kill any previous alwayson loop (and whatever holds our ports) BEFORE we
+# spawn children. Without this, every restart/launch leaves an orphaned loop
+# that fights the new one for :47113/:3100 and SIGTERMs the gateway (flapping).
+LOCK="$ROOT/.dmrx-alwayson.pid"
+if [ -f "$LOCK" ]; then
+  OLD="$(cat "$LOCK" 2>/dev/null)"
+  if [ -n "$OLD" ] && tasklist /fi "PID eq $OLD" 2>/dev/null | grep -q "$OLD"; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Killing previous alwayson instance (PID $OLD)..."
+    taskkill /PID "$OLD" /F >/dev/null 2>&1 || true
+    sleep 1
+  fi
+fi
+# Also clear any process still bound to our ports (defensive).
+for port in 47113 3100; do
+  for p in $(netstat -ano 2>/dev/null | grep -E ":$port " | grep LISTEN | awk '{print $5}' | sort -u); do
+    [ "$p" != "0" ] && taskkill /PID "$p" /F >/dev/null 2>&1 || true
+  done
+done
+sleep 1
+echo "$$" > "$LOCK"
+
 # Load .env so provider API keys (api_key_ref) resolve for both processes.
 if [ -f .env ]; then
   set -a
