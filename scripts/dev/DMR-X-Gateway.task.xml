@@ -13,7 +13,7 @@
   <Settings>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <ExecutionTimeLimit>PT3650D</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Hidden>true</Hidden>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <RestartOnFailure>
