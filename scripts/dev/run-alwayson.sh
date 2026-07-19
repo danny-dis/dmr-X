@@ -21,6 +21,13 @@ export DMRX_LOCAL_MODE="${DMRX_LOCAL_MODE:-true}"
 export DMRX_FREE_PROVIDERS="${DMRX_FREE_PROVIDERS:-openrouter-free,codestral-free,google,mistral,deepseek,tencent,nvidia-nim,routeway,ovhcloud}"
 export DMRX_GATEWAY_URL="${DMRX_GATEWAY_URL:-http://localhost:47113}"
 
+# Ensure the vendored G0DM0D3 proxy has the DMR-X relay patches applied.
+# The .dmrx-data/ dir is gitignored, so a fresh clone ships the upstream
+# (unpatched) proxy. This is idempotent — safe to run every boot.
+if [ -f "$ROOT/scripts/dev/patch-g0dm0d3.sh" ]; then
+  bash "$ROOT/scripts/dev/patch-g0dm0d3.sh" || echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: patch-g0dm0d3.sh failed (non-fatal)" >&2
+fi
+
 BUN="$(command -v bun || echo "$HOME/.bun/bin/bun")"
 
 # MCP server runs the built dist (rebuild with: bunx tsc -b in services/mcp-server)
