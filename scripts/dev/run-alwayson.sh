@@ -39,7 +39,12 @@ start_mcp() {
 start_gateway() {
   while true; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting DMR-X gateway on :47113..."
-    "$BUN" apps/gateway/src/main.ts >> "$ROOT/gateway.log" 2>&1
+    # Run via `bun run start` from apps/gateway so .env loads through --env-file
+    # (provider keys resolve) and the G0DM0D3 child spawns the same way as a
+    # manual `bun run start` (its auto-boot relies on Bun's spawn + warmed
+    # bunx cache). Running main.ts directly here worked inconsistently for the
+    # child process, so we mirror the documented start command.
+    ( cd "$ROOT/apps/gateway" && "$BUN" --env-file=../../.env run start ) >> "$ROOT/gateway.log" 2>&1
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Gateway exited ($?). Restarting in 3s..."
     sleep 3
   done
