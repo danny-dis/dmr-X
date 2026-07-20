@@ -694,29 +694,58 @@ export class Router {
       result.subTaskResults.size > 0 &&
       Array.from(result.subTaskResults.values()).every((r) => !r.success);
     if ((!aggregatedContent || aggregatedContent.trim().length === 0) && allSubTasksFailed) {
-      const fallbackCandidate =
-        compositeCandidates.find((c) => c.isHealthy) ?? compositeCandidates[0];
-      if (fallbackCandidate) {
+      // When every sub-task failed (typically because the decomposed sub-tasks
+      // overflow the smaller context windows of the fanned-out specialist
+      // models on large prompts), retry the ORIGINAL request as a single
+      // non-decomposed pass. Build one plan whose primary + chain span the
+      // composite's own healthy candidates AND auto-agentic's candidates (which
+      // we know route to a single large-context model that succeeds on large
+      // prompts). Use cost filter 'all' for the agentic tier so we don't exclude
+      // its working candidates just because the original request was restricted
+      // to free models. A populated chain lets executeWithFallback survive a
+      // single provider 429 instead of giving up after the primary.
+      const fallbackCandidatePools: ProviderModel[][] = [compositeCandidates];
+      const agenticResolution = resolveMetaModel('auto-agentic', this.candidates, 'all');
+      if (agenticResolution && agenticResolution.resolved.length > 0) {
+        fallbackCandidatePools.push(agenticResolution.resolved);
+      }
+
+      const healthy = fallbackCandidatePools
+        .flat()
+        .filter((c) => c.isHealthy);
+      const ordered = healthy.length > 0 ? healthy : fallbackCandidatePools.flat();
+      if (ordered.length === 0) {
+        logger.warn(
+          { metaModel: compositeModelTarget.modelId },
+          'Composite aggregation empty — no fallback candidates available'
+        );
+      } else {
+        const [primary, ...rest] = ordered;
+        const singlePassPlan: RoutingPlan = {
+          primary: {
+            providerId: primary.providerId,
+            modelId: primary.modelId,
+            adapterType: 'openai',
+            score: 1,
+          },
+          chain: rest.map((c) => ({
+            provider: { providerId: c.providerId, modelId: c.modelId, adapterType: 'openai', score: 0.9 },
+            trigger: 'error' as const,
+            waitMs: 0,
+          })),
+          timeoutMs: decomposed.executionPlan.estimatedDurationMs,
+          maxRetries: 1,
+        };
         logger.warn(
           {
             metaModel: compositeModelTarget.modelId,
             subTaskCount: result.subTaskResults.size,
-            fallbackProvider: fallbackCandidate.providerId,
-            fallbackModel: fallbackCandidate.modelId,
+            fallbackProvider: primary.providerId,
+            fallbackModel: primary.modelId,
+            chainLength: singlePassPlan.chain.length,
           },
           'Composite aggregation empty (all sub-tasks failed) — retrying as single-pass'
         );
-        const singlePassPlan: RoutingPlan = {
-          primary: {
-            providerId: fallbackCandidate.providerId,
-            modelId: fallbackCandidate.modelId,
-            adapterType: 'openai',
-            score: 1,
-          },
-          chain: [],
-          timeoutMs: decomposed.executionPlan.estimatedDurationMs,
-          maxRetries: 1,
-        };
         try {
           const singlePassResponse = await executeWithFallback(
             singlePassPlan,
