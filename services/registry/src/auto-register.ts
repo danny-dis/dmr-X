@@ -574,7 +574,7 @@ export async function autoRegisterProviders(): Promise<string[]> {
 
       // Create model profiles (rich variant with rate-limit / rank fields)
       const insert = db.prepare(
-        `INSERT INTO model_profiles (
+        `INSERT OR IGNORE INTO model_profiles (
           id, provider_id, model_id, display_name, modality, capability_tier,
           supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
           context_window, max_output_tokens,

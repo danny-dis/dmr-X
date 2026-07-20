@@ -1350,7 +1350,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               method: 'POST',
               headers: {
                 'content-type': 'application/json',
-                ...(gwKey ? { Authorization: `Bearer ${gwKey}` } : {}),
+                ...(gwKey ? { authorization: `Bearer ${gwKey}` } : {}),
               },
               body: JSON.stringify({
                 model: (params.model as string) || 'auto',
@@ -3097,17 +3097,35 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     if (!key) {
       return [];
     }
-    const listRes = await fetch(`${gatewayUrl}/v1/agents`, {
-      method: 'GET',
-      headers: { authorization: `Bearer ${key}` },
-    });
-    if (!listRes.ok) {
-      mcpLog(server, 'warning', { status: listRes.status }, 'subagent-list-failed');
-      return [];
+    const all: any[] = [];
+    let offset = 0;
+    const pageSize = 100;
+    // Page through every agent definition so all subagents (not just the
+    // first 20) are exposed as dmrx_agent_* MCP tools and A2A delegates.
+    for (;;) {
+      const listRes = await fetch(
+        `${gatewayUrl}/v1/agents?limit=${pageSize}&offset=${offset}`,
+        {
+          method: 'GET',
+          headers: { authorization: `Bearer ${key}` },
+        },
+      );
+      if (!listRes.ok) {
+        mcpLog(server, 'warning', { status: listRes.status }, 'subagent-list-failed');
+        return all;
+      }
+      const listJson: any = await listRes.json();
+      const defs: any[] = Array.isArray(listJson)
+        ? listJson
+        : listJson?.items ?? listJson?.data ?? [];
+      if (!defs.length) break;
+      all.push(...defs);
+      const total = listJson?.total;
+      if (typeof total === 'number' && all.length >= total) break;
+      if (defs.length < pageSize) break;
+      offset += defs.length;
     }
-    const listJson: any = await listRes.json();
-    const defs: any[] = Array.isArray(listJson) ? listJson : listJson?.items ?? listJson?.data ?? [];
-    return defs;
+    return all;
   }
 
   // DRY helper for authenticated JSON POSTs to the gateway. Uses the same
@@ -3210,7 +3228,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
                   method: 'POST',
                   headers: {
                     'content-type': 'application/json',
-                    authorization: `Bearer ${key}`,
+                    authorization: `Bearer ${key}`
                   },
                   body: JSON.stringify({ task: params.task, run: params.run ?? true }),
                 });
