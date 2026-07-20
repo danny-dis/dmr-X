@@ -1,4 +1,5 @@
 import { ProviderUnavailableError } from '@dmr-x/core';
+import { BadGatewayError, ServiceUnavailableError } from '@dmr-x/utils';
 import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, ProviderPreferences, ProviderModel } from '@dmr-x/core';
 import type { CandidateSet } from '@dmr-x/core';
 import type { PolicyService } from '@dmr-x/policy';
@@ -46,6 +47,30 @@ export interface RouterConfig {
   onProviderFailure?: (providerId: string) => void;
   /** Executor for handover summarization (provides the LLM call) */
   summarizationExecutor?: SummarizationExecutor;
+}
+
+/**
+ * Brief backoff applied before retrying a request that failed with an
+ * upstream 5xx (502/503). Bursts of 502s from a flapping provider usually
+ * clear within a second; a short wait lets the circuit-breaker/cooldown
+ * reset so the retry lands on a healthy candidate instead of re-hitting
+ * the same failing one.
+ */
+const UPSTREAM_5XX_BACKOFF_MS = 800;
+
+/**
+ * An upstream 5xx (BadGateway 502 / ServiceUnavailable 503) is transient and
+ * retryable — unlike a 4xx (bad request/auth) which is the caller's fault.
+ * Without this, a burst of provider 502s cascaded straight to the caller
+ * (Chimera saw `needs_user` and stalled) instead of being retried across the
+ * healthy candidate pool. ProviderUnavailableError is already retried by the
+ * caller; this covers the parallel path where the adapter surfaces a raw
+ * HttpError subclass.
+ */
+function isRetryable5xx(error: unknown): boolean {
+  if (error instanceof BadGatewayError || error instanceof ServiceUnavailableError) return true;
+  const status = (error as { statusCode?: number } | null)?.statusCode;
+  return typeof status === 'number' && status >= 500 && status !== 501;
 }
 
 export class Router {
@@ -407,9 +432,10 @@ export class Router {
             thompsonSampler: this.thompsonSampler,
           });
         } catch (error) {
-          if (error instanceof ProviderUnavailableError) {
+          const retryable = error instanceof ProviderUnavailableError || isRetryable5xx(error);
+          if (retryable) {
             // (a) Transient rate-limit cooldown: brief wait then retry the same pool.
-            if (error.retryAfter) {
+            if (error instanceof ProviderUnavailableError && error.retryAfter) {
               const waitMs = Math.min(error.retryAfter, 3000);
               logger.info({ waitMs }, 'All providers temporarily unavailable, retrying after wait');
               span.addEvent('router.retry_after_wait', { 'wait_ms': waitMs });
@@ -430,14 +456,15 @@ export class Router {
               });
             } else if (isMetaModel(modelTarget.modelId ?? '') && !metaModelFilteredFree) {
               // (b) Cross-pool degradation: a meta-model's preferred pool is empty
-              // (every preferred provider is flapping / cooldowned / circuit-open).
+              // (every preferred provider is flapping / cooldowned / circuit-open),
+              // OR an upstream 5xx (502/503) burst wiped out the preferred pool.
               // Retry once over the full healthy candidate set so a healthy
               // alternative with matching capabilities can still serve inference
               // instead of erroring. Free-only meta-models keep their contract
               // (no paid fallback). This is the DMR-X smooth-flow guarantee.
               logger.warn(
-                { metaModel: modelTarget.modelId, totalCandidates: this.candidates.length },
-                'Meta-model preferred pool empty; degrading to full candidate pool'
+                { metaModel: modelTarget.modelId, totalCandidates: this.candidates.length, upstream5xx: isRetryable5xx(error) },
+                'Meta-model preferred pool empty/unavailable; degrading to full candidate pool'
               );
               span.addEvent('router.cross_pool_fallback', { meta_model: modelTarget.modelId });
               result = await runPipeline({
@@ -455,7 +482,28 @@ export class Router {
                 thompsonSampler: this.thompsonSampler,
               });
             } else {
-              throw error;
+              // (c) Upstream 5xx on a direct model (or a free meta-model that must
+              // stay within its pool): brief backoff then one retry over the same
+              // candidate set. Bursts of 502s usually clear within the backoff
+              // window as cooldowns/circuit-breakers reset.
+              const waitMs = UPSTREAM_5XX_BACKOFF_MS;
+              logger.warn({ waitMs, model: modelTarget.modelId }, 'Upstream 5xx; backing off then retrying same pool');
+              span.addEvent('router.upstream_5xx_backoff', { 'wait_ms': waitMs });
+              await new Promise(resolve => setTimeout(resolve, waitMs));
+              result = await runPipeline({
+                taskProfile,
+                candidates: pipelineCandidates,
+                epsilon: this.config.epsilon ?? 0.05,
+                rateLimitService: this.config.rateLimitService,
+                quotaService: this.config.quotaService,
+                policyService: this.config.policyService,
+                tenantId,
+                estimatedTokens: this.estimateTokens(request),
+                freeTierStrategy: effectiveFreeTierStrategy,
+                providerPreferences,
+                metaModelFilteredFree,
+                thompsonSampler: this.thompsonSampler,
+              });
             }
           } else {
             throw error;
