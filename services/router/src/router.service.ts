@@ -679,6 +679,62 @@ export class Router {
       freeTierStrategy
     );
 
+    // Step 2.5: Fallback — composite decomposition can yield an EMPTY aggregated
+    // response when every sub-task fails (e.g. large prompts overflow the
+    // smaller context windows of the fanned-out specialist models). Rather than
+    // return a blank completion (which breaks callers like Chimera), retry the
+    // ORIGINAL request as a single non-decomposed pass against one capable
+    // candidate. This mirrors the behavior of meta-models that route to a single
+    // model (e.g. auto-agentic) and avoids the decomposition overflow entirely.
+    const aggregatedContent =
+      typeof result.aggregatedResponse?.message?.content === 'string'
+        ? (result.aggregatedResponse.message.content as string)
+        : '';
+    const allSubTasksFailed =
+      result.subTaskResults.size > 0 &&
+      Array.from(result.subTaskResults.values()).every((r) => !r.success);
+    if ((!aggregatedContent || aggregatedContent.trim().length === 0) && allSubTasksFailed) {
+      const fallbackCandidate =
+        compositeCandidates.find((c) => c.isHealthy) ?? compositeCandidates[0];
+      if (fallbackCandidate) {
+        logger.warn(
+          {
+            metaModel: compositeModelTarget.modelId,
+            subTaskCount: result.subTaskResults.size,
+            fallbackProvider: fallbackCandidate.providerId,
+            fallbackModel: fallbackCandidate.modelId,
+          },
+          'Composite aggregation empty (all sub-tasks failed) — retrying as single-pass'
+        );
+        const singlePassPlan: RoutingPlan = {
+          primary: {
+            providerId: fallbackCandidate.providerId,
+            modelId: fallbackCandidate.modelId,
+            adapterType: 'openai',
+            score: 1,
+          },
+          chain: [],
+          timeoutMs: decomposed.executionPlan.estimatedDurationMs,
+          maxRetries: 1,
+        };
+        try {
+          const singlePassResponse = await executeWithFallback(
+            singlePassPlan,
+            request,
+            this.adapterExecutor!
+          );
+          if (singlePassResponse?.message?.content) {
+            return { plan: singlePassPlan, response: singlePassResponse };
+          }
+        } catch (fallbackErr) {
+          logger.error(
+            { err: fallbackErr, metaModel: compositeModelTarget.modelId },
+            'Single-pass fallback after empty composite also failed'
+          );
+        }
+      }
+    }
+
     // Log model assignments
     for (const [subTaskId, model] of result.modelAssignments) {
       logger.info({ subTaskId, model }, 'Sub-task assigned');
