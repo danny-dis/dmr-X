@@ -1,282 +1,216 @@
 /**
  * A2A Task Manager
- * 
- * Manages agent-to-agent tasks including task creation,
- * status tracking, and result handling.
- * 
- * Based on Google's A2A protocol specification.
+ *
+ * In-memory store of A2A-native Task/Message objects (spec shapes: `kind`,
+ * `contextId`, `history`, `artifacts`). Pure store — no I/O side effects
+ * (dispatch + push live in dispatch.ts / jsonrpc.ts).
+ *
+ * ponytail: in-memory Map, lost on restart. Swap for @dmr-x/db if tasks must
+ * survive a gateway bounce or be shared across instances.
  */
 
-import crypto from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import {
+  initPersistence,
+  persistTask,
+  loadPersistedTasks,
+  setPushConfig as persistPushConfig,
+  getPushConfig as loadPushConfig,
+} from './persistence.js';
 
 import { createLogger } from '@dmr-x/utils';
 
 const logger = createLogger('mcp-server:a2a:task-manager');
 
 // ---------------------------------------------------------------------------
-// Types
+// A2A object shapes (current spec)
 // ---------------------------------------------------------------------------
 
-export type TaskState = 
+export type TaskState =
   | 'submitted'
   | 'working'
   | 'input-required'
   | 'completed'
   | 'canceled'
   | 'failed'
-  | 'rejected';
+  | 'rejected'
+  | 'auth-required'
+  | 'unknown';
 
-export interface TaskMessage {
-  /** Message role */
-  role: 'user' | 'agent';
-  /** Message parts */
-  parts: TaskPart[];
-  /** Metadata */
-  metadata?: Record<string, unknown>;
+const TERMINAL: ReadonlySet<TaskState> = new Set<TaskState>([
+  'completed',
+  'canceled',
+  'failed',
+  'rejected',
+]);
+
+export function isTerminal(state: TaskState): boolean {
+  return TERMINAL.has(state);
 }
 
 export interface TaskPart {
-  /** Part type */
-  type: 'text' | 'data' | 'file';
-  /** Text content (for text parts) */
+  kind: 'text' | 'file' | 'data';
   text?: string;
-  /** Data content (for data parts) */
   data?: unknown;
-  /** File metadata (for file parts) */
-  file?: {
-    name: string;
-    mimeType: string;
-    uri?: string;
-    bytes?: string;
-  };
+  file?: { name?: string; mimeType?: string; uri?: string; bytes?: string };
+  metadata?: Record<string, unknown>;
 }
 
-export interface Task {
-  /** Task ID */
-  id: string;
-  /** Session ID */
-  sessionId?: string;
-  /** Task status */
-  status: TaskStatus;
-  /** Task messages */
-  messages: TaskMessage[];
-  /** Task artifacts */
-  artifacts: TaskArtifact[];
-  /** Metadata */
+export interface TaskMessage {
+  role: 'user' | 'agent';
+  parts: TaskPart[];
+  messageId: string;
+  kind: 'message';
+  taskId?: string;
+  contextId?: string;
   metadata?: Record<string, unknown>;
 }
 
 export interface TaskStatus {
-  /** Current task state */
   state: TaskState;
-  /** Status message */
-  message?: string;
-  /** Timestamp */
+  message?: TaskMessage;
   timestamp: string;
 }
 
 export interface TaskArtifact {
-  /** Artifact ID */
-  id: string;
-  /** Artifact name */
+  artifactId: string;
   name?: string;
-  /** Artifact parts */
+  description?: string;
   parts: TaskPart[];
-  /** Metadata */
   metadata?: Record<string, unknown>;
 }
 
-export interface TaskCreateRequest {
-  /** Task ID (optional, will be generated if not provided) */
-  id?: string;
-  /** Session ID */
-  sessionId?: string;
-  /** Initial message */
-  message?: TaskMessage;
-  /** Metadata */
+export interface PushNotificationConfig {
+  url: string;
+  token?: string;
+  authentication?: { schemes: string[]; credentials?: string };
+}
+
+export interface Task {
+  id: string;
+  contextId: string;
+  status: TaskStatus;
+  history: TaskMessage[];
+  artifacts: TaskArtifact[];
+  kind: 'task';
   metadata?: Record<string, unknown>;
 }
 
-export interface TaskGetRequest {
-  /** Task ID */
-  id: string;
-  /** Session ID */
-  sessionId?: string;
-  /** Include history */
-  historyLength?: number;
+// ---------------------------------------------------------------------------
+// Helpers to build spec-shaped objects
+// ---------------------------------------------------------------------------
+
+export function newMessageId(): string {
+  return crypto.randomUUID();
 }
 
-export interface TaskUpdateRequest {
-  /** Task ID */
-  id: string;
-  /** Session ID */
-  sessionId?: string;
-  /** New status */
-  status?: TaskStatus;
-  /** Additional messages */
-  messages?: TaskMessage[];
-  /** Artifacts */
-  artifacts?: TaskArtifact[];
+export function textMessage(role: 'user' | 'agent', text: string, extra?: Partial<TaskMessage>): TaskMessage {
+  return {
+    role,
+    parts: [{ kind: 'text', text }],
+    messageId: newMessageId(),
+    kind: 'message',
+    ...extra,
+  };
 }
 
-export interface TaskCancelRequest {
-  /** Task ID */
-  id: string;
-  /** Session ID */
-  sessionId?: string;
+/** Flatten a message's parts into a single text string. */
+export function messageText(msg: TaskMessage | undefined): string {
+  if (!msg?.parts) return '';
+  return msg.parts
+    .map((p) => (p.kind === 'text' ? p.text ?? '' : p.kind === 'data' ? JSON.stringify(p.data) : ''))
+    .join('\n')
+    .trim();
 }
 
 // ---------------------------------------------------------------------------
-// Task Manager
+// Store
 // ---------------------------------------------------------------------------
 
-/**
- * A2A Task Manager for handling agent-to-agent tasks
- */
 export class A2ATaskManager {
   private tasks = new Map<string, Task>();
-  private sessions = new Map<string, Set<string>>();
+  private contexts = new Map<string, Set<string>>();
+  private push = new Map<string, PushNotificationConfig>();
 
-  /**
-   * Create a new task
-   */
-  createTask(request: TaskCreateRequest): Task {
-    const taskId = request.id || crypto.randomUUID();
+  constructor() {
+    // Rehydrate tasks persisted from a previous run (survives restart).
+    for (const t of loadPersistedTasks()) {
+      this.tasks.set(t.id, t);
+      const set = this.contexts.get(t.contextId) ?? new Set<string>();
+      set.add(t.id);
+      this.contexts.set(t.contextId, set);
+    }
+  }
+
+  /** Create a task from an inbound user message (spec: message/send). */
+  createTask(message: TaskMessage, opts?: { contextId?: string; metadata?: Record<string, unknown> }): Task {
+    const id = message.taskId || crypto.randomUUID();
+    const contextId = opts?.contextId || message.contextId || crypto.randomUUID();
     const now = new Date().toISOString();
 
     const task: Task = {
-      id: taskId,
-      sessionId: request.sessionId,
-      status: {
-        state: 'submitted',
-        timestamp: now,
-      },
-      messages: request.message ? [request.message] : [],
+      id,
+      contextId,
+      status: { state: 'submitted', timestamp: now },
+      history: [{ ...message, taskId: id, contextId }],
       artifacts: [],
-      metadata: request.metadata,
+      kind: 'task',
+      metadata: opts?.metadata,
     };
 
-    this.tasks.set(taskId, task);
+    this.tasks.set(id, task);
+    const set = this.contexts.get(contextId) ?? new Set<string>();
+    set.add(id);
+    this.contexts.set(contextId, set);
+    persistTask(task);
 
-    // Track session
-    if (request.sessionId) {
-      const sessionTasks = this.sessions.get(request.sessionId) || new Set();
-      sessionTasks.add(taskId);
-      this.sessions.set(request.sessionId, sessionTasks);
-    }
-
-    logger.info({ taskId, sessionId: request.sessionId }, 'Task created');
+    logger.info({ taskId: id, contextId }, 'A2A task created');
     return task;
   }
 
-  /**
-   * Get a task by ID
-   */
-  getTask(request: TaskGetRequest): Task | null {
-    return this.tasks.get(request.id) || null;
-  }
-
-  /**
-   * Update a task
-   */
-  updateTask(request: TaskUpdateRequest): Task | null {
-    const task = this.tasks.get(request.id);
+  getTask(id: string, historyLength?: number): Task | null {
+    const task = this.tasks.get(id);
     if (!task) return null;
-
-    if (request.status) {
-      task.status = {
-        ...task.status,
-        ...request.status,
-        timestamp: new Date().toISOString(),
-      };
-    }
-
-    if (request.messages) {
-      task.messages.push(...request.messages);
-    }
-
-    if (request.artifacts) {
-      task.artifacts.push(...request.artifacts);
-    }
-
-    logger.info({ taskId: request.id, state: task.status.state }, 'Task updated');
-    return task;
+    if (historyLength === undefined) return task;
+    return { ...task, history: task.history.slice(-Math.max(0, historyLength)) };
   }
 
-  /**
-   * Cancel a task
-   */
-  cancelTask(request: TaskCancelRequest): Task | null {
-    const task = this.tasks.get(request.id);
+  setStatus(id: string, state: TaskState, message?: TaskMessage): Task | null {
+    const task = this.tasks.get(id);
     if (!task) return null;
-
-    task.status = {
-      state: 'canceled',
-      message: 'Task canceled by user',
-      timestamp: new Date().toISOString(),
-    };
-
-    logger.info({ taskId: request.id }, 'Task canceled');
+    task.status = { state, message, timestamp: new Date().toISOString() };
+    if (message) task.history.push(message);
+    persistTask(task);
+    logger.info({ taskId: id, state }, 'A2A task status');
     return task;
   }
 
-  /**
-   * List tasks for a session
-   */
-  listTasks(sessionId?: string): Task[] {
-    if (!sessionId) {
-      return Array.from(this.tasks.values());
-    }
-
-    const taskIds = this.sessions.get(sessionId);
-    if (!taskIds) return [];
-
-    return Array.from(taskIds)
-      .map((id) => this.tasks.get(id))
-      .filter((task): task is Task => task !== undefined);
+  addArtifact(id: string, artifact: TaskArtifact): Task | null {
+    const task = this.tasks.get(id);
+    if (!task) return null;
+    task.artifacts.push(artifact);
+    return task;
   }
 
-  /**
-   * Delete a task
-   */
-  deleteTask(taskId: string): boolean {
-    const task = this.tasks.get(taskId);
-    if (!task) return false;
+  /** Cancel a task. Returns { task } or an error reason for JSON-RPC mapping. */
+  cancelTask(id: string): { task?: Task; error?: 'not-found' | 'not-cancelable' } {
+    const task = this.tasks.get(id);
+    if (!task) return { error: 'not-found' };
+    if (isTerminal(task.status.state)) return { error: 'not-cancelable' };
+    task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+    logger.info({ taskId: id }, 'A2A task canceled');
+    return { task };
+  }
 
-    // Remove from session tracking
-    if (task.sessionId) {
-      const sessionTasks = this.sessions.get(task.sessionId);
-      if (sessionTasks) {
-        sessionTasks.delete(taskId);
-        if (sessionTasks.size === 0) {
-          this.sessions.delete(task.sessionId);
-        }
-      }
-    }
-
-    this.tasks.delete(taskId);
-    logger.info({ taskId }, 'Task deleted');
+  setPushConfig(id: string, config: PushNotificationConfig): boolean {
+    if (!this.tasks.has(id)) return false;
+    this.push.set(id, config);
+    persistPushConfig(id, config);
     return true;
   }
 
-  /**
-   * Get task statistics
-   */
-  getStats(): {
-    totalTasks: number;
-    activeTasks: number;
-    completedTasks: number;
-    failedTasks: number;
-    totalSessions: number;
-  } {
-    const tasks = Array.from(this.tasks.values());
-    return {
-      totalTasks: tasks.length,
-      activeTasks: tasks.filter((t) => ['submitted', 'working', 'input-required'].includes(t.status.state)).length,
-      completedTasks: tasks.filter((t) => t.status.state === 'completed').length,
-      failedTasks: tasks.filter((t) => ['canceled', 'failed', 'rejected'].includes(t.status.state)).length,
-      totalSessions: this.sessions.size,
-    };
+  getPushConfig(id: string): PushNotificationConfig | null {
+    return loadPushConfig(id) ?? this.push.get(id) ?? null;
   }
 }
 
@@ -287,9 +221,7 @@ export class A2ATaskManager {
 let instance: A2ATaskManager | null = null;
 
 export function getTaskManager(): A2ATaskManager {
-  if (!instance) {
-    instance = new A2ATaskManager();
-  }
+  if (!instance) instance = new A2ATaskManager();
   return instance;
 }
 

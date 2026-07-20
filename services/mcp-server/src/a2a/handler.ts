@@ -1,262 +1,167 @@
 /**
- * A2A Protocol HTTP Handler
- * 
- * Implements the A2A protocol endpoints for agent-to-agent communication.
- * 
- * Endpoints:
- * - GET /.well-known/agent.json - Agent Card discovery
- * - POST /a2a/tasks/send - Send a task to the agent
- * - POST /a2a/tasks/get - Get task status
- * - POST /a2a/tasks/cancel - Cancel a task
- * - GET /a2a/tasks/{taskId} - Get task by ID (RESTful)
+ * A2A Protocol HTTP transport.
+ *
+ * Framing only — protocol logic lives in jsonrpc.ts. Surfaces:
+ *   - GET  /.well-known/agent-card.json  Agent Card discovery (spec current)
+ *   - GET  /.well-known/agent.json       Agent Card discovery (legacy alias)
+ *   - POST /a2a                          JSON-RPC 2.0 endpoint (send/get/cancel/…)
+ *                                        SSE response for streaming methods
+ *   - Legacy REST shims (back-compat, thin wrappers over the JSON-RPC core):
+ *     POST /a2a/tasks/send, /a2a/tasks/get, /a2a/tasks/cancel
+ *     GET  /a2a/tasks/:id
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { createLogger } from '@dmr-x/utils';
 
-import { resolveGatewayKey } from '../tenant-key.js';
+import type { RequestHeaders } from '../tenant-key.js';
 import { buildAgentCard, type AgentCardConfig } from './agent-card.js';
-import { getTaskManager, type TaskMessage } from './task-manager.js';
+import {
+  handleRpc,
+  handleRpcStream,
+  isStreamMethod,
+  rpcError,
+  A2A_ERR,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
+  type StreamSink,
+} from './jsonrpc.js';
+import { getTaskManager } from './task-manager.js';
 
 const logger = createLogger('mcp-server:a2a:handler');
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface A2AHandlerConfig {
-  /** Agent Card configuration */
   agentCard?: AgentCardConfig;
-  /** Enable A2A protocol */
   enabled?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// A2A Protocol Handler
-// ---------------------------------------------------------------------------
+type ToolList = Array<{ name: string; description: string; modality?: string }>;
 
-/**
- * Handle A2A protocol HTTP requests
- */
 export async function handleA2ARoutes(
   req: IncomingMessage,
   res: ServerResponse,
   config?: A2AHandlerConfig,
-  tools?: Array<{ name: string; description: string; modality?: string }>
+  tools?: ToolList,
 ): Promise<boolean> {
+  if (config?.enabled === false) return false;
+
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const path = url.pathname;
 
-  // Check if A2A is enabled
-  if (config?.enabled === false) {
-    return false;
-  }
-
-  // Agent Card discovery endpoint
-  if (path === '/.well-known/agent.json' && req.method === 'GET') {
-    const agentCard = buildAgentCard(config?.agentCard || {}, tools || []);
-    sendJson(res, 200, agentCard);
+  // --- Agent Card discovery (current + legacy paths) ---
+  if (
+    (path === '/.well-known/agent-card.json' || path === '/.well-known/agent.json') &&
+    req.method === 'GET'
+  ) {
+    sendJson(res, 200, buildAgentCard(config?.agentCard || {}, tools || []));
     return true;
   }
 
-  // A2A task endpoints
+  // --- Primary JSON-RPC 2.0 endpoint ---
+  if (path === '/a2a' && req.method === 'POST') {
+    return handleJsonRpc(req, res);
+  }
+
+  // --- Legacy REST shims (map onto JSON-RPC methods) ---
   if (path === '/a2a/tasks/send' && req.method === 'POST') {
-    return handleTaskSend(req, res);
+    return legacyShim(req, res, 'message/send', (b) => ({ message: b.message }));
   }
-
   if (path === '/a2a/tasks/get' && req.method === 'POST') {
-    return handleTaskGet(req, res);
+    return legacyShim(req, res, 'tasks/get', (b) => ({ id: b.id }));
   }
-
   if (path === '/a2a/tasks/cancel' && req.method === 'POST') {
-    return handleTaskCancel(req, res);
+    return legacyShim(req, res, 'tasks/cancel', (b) => ({ id: b.id }));
   }
-
-  // RESTful task endpoint
   const taskIdMatch = path.match(/^\/a2a\/tasks\/([^/]+)$/);
   if (taskIdMatch && req.method === 'GET') {
-    return handleTaskGetById(res, taskIdMatch[1]);
+    const task = getTaskManager().getTask(taskIdMatch[1]);
+    if (!task) {
+      sendJson(res, 404, { error: 'Task not found' });
+      return true;
+    }
+    sendJson(res, 200, task);
+    return true;
   }
 
-  // Not an A2A route
   return false;
 }
 
 // ---------------------------------------------------------------------------
-// Task Handlers
+// JSON-RPC transport
 // ---------------------------------------------------------------------------
 
-async function handleTaskSend(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  let rpc: JsonRpcRequest;
   try {
-    const body = await readBody(req);
-    
-    if (!body.message) {
-      sendJson(res, 400, { error: 'Missing message parameter' });
-      return true;
-    }
-
-    const taskManager = getTaskManager();
-    const task = taskManager.createTask({
-      id: body.id as string | undefined,
-      sessionId: body.sessionId as string | undefined,
-      message: body.message as TaskMessage,
-      metadata: body.metadata as Record<string, unknown> | undefined,
-    });
-
-    // Update task to working state
-    taskManager.updateTask({
-      id: task.id,
-      status: {
-        state: 'working',
-        timestamp: new Date().toISOString(),
-      },
-    });
-
-    // Forward the task to the DMR-X meta-agent dispatcher, which routes it to
-    // the best matching defined subagent. This bridges A2A callers (other
-    // agents) into DMR-X's subagent fleet.
-    const gatewayUrl = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
-    // Per-client tenant isolation: resolve key from the incoming request's
-    // X-DMR-Tenant-Key header, falling back to DMRX_MCP_AGENT_API_KEY (legacy
-    // shared tenant) or a best-effort auto-provisioned key.
-    const agentApiKey = resolveGatewayKey(req.headers);
-    let taskText = '';
-    const msg: any = body.message;
-    if (typeof msg === 'string') {
-      taskText = msg;
-    } else if (msg?.parts && Array.isArray(msg.parts)) {
-      taskText = msg.parts.map((p: any) => (typeof p === 'string' ? p : p?.text ?? '')).join('\n').trim();
-    } else if (typeof msg?.text === 'string') {
-      taskText = msg.text;
-    }
-
-    if (!agentApiKey) {
-      logger.warn(
-        { gatewayUrl },
-        'DMR-X A2A: agent key not configured (no DMRX_MCP_AGENT_API_KEY, X-DMR-Tenant-Key, or auto-provisioned key) — task will not be dispatched.',
-      );
-    }
-
-    if (taskText && agentApiKey) {
-      try {
-        const dispatchRes = await fetch(`${gatewayUrl}/v1/agentic/dispatch`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${agentApiKey}` },
-          body: JSON.stringify({ task: taskText, run: true }),
-        });
-        const dispatchJson: any = await dispatchRes.json();
-        if (!dispatchRes.ok) {
-          taskManager.updateTask({
-            id: task.id,
-            status: { state: 'failed', timestamp: new Date().toISOString() },
-            artifacts: [{ id: 'error', name: 'error', parts: [{ type: 'text', text: dispatchJson?.error?.message || 'Dispatch failed' }] }],
-          });
-        } else {
-          const resultText =
-            typeof dispatchJson.content === 'string'
-              ? dispatchJson.content
-              : JSON.stringify(dispatchJson.content ?? dispatchJson);
-          taskManager.updateTask({
-            id: task.id,
-            status: { state: 'completed', timestamp: new Date().toISOString() },
-            artifacts: [{ id: 'result', name: 'result', parts: [{ type: 'text', text: resultText }] }],
-          });
-        }
-      } catch (err) {
-        taskManager.updateTask({
-          id: task.id,
-          status: { state: 'failed', timestamp: new Date().toISOString() },
-          artifacts: [{ id: 'error', name: 'error', parts: [{ type: 'text', text: `Dispatch error: ${err instanceof Error ? err.message : String(err)}` }] }],
-        });
-      }
-    } else {
-      taskManager.updateTask({
-        id: task.id,
-        status: { state: 'failed', timestamp: new Date().toISOString() },
-        artifacts: [{ id: 'error', name: 'error', parts: [{ type: 'text', text: agentApiKey ? 'Empty task message' : 'A2A agent key not configured (DMRX_MCP_AGENT_API_KEY)' }] }],
-      });
-    }
-
-    const finalTask = taskManager.getTask({ id: task.id });
-    sendJson(res, 200, finalTask);
-
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    logger.error({ error }, 'Failed to send task');
-    sendJson(res, 500, { error: message });
+    const body = await readRaw(req);
+    rpc = body ? JSON.parse(body) : ({} as JsonRpcRequest);
+  } catch {
+    sendJson(res, 200, rpcError(null, A2A_ERR.PARSE, 'Parse error'));
     return true;
   }
+
+  if (rpc.jsonrpc !== '2.0' || typeof rpc.method !== 'string') {
+    sendJson(res, 200, rpcError(rpc.id ?? null, A2A_ERR.INVALID_REQUEST, 'Invalid JSON-RPC request'));
+    return true;
+  }
+
+  const headers = req.headers as RequestHeaders;
+
+  // Streaming methods → SSE.
+  const accept = String(req.headers.accept || '');
+  if (isStreamMethod(rpc.method) || accept.includes('text/event-stream')) {
+    if (!isStreamMethod(rpc.method)) {
+      // Client asked for SSE on a non-streaming method — answer as a single event.
+      const result = await handleRpc(rpc, headers);
+      openSse(res);
+      writeSse(res, result);
+      res.end();
+      return true;
+    }
+    openSse(res);
+    const sink: StreamSink = {
+      send: (event: JsonRpcResponse) => writeSse(res, event),
+      end: () => res.end(),
+    };
+    await handleRpcStream(rpc, headers, sink);
+    return true;
+  }
+
+  // Blocking methods → single JSON response.
+  try {
+    const result = await handleRpc(rpc, headers);
+    sendJson(res, 200, result);
+  } catch (err) {
+    logger.error({ err, method: rpc.method }, 'A2A JSON-RPC handler error');
+    sendJson(res, 200, rpcError(rpc.id ?? null, A2A_ERR.INTERNAL, 'Internal error'));
+  }
+  return true;
 }
 
-async function handleTaskGet(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+/** Bridge a legacy REST call to a JSON-RPC method and return the raw result. */
+async function legacyShim(
+  req: IncomingMessage,
+  res: ServerResponse,
+  method: string,
+  toParams: (body: Record<string, any>) => Record<string, unknown>,
+): Promise<boolean> {
+  let body: Record<string, any> = {};
   try {
-    const body = await readBody(req);
-    
-    if (!body.id) {
-      sendJson(res, 400, { error: 'Missing task ID' });
-      return true;
-    }
-
-    const taskManager = getTaskManager();
-    const task = taskManager.getTask({ id: body.id as string });
-
-    if (!task) {
-      sendJson(res, 404, { error: 'Task not found' });
-      return true;
-    }
-
-    sendJson(res, 200, task);
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    logger.error({ error }, 'Failed to get task');
-    sendJson(res, 500, { error: message });
+    const raw = await readRaw(req);
+    body = raw ? JSON.parse(raw) : {};
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body' });
     return true;
   }
-}
-
-async function handleTaskCancel(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-  try {
-    const body = await readBody(req);
-    
-    if (!body.id) {
-      sendJson(res, 400, { error: 'Missing task ID' });
-      return true;
-    }
-
-    const taskManager = getTaskManager();
-    const task = taskManager.cancelTask({ id: body.id as string });
-
-    if (!task) {
-      sendJson(res, 404, { error: 'Task not found' });
-      return true;
-    }
-
-    sendJson(res, 200, {
-      id: task.id,
-      status: task.status,
-    });
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    logger.error({ error }, 'Failed to cancel task');
-    sendJson(res, 500, { error: message });
+  const rpc: JsonRpcRequest = { jsonrpc: '2.0', id: 1, method, params: toParams(body) };
+  const result = await handleRpc(rpc, req.headers as RequestHeaders);
+  if (result.error) {
+    const status = result.error.code === A2A_ERR.TASK_NOT_FOUND ? 404 : 400;
+    sendJson(res, status, { error: result.error.message });
     return true;
   }
-}
-
-async function handleTaskGetById(res: ServerResponse, taskId: string): Promise<boolean> {
-  const taskManager = getTaskManager();
-  const task = taskManager.getTask({ id: taskId });
-
-  if (!task) {
-    sendJson(res, 404, { error: 'Task not found' });
-    return true;
-  }
-
-  sendJson(res, 200, task);
+  sendJson(res, 200, result.result);
   return true;
 }
 
@@ -269,18 +174,23 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data, null, 2));
 }
 
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+function openSse(res: ServerResponse): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+}
+
+function writeSse(res: ServerResponse, event: unknown): void {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+async function readRaw(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => {
-      try {
-        const body = Buffer.concat(chunks).toString();
-        resolve(body ? JSON.parse(body) : {});
-      } catch (error) {
-        reject(error);
-      }
-    });
+    req.on('data', (chunk) => chunks.push(chunk as Buffer));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
 }

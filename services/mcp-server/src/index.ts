@@ -71,10 +71,6 @@ export {
   type Task,
   type TaskStatus,
   type TaskArtifact,
-  type TaskCreateRequest,
-  type TaskGetRequest,
-  type TaskUpdateRequest,
-  type TaskCancelRequest,
 } from './a2a/task-manager.js';
 export {
   FederationManager,
@@ -890,6 +886,14 @@ async function main(): Promise<void> {
   const transport = resolveConfig(configFile, 'transport', 'DMRX_MCP_TRANSPORT', 'stdio').toLowerCase();
   const { mcpConfig, externalMcpClient, telemetryConfig: tc } = await buildConfig();
   telemetryConfig = tc;
+
+  // Initialize A2A task persistence (sqlite file — survives restart).
+  // No-op (in-memory) if DMRX_A2A_DB_PATH is unset.
+  if (mcpConfig.a2a?.enabled) {
+    const { initPersistence } = await import('./a2a/persistence.js');
+    const dbPath = process.env.DMRX_A2A_DB_PATH || '';
+    initPersistence({ dbPath: dbPath || undefined });
+  }
 
   // Start telemetry service (Prometheus metrics + OTel tracing)
   const telemetry = getTelemetryService(tc);

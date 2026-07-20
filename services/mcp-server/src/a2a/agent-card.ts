@@ -73,6 +73,8 @@ export interface AgentSkill {
 }
 
 export interface AgentCard {
+  /** A2A protocol version this agent speaks (spec current: 0.3.0). */
+  protocolVersion: string;
   /** Agent name */
   name: string;
   /** Agent description */
@@ -81,6 +83,8 @@ export interface AgentCard {
   version: string;
   /** Agent URL */
   url: string;
+  /** Preferred transport for the primary url (spec: JSONRPC | GRPC | HTTP+JSON). */
+  preferredTransport: string;
   /** Supported capabilities */
   capabilities: AgentCapabilities;
   /** Authentication configuration */
@@ -114,14 +118,16 @@ export function buildAgentCard(
   }));
 
   return {
+    protocolVersion: '0.3.0',
     name: config.name || 'DMR-X Agent',
     description: config.description || 'DMR-X MCP Server with intelligent routing',
     version: config.version || '0.5.0',
     url: config.url || 'http://localhost:3100',
+    preferredTransport: 'JSONRPC',
     capabilities: config.capabilities || {
       streaming: true,
-      pushNotifications: false,
-      stateTransitionHistory: false,
+      pushNotifications: true,
+      stateTransitionHistory: true,
     },
     authentication: config.authentication,
     defaultInputModes: config.defaultInputModes || ['text'],
@@ -139,6 +145,7 @@ export function validateAgentCard(card: AgentCard): { valid: boolean; errors: st
   if (!card.name) errors.push('Agent name is required');
   if (!card.version) errors.push('Agent version is required');
   if (!card.url) errors.push('Agent URL is required');
+  if (!card.protocolVersion) errors.push('protocolVersion is required');
   if (!card.skills || card.skills.length === 0) {
     errors.push('At least one skill is required');
   }
