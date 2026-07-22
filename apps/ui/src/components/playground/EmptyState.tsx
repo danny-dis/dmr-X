@@ -120,21 +120,21 @@ function EmptyStateComponent() {
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-12">
-      <div className="text-center max-w-md">
-        <div className="size-16 rounded-3xl bg-surface-2 flex items-center justify-center mx-auto mb-4">
+    <div className="flex flex-1 flex-col items-center justify-center p-6 sm:p-10">
+      <div className="w-full max-w-2xl text-center">
+        <div className="mx-auto mb-5 flex size-16 items-center justify-center rounded-xl border border-border bg-surface-1 shadow-sm">
           <Icon className="size-8 text-fg-muted" />
         </div>
 
-        <h3 className="text-lg font-semibold text-fg mb-2">
+        <h3 className="mb-2 text-xl font-semibold text-fg">
           {config.title}
         </h3>
 
-        <p className="text-sm text-fg-muted mb-6">
+        <p className="mx-auto mb-6 max-w-md text-sm text-fg-muted">
           {config.description}
         </p>
 
-        <div className="grid grid-cols-2 gap-2 mb-6">
+        <div className="mb-6 grid gap-2 sm:grid-cols-2">
           {samplePrompts
             .filter(p => p.mode === mode)
             .map((sample, i) => (
@@ -142,7 +142,7 @@ function EmptyStateComponent() {
                 key={i}
                 variant="outline"
                 size="sm"
-                className="justify-start h-auto py-3"
+                className="h-auto justify-start rounded-lg border-border bg-surface-1 px-3 py-3 text-left shadow-sm hover:border-primary/30"
                 onClick={() => handleSampleClick(sample)}
               >
                 <sample.icon className="size-4 mr-2 shrink-0" />
@@ -152,7 +152,7 @@ function EmptyStateComponent() {
         </div>
 
         <div className="text-xs text-fg-subtle">
-          Press <kbd className="px-1 py-0.5 bg-surface-2 rounded">Enter</kbd> to send
+          Press <kbd className="rounded bg-surface-2 px-1 py-0.5">Enter</kbd> to send
         </div>
       </div>
     </div>

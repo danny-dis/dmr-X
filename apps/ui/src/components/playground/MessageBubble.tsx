@@ -52,18 +52,18 @@ function MessageBubbleComponent({ message }: MessageBubbleProps) {
   };
 
   return (
-    <div className={cn('group flex gap-4 py-6', isUser ? 'justify-end' : 'justify-start')}>
+    <div className={cn('group flex gap-3 py-4 sm:gap-4 sm:py-5', isUser ? 'justify-end' : 'justify-start')}>
       {!isUser && (
-        <div className="size-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-primary">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/15 bg-primary/10 text-primary">
           <SparkleIcon />
         </div>
       )}
 
       <div className={cn(
-        'max-w-[70%] rounded-2xl px-4 py-3 shadow-sm',
+        'max-w-[min(760px,82%)] rounded-xl px-4 py-3 shadow-sm',
         isUser
           ? 'bg-primary text-white'
-          : 'bg-surface-2 text-fg border border-border/60',
+          : 'border border-border bg-surface-1 text-fg',
       )}>
         {isUser ? (
           <div className="text-sm whitespace-pre-wrap leading-relaxed">{message.content}</div>
@@ -160,7 +160,7 @@ function MessageBubbleComponent({ message }: MessageBubbleProps) {
       )}
 
       {isUser && (
-        <div className="size-8 rounded-full bg-surface-3 flex items-center justify-center shrink-0 text-fg-muted">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-2 text-fg-muted">
           <UserIcon />
         </div>
       )}

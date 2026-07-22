@@ -278,10 +278,10 @@ export function PlaygroundInput() {
   };
   
   return (
-    <div className="shrink-0 border-t border-border bg-surface-1 p-4">
-      <div className="max-w-[800px] mx-auto">
+    <div className="shrink-0 border-t border-border bg-surface-1/95 p-3 shadow-[0_-10px_30px_-24px_rgba(15,23,42,0.45)] backdrop-blur sm:p-4">
+      <div className="mx-auto w-full max-w-[960px]">
         {/* Mode Tabs */}
-        <div className="flex justify-center mb-3">
+        <div className="mb-3 flex justify-center">
           <Tabs value={mode} onValueChange={(v) => setMode(v as PlaygroundMode)}>
             <TabsList variant="pills" className="flex-wrap justify-center">
               {modeOptions.map((option) => (
@@ -295,21 +295,21 @@ export function PlaygroundInput() {
         </div>
         
         {/* Config Row */}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
+        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {/* Model Selector Combobox */}
-            <div className="relative" ref={modelDropdownRef}>
+            <div className="relative min-w-0" ref={modelDropdownRef}>
               <button
                 type="button"
                 onClick={() => setShowModelDropdown(!showModelDropdown)}
-                className="flex h-9 w-[260px] items-center justify-between gap-2 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none transition-colors hover:border-border-strong focus:border-primary/40 focus:ring-2 focus:ring-primary/20"
+                className="flex h-9 w-[min(100vw-2rem,320px)] items-center justify-between gap-2 rounded-lg border border-border bg-surface-2 px-3 text-sm text-fg outline-none transition-colors hover:border-border-strong focus:border-primary/40 focus:ring-2 focus:ring-primary/20 sm:w-[320px]"
               >
                 <span className="truncate">{currentModelLabel}</span>
                 <ChevronDown className={cn("size-3.5 text-fg-muted shrink-0 transition-transform", showModelDropdown && "rotate-180")} />
               </button>
 
               {showModelDropdown && (
-                <div className="absolute top-full left-0 z-50 mt-1 w-[320px] max-h-[400px] rounded-lg border border-border bg-surface-1 shadow-2xl overflow-hidden">
+                <div className="absolute left-0 top-full z-50 mt-1 max-h-[400px] w-[min(100vw-2rem,360px)] overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
                   {/* Search input */}
                   <div className="p-2 border-b border-border">
                     <div className="relative">
@@ -464,7 +464,7 @@ export function PlaygroundInput() {
         
         {/* Config Panel */}
         {showConfig && (
-          <div className="mb-3 p-3 bg-surface-2 rounded-lg border border-border space-y-4">
+          <div className="mb-3 space-y-4 rounded-lg border border-border bg-surface-2 p-3">
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <div className="flex items-center justify-between text-xs mb-2">
@@ -601,17 +601,17 @@ export function PlaygroundInput() {
         )}
         
         {/* Input */}
-        <div className="relative">
+        <div className="relative rounded-xl border border-border bg-surface-2 p-2 shadow-sm focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/15">
           <Textarea
             ref={promptRef}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={`Send a ${mode} message...`}
-            className="min-h-[60px] max-h-[200px] pr-24 resize-none"
+            className="min-h-[68px] max-h-[220px] resize-none border-0 bg-transparent pr-28 shadow-none focus:ring-0"
             disabled={isStreaming}
           />
-          <div className="absolute right-2 bottom-2 flex items-center gap-2">
+          <div className="absolute bottom-3 right-3 flex items-center gap-2">
             <ImportButton onAttach={(file) => setAttachments(prev => [...prev, file])} />
             {(mode === 'chat' || mode === 'image') && <GenerateButtons />}
             {isStreaming ? (

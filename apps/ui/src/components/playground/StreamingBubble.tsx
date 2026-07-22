@@ -13,12 +13,12 @@ function StreamingBubbleComponent({ message }: StreamingBubbleProps) {
   const { cancelStreaming } = usePlaygroundStore();
 
   return (
-    <div className="group flex gap-4 py-6 justify-start">
-      <div className="size-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-primary">
+    <div className="group flex justify-start gap-3 py-4 sm:gap-4 sm:py-5">
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/15 bg-primary/10 text-primary">
         <SparkleIcon />
       </div>
 
-      <div className="max-w-[70%] rounded-2xl px-4 py-3 bg-surface-2 text-fg border border-border/60 shadow-sm">
+      <div className="max-w-[min(760px,82%)] rounded-xl border border-border bg-surface-1 px-4 py-3 text-fg shadow-sm">
         {message.content ? (
           <>
             <Markdown source={message.content} />

@@ -21,8 +21,8 @@ export function PlaygroundMain() {
   }
   
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[800px] mx-auto py-6 px-4">
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-[960px] px-4 py-6 sm:px-6">
         {messages.map((message) => (
           <div key={message.id}>
             {message.isStreaming ? (
@@ -35,9 +35,9 @@ export function PlaygroundMain() {
                 tool_calls, tool_results, error, done, etc.). Chat/image/
                 tts/embed messages leave this array empty. */}
             {message.events && message.events.length > 0 && (
-              <div className="ml-12 mt-1 space-y-1">
+              <div className="ml-0 mt-1 space-y-1 rounded-lg border border-border bg-surface-1/80 p-2 sm:ml-12">
                 {message.events.map((evt, i) => (
-                  <div key={i} className="text-[10px] text-fg-muted font-mono break-all">
+                  <div key={i} className="break-all font-mono text-[10px] text-fg-muted">
                     <span className="text-primary">{evt.name}</span>
                     <span className="opacity-70">
                       {' '}{JSON.stringify(evt.data).slice(0, 200)}

@@ -39,9 +39,13 @@ export function PlaygroundSidebar() {
   if (!showSidebar) return null;
   
   return (
-    <div className="w-[260px] h-full border-r border-border bg-surface-2 flex flex-col">
+    <aside className="fixed bottom-3 left-3 top-[76px] z-40 flex w-[min(300px,calc(100vw-1.5rem))] shrink-0 flex-col rounded-lg border border-border bg-surface-1 shadow-lg md:static md:inset-auto md:z-auto md:h-full md:w-[300px] md:rounded-none md:border-y-0 md:border-l-0 md:shadow-none">
       {/* Header */}
-      <div className="p-4 border-b border-border">
+      <div className="border-b border-border p-4">
+        <div className="mb-3">
+          <h2 className="text-sm font-semibold text-fg">Conversations</h2>
+          <p className="text-xs text-fg-muted">Saved playground runs</p>
+        </div>
         <Button 
           className="w-full" 
           onClick={() => createConversation()}
@@ -65,7 +69,7 @@ export function PlaygroundSidebar() {
       </div>
       
       {/* Conversation List */}
-      <div className="flex-1 overflow-y-auto px-2">
+      <div className="flex-1 overflow-y-auto px-2 pb-3">
         {isLoading ? (
           <div className="space-y-2 p-2">
             {[1, 2, 3].map((i) => (
@@ -73,8 +77,8 @@ export function PlaygroundSidebar() {
             ))}
           </div>
         ) : filteredConversations.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 text-fg-muted">
-            <MessageSquare className="size-8 mb-2 opacity-50" />
+          <div className="mx-2 mt-6 flex h-36 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-surface-2 text-fg-muted">
+            <MessageSquare className="mb-2 size-8 opacity-50" />
             <p className="text-sm">No conversations yet</p>
             <button
               onClick={() => createConversation()}
@@ -98,11 +102,11 @@ export function PlaygroundSidebar() {
       </div>
       
       {/* Footer */}
-      <div className="p-4 border-t border-border">
-        <div className="text-xs text-fg-muted text-center">
+      <div className="border-t border-border p-4">
+        <div className="rounded-md bg-surface-2 px-3 py-2 text-center text-xs text-fg-muted">
           {filteredConversations.length} conversation(s)
         </div>
       </div>
-    </div>
+    </aside>
   );
 }
