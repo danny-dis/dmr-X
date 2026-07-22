@@ -15,6 +15,8 @@ import { usePlaygroundStore, PlaygroundMode } from '@/store/usePlaygroundStore';
 import type { ApiModel } from '@/types/api';
 import { GodmodePanel } from './GodmodePanel';
 import { PromptLibrary } from './PromptLibrary';
+import { GenerateButtons } from './GenerateButtons';
+import { ImportButton, type ImportedFile } from './ImportButton';
 
 const modeOptions = [
   { value: 'chat', label: 'Chat', icon: MessageSquare },
@@ -55,6 +57,7 @@ export function PlaygroundInput() {
   // Tools panel collapsed by default — most users won't need it for
   // regular chat. Once expanded we keep it open for the session.
   const [showTools, setShowTools] = React.useState(false);
+  const [attachments, setAttachments] = React.useState<ImportedFile[]>([]);
 
   // Ref onto the prompt textarea so we can focus it after the empty-state
   // sample tiles (or any other consumer) seed a prompt via the store.
@@ -257,6 +260,7 @@ export function PlaygroundInput() {
     
     const message = prompt;
     setPrompt('');
+    setAttachments([]);
     
     try {
       await sendMessage(message);
@@ -608,6 +612,8 @@ export function PlaygroundInput() {
             disabled={isStreaming}
           />
           <div className="absolute right-2 bottom-2 flex items-center gap-2">
+            <ImportButton onAttach={(file) => setAttachments(prev => [...prev, file])} />
+            {(mode === 'chat' || mode === 'image') && <GenerateButtons />}
             {isStreaming ? (
               <Button
                 variant="outline"
@@ -629,6 +635,23 @@ export function PlaygroundInput() {
             )}
           </div>
         </div>
+        
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {attachments.map((file, idx) => (
+              <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-surface-2 border border-border">
+                <span className="truncate max-w-[120px]">{file.name}</span>
+                <button
+                  type="button"
+                  onClick={() => setAttachments(prev => prev.filter((_, i) => i !== idx))}
+                  className="text-fg-muted hover:text-fg"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         
         <p className="text-[10px] text-fg-subtle text-center mt-2">
           Press Enter to send, Shift+Enter for new line

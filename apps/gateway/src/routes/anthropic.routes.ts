@@ -81,6 +81,115 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
+    // ── auto-free → G0DM0D3 "godmode" reroute ──────────────────────────────
+    // Loop-breaker: when the request already carries X-DMRX-Godmode-Proxy it
+    // originated from the godmode proxy relaying back into the gateway.
+    const isGodmodeProxyRelay = request.headers['x-dmrx-godmode-proxy'] === '1';
+    if (body.model === 'auto-free' && !isGodmodeProxyRelay) {
+      try {
+        const { wrapAutoFreeViaGodmode, isGodmodeStrict, ensureGodmodeProxy, GODMODE_WRAP_ORDER } = await import('../lib/godmode-guard.js');
+
+        if (!body.stream) {
+          // Non-streaming: use the shared godmode guard
+          const result = await wrapAutoFreeViaGodmode({
+            requestId,
+            messages: body.messages.map(m => ({
+              role: m.role,
+              content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+            })),
+            model: body.model,
+            temperature: body.temperature,
+            maxTokens: body.max_tokens,
+            topP: body.top_p,
+          });
+
+          if (result.status === 'wrapped' && result.completion) {
+            // Convert OpenAI-shaped completion to Anthropic format
+            const choice = result.completion.choices?.[0];
+            const content = choice?.message?.content ?? '';
+            return {
+              id: result.completion.id ?? `msg_${requestId}`,
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'text', text: content }],
+              model: result.completion.model ?? body.model,
+              stop_reason: choice?.finish_reason === 'length' ? 'max_tokens' : 'end_turn',
+              stop_sequence: null,
+              usage: {
+                input_tokens: result.completion.usage?.prompt_tokens ?? 0,
+                output_tokens: result.completion.usage?.completion_tokens ?? 0,
+              },
+            };
+          }
+
+          if (isGodmodeStrict()) {
+            throw new ProviderUnavailableError([]);
+          }
+          // Non-strict: fall through to normal routing with resolved model
+        } else {
+          // Streaming: ensure proxy is up, then use GODMODE_WRAP_ORDER
+          const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
+          if (proxyReady) {
+            const { getGodmodeService } = await import('@dmr-x/godmode');
+            const godmode = getGodmodeService();
+            if (godmode.isInitialized()) {
+              reply.raw.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                Connection: 'keep-alive',
+              });
+
+              for (const wrapModel of GODMODE_WRAP_ORDER) {
+                try {
+                  let sent = false;
+                  for await (const chunk of godmode.chatStream({
+                    messages: body.messages.map(m => ({
+                      role: m.role,
+                      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+                    })),
+                    model: wrapModel,
+                    temperature: body.temperature,
+                    max_tokens: body.max_tokens,
+                    top_p: body.top_p,
+                  })) {
+                    // chunk is a plain text delta string from the godmode proxy
+                    if (chunk) {
+                      const event = {
+                        type: 'content_block_delta',
+                        index: 0,
+                        delta: { type: 'text_delta', text: chunk },
+                      };
+                      reply.raw.write(`event: content_block_delta\ndata: ${JSON.stringify(event)}\n\n`);
+                      sent = true;
+                    }
+                  }
+                  if (sent) {
+                    reply.raw.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+                  }
+                  break; // success — exit wrap-order loop
+                } catch (e) {
+                  logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next model');
+                }
+              }
+              reply.raw.end();
+              return reply;
+            }
+          }
+
+          if (isGodmodeStrict()) {
+            reply.raw.writeHead(503, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+            reply.raw.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'auto-free godmode proxy unavailable (strict mode)' } })}\n\n`);
+            reply.raw.end();
+            return reply;
+          }
+          // Non-strict: fall through to normal routing
+        }
+      } catch (err) {
+        if (err instanceof ProviderUnavailableError) throw err;
+        logger.error({ err, requestId }, 'auto-free godmode reroute failed; falling back to normal routing');
+      }
+    }
+
     // Apply compression if enabled
     let compressionMetadata = undefined;
     const tenantId = (request as any).tenant?.id;

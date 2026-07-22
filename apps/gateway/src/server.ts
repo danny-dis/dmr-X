@@ -58,6 +58,8 @@ import { createAgentConcurrencyGuard } from './middleware/agent-concurrency.midd
 import { cloudcodeRoutes } from './routes/cloudcode.routes.js';
 import { godmodeRoutes } from './routes/godmode.routes.js';
 import { promptRoutes } from './routes/prompt.routes.js';
+import { registerContextRoutes } from './routes/context.routes.js';
+import { registerWorkflowRoutes } from './routes/workflow.routes.js';
 
 const LOCAL_MODE = process.env.DMRX_LOCAL_MODE === 'true';
 declare const Bun: unknown | undefined;
@@ -663,6 +665,10 @@ void (async () => {
 
     logger.info('Registering route: promptRoutes');
     await server.register(promptRoutes, { prefix: '/v1' }); // L1B3RT4S prompt library
+    logger.info('Registering route: contextRoutes');
+    await server.register(registerContextRoutes, { prefix: '/v1' });
+    logger.info('Registering route: workflowRoutes');
+    await server.register(registerWorkflowRoutes, { prefix: '/v1' });
     logger.info('All routes registered');
 
   // Start the agent scheduler in the background — must not block the listener.
