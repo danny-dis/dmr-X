@@ -81,16 +81,23 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
-    // ── auto-free → G0DM0D3 "godmode" reroute ──────────────────────────────
-    // Loop-breaker: when the request already carries X-DMRX-Godmode-Proxy it
-    // originated from the godmode proxy relaying back into the gateway.
+    // ── auto-free → pick active model, then G0DM0D3 wrap ───────────────────
+    // Loop-breaker: X-DMRX-Godmode-Proxy means this is a relay from godmode
+    // back into the gateway — fall through to normal routing (sticky concrete
+    // model already chosen on the outbound wrap).
     const isGodmodeProxyRelay = request.headers['x-dmrx-godmode-proxy'] === '1';
     if (body.model === 'auto-free' && !isGodmodeProxyRelay) {
       try {
-        const { wrapAutoFreeViaGodmode, isGodmodeStrict, ensureGodmodeProxy, GODMODE_WRAP_ORDER } = await import('../lib/godmode-guard.js');
+        const {
+          wrapAutoFreeViaGodmode,
+          isGodmodeStrict,
+          ensureGodmodeProxy,
+          buildGodmodeWrapOrder,
+        } = await import('../lib/godmode-guard.js');
+        const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
+        const candidates = router.getCandidates();
 
         if (!body.stream) {
-          // Non-streaming: use the shared godmode guard
           const result = await wrapAutoFreeViaGodmode({
             requestId,
             messages: body.messages.map(m => ({
@@ -98,13 +105,14 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
               content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
             })),
             model: body.model,
+            candidates,
+            costFilter,
             temperature: body.temperature,
             maxTokens: body.max_tokens,
             topP: body.top_p,
           });
 
           if (result.status === 'wrapped' && result.completion) {
-            // Convert OpenAI-shaped completion to Anthropic format
             const choice = result.completion.choices?.[0];
             const content = choice?.message?.content ?? '';
             return {
@@ -112,7 +120,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
               type: 'message',
               role: 'assistant',
               content: [{ type: 'text', text: content }],
-              model: result.completion.model ?? body.model,
+              model: result.wrapModel ?? result.completion.model ?? body.model,
               stop_reason: choice?.finish_reason === 'length' ? 'max_tokens' : 'end_turn',
               stop_sequence: null,
               usage: {
@@ -125,9 +133,11 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
           if (isGodmodeStrict()) {
             throw new ProviderUnavailableError([]);
           }
-          // Non-strict: fall through to normal routing with resolved model
+          // Non-strict: fall through — resolve to top concrete for normal routing
+          const wrapOrder = result.wrapOrder ?? buildGodmodeWrapOrder(candidates, costFilter);
+          if (wrapOrder[0]) body.model = wrapOrder[0];
         } else {
-          // Streaming: ensure proxy is up, then use GODMODE_WRAP_ORDER
+          const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
           const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
           if (proxyReady) {
             const { getGodmodeService } = await import('@dmr-x/godmode');
@@ -139,7 +149,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                 Connection: 'keep-alive',
               });
 
-              for (const wrapModel of GODMODE_WRAP_ORDER) {
+              for (const wrapModel of wrapOrder) {
                 try {
                   let sent = false;
                   for await (const chunk of godmode.chatStream({
@@ -152,7 +162,6 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                     max_tokens: body.max_tokens,
                     top_p: body.top_p,
                   })) {
-                    // chunk is a plain text delta string from the godmode proxy
                     if (chunk) {
                       const event = {
                         type: 'content_block_delta',
@@ -165,10 +174,11 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                   }
                   if (sent) {
                     reply.raw.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+                    reply.raw.end();
+                    return reply;
                   }
-                  break; // success — exit wrap-order loop
                 } catch (e) {
-                  logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next model');
+                  logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next picked model');
                 }
               }
               reply.raw.end();
@@ -182,7 +192,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
             reply.raw.end();
             return reply;
           }
-          // Non-strict: fall through to normal routing
+          if (wrapOrder[0]) body.model = wrapOrder[0];
         }
       } catch (err) {
         if (err instanceof ProviderUnavailableError) throw err;

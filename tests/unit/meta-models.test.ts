@@ -501,7 +501,7 @@ describe('meta-models', () => {
   });
 
   describe('auto-free', () => {
-    it('should resolve all candidates (godmode proxy handles persona wrapping)', () => {
+    it('should resolve ranked candidates then flag godmode (pick-then-wrap)', () => {
       const candidates: CandidateSet = [
         makeCandidate({ modelId: 'free-1', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.7 }),
         makeCandidate({ modelId: 'free-2', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.9 }),

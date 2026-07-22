@@ -1,0 +1,260 @@
+/**
+ * Companion process boot for the gateway.
+ *
+ * After the gateway listens, optionally start:
+ *  - MCP server (HTTP) with A2A enabled
+ *  - G0DM0D3 proxy (via server-manager), already deferred from main.ts
+ *
+ * Both are gated by env (default on) and skip if the target is already healthy,
+ * so an external always-on supervisor and gateway-managed spawn can coexist.
+ */
+import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { logger } from '@dmr-x/utils';
+
+type ChildLike = {
+  pid: number | null;
+  kill: (signal?: string) => void;
+  exited?: Promise<number>;
+};
+
+let mcpChild: ChildLike | null = null;
+let mcpStopping = false;
+let mcpRestartTimer: ReturnType<typeof setTimeout> | null = null;
+
+function repoRootFromHere(): string {
+  // apps/gateway/src/lib → ../../../../
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+}
+
+function resolveMcpEntry(root: string): string | null {
+  const candidates = [
+    path.join(root, 'services/mcp-server/dist/index.js'),
+    path.join(process.cwd(), 'services/mcp-server/dist/index.js'),
+    path.join(process.cwd(), '../../services/mcp-server/dist/index.js'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
+async function httpOk(url: string, timeoutMs = 2000): Promise<boolean> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function spawnMcpProcess(entry: string, env: NodeJS.ProcessEnv, cwd: string): ChildLike {
+  const BunCtor = (globalThis as { Bun?: { spawn: (cmd: string[], opts: Record<string, unknown>) => ChildLike } }).Bun;
+  if (BunCtor?.spawn) {
+    return BunCtor.spawn(['bun', entry], {
+      cwd,
+      env,
+      stdout: 'inherit',
+      stderr: 'inherit',
+    });
+  }
+
+  const cp: ChildProcess = spawn('bun', [entry], {
+    cwd,
+    env,
+    stdio: 'ignore',
+    detached: false,
+  });
+  return {
+    pid: cp.pid ?? null,
+    kill: (s?: string) => {
+      try {
+        cp.kill((s as NodeJS.Signals) ?? 'SIGTERM');
+      } catch {
+        /* already gone */
+      }
+    },
+    exited: new Promise((resolve) => {
+      cp.on('exit', (code) => resolve(code ?? 1));
+    }),
+  };
+}
+
+function scheduleMcpRestart(entry: string, env: NodeJS.ProcessEnv, cwd: string): void {
+  if (mcpStopping) return;
+  if (mcpRestartTimer) clearTimeout(mcpRestartTimer);
+  mcpRestartTimer = setTimeout(() => {
+    mcpRestartTimer = null;
+    if (mcpStopping) return;
+    logger.warn('MCP sidecar exited — restarting in-loop');
+    void launchMcp(entry, env, cwd);
+  }, 3000);
+  mcpRestartTimer.unref?.();
+}
+
+async function launchMcp(entry: string, env: NodeJS.ProcessEnv, cwd: string): Promise<void> {
+  const child = spawnMcpProcess(entry, env, cwd);
+  mcpChild = child;
+  logger.info({ pid: child.pid, entry }, 'MCP sidecar spawned (A2A enabled)');
+  if (child.exited) {
+    void child.exited.then((code) => {
+      if (mcpChild === child) mcpChild = null;
+      logger.warn({ code }, 'MCP sidecar process exited');
+      scheduleMcpRestart(entry, env, cwd);
+    });
+  }
+}
+
+/**
+ * Start the MCP HTTP server with A2A if not already healthy.
+ * Controlled by DMRX_MCP_AUTOSTART (default: true).
+ */
+export async function deferMcpBoot(): Promise<void> {
+  if ((process.env.DMRX_MCP_AUTOSTART ?? 'true') === 'false') {
+    logger.info('MCP autostart disabled (DMRX_MCP_AUTOSTART=false)');
+    return;
+  }
+
+  const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
+  const port = process.env.DMRX_MCP_PORT || '3100';
+  const healthUrl = `http://${host}:${port}/health`;
+
+  if (await httpOk(healthUrl)) {
+    logger.info({ healthUrl }, 'MCP already healthy — skipping sidecar spawn');
+    return;
+  }
+
+  const root = repoRootFromHere();
+  const entry = resolveMcpEntry(root);
+  if (!entry) {
+    logger.warn({ root }, 'MCP autostart skipped — services/mcp-server/dist/index.js not found (run bunx tsc -b in services/mcp-server)');
+    return;
+  }
+
+  const gatewayPort = process.env.PORT || '47113';
+  const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${gatewayPort}`;
+  const agentKey =
+    process.env.DMRX_MCP_AGENT_API_KEY ||
+    process.env.DMRX_ADMIN_API_KEY ||
+    'dmrx-local';
+  const dataDir = process.env.DMRX_MCP_DATA_DIR || path.join(root, '.dmrx-data-mcp');
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    DMRX_MCP_TRANSPORT: 'http',
+    DMRX_MCP_PORT: port,
+    DMRX_MCP_HOST: host,
+    DMRX_MCP_AGENT_API_KEY: agentKey,
+    DMRX_A2A_ENABLED: process.env.DMRX_A2A_ENABLED ?? 'true',
+    DMRX_A2A_AGENT_URL: process.env.DMRX_A2A_AGENT_URL || `http://${host}:${port}`,
+    DMRX_GATEWAY_URL: gatewayUrl,
+    DMRX_DATA_DIR: dataDir,
+  };
+
+  mcpStopping = false;
+  await launchMcp(entry, env, root);
+
+  // Best-effort wait so logs show ready/fail without blocking callers long.
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (await httpOk(healthUrl, 1500)) {
+      logger.info({ healthUrl }, 'MCP sidecar healthy (A2A agent card available)');
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  logger.warn({ healthUrl }, 'MCP sidecar spawned but /health not ready within 20s');
+}
+
+/** Stop the gateway-managed MCP child (no-op if externally supervised). */
+export function stopMcpSidecar(): void {
+  mcpStopping = true;
+  if (mcpRestartTimer) {
+    clearTimeout(mcpRestartTimer);
+    mcpRestartTimer = null;
+  }
+  if (!mcpChild) return;
+  try {
+    mcpChild.kill('SIGTERM');
+  } catch {
+    /* already gone */
+  }
+  mcpChild = null;
+}
+
+/**
+ * Deferred G0DM0D3 auto-boot (relay mode). Same logic previously inline in main.ts.
+ * Controlled by DMRX_GODMODE_AUTOSTART (default: true).
+ */
+export async function deferGodmodeBoot(): Promise<void> {
+  try {
+    if ((process.env.DMRX_GODMODE_AUTOSTART ?? 'true') === 'false') {
+      logger.info('G0DM0D3 autostart disabled (DMRX_GODMODE_AUTOSTART=false)');
+      return;
+    }
+    logger.info('G0DM0D3 companion boot starting…');
+    const { getGodmodeService, setGodmodeConfig } = await import('@dmr-x/godmode');
+    if (getGodmodeService().isInitialized()) {
+      logger.info('G0DM0D3 proxy already initialized — skipping');
+      return;
+    }
+    const { serverManager } = await import('@dmr-x/server-manager');
+    const live = serverManager.getRunningInstance();
+    const liveHealthy = live?.url
+      ? await serverManager.healthCheck({ url: live.url, timeoutMs: 2500 }).catch(() => false)
+      : false;
+    if (liveHealthy) {
+      logger.info({ url: live!.url }, 'G0DM0D3 already running and healthy — proxy ready');
+      setGodmodeConfig({
+        baseUrl: live!.url!,
+        apiKey: live!.api_key ?? undefined,
+        openrouterApiKey: '',
+        llmBaseUrl: live!.llm_base_url ?? undefined,
+        llmApiKey: live!.llm_api_key ?? undefined,
+      });
+      await getGodmodeService().initialize();
+      return;
+    }
+    // Also accept a live process even if server_instances row is missing (fresh DB).
+    if (await httpOk('http://127.0.0.1:7860/v1/health', 2000)) {
+      const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+      setGodmodeConfig({
+        baseUrl: 'http://localhost:7860',
+        openrouterApiKey: '',
+        llmBaseUrl: `${gatewayUrl}/v1`,
+      });
+      await getGodmodeService().initialize();
+      logger.info({ url: 'http://localhost:7860' }, 'G0DM0D3 already listening — proxy wired');
+      return;
+    }
+
+    const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+    const started = await serverManager.start({
+      openrouterApiKey: '',
+      llmBaseUrl: `${gatewayUrl}/v1`,
+    });
+    setGodmodeConfig({
+      baseUrl: started.url ?? 'http://localhost:7860',
+      openrouterApiKey: '',
+      llmBaseUrl: started.llm_base_url ?? `${gatewayUrl}/v1`,
+      llmApiKey: started.llm_api_key ?? undefined,
+    });
+    await getGodmodeService().initialize();
+    logger.info({ url: started.url, relay: true }, 'Auto-booted G0DM0D3 proxy (relay mode → DMR-X vault)');
+  } catch (bootErr) {
+    logger.warn({ err: bootErr }, 'G0DM0D3 auto-boot failed; auto-free will fall back to a concrete model until /godmode/server/start');
+  }
+}
+
+/** Fire MCP + godmode boots in parallel after listen(). */
+export function startCompanionServices(): void {
+  void deferMcpBoot();
+  void deferGodmodeBoot();
+}
