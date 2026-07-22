@@ -1,22 +1,28 @@
 /**
  * Shared godmode proxy guard for `auto-free` requests.
  *
- * Single source of truth for the guarantee that any `auto-free` request is
- * served through the G0DM0D3 godmode proxy, and that the proxy is auto-
- * restarted on demand if it is down at the moment the API is called.
+ * Flow (pick-then-wrap):
+ *  1. Gateway ranks active candidates via the `auto-free` meta-model.
+ *  2. The top concrete model(s) are sent through G0DM0D3 for persona wrapping.
+ *  3. Godmode relays inference back to DMR-X with that sticky concrete model
+ *     (X-DMRX-Godmode-Proxy loop-breaker skips re-wrapping).
  *
- * Used by every chat endpoint that accepts an explicit `model` field
- * (OpenAI /v1/chat/completions and Anthropic /v1/messages). The Gemini
- * endpoint has no client-supplied model selector, and agent-chat derives its
- * model from the agent definition, so neither can request `auto-free`.
+ * Used by OpenAI /v1/chat/completions and Anthropic /v1/messages.
  */
+import type { CandidateSet } from '@dmr-x/core';
+import { resolveMetaModel } from '@dmr-x/router';
 import { logger } from '@dmr-x/utils';
 
-/** Model wrap-order tried against the godmode proxy (full multi-candidate
- *  fallback in the vault first, then concrete models the vault reliably
- *  serves), keeping the WRAP intact instead of dropping to an unwrapped
- *  response. */
-export const GODMODE_WRAP_ORDER = ['auto-free', 'codestral-latest', 'gemini-3.1-flash-lite'];
+/** Last-resort concrete models when the vault has no `auto-free` candidates. */
+export const GODMODE_WRAP_FALLBACK = ['codestral-latest', 'gemini-3.1-flash-lite'];
+
+/**
+ * @deprecated Prefer {@link buildGodmodeWrapOrder}. Kept as an alias of the
+ * empty-vault fallback list so older imports keep compiling.
+ */
+export const GODMODE_WRAP_ORDER = GODMODE_WRAP_FALLBACK;
+
+const DEFAULT_WRAP_CANDIDATE_LIMIT = 5;
 
 /** Reads DMRX_GODMODE_STRICT. When true, an `auto-free` request that cannot
  *  get the godmode proxy up hard-fails instead of silently degrading to an
@@ -26,6 +32,35 @@ export function isGodmodeStrict(): boolean {
 }
 
 let godmodeRestartInFlight: Promise<boolean> | null = null;
+
+/**
+ * Rank gateway candidates with the `auto-free` meta-model and return concrete
+ * model ids (pick-first). Empty vault → emergency fallbacks.
+ */
+export function buildGodmodeWrapOrder(
+  candidates: CandidateSet,
+  costFilter?: 'free' | 'all',
+  limit = DEFAULT_WRAP_CANDIDATE_LIMIT,
+): string[] {
+  const resolution = resolveMetaModel('auto-free', candidates, costFilter);
+  const seen = new Set<string>();
+  const order: string[] = [];
+
+  for (const c of resolution?.resolved ?? []) {
+    const id = c.modelId?.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    order.push(id);
+    if (order.length >= limit) break;
+  }
+
+  if (order.length === 0) {
+    logger.warn('auto-free wrap: no ranked candidates — using emergency fallbacks');
+    return [...GODMODE_WRAP_FALLBACK];
+  }
+
+  return order;
+}
 
 /**
  * Bring the godmode proxy online on demand:
@@ -50,7 +85,6 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
       : false;
 
     if (liveHealthy) {
-      // Registered + healthy but the proxy lost its config — re-point + re-init.
       setGodmodeConfig({
         baseUrl: live!.url ?? 'http://localhost:7860',
         openrouterApiKey: '',
@@ -58,8 +92,6 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
         llmApiKey: live!.llm_api_key ?? undefined,
       });
     } else {
-      // No instance, or it died. Tear down any zombie then boot fresh in relay
-      // mode (reuses DMR-X's provider vault — no OpenRouter key needed).
       try {
         await serverManager.stop();
       } catch {
@@ -87,7 +119,7 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
 }
 
 /** Ensure the godmode proxy is initialized and reachable, auto-restarting it
- *  if necessary. Returns true when the proxy is ready to wrap `auto-free`. */
+ *  if necessary. Returns true when the proxy is ready to wrap. */
 export async function ensureGodmodeProxy(requestId: string): Promise<boolean> {
   const { getGodmodeService } = await import('@dmr-x/godmode');
   const godmode = getGodmodeService();
@@ -109,7 +141,11 @@ export async function ensureGodmodeProxy(requestId: string): Promise<boolean> {
 export interface GodmodeWrapArgs {
   requestId: string;
   messages: any[];
+  /** Usually `auto-free`; used only for logging. */
   model: string;
+  /** Live router candidates — ranked to pick the active wrap model(s). */
+  candidates: CandidateSet;
+  costFilter?: 'free' | 'all';
   temperature?: number;
   maxTokens?: number;
   topP?: number;
@@ -117,32 +153,37 @@ export interface GodmodeWrapArgs {
 
 export interface GodmodeWrapResult {
   /** 'wrapped' when served via the godmode proxy; 'unavailable' when the proxy
-   *  could not be brought up (caller decides strict-fail vs concrete fallback). */
+   *  could not be brought up or every picked model failed to wrap. */
   status: 'wrapped' | 'unavailable';
   completion?: any;
+  /** Concrete model that successfully wrapped (pick-then-wrap). */
+  wrapModel?: string;
+  /** Ordered concrete models that were attempted. */
+  wrapOrder?: string[];
 }
 
 /**
  * Resolve an `auto-free` request through the godmode proxy (non-streaming).
  *
- * - Ensures (and auto-restarts) the proxy.
- * - Returns `{ status: 'wrapped', completion }` with the OpenAI-shaped
- *   completion, or `{ status: 'unavailable' }` if the proxy is down and could
- *   not be restarted. Callers convert `completion` to their wire format and
- *   handle strict-mode / concrete fallback.
+ * Pick-then-wrap: rank vault candidates first, then wrap each concrete model
+ * through G0DM0D3 until one succeeds.
  *
- * Streaming is intentionally NOT handled here: each endpoint's SSE framing
- * differs (OpenAI chunks vs Anthropic events vs Gemini `data:` lines), so the
- * caller runs its own streaming loop after `ensureGodmodeProxy()` returns
- * ready. `GODMODE_WRAP_ORDER` is exported for that purpose.
+ * Streaming stays in the route handlers (SSE framing differs per wire format);
+ * use {@link buildGodmodeWrapOrder} + {@link ensureGodmodeProxy} there.
  */
 export async function wrapAutoFreeViaGodmode(
   args: GodmodeWrapArgs,
 ): Promise<GodmodeWrapResult> {
-  const { requestId, messages, model, temperature, maxTokens, topP } = args;
+  const { requestId, messages, temperature, maxTokens, topP, candidates, costFilter } = args;
+  const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
+  logger.info(
+    { requestId, primary: wrapOrder[0], wrapOrder },
+    'auto-free pick-then-wrap: resolved concrete model(s) for godmode',
+  );
+
   const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
   if (!proxyReady) {
-    return { status: 'unavailable' };
+    return { status: 'unavailable', wrapOrder };
   }
 
   const { getGodmodeService } = await import('@dmr-x/godmode');
@@ -151,17 +192,17 @@ export async function wrapAutoFreeViaGodmode(
     try {
       await godmode.initialize();
     } catch {
-      /* fall through to wrap-attempt error handling */
+      /* fall through */
     }
   }
   if (!godmode.isInitialized()) {
-    return { status: 'unavailable' };
+    return { status: 'unavailable', wrapOrder };
   }
 
-  // Non-streaming: collect the wrapped completion.
   let completion: any;
   let wrapErr: unknown;
-  for (const wrapModel of GODMODE_WRAP_ORDER) {
+  let usedModel: string | undefined;
+  for (const wrapModel of wrapOrder) {
     try {
       completion = await godmode.chat({
         messages,
@@ -171,15 +212,16 @@ export async function wrapAutoFreeViaGodmode(
         top_p: topP,
       });
       wrapErr = undefined;
+      usedModel = wrapModel;
       break;
     } catch (e) {
       wrapErr = e;
-      logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode wrap attempt failed; trying next model');
+      logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode wrap attempt failed; trying next picked model');
     }
   }
-  if (wrapErr || !completion) {
-    logger.error({ requestId, err: wrapErr }, 'all godmode wrap attempts failed');
-    return { status: 'unavailable' };
+  if (wrapErr || !completion || !usedModel) {
+    logger.error({ requestId, err: wrapErr, wrapOrder }, 'all godmode wrap attempts failed');
+    return { status: 'unavailable', wrapOrder };
   }
-  return { status: 'wrapped', completion };
+  return { status: 'wrapped', completion, wrapModel: usedModel, wrapOrder };
 }

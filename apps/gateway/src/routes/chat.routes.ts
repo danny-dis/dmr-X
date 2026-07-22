@@ -41,139 +41,137 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
 
-    // ── auto-free → G0DM0D3 "godmode" reroute ──────────────────────────────
-    // `auto-free` means "auto freedom": the request is sent through the G0DM0D3
-    // godmode proxy for GODMODE/persona wrapping, and the proxy relays the
-    // actual inference back through DMR-X's own provider vault as the SAME
-    // `auto-free` meta-model — so the gateway's normal router performs full
-    // multi-candidate fallback (no single concrete model can wedge the relay).
-    //
-    // Loop-breaker: when the request already carries X-DMRX-Godmode-Proxy it
-    // originated from the godmode proxy relaying back into the gateway. We must
-    // NOT re-enter the godmode branch (that would recurse infinitely) — instead
-    // fall through to normal routing, which resolves `auto-free` across all
-    // healthy candidates with fallback.
+    // ── auto-free → pick active model, then G0DM0D3 wrap ───────────────────
+    // Gateway ranks candidates first; the top concrete model gets the godmode
+    // package. Relay calls carry X-DMRX-Godmode-Proxy and fall through here
+    // to normal routing with that sticky model (no re-wrap / no recursion).
     const isGodmodeProxyRelay = request.headers['x-dmrx-godmode-proxy'] === '1';
     if (body.model === 'auto-free' && !isGodmodeProxyRelay) {
       try {
         const { getMetaModel } = await import('@dmr-x/router');
         const meta = getMetaModel('auto-free');
         if (meta?.godmode) {
-          const { getGodmodeService } = await import('@dmr-x/godmode');
-          const godmode = getGodmodeService();
-          // Lazily initialize so concurrent/late registration (godmodeRoutes
-          // captures the singleton at boot before auto-boot runs) doesn't leave
-          // it uninitialized. initialize() is idempotent.
-          if (!godmode.isInitialized()) {
-            await godmode.initialize().catch(() => {});
-          }
-          if (godmode.isInitialized()) {
-            // Preferred order: the meta-model first (full multi-candidate
-            // fallback in the vault), then verified-working concrete models as
-            // fallbacks. The vault's free-tier candidates include dead upstream
-            // providers (e.g. google 429/404, nvidia-nim 404) that can exhaust
-            // the meta-model's fallback; retrying with a concrete model that the
-            // vault reliably serves keeps the godmode WRAP intact instead of
-            // dropping to an unwrapped response.
-            if (body.stream) {
-              // Streaming: pipe godmode.chatStream SSE frames back to the client.
-              reply.header('Content-Type', 'text/event-stream');
-              reply.header('Cache-Control', 'no-cache');
-              reply.header('Connection', 'keep-alive');
-              reply.raw.writeHead(200);
-              for (const wrapModel of ['auto-free', 'codestral-latest', 'gemini-3.1-flash-lite']) {
-                try {
-                  let sent = false;
-                  for await (const chunk of godmode.chatStream({
-                    messages: body.messages as any,
-                    model: wrapModel,
-                    temperature: body.temperature,
-                    max_tokens: body.max_tokens,
-                    top_p: body.top_p,
-                  })) {
-                    if (chunk) {
+          const {
+            wrapAutoFreeViaGodmode,
+            isGodmodeStrict,
+            ensureGodmodeProxy,
+            buildGodmodeWrapOrder,
+          } = await import('../lib/godmode-guard.js');
+          const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
+          const candidates = router.getCandidates();
+
+          if (body.stream) {
+            const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
+            const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
+            if (proxyReady) {
+              const { getGodmodeService } = await import('@dmr-x/godmode');
+              const godmode = getGodmodeService();
+              if (!godmode.isInitialized()) {
+                await godmode.initialize().catch(() => {});
+              }
+              if (godmode.isInitialized()) {
+                reply.header('Content-Type', 'text/event-stream');
+                reply.header('Cache-Control', 'no-cache');
+                reply.header('Connection', 'keep-alive');
+                reply.raw.writeHead(200);
+                for (const wrapModel of wrapOrder) {
+                  try {
+                    let sent = false;
+                    for await (const chunk of godmode.chatStream({
+                      messages: body.messages as any,
+                      model: wrapModel,
+                      temperature: body.temperature,
+                      max_tokens: body.max_tokens,
+                      top_p: body.top_p,
+                    })) {
+                      if (chunk) {
+                        reply.raw.write(
+                          `data: ${JSON.stringify({
+                            id: `gm-${requestId}`,
+                            object: 'chat.completion.chunk',
+                            model: wrapModel,
+                            choices: [{ index: 0, delta: { role: 'assistant', content: chunk }, finish_reason: null }],
+                          })}\n\n`,
+                        );
+                        sent = true;
+                      }
+                    }
+                    if (sent) {
                       reply.raw.write(
                         `data: ${JSON.stringify({
                           id: `gm-${requestId}`,
                           object: 'chat.completion.chunk',
                           model: wrapModel,
-                          choices: [{ index: 0, delta: { role: 'assistant', content: chunk }, finish_reason: null }],
+                          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
                         })}\n\n`,
                       );
-                      sent = true;
+                      reply.raw.write('data: [DONE]\n\n');
+                      reply.raw.end();
+                      return;
                     }
+                  } catch (e) {
+                    logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next picked model');
                   }
-                  if (sent) {
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        id: `gm-${requestId}`,
-                        object: 'chat.completion.chunk',
-                        model: wrapModel,
-                        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-                      })}\n\n`,
-                    );
-                    reply.raw.write('data: [DONE]\n\n');
-                    reply.raw.end();
-                    return;
-                  }
-                } catch (e) {
-                  logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next model');
                 }
+                if (isGodmodeStrict()) {
+                  reply.raw.write(`data: ${JSON.stringify({ error: { message: 'auto-free godmode proxy unavailable (strict mode)' } })}\n\n`);
+                  reply.raw.end();
+                  return;
+                }
+                reply.raw.write(`data: ${JSON.stringify({ error: { message: 'all godmode stream attempts failed' } })}\n\n`);
+                reply.raw.end();
+                return;
               }
-              reply.raw.write(`data: ${JSON.stringify({ error: { message: 'all godmode stream attempts failed' } })}\n\n`);
+            }
+            if (isGodmodeStrict()) {
+              reply.header('Content-Type', 'text/event-stream');
+              reply.raw.writeHead(503);
+              reply.raw.write(`data: ${JSON.stringify({ error: { message: 'auto-free godmode proxy unavailable (strict mode)' } })}\n\n`);
               reply.raw.end();
               return;
             }
-            // Non-streaming: collect the wrapped completion.
-            const wrapOrder = ['auto-free', 'codestral-latest', 'gemini-3.1-flash-lite'];
-            let gm: any;
-            let wrapErr: unknown;
-            for (const wrapModel of wrapOrder) {
-              try {
-                gm = await godmode.chat({
-                  messages: body.messages as any,
-                  model: wrapModel,
-                  temperature: body.temperature,
-                  max_tokens: body.max_tokens,
-                  top_p: body.top_p,
-                });
-                wrapErr = undefined;
-                break;
-              } catch (e) {
-                wrapErr = e;
-                logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode wrap attempt failed; trying next model');
-              }
+            if (wrapOrder[0]) {
+              body.model = wrapOrder[0];
+              logger.info({ requestId, concrete: wrapOrder[0] }, 'auto-free fallback → concrete model (no godmode)');
             }
-            if (wrapErr || !gm) {
-              throw wrapErr instanceof Error ? wrapErr : new Error('all godmode wrap attempts failed');
-            }
-            const gmContent = Array.isArray(gm.choices) && gm.choices[0]?.message?.content
-              ? gm.choices[0].message.content
-              : '';
-            return reply.send({
-              id: `gm-${requestId}`,
-              object: 'chat.completion',
-              model: (gm as any).model ?? 'auto-free',
-              choices: [{ index: 0, message: { role: 'assistant', content: gmContent }, finish_reason: 'stop' }],
-              usage: gm.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          } else {
+            const result = await wrapAutoFreeViaGodmode({
+              requestId,
+              messages: body.messages as any,
+              model: body.model,
+              candidates,
+              costFilter,
+              temperature: body.temperature,
+              maxTokens: body.max_tokens,
+              topP: body.top_p,
             });
-          }
-          logger.warn({ requestId }, 'auto-free requested but godmode proxy not initialized; resolving auto-free to a concrete model and routing normally');
-          // Resolve auto-free to its top concrete candidate and let normal
-          // routing handle it — never hang on a godmode proxy that isn't up.
-          try {
-            const { resolveMetaModel } = await import('@dmr-x/router');
-            const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
-            const resolution = resolveMetaModel('auto-free', router.getCandidates(), costFilter);
-            const concrete = resolution?.resolved?.[0]?.modelId;
+            if (result.status === 'wrapped' && result.completion) {
+              const gm = result.completion;
+              const gmContent = Array.isArray(gm.choices) && gm.choices[0]?.message?.content
+                ? gm.choices[0].message.content
+                : '';
+              return reply.send({
+                id: `gm-${requestId}`,
+                object: 'chat.completion',
+                model: result.wrapModel ?? gm.model ?? 'auto-free',
+                choices: [{ index: 0, message: { role: 'assistant', content: gmContent }, finish_reason: 'stop' }],
+                usage: gm.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+              });
+            }
+            if (isGodmodeStrict()) {
+              return reply.status(503).send({
+                error: {
+                  message: 'auto-free godmode proxy unavailable (strict mode)',
+                  type: 'server_error',
+                  code: 'godmode_unavailable',
+                },
+              });
+            }
+            const concrete = result.wrapOrder?.[0] ?? buildGodmodeWrapOrder(candidates, costFilter)[0];
             if (concrete) {
               body.model = concrete;
-              logger.info({ requestId, resolvedFrom: 'auto-free', concrete }, 'auto-free fallback → concrete model');
-            } else {
-              logger.warn({ requestId }, 'auto-free fallback: no concrete candidate resolved; passing through');
+              logger.info({ requestId, concrete }, 'auto-free fallback → concrete model (no godmode)');
             }
-          } catch (resolveErr) {
-            logger.warn({ err: resolveErr, requestId }, 'auto-free fallback resolution failed; passing model=auto-free to router');
           }
         }
       } catch (err) {
