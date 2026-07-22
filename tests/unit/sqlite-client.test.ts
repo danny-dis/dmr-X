@@ -55,7 +55,7 @@ describe('sqlite-client', () => {
       // steps, evaluations, plan mode, and compaction).
       // Bump this number when adding migrations — it verifies the full
       // migration set is applied, not just the schema seed.
-      expect(row.v).toBe(58);
+      expect(row.v).toBe(61);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

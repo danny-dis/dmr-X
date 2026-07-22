@@ -501,7 +501,7 @@ describe('meta-models', () => {
   });
 
   describe('auto-free', () => {
-    it('should only return free models regardless of costFilter override', () => {
+    it('should resolve all candidates (godmode proxy handles persona wrapping)', () => {
       const candidates: CandidateSet = [
         makeCandidate({ modelId: 'free-1', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.7 }),
         makeCandidate({ modelId: 'free-2', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.9 }),
@@ -510,28 +510,31 @@ describe('meta-models', () => {
 
       const result = resolveMetaModel('auto-free', candidates);
       expect(result).not.toBeNull();
-      expect(result!.costFilter).toBe('free');
-      expect(result!.resolved).toHaveLength(2);
-      expect(result!.resolved.every(c => c.costPerInputToken === 0)).toBe(true);
+      expect(result!.costFilter).toBe('all');
+      expect(result!.resolved).toHaveLength(3);
+      expect(result!.godmode).toBe(true);
     });
 
-    it('should ignore costFilter override (always free)', () => {
+    it('should honor costFilter override like any auto-* alias', () => {
       const candidates: CandidateSet = [
         makeCandidate({ modelId: 'free-1', costPerInputToken: 0, costPerOutputToken: 0 }),
         makeCandidate({ modelId: 'paid-1', costPerInputToken: 0.01, costPerOutputToken: 0.02 }),
       ];
 
-      // Even passing 'all' should still filter to free only
-      const result = resolveMetaModel('auto-free', candidates, 'all');
-      expect(result).not.toBeNull();
-      // costFilter reflects the override passed, but the ranker always filters to free
-      expect(result!.costFilter).toBe('all');
-      expect(result!.resolved).toHaveLength(1);
-      expect(result!.resolved[0].modelId).toBe('free-1');
-      expect(result!.resolved.every(c => c.costPerInputToken === 0)).toBe(true);
+      // Passing 'free' filters to free-only, 'all' includes everything
+      const resultFree = resolveMetaModel('auto-free', candidates, 'free');
+      expect(resultFree).not.toBeNull();
+      expect(resultFree!.costFilter).toBe('free');
+      expect(resultFree!.resolved).toHaveLength(1);
+      expect(resultFree!.resolved[0].modelId).toBe('free-1');
+
+      const resultAll = resolveMetaModel('auto-free', candidates, 'all');
+      expect(resultAll).not.toBeNull();
+      expect(resultAll!.costFilter).toBe('all');
+      expect(resultAll!.resolved).toHaveLength(2);
     });
 
-    it('should preserve original order of free candidates', () => {
+    it('should rank candidates by quality-weighted score', () => {
       const candidates: CandidateSet = [
         makeCandidate({ modelId: 'free-a', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.6 }),
         makeCandidate({ modelId: 'free-b', costPerInputToken: 0, costPerOutputToken: 0, qualityScore: 0.8 }),
@@ -541,15 +544,14 @@ describe('meta-models', () => {
       const result = resolveMetaModel('auto-free', candidates);
       expect(result).not.toBeNull();
       expect(result!.resolved).toHaveLength(3);
-      expect(result!.resolved[0].modelId).toBe('free-a');
-      expect(result!.resolved[1].modelId).toBe('free-b');
+      // Higher qualityScore should rank first
+      expect(result!.resolved[0].modelId).toBe('free-b');
+      expect(result!.resolved[1].modelId).toBe('free-a');
       expect(result!.resolved[2].modelId).toBe('free-c');
     });
 
-    it('should return null when no free candidates exist', () => {
-      const candidates: CandidateSet = [
-        makeCandidate({ modelId: 'paid-1', costPerInputToken: 0.01, costPerOutputToken: 0.02 }),
-      ];
+    it('should return null when no candidates exist', () => {
+      const candidates: CandidateSet = [];
 
       const result = resolveMetaModel('auto-free', candidates);
       expect(result).toBeNull();

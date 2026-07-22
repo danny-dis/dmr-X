@@ -15,6 +15,11 @@ const MODEL_ERROR_TTL: Record<string, number> = {
 };
 const modelErrorCache = new Map<string, { category: string; expiresAt: number }>();
 
+/** Reset the model error cache. Exported for testing only. */
+export function resetModelErrorCache(): void {
+  modelErrorCache.clear();
+}
+
 export interface AdapterExecutor {
   execute(
     providerId: string,

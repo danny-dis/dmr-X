@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { executeWithFallback, executeWithMultiBindingFallback } from '../../services/router/src/fallback/fallback-executor.js';
+import { executeWithFallback, executeWithMultiBindingFallback, resetModelErrorCache } from '../../services/router/src/fallback/fallback-executor.js';
 import {
   AllProvidersFailedError,
   ProviderError,
@@ -61,6 +61,7 @@ describe('executeWithFallback', () => {
   let mockRLS: ReturnType<typeof createMockRLS>;
 
   beforeEach(() => {
+    resetModelErrorCache();
     mockExecutor = { execute: vi.fn() };
     mockRLS = createMockRLS();
   });
@@ -545,6 +546,7 @@ describe('executeWithMultiBindingFallback', () => {
   let mockRLS: ReturnType<typeof createMockRLS>;
 
   beforeEach(() => {
+    resetModelErrorCache();
     mockExecutor = { execute: vi.fn() };
     mockRLS = createMockRLS();
   });
