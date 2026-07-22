@@ -161,8 +161,8 @@ export const AgentListQuerySchema = z.object({
   category: z.string().optional(),
   tag: z.string().optional(),
   search: z.string().optional(),
-  page: z.number().min(1).optional().default(1),
-  limit: z.number().min(1).max(100).optional().default(20),
+  page: z.coerce.number().min(1).optional().default(1),
+  limit: z.coerce.number().min(1).max(1000).optional().default(20),
 });
 
 export type AgentListQuery = z.infer<typeof AgentListQuerySchema>;

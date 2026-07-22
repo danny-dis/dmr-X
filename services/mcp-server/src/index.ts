@@ -568,7 +568,11 @@ async function buildConfig(): Promise<BuiltConfig> {
 
 async function startStdio(config: DMRXMcpServerConfig): Promise<void> {
   const result = createDMRXMcpServer(config);
-  const { server, state } = result;
+  const { server, state, ready } = result;
+  // Wait for the initial subagent-tool refresh so registered tools are
+  // reflected in tools/list (post-connect registrations are not picked up
+  // by the Streamable HTTP / SSE transports).
+  await ready;
   liveHandle = { server, state };
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -585,6 +589,8 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   // single source of truth — not a throwaway instance per connection.
   if (!liveHandle) {
     const built = createDMRXMcpServer(config);
+    // Wait for the initial subagent-tool refresh before connecting sessions.
+    await built.ready;
     liveHandle = { server: built.server, state: built.state };
   }
   const sharedHandle = liveHandle;
@@ -624,10 +630,12 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
       // Create a new SSE session
-      const { server } = createDMRXMcpServer({
+      const { server, ready } = createDMRXMcpServer({
         ...config,
         allowedTools: authResult.allowedTools,
       });
+      // Ensure subagent tools are registered before connect.
+      await ready;
       const transport = new SSEServerTransport('/messages', res);
       const sessionId = transport.sessionId;
 
@@ -783,10 +791,13 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 
       // New session
       if (req.method === 'POST') {
-        const { server } = createDMRXMcpServer({
+        const { server, ready } = createDMRXMcpServer({
           ...config,
           allowedTools: authResult.allowedTools,
         });
+        // Ensure subagent tools are registered before connect so tools/list
+        // reflects them for the Streamable HTTP transport.
+        await ready;
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid: string) => {

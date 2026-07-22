@@ -202,9 +202,45 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Kick off background initialisation (auto-register, model discovery, etc.)
-  // This is non-blocking — the server is already listening.
+  // Kick off background initialisation first, before deferred godmode auto-boot.
   runBackgroundInit();
+
+  // Deferred G0DM0D3 auto-boot: runs after listen so it never blocks startup.
+  const deferGodmodeBoot = async (): Promise<void> => {
+    try {
+      const { getGodmodeService } = await import('@dmr-x/godmode');
+      const { setGodmodeConfig } = await import('@dmr-x/godmode');
+      if ((process.env.DMRX_GODMODE_AUTOSTART ?? 'true') === 'false' || getGodmodeService().isInitialized()) {
+        return;
+      }
+      const { serverManager } = await import('@dmr-x/server-manager');
+      const live = serverManager.getRunningInstance();
+      const liveHealthy = live?.url
+        ? await serverManager.healthCheck({ url: live.url, timeoutMs: 2500 }).catch(() => false)
+        : false;
+      if (liveHealthy) {
+        logger.info({ url: live!.url }, 'G0DM0D3 already running and healthy — proxy ready');
+        return;
+      }
+      const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+      const started = await serverManager.start({
+        openrouterApiKey: '',
+        llmBaseUrl: `${gatewayUrl}/v1`,
+      });
+      setGodmodeConfig({
+        baseUrl: started.url ?? 'http://localhost:7860',
+        openrouterApiKey: '',
+        llmBaseUrl: started.llm_base_url ?? `${gatewayUrl}/v1`,
+        llmApiKey: started.llm_api_key ?? undefined,
+      });
+      await getGodmodeService().initialize();
+      logger.info({ url: started.url, relay: true }, 'Auto-booted G0DM0D3 proxy (relay mode → DMR-X vault)');
+    } catch (bootErr) {
+      logger.warn({ err: bootErr }, 'G0DM0D3 auto-boot failed; auto-free will fall back to a concrete model until /godmode/server/start');
+    }
+  };
+
+  void deferGodmodeBoot();
 
   // Graceful shutdown with 30-second timeout
   const SHUTDOWN_TIMEOUT_MS = 30_000;

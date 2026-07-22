@@ -120,6 +120,10 @@ export const MODALITY_ENDPOINTS: Record<string, Modality> = {
   '/v1/agents/delegate': 'llm',
   '/v1/agents/plan': 'llm',
   '/v1/agents/compact': 'llm',
+  // Meta-agent dispatcher (intent-based subagent picker). Used by the AaaS
+  // /v1/agentic/dispatch route AND by the MCP server's agent-tool + A2A
+  // bridges, so it MUST be present or the dispatch path 500s on first call.
+  '/v1/agentic/dispatch': 'llm',
   '/v1/tools/loop': 'llm',
   '/v1/messages': 'llm',
   '/v1/gemini/generateContent': 'llm',

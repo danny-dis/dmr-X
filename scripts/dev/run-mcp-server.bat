@@ -26,6 +26,11 @@ echo [%date% %time%] Starting DMR-X MCP server on port 3100 (http)... >> "C:\Use
 set "DMRX_MCP_TRANSPORT=http"
 set "DMRX_MCP_PORT=3100"
 set "DMRX_MCP_HOST=127.0.0.1"
+REM Expose subagents as dmrx_agent_* MCP tools + enable the A2A agent door.
+if not defined DMRX_MCP_AGENT_API_KEY set "DMRX_MCP_AGENT_API_KEY=%DMRX_ADMIN_API_KEY%"
+if not defined DMRX_MCP_AGENT_API_KEY set "DMRX_MCP_AGENT_API_KEY=dmrx-local"
+set "DMRX_A2A_ENABLED=true"
+set "DMRX_A2A_AGENT_URL=http://127.0.0.1:3100"
 "C:\Users\pc\.bun\bin\bun.exe" services/mcp-server/dist/index.js >> "C:\Users\pc\Documents\projects\DMR-X\mcp-server.log" 2>&1
 echo [%date% %time%] MCP server exited with code %errorlevel%. Restarting in 3s... >> "C:\Users\pc\Documents\projects\DMR-X\mcp-server.log"
 timeout /t 3 /nobreak >nul

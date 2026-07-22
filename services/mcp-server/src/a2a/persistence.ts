@@ -9,9 +9,10 @@
  *   closing the "stored but never sent" gap).
  *
  * Uses Node's built-in `node:sqlite` (Node 22.5+) — no new dependency.
+ * The import is LAZY (dynamic) so runtimes without node:sqlite (e.g. Bun)
+ * can still run the server in in-memory mode without crashing at load time.
  */
 
-import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -24,36 +25,46 @@ export interface A2APersistenceConfig {
   pushEnabled?: boolean;
 }
 
-let db: DatabaseSync | null = null;
+// `any` because node:sqlite is only loaded on demand (see initPersistence).
+let db: any = null;
 let cfg: A2APersistenceConfig = {};
 const pushConfigs = new Map<string, PushNotificationConfig>();
 
 export function initPersistence(config: A2APersistenceConfig = {}): void {
   cfg = { pushEnabled: true, ...config };
   if (!cfg.dbPath) return; // in-memory only
-  try {
-    const dir = dirname(cfg.dbPath);
-    if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true });
-    db = new DatabaseSync(cfg.dbPath);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS a2a_tasks (
-        id TEXT PRIMARY KEY,
-        context_id TEXT,
-        state TEXT,
-        data TEXT,
-        updated_at INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS a2a_push_configs (
-        task_id TEXT PRIMARY KEY,
-        url TEXT,
-        token TEXT,
-        updated_at INTEGER
-      );
-    `);
-  } catch (e) {
-    console.error('[a2a] persistence init failed, falling back to memory:', (e as Error).message);
-    db = null;
-  }
+  // Lazy-load node:sqlite so runtimes that lack it (Bun) don't crash on
+  // import. If the dynamic import fails, we stay in-memory mode.
+  import('node:sqlite')
+    .then(({ DatabaseSync }) => {
+      try {
+        const dir = dirname(cfg.dbPath as string);
+        if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true });
+        db = new DatabaseSync(cfg.dbPath as string);
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS a2a_tasks (
+            id TEXT PRIMARY KEY,
+            context_id TEXT,
+            state TEXT,
+            data TEXT,
+            updated_at INTEGER
+          );
+          CREATE TABLE IF NOT EXISTS a2a_push_configs (
+            task_id TEXT PRIMARY KEY,
+            url TEXT,
+            token TEXT,
+            updated_at INTEGER
+          );
+        `);
+      } catch (e) {
+        console.error('[a2a] persistence init failed, falling back to memory:', (e as Error).message);
+        db = null;
+      }
+    })
+    .catch((e) => {
+      console.error('[a2a] node:sqlite unavailable, running in-memory:', (e as Error).message);
+      db = null;
+    });
 }
 
 export function persistTask(task: Task): void {

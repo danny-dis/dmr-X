@@ -51,12 +51,17 @@ if [ -f "$ROOT/scripts/dev/patch-g0dm0d3.sh" ]; then
 fi
 
 BUN="$(command -v bun || echo "$HOME/.bun/bin/bun")"
-
 # MCP server runs the built dist (rebuild with: bunx tsc -b in services/mcp-server)
 start_mcp() {
   while true; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting DMR-X MCP server on :3100 (http)..."
+    # Expose subagents as dmrx_agent_* MCP tools (needs a gateway key; in
+    # LOCAL_MODE any valid key is accepted) and turn on the A2A agent door so
+    # external agents can discover + delegate to DMR-X subagents.
     DMRX_MCP_TRANSPORT=http DMRX_MCP_PORT=3100 DMRX_MCP_HOST=127.0.0.1 \
+      DMRX_MCP_AGENT_API_KEY="${DMRX_ADMIN_API_KEY:-dmrx-local}" \
+      DMRX_A2A_ENABLED=true \
+      DMRX_A2A_AGENT_URL="http://127.0.0.1:3100" \
       DMRX_DATA_DIR="$ROOT/.dmrx-data-mcp" \
       "$BUN" services/mcp-server/dist/index.js >> "$ROOT/mcp-server.log" 2>&1
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] MCP exited ($?). Restarting in 3s..."

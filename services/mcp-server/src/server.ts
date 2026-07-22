@@ -1133,6 +1133,7 @@ function logAuditEvent(
 export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   server: McpServer;
   state: ServerState;
+  ready: Promise<void>;
 } {
   // Initialize adapter registry
   const adapterRegistry = buildAdapterRegistry();
@@ -3098,18 +3099,24 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       return [];
     }
     const all: any[] = [];
-    let offset = 0;
-    const pageSize = 100;
-    // Page through every agent definition so all subagents (not just the
-    // first 20) are exposed as dmrx_agent_* MCP tools and A2A delegates.
+    const pageSize = 200;
+    let page = 1;
     for (;;) {
-      const listRes = await fetch(
-        `${gatewayUrl}/v1/agents?limit=${pageSize}&offset=${offset}`,
-        {
+      const url = `${gatewayUrl}/v1/agents?limit=${pageSize}&page=${page}`;
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 15_000);
+      let listRes: any;
+      try {
+        listRes = await fetch(url, {
           method: 'GET',
           headers: { authorization: `Bearer ${key}` },
-        },
-      );
+          signal: controller.signal,
+        });
+      } catch {
+        clearTimeout(t);
+        return all;
+      }
+      clearTimeout(t);
       if (!listRes.ok) {
         mcpLog(server, 'warning', { status: listRes.status }, 'subagent-list-failed');
         return all;
@@ -3123,7 +3130,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       const total = listJson?.total;
       if (typeof total === 'number' && all.length >= total) break;
       if (defs.length < pageSize) break;
-      offset += defs.length;
+      page += 1;
     }
     return all;
   }
@@ -3277,17 +3284,21 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     }
   }
 
-  {
+  const subagentReady: Promise<void> = (async () => {
     // Keep createDMRXMcpServer synchronous so existing callers can still
     // destructure { server, state } immediately. Registration refreshes
     // lazily on startup and then on an interval so gateway subagent changes
     // are picked up without restarting the MCP server. refreshSubagentTools()
     // self-guards on a missing key, so it's safe to start even before
     // auto-provisioning (or an X-DMR-Tenant-Key) resolves.
-    void refreshSubagentTools();
-    const subagentRefreshInterval = setInterval(() => void refreshSubagentTools(), 60_000);
-    void subagentRefreshInterval;
-  }
+    // We store the initial refresh as `subagentReady` so callers can `await`
+    // it BEFORE server.connect() — otherwise post-connect registerTool calls
+    // are not reflected in tools/list for the Streamable HTTP transport.
+    await refreshSubagentTools().catch((e) => {
+      mcpLog(server, 'warning', { message: String(e) }, 'subagent-list-error');
+    });
+    setInterval(() => void refreshSubagentTools(), 60_000);
+  })();
 
   // -----------------------------------------------------------------------
   // Tool: dmrx_tool_search — Intelligent tool discovery
@@ -4198,7 +4209,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     }
   }, 60 * 60 * 1000);
 
-  return { server, state };
+  return { server, state, ready: subagentReady };
 }
 
 // -----------------------------------------------------------------------

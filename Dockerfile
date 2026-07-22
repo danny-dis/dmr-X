@@ -125,7 +125,17 @@ CMD ["bun", "apps/gateway/dist/main.js"]
 # ─── Production Stage (Binary mode) ─────────────────────────────────────────
 # A single static executable plus the UI assets. Smaller than node mode
 # (no Bun runtime, no node_modules) but slower to build.
-FROM gcr.io/distroless/static-debian12:nonroot AS production-binary
+# Binary is compiled on Alpine (musl), so the runtime must be musl too.
+# distroless/static-debian12 is glibc and lacks the musl loader, so the
+# binary fails with ENOENT. Alpine provides /lib/ld-musl-x86_64.so.1.
+FROM alpine:3.20 AS production-binary
+
+# The bun-compiled binary needs the C++ runtime (libstdc++ + libgcc_s) at
+# runtime even on musl; bare alpine lacks them, causing "Error relocating
+# ... symbol not found" on exec.
+RUN apk add --no-cache libgcc libstdc++
+
+RUN addgroup -g 65532 -S nonroot && adduser -S nonroot -u 65532 -G nonroot
 
 LABEL org.opencontainers.image.title="DMR-X Gateway (binary)" \
       org.opencontainers.image.description="Universal AI routing and orchestration platform — single static binary" \
@@ -136,6 +146,11 @@ LABEL org.opencontainers.image.title="DMR-X Gateway (binary)" \
 WORKDIR /app
 COPY --from=binary-builder --chown=nonroot:nonroot /out/dmrx /usr/local/bin/dmrx
 COPY --from=binary-builder --chown=nonroot:nonroot /out/public /app/public
+# bun-compiled binary resolves runtime assets (e.g. sql.js wasm) from
+# /app/node_modules/.bun/..., so the install cache must ship with it.
+# Copy only the sql.js package the binary actually asked for — not the
+# whole node_modules or .bun cache (both wedge the build under low RAM).
+COPY --from=builder --chown=nonroot:nonroot /app/node_modules/.bun/sql.js@1.14.1 /app/node_modules/.bun/sql.js@1.14.1
 
 ENV NODE_ENV=production \
     PORT=3000 \
@@ -146,7 +161,4 @@ EXPOSE 3000
 
 USER nonroot
 
-# distroless ships no shell, so we can't wget the healthcheck. The
-# operator must scrape the binary's /healthz from a sidecar or rely
-# on container restart policy.
 CMD ["/usr/local/bin/dmrx"]
