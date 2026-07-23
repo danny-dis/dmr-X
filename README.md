@@ -422,19 +422,18 @@ CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that build
 - Keep generated files out of source folders; build outputs belong in `dist/` or `apps/gateway/public/`.
 - Prefer behavior-preserving refactors and small commits by phase.
 - Follow existing TypeScript ESM style and package boundaries.
-- **All contributors must sign the [CLA](CLA.md) before contributions can be merged.**
+- **All contributions are made under the GPL-2.0 license.**
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## License
 
-This project is licensed under the [Business Source License 1.1](LICENSE) (BSL-1.1).
+This project is licensed under the [GNU General Public License v2.0](LICENSE) (GPL-2.0) — the same license used by the Linux kernel.
 
 | Use Case | Terms |
 |----------|-------|
-| **Production (≤50 users)** | Free |
-| **Non-production** | Unlimited (dev, testing, evaluation) |
-| **Production (>50 users)** | Commercial license required |
-| **After 2030-05-30** | Converts to AGPL-3.0 |
+| **Any use** | Free, with full source code access |
+| **Modification** | Allowed, must be released under GPL-2.0 |
+| **Distribution** | Must include source code and GPL-2.0 license |
 
 For commercial licensing: see [LICENSE](LICENSE) for contact details.

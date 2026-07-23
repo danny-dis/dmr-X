@@ -96,4 +96,4 @@ See [ROADMAP.md](ROADMAP.md) for planned features (observability, guardrails, en
 
 The DMR-X SDKs (Python and Go) are licensed under the **MIT License**. See `LICENSES.md` in the project root for the full licensing policy.
 
-The DMR-X platform itself is licensed under the **Business Source License 1.1** (BSL-1.1).
+The DMR-X platform itself is licensed under the **GNU General Public License v2.0** (GPL-2.0).
