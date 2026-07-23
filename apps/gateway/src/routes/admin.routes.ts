@@ -901,12 +901,15 @@ function providerHasActiveKeys(db: ReturnType<typeof getDb>, providerId: string)
  * Auto-discover models for a provider after a key is added.
  * Fetches the provider's /v1/models endpoint and upserts discovered
  * models into model_profiles. Only runs for OpenAI-compatible providers.
+ * Enriches discovered models with catalog data (costs, context windows,
+ * capabilities) when available.
  */
 async function autoDiscoverModelsOnKeyAdd(
   db: ReturnType<typeof getDb>,
   providerId: string,
   providerName: string,
   baseUrl: string | undefined,
+  apiKey?: string,
 ): Promise<void> {
   if (!baseUrl) return;
 
@@ -915,11 +918,36 @@ async function autoDiscoverModelsOnKeyAdd(
   if (!isOpenaiCompat) return;
 
   try {
-    const discovered = await discoverOpenAIModels({ baseUrl, apiKey: '' });
+    const discovered = await discoverOpenAIModels({ baseUrl, apiKey: apiKey || '' });
     if (discovered.length === 0) {
       logger.debug({ provider: providerName }, 'Auto-discovery: /v1/models returned empty');
       return;
     }
+
+    // Enrich discovered models with catalog data (costs, context, capabilities)
+    const catalogLookup = new Map<string, any>();
+    for (const t of PROVIDER_CATALOG) {
+      for (const m of t.models) {
+        catalogLookup.set(`${t.id}/${m.id}`, m);
+      }
+    }
+    const enriched = discovered.map(m => {
+      const key = `${providerName}/${m.modelId}`;
+      const tmpl = catalogLookup.get(key);
+      if (!tmpl) return m;
+      return {
+        ...m,
+        displayName: m.displayName || tmpl.id,
+        modality: m.modality || tmpl.modalities[0] || 'llm',
+        contextWindow: m.contextWindow ?? tmpl.contextWindow ?? null,
+        maxOutputTokens: m.maxOutputTokens ?? tmpl.maxOutputTokens ?? null,
+        inputCostPer1M: m.inputCostPer1M || tmpl.inputCostPer1M || 0,
+        outputCostPer1M: m.outputCostPer1M || tmpl.outputCostPer1M || 0,
+        costPerImage: m.costPerImage || tmpl.costPerImage || 0,
+        capabilities: m.capabilities.length > 0 ? m.capabilities : tmpl.capabilities,
+        specializations: m.specializations.length > 0 ? m.specializations : tmpl.specializations,
+      };
+    });
 
     const insert = db.prepare(
       `INSERT OR IGNORE INTO model_profiles (
@@ -933,7 +961,7 @@ async function autoDiscoverModelsOnKeyAdd(
     );
 
     let inserted = 0;
-    for (const m of discovered) {
+    for (const m of enriched) {
       if (!m.modelId) continue;
       const caps = new Set(m.capabilities);
       const result = insert.run(
@@ -1293,7 +1321,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     // Auto-discover models if an API key was provided
     if (api_key) {
-      void autoDiscoverModelsOnKeyAdd(db, provider.id, providerName, template.baseUrl);
+      void autoDiscoverModelsOnKeyAdd(db, provider.id, providerName, template.baseUrl, api_key);
     }
 
     // Hybrid: also persist the key to .env so it survives DB corruption
@@ -1495,7 +1523,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
     // Auto-discover models if a new key was provided
     if (api_key) {
-      void autoDiscoverModelsOnKeyAdd(db, id, provider.name, provider.base_url ?? undefined);
+      void autoDiscoverModelsOnKeyAdd(db, id, provider.name, provider.base_url ?? undefined, api_key);
     }
 
     // Hybrid: also persist the key to .env so it survives DB corruption
@@ -1620,7 +1648,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     // This populates model_profiles with models from the provider's /v1/models
     // endpoint so they appear in the Playground and Models page immediately.
     if (body.api_key) {
-      void autoDiscoverModelsOnKeyAdd(db, id, provider.name, provider.base_url ?? undefined);
+      void autoDiscoverModelsOnKeyAdd(db, id, provider.name, provider.base_url ?? undefined, body.api_key);
     }
 
     reply.status(201);
@@ -2916,6 +2944,165 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       total: freeModels.length,
       verified: freeModels.filter(m => m.verifiedFree).length,
       models: freeModels,
+    };
+  });
+
+  // Discover models for a provider from its /v1/models endpoint.
+  // Enriches with catalog data and upserts into model_profiles.
+  server.post('/admin/providers/:id/discover', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const db = getDb();
+
+    const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      throw new ValidationError('Provider not found');
+    }
+
+    if (!provider.base_url) {
+      throw new ValidationError('Provider has no base_url configured');
+    }
+
+    // Resolve API key: try provider_keys table first, then config
+    let apiKey = '';
+    const keyRow = db.prepare(
+      `SELECT api_key_encrypted FROM provider_keys WHERE provider_id = ? AND is_active = 1 LIMIT 1`
+    ).get(id) as { api_key_encrypted: string } | undefined;
+    if (keyRow?.api_key_encrypted) {
+      try {
+        apiKey = decrypt(keyRow.api_key_encrypted);
+      } catch { /* ignore */ }
+    }
+    if (!apiKey) {
+      try {
+        const cfg = JSON.parse(provider.config || '{}');
+        if (cfg.apiKey) apiKey = decrypt(cfg.apiKey);
+      } catch { /* ignore */ }
+    }
+
+    const template = PROVIDER_CATALOG.find(t => t.id === provider.name);
+    const isOpenaiCompat = template?.apiFormat === 'openai' || provider.name === 'google';
+    if (!isOpenaiCompat) {
+      throw new ValidationError('Provider is not OpenAI-compatible — discovery only works for OpenAI-format providers');
+    }
+
+    const { discoverOpenAIModels } = await import('@dmr-x/registry');
+    const discovered = await discoverOpenAIModels({ baseUrl: provider.base_url, apiKey });
+
+    if (discovered.length === 0) {
+      return { discovered: 0, inserted: 0, message: 'No models found at /v1/models' };
+    }
+
+    // Enrich with catalog data
+    const catalogLookup = new Map<string, any>();
+    for (const t of PROVIDER_CATALOG) {
+      for (const m of t.models) {
+        catalogLookup.set(`${t.id}/${m.id}`, m);
+      }
+    }
+    const enriched = discovered.map(m => {
+      const key = `${provider.name}/${m.modelId}`;
+      const tmpl = catalogLookup.get(key);
+      if (!tmpl) return m;
+      return {
+        ...m,
+        displayName: m.displayName || tmpl.id,
+        modality: m.modality || tmpl.modalities[0] || 'llm',
+        contextWindow: m.contextWindow ?? tmpl.contextWindow ?? null,
+        maxOutputTokens: m.maxOutputTokens ?? tmpl.maxOutputTokens ?? null,
+        inputCostPer1M: m.inputCostPer1M || tmpl.inputCostPer1M || 0,
+        outputCostPer1M: m.outputCostPer1M || tmpl.outputCostPer1M || 0,
+        costPerImage: m.costPerImage || tmpl.costPerImage || 0,
+        capabilities: m.capabilities.length > 0 ? m.capabilities : tmpl.capabilities,
+        specializations: m.specializations.length > 0 ? m.specializations : tmpl.specializations,
+      };
+    });
+
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO model_profiles (
+        id, provider_id, model_id, display_name, modality, capability_tier,
+        supports_streaming, supports_vision, supports_tool_use, supports_json_mode, supports_function_call, supports_reasoning,
+        context_window, max_output_tokens,
+        input_cost_per_1k, output_cost_per_1k, cost_per_image,
+        quality_score, is_active,
+        task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level, architecture
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    let inserted = 0;
+    for (const m of enriched) {
+      if (!m.modelId) continue;
+      const caps = new Set(m.capabilities);
+      const result = insert.run(
+        crypto.randomUUID(),
+        id,
+        m.modelId,
+        m.displayName || m.modelId,
+        m.modality || 'llm',
+        'balanced',
+        caps.has('streaming') ? 1 : 0,
+        caps.has('vision') ? 1 : 0,
+        caps.has('tool_use') ? 1 : 0,
+        caps.has('json_mode') ? 1 : 0,
+        caps.has('function_call') ? 1 : 0,
+        caps.has('reasoning') ? 1 : 0,
+        m.contextWindow,
+        m.maxOutputTokens,
+        m.inputCostPer1M / 1000,
+        m.outputCostPer1M / 1000,
+        m.costPerImage,
+        0.5,
+        1,
+        JSON.stringify(['general']),
+        'medium',
+        'cloud',
+        'fixed',
+        'standard',
+        'chat',
+        'unknown',
+      );
+      if (result.changes > 0) inserted++;
+    }
+
+    logAdminAction(request, 'providers.discover', 'provider', `${provider.name}`, { discovered: discovered.length, inserted });
+
+    return {
+      provider: provider.name,
+      discovered: discovered.length,
+      inserted,
+      models: enriched.map(m => ({
+        id: m.modelId,
+        name: m.displayName,
+        modality: m.modality,
+        contextWindow: m.contextWindow,
+        cost: { input: m.inputCostPer1M, output: m.outputCostPer1M },
+      })),
+    };
+  });
+
+  // Batch-verify which models are free for a provider.
+  // Probes each model with a minimal chat completion to check if it's free.
+  server.post('/admin/providers/:id/verify-free-batch', async (request) => {
+    const { id } = request.params as { id: string };
+    const { concurrency } = (request.body as any) || {};
+    const db = getDb();
+
+    const provider = db.prepare('SELECT name FROM providers WHERE id = ?').get(id) as any;
+    if (!provider) {
+      throw new ValidationError('Provider not found');
+    }
+
+    const { batchVerifyFree } = await import('@dmr-x/registry');
+    const result = await batchVerifyFree(id, concurrency || 3);
+
+    logAdminAction(request, 'providers.verify_free_batch', 'provider', provider.name, {
+      free: result.freeCount,
+      paid: result.paidCount,
+      errors: result.errorCount,
+    });
+
+    return {
+      provider: provider.name,
+      ...result,
     };
   });
 

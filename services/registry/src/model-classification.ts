@@ -433,3 +433,168 @@ export function isModelFree(providerId: string, modelId: string): boolean {
   if (!classification) return false;
   return classification.pricingTier === 'free' || classification.pricingTier === 'free_with_limits';
 }
+
+// ---------------------------------------------------------------------------
+// Batch Verification
+// ---------------------------------------------------------------------------
+
+export interface BatchVerificationResult {
+  providerId: string;
+  totalModels: number;
+  freeCount: number;
+  paidCount: number;
+  errorCount: number;
+  models: Array<{
+    modelId: string;
+    isFree: boolean;
+    status: number;
+    error?: string;
+  }>;
+}
+
+/**
+ * Batch-verify which models are free for a given provider.
+ * Probes each model with a minimal chat completion request.
+ * Concurrency-limited to avoid rate limits.
+ */
+export async function batchVerifyFree(
+  providerId: string,
+  concurrency = 3,
+): Promise<BatchVerificationResult> {
+  const db = getDb();
+  const models = db.prepare(
+    `SELECT model_id FROM model_profiles WHERE provider_id = ? AND is_active = 1`
+  ).all(providerId) as Array<{ model_id: string }>;
+
+  const results: BatchVerificationResult['models'] = [];
+  let freeCount = 0;
+  let paidCount = 0;
+  let errorCount = 0;
+
+  // Process in batches to limit concurrency
+  for (let i = 0; i < models.length; i += concurrency) {
+    const batch = models.slice(i, i + concurrency);
+    const batchResults = await Promise.all(
+      batch.map(async (m) => {
+        try {
+          const result = await verifyModelFree(providerId, m.model_id);
+          return {
+            modelId: m.model_id,
+            isFree: result.isActuallyFree,
+            status: result.responseStatus,
+            error: result.error,
+          };
+        } catch {
+          errorCount++;
+          return {
+            modelId: m.model_id,
+            isFree: false,
+            status: 0,
+            error: 'Verification failed',
+          };
+        }
+      }),
+    );
+
+    for (const r of batchResults) {
+      results.push(r);
+      if (r.error) {
+        errorCount++;
+      } else if (r.isFree) {
+        freeCount++;
+        // Persist free classification
+        saveClassification({
+          providerId,
+          modelId: r.modelId,
+          pricingTier: 'free',
+          inputCostPer1M: 0,
+          outputCostPer1M: 0,
+          hasFreeTier: true,
+          rateLimits: null,
+          monthlyBudget: 0,
+          verifiedFree: true,
+          lastVerification: new Date(),
+          source: 'verified',
+        });
+      } else {
+        paidCount++;
+        saveClassification({
+          providerId,
+          modelId: r.modelId,
+          pricingTier: 'paid',
+          inputCostPer1M: 0,
+          outputCostPer1M: 0,
+          hasFreeTier: false,
+          rateLimits: null,
+          monthlyBudget: 0,
+          verifiedFree: false,
+          lastVerification: new Date(),
+          source: 'verified',
+        });
+      }
+    }
+  }
+
+  logger.info(
+    { providerId, total: models.length, free: freeCount, paid: paidCount, errors: errorCount },
+    'Batch free verification complete',
+  );
+
+  return {
+    providerId,
+    totalModels: models.length,
+    freeCount,
+    paidCount,
+    errorCount,
+    models: results,
+  };
+}
+
+/**
+ * Auto-classify models for providers listed in DMRX_FREE_PROVIDERS.
+ * Called at boot to ensure the isFree() predicate works immediately.
+ */
+export function classifyFreeProviderModels(): number {
+  const freeProviders = (process.env.DMRX_FREE_PROVIDERS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (freeProviders.length === 0) return 0;
+
+  const db = getDb();
+  let classified = 0;
+
+  for (const providerName of freeProviders) {
+    const provider = db.prepare(
+      'SELECT id FROM providers WHERE name = ?'
+    ).get(providerName) as { id: string } | undefined;
+    if (!provider) continue;
+
+    const models = db.prepare(
+      'SELECT model_id FROM model_profiles WHERE provider_id = ? AND is_active = 1'
+    ).all(provider.id) as Array<{ model_id: string }>;
+
+    for (const m of models) {
+      saveClassification({
+        providerId: provider.id,
+        modelId: m.model_id,
+        pricingTier: 'free',
+        inputCostPer1M: 0,
+        outputCostPer1M: 0,
+        hasFreeTier: true,
+        rateLimits: null,
+        monthlyBudget: 0,
+        verifiedFree: false,
+        lastVerification: null,
+        source: 'catalog',
+      });
+      classified++;
+    }
+  }
+
+  if (classified > 0) {
+    logger.info({ count: classified, providers: freeProviders.length }, 'Classified free provider models from DMRX_FREE_PROVIDERS');
+  }
+  return classified;
+}

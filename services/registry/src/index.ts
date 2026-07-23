@@ -17,6 +17,9 @@ export {
   getFreeModels,
   getModelsByTier,
   isModelFree,
+  batchVerifyFree,
+  classifyFreeProviderModels,
   type ModelClassification,
   type VerificationResult,
+  type BatchVerificationResult,
 } from './model-classification.js';

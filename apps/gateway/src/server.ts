@@ -15,7 +15,7 @@ import fastifyMultipart from '@fastify/multipart';
 
 import { getTelemetryService, contentCaptureService } from '@dmr-x/telemetry';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications } from '@dmr-x/registry';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications, classifyFreeProviderModels } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { agentScheduler } from '@dmr-x/agent-runtime';
 import { quotaService, getRateLimitService } from '@dmr-x/quota';
@@ -791,6 +791,13 @@ void (async () => {
         syncClassifications();
       } catch (err) {
         logger.warn({ err }, 'Failed to sync model classifications');
+      }
+
+      // 1.6) Auto-classify models for providers in DMRX_FREE_PROVIDERS
+      try {
+        classifyFreeProviderModels();
+      } catch (err) {
+        logger.warn({ err }, 'Failed to classify free provider models');
       }
 
       // 2) Backfill model profiles for any OpenAI-compatible provider whose
