@@ -232,15 +232,26 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   // ─── Server management (G0DM0D3 auto-install) ─────────────────────────────
 
   // Install + clone the pinned G0DM0D3 repo.
-  server.post('/godmode/server/install', async () => {
+  server.post('/godmode/server/install', async (request) => {
     try {
-      const res = await serverManager.install({ openrouterApiKey: process.env.OPENROUTER_API_KEY });
+      const body = (request.body ?? {}) as { openrouterApiKey?: string; llmBaseUrl?: string; llmApiKey?: string };
+      const res = await serverManager.install({
+        openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
+        llmBaseUrl: body.llmBaseUrl,
+        llmApiKey: body.llmApiKey,
+      });
+      const relay = res.openrouter_key_ref?.startsWith('relay:')
+        ? res.openrouter_key_ref.slice('relay:'.length)
+        : null;
       // Point the proxy at the freshly-launched server.
       setGodmodeConfig({
         baseUrl: res.url ?? 'http://localhost:7860',
         apiKey: res.api_key ?? undefined,
-        openrouterApiKey: res.openrouter_key_ref ? process.env.OPENROUTER_API_KEY ?? '' : '',
+        openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
+        llmBaseUrl: relay ?? undefined,
+        llmApiKey: relay ? res.llm_api_key ?? undefined : undefined,
       });
+      await getGodmodeService().initialize();
       return { status: res.status, url: res.url, runtime: res.runtime, id: res.id };
     } catch (err: any) {
       logger.error({ err }, 'G0DM0D3 install/start failed');
@@ -251,16 +262,31 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   // Start an already-installed server (re-run start for a stopped instance).
   server.post('/godmode/server/start', async (request) => {
     try {
-      const body = (request.body ?? {}) as { openrouterApiKey?: string };
-      const res = await serverManager.start({ openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY });
+      const body = (request.body ?? {}) as { openrouterApiKey?: string; llmBaseUrl?: string; llmApiKey?: string };
+      // No OpenRouter key and no explicit relay → default to routing through
+      // DMR-X itself (reuses the host's provider vault, incl. LOCAL MODE).
+      const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+      const useRelay = !body.openrouterApiKey && !process.env.OPENROUTER_API_KEY;
+      const llmBaseUrl = body.llmBaseUrl ?? (useRelay ? `${gatewayUrl}/v1` : undefined);
+      const res = await serverManager.start({
+        openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
+        llmBaseUrl,
+        llmApiKey: body.llmApiKey,
+      });
+      const relay = res.openrouter_key_ref?.startsWith('relay:')
+        ? res.openrouter_key_ref.slice('relay:'.length)
+        : null;
       setGodmodeConfig({
         baseUrl: res.url ?? 'http://localhost:7860',
         apiKey: res.api_key ?? undefined,
-        openrouterApiKey: res.openrouter_key_ref ? process.env.OPENROUTER_API_KEY ?? '' : '',
+        openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
+        llmBaseUrl: relay ?? undefined,
+        llmApiKey: relay ? res.llm_api_key ?? undefined : undefined,
       });
+      await getGodmodeService().initialize();
       return { status: res.status, url: res.url, runtime: res.runtime, id: res.id };
     } catch (err: any) {
-      logger.error({ err }, 'G0DM0D3 start failed');
+      logger.error({ err, stack: err?.stack }, 'G0DM0D3 start failed');
       return replyError(err);
     }
   });

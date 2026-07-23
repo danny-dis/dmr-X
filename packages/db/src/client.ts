@@ -22,9 +22,30 @@ const log = {
   warn: (...args: unknown[]) => console.warn('[dmr-x]', ...args),
 };
 
-let db: SqlJsDatabase | null = null;
-let dbPath = '';
-let initPromise: Promise<DatabaseWrapper> | null = null;
+// Store the live sql.js handle on globalThis so every copy of this module
+// (the monorepo can load @dmr-x/db more than once under bun) shares ONE
+// in-memory database. Without this, server-manager and the gateway each get
+// their own `db`, so writes by one are invisible to the other.
+const g = globalThis as unknown as { __dmrxSqlDb?: SqlJsDatabase | null; __dmrxDbPath?: string; __dmrxDbInit?: Promise<DatabaseWrapper> | null };
+function getDbHandle(): SqlJsDatabase | null {
+  return g.__dmrxSqlDb ?? null;
+}
+function setDbHandle(v: SqlJsDatabase | null): void {
+  g.__dmrxSqlDb = v;
+  if (v) (v as any).__marker = (v as any).__marker ?? `raw-${Math.random().toString(36).slice(2, 8)}`;
+}
+function getDbPath(): string {
+  return g.__dmrxDbPath ?? '';
+}
+function setDbPath(v: string): void {
+  g.__dmrxDbPath = v;
+}
+function getInitPromise(): Promise<DatabaseWrapper> | null {
+  return g.__dmrxDbInit ?? null;
+}
+function setInitPromise(v: Promise<DatabaseWrapper> | null): void {
+  g.__dmrxDbInit = v;
+}
 
 // ---------------------------------------------------------------------------
 // FTS5 splitter
@@ -95,12 +116,12 @@ async function atomicReplace(src: string, dest: string): Promise<void> {
 let saveInFlight: Promise<void> | null = null;
 let tmpCounter = 0;
 async function saveDatabase(): Promise<void> {
-  if (!db || !dbPath) return;
+  if (!getDbHandle() || !getDbPath()) return;
   if (saveInFlight) return saveInFlight;
   const run = (async () => {
-    await fs.promises.mkdir(path.dirname(dbPath), { recursive: true });
+    await fs.promises.mkdir(path.dirname(getDbPath()), { recursive: true });
     const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
-    const targetPath = keySet ? `${dbPath}.enc` : dbPath;
+    const targetPath = keySet ? `${getDbPath()}.enc` : getDbPath();
     const lastGoodPath = `${targetPath}.lastgood`;
     // Unique temp file per save. A fixed ".tmp" name let two concurrent
     // saves (e.g. the init-time saveDatabase() and a debounced scheduleSave)
@@ -108,7 +129,7 @@ async function saveDatabase(): Promise<void> {
     // left a corrupt/zeroed on-disk file and forced a fresh DB on reboot.
     const tmpPath = `${targetPath}.tmp.${process.pid}.${++tmpCounter}`;
     try {
-      const data = db.export();
+      const data = getDbHandle()!.export();
       // Guard against persisting an empty/invalid export. A mid-crash export
       // can yield a zero-byte buffer; writing that would clobber the last
       // good on-disk copy and force a "fresh database" reset on the next
@@ -123,7 +144,7 @@ async function saveDatabase(): Promise<void> {
         const { encryptBytes } = await import('@dmr-x/utils');
         toWrite = Buffer.from(encryptBytes(Buffer.from(data)));
         // Never leave a plaintext copy behind once encryption is enabled.
-        try { if (fs.existsSync(dbPath)) await fs.promises.unlink(dbPath); } catch { /* best-effort */ }
+        try { if (fs.existsSync(getDbPath())) await fs.promises.unlink(getDbPath()); } catch { /* best-effort */ }
       } else {
         toWrite = Buffer.from(data);
       }
@@ -643,11 +664,11 @@ export function runMigrations(
 }
 
 export function initDb(): Promise<DatabaseWrapper> {
-  if (db) return Promise.resolve(new DatabaseWrapper(db));
-  if (initPromise) return initPromise;
+  if (getDbHandle()) return Promise.resolve(new DatabaseWrapper(getDbHandle()!));
+  if (getInitPromise()) return getInitPromise()!;
 
-  initPromise = doInitDb();
-  return initPromise;
+  setInitPromise(doInitDb());
+  return getInitPromise()!;
 }
 
 async function doInitDb(): Promise<DatabaseWrapper> {
@@ -655,12 +676,12 @@ async function doInitDb(): Promise<DatabaseWrapper> {
 
   const dataDir = process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
   fs.mkdirSync(dataDir, { recursive: true });
-  dbPath = path.join(dataDir, 'data.db');
+  setDbPath(path.join(dataDir, 'data.db'));
 
   // When DMRX_ENCRYPTION_KEY is set, the on-disk DB is stored encrypted as
   // data.db.enc. Otherwise we use the plaintext data.db (dev / local mode).
   const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
-  const activeDbPath = keySet ? `${dbPath}.enc` : dbPath;
+  const activeDbPath = keySet ? `${getDbPath()}.enc` : getDbPath();
 
   async function openDbFile(filePath: string): Promise<SqlJsDatabase> {
     const raw = fs.readFileSync(filePath);
@@ -676,7 +697,7 @@ async function doInitDb(): Promise<DatabaseWrapper> {
 
   if (fs.existsSync(activeDbPath)) {
     try {
-      db = await openDbFile(activeDbPath);
+      setDbHandle(await openDbFile(activeDbPath));
     } catch (openErr) {
       // Log the exact error so operators can diagnose sql.js version
       // mismatches, file truncation, or actual corruption.
@@ -701,9 +722,9 @@ async function doInitDb(): Promise<DatabaseWrapper> {
       if (!restored && fs.existsSync(lastGoodPath)) {
         try {
           const lgBuf = fs.readFileSync(lastGoodPath);
-          db = keySet
+          setDbHandle(keySet
             ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(lgBuf.toString('utf8')))
-            : new SQL.Database(lgBuf);
+            : new SQL.Database(lgBuf));
           fs.copyFileSync(lastGoodPath, activeDbPath);
           log.warn(`Restored database from last-good snapshot: ${lastGoodPath}`);
           restored = true;
@@ -723,9 +744,9 @@ async function doInitDb(): Promise<DatabaseWrapper> {
         for (const cand of candidates) {
           try {
             const candBuf = fs.readFileSync(path.join(dataDir, cand.name));
-            db = keySet
+            setDbHandle(keySet
               ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(candBuf.toString('utf8')))
-              : new SQL.Database(candBuf);
+              : new SQL.Database(candBuf));
             // Restore the good file back to the primary path
             fs.copyFileSync(path.join(dataDir, cand.name), activeDbPath);
             log.warn(`Restored database from backup: ${cand.name}`);
@@ -739,18 +760,18 @@ async function doInitDb(): Promise<DatabaseWrapper> {
 
       if (!restored) {
         log.warn('No valid backup found — creating fresh database');
-        db = new SQL.Database();
+        setDbHandle(new SQL.Database());
       }
     }
   } else {
-    db = new SQL.Database();
+    setDbHandle(new SQL.Database());
   }
 
   // Enable foreign key enforcement (SQLite has it off by default)
-  db!.exec('PRAGMA foreign_keys = ON;');
+  getDbHandle()!.exec('PRAGMA foreign_keys = ON;');
 
   // Enable Write-Ahead Logging for concurrent reads without blocking on writes
-  db!.exec('PRAGMA journal_mode = WAL;');
+  getDbHandle()!.exec('PRAGMA journal_mode = WAL;');
 
   // Load migrations from disk when present, then backfill any missing versions
   // from embedded SQL. Some dev/dist layouts can have a partial migrations
@@ -810,13 +831,13 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   // roll back.  Keep at most 5 pre-migration snapshots to avoid
   // filling the data directory.
   try {
-    const preMigrationPath = `${dbPath}.pre-migration.${Date.now()}.bak`;
-    fs.copyFileSync(dbPath, preMigrationPath);
+    const preMigrationPath = `${getDbPath()}.pre-migration.${Date.now()}.bak`;
+    fs.copyFileSync(getDbPath(), preMigrationPath);
     log.info(`Pre-migration backup: ${preMigrationPath}`);
 
     // Prune old pre-migration backups (keep newest 5)
-    const dataDir = path.dirname(dbPath);
-    const basename = path.basename(dbPath);
+    const dataDir = path.dirname(getDbPath());
+    const basename = path.basename(getDbPath());
     const preMigrationBackups = fs.readdirSync(dataDir)
       .filter(f => f.startsWith(`${basename}.pre-migration.`) && f.endsWith('.bak'))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(dataDir, f)).mtimeMs }))
@@ -831,7 +852,7 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   // Apply pending migrations and verify checksums of already-applied ones.
   // Strict mode (production) refuses to start on mismatch; dev mode logs only.
   const isProduction = process.env.NODE_ENV === 'production';
-  const migrationResult = runMigrations(db!, migrations, { strict: isProduction });
+  const migrationResult = runMigrations(getDbHandle()!, migrations, { strict: isProduction });
   if (migrationResult.applied.length > 0) {
     log.info(
       `Applied ${migrationResult.applied.length} migration(s): ${migrationResult.applied.join(', ')}`,
@@ -844,27 +865,27 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   }
 
   await saveDatabase();
-  log.info(`SQLite database ready at ${dbPath}`);
+  log.info(`SQLite database ready at ${getDbPath()}`);
 
   // Migrate plaintext API keys to encrypted (one-time pass)
-  await migratePlaintextApiKeys(db!);
+  await migratePlaintextApiKeys(getDbHandle()!);
 
-  return new DatabaseWrapper(db!);
+  return new DatabaseWrapper(getDbHandle()!);
 }
 
 export function getDb(): DatabaseWrapper {
-  if (!db) {
+  if (!getDbHandle()) {
     throw new Error('Database not initialized. Call initDb() first.');
   }
-  return new DatabaseWrapper(db);
+  return new DatabaseWrapper(getDbHandle()!);
 }
 
 export async function closeDb() {
-  if (db) {
+  if (getDbHandle()) {
     await flush();
-    db.close();
-    db = null;
-    initPromise = null;
+    getDbHandle()!.close();
+    setDbHandle(null);
+    setInitPromise(null);
   }
 }
 
