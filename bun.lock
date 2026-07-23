@@ -26,7 +26,7 @@
     },
     "apps/gateway": {
       "name": "@dmr-x/gateway",
-      "version": "0.5.9",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/agent-registry": "*",
@@ -68,7 +68,7 @@
     },
     "apps/ui": {
       "name": "@dmr-x/ui",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@hookform/resolvers": "5.2.2",
         "@radix-ui/react-accordion": "1.2.12",
@@ -126,7 +126,7 @@
     },
     "packages/cli": {
       "name": "@dmr-x/cli",
-      "version": "0.5.9",
+      "version": "0.5.12",
       "bin": {
         "dmrx": "./dist/index.js",
       },
@@ -144,7 +144,7 @@
     },
     "packages/core": {
       "name": "@dmr-x/core",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "zod": "3.23.0",
       },
@@ -154,7 +154,7 @@
     },
     "packages/db": {
       "name": "@dmr-x/db",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/utils": "*",
         "sql.js": "1.14.1",
@@ -166,21 +166,21 @@
     },
     "packages/plugin-loader": {
       "name": "@dmr-x/plugin-loader",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "devDependencies": {
         "typescript": "5.9.3",
       },
     },
     "packages/provider-catalog": {
       "name": "@dmr-x/provider-catalog",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "devDependencies": {
         "typescript": "5.9.3",
       },
     },
     "packages/secrets": {
       "name": "@dmr-x/secrets",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/db": "workspace:*",
         "@dmr-x/utils": "workspace:*",
@@ -191,7 +191,7 @@
     },
     "packages/tokenizers": {
       "name": "@dmr-x/tokenizers",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/utils": "*",
         "tiktoken": "^1.0.18",
@@ -202,7 +202,7 @@
     },
     "packages/utils": {
       "name": "@dmr-x/utils",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "pino": "9.0.0",
         "zod": "^4.0.0",
@@ -213,7 +213,7 @@
     },
     "services/adapters": {
       "name": "@dmr-x/adapters",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/quota": "*",
@@ -226,7 +226,7 @@
     },
     "services/agent-registry": {
       "name": "@dmr-x/agent-registry",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -241,7 +241,7 @@
     },
     "services/agent-runtime": {
       "name": "@dmr-x/agent-runtime",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/agent-registry": "*",
         "@dmr-x/billing": "*",
@@ -256,7 +256,7 @@
     },
     "services/benchmark": {
       "name": "@dmr-x/benchmark",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/core": "*",
@@ -270,7 +270,7 @@
     },
     "services/billing": {
       "name": "@dmr-x/billing",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -282,7 +282,7 @@
     },
     "services/cache": {
       "name": "@dmr-x/cache",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -295,7 +295,7 @@
     },
     "services/federation": {
       "name": "@dmr-x/federation",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -307,7 +307,7 @@
     },
     "services/godmode": {
       "name": "@dmr-x/godmode",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/utils": "workspace:*",
       },
@@ -317,7 +317,7 @@
     },
     "services/mcp-client": {
       "name": "@dmr-x/mcp-client",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/core": "*",
@@ -330,7 +330,7 @@
     },
     "services/mcp-server": {
       "name": "@dmr-x/mcp-server",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "bin": {
         "dmrx-mcp": "./dist/index.js",
       },
@@ -355,7 +355,7 @@
     },
     "services/memory": {
       "name": "@dmr-x/memory",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -367,7 +367,7 @@
     },
     "services/oauth": {
       "name": "@dmr-x/oauth",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/db": "*",
         "@dmr-x/registry": "*",
@@ -379,7 +379,7 @@
     },
     "services/operator": {
       "name": "@dmr-x/operator",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -393,7 +393,7 @@
     },
     "services/plugin-loader-bootstrap": {
       "name": "@dmr-x/plugin-loader-bootstrap",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/gateway": "workspace:*",
         "@dmr-x/mcp-server": "workspace:*",
@@ -405,7 +405,7 @@
     },
     "services/policy": {
       "name": "@dmr-x/policy",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -418,7 +418,7 @@
     },
     "services/prompts": {
       "name": "@dmr-x/prompts",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/utils": "workspace:*",
       },
@@ -428,7 +428,7 @@
     },
     "services/quota": {
       "name": "@dmr-x/quota",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/billing": "*",
         "@dmr-x/core": "*",
@@ -442,7 +442,7 @@
     },
     "services/registry": {
       "name": "@dmr-x/registry",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/adapters": "*",
         "@dmr-x/core": "*",
@@ -456,7 +456,7 @@
     },
     "services/router": {
       "name": "@dmr-x/router",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -472,7 +472,7 @@
     },
     "services/sandbox": {
       "name": "@dmr-x/sandbox",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -484,7 +484,7 @@
     },
     "services/server-manager": {
       "name": "@dmr-x/server-manager",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/db": "workspace:*",
         "@dmr-x/utils": "workspace:*",
@@ -495,7 +495,7 @@
     },
     "services/telemetry": {
       "name": "@dmr-x/telemetry",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -514,7 +514,7 @@
     },
     "services/tool-search": {
       "name": "@dmr-x/tool-search",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/utils": "*",
       },
@@ -524,7 +524,7 @@
     },
     "services/workers": {
       "name": "@dmr-x/workers",
-      "version": "0.5.7",
+      "version": "0.5.12",
       "dependencies": {
         "@dmr-x/core": "*",
         "@dmr-x/db": "*",
@@ -536,8 +536,10 @@
     },
   },
   "overrides": {
+    "@opentelemetry/propagator-jaeger": ">=2.9.0",
+    "brace-expansion": "^1.1.16",
     "esbuild": "^0.28.1",
-    "fast-uri": "^3.1.2",
+    "fast-uri": "^3.1.4",
     "postcss": "^8.5.10",
     "protobufjs": "^7.5.4",
     "tmp": "^0.2.6",
@@ -848,7 +850,7 @@
 
     "@opentelemetry/propagator-b3": ["@opentelemetry/propagator-b3@2.7.1", "", { "dependencies": { "@opentelemetry/core": "2.7.1" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-RJid6E2CKyeGfKBzXKF21ejabGMHypFkPAh3qZ+NvI+SGjuIye79t3PmiqcDgtRzdKH6ynXzbfslQ8DfpRUg2A=="],
 
-    "@opentelemetry/propagator-jaeger": ["@opentelemetry/propagator-jaeger@2.7.1", "", { "dependencies": { "@opentelemetry/core": "2.7.1" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-KMjVBHzP4N60bOzxja76M1F1hZZ43lGPga5ix+mkv9+kk1nx9SbkxSvJsMbuVUxdPQmsPTqGShmhN8ulrMOg6Q=="],
+    "@opentelemetry/propagator-jaeger": ["@opentelemetry/propagator-jaeger@2.10.0", "", { "dependencies": { "@opentelemetry/core": "2.10.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-yw/IX8DL470dSMZJoE82ScfYGp7JWZ/G8kFJo35ZILUVTB2jFPTOaioN+8s09pH0RHsWNhweVZb+ZnjJJpCChg=="],
 
     "@opentelemetry/resources": ["@opentelemetry/resources@1.30.1", "", { "dependencies": { "@opentelemetry/core": "1.30.1", "@opentelemetry/semantic-conventions": "1.28.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-5UxZqiAgLYGFjS4s9qm5mBVo433u+dSPUFWVWXmLAD4wB65oMCoXaJP1KJa9DIYYMeHu3z4BZcStG3LC593cWA=="],
 
@@ -1222,7 +1224,7 @@
 
     "body-parser": ["body-parser@2.3.0", "", { "dependencies": { "bytes": "^3.1.2", "content-type": "^2.0.0", "debug": "^4.4.3", "http-errors": "^2.0.1", "iconv-lite": "^0.7.2", "on-finished": "^2.4.1", "qs": "^6.15.2", "raw-body": "^3.0.2", "type-is": "^2.1.0" } }, "sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw=="],
 
-    "brace-expansion": ["brace-expansion@1.1.15", "", { "dependencies": { "balanced-match": "^1.0.0", "concat-map": "0.0.1" } }, "sha512-EwOCDEex4quD37XhqM3omwtMoJjr//isUZz1JopUNWms+4Z2ViyM/k1YIRePpoVNnQhENnxtFjLaxNHrT7xIUg=="],
+    "brace-expansion": ["brace-expansion@1.1.16", "", { "dependencies": { "balanced-match": "^1.0.0", "concat-map": "0.0.1" } }, "sha512-IDw48K2/2kRkg9LdJxurvq3lV3aBgq0REY89duEqFRthjlPdXHKMj7EnQOXVckxzgisinf3nHfrcE2FufFLXMw=="],
 
     "braces": ["braces@3.0.3", "", { "dependencies": { "fill-range": "^7.1.1" } }, "sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA=="],
 
@@ -1456,7 +1458,7 @@
 
     "fast-safe-stringify": ["fast-safe-stringify@2.1.1", "", {}, "sha512-W+KJc2dmILlPplD/H4K9l9LcAHAfPtP6BY84uVLXQ6Evcz9Lcg33Y2z1IVblT6xdY54PXYVHEv+0Wpq8Io6zkA=="],
 
-    "fast-uri": ["fast-uri@3.1.3", "", {}, "sha512-i70LwGWUduXqzicKXWshooq+sWL1K3WUU5rKZNG/0i3a1OSoX3HqhH5WbWwTmqWfor4urUakGPiRQcleRZTwOg=="],
+    "fast-uri": ["fast-uri@3.1.4", "", {}, "sha512-8JnbkQ4juDyvYs4mgFGQqg4yCYtFDtUtmp2QIQq11ZZe5CFQ5wcqm1rqDgAh/QdMySuBnPzMUiJUNZG5N/AiQw=="],
 
     "fastify": ["fastify@5.9.0", "", { "dependencies": { "@fastify/ajv-compiler": "^4.0.5", "@fastify/error": "^4.0.0", "@fastify/fast-json-stringify-compiler": "^5.0.0", "@fastify/proxy-addr": "^5.0.0", "abstract-logging": "^2.0.1", "avvio": "^9.0.0", "fast-json-stringify": "^6.0.0", "find-my-way": "^9.6.0", "light-my-request": "^6.0.0", "pino": "^9.14.0 || ^10.1.0", "process-warning": "^5.0.0", "rfdc": "^1.3.1", "secure-json-parse": "^4.0.0", "semver": "^7.6.0", "toad-cache": "^3.7.0" } }, "sha512-VMS5lE0zj+MZlJpQa3Qv5iGjfun0H2N7VRgoBwpcTNQ2bdIQpv7fDpb+HGteGbicBsGkzGS+X+hdx9mmrfWuHQ=="],
 
@@ -2220,7 +2222,7 @@
 
     "@opentelemetry/propagator-b3/@opentelemetry/core": ["@opentelemetry/core@2.7.1", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-QAqIj32AtK6+pEVNG7EOVxHdE06RP+FM5qpiEJ4RtDcFIqKUZHYhl7/7UY5efhwmwNAg7j8QbJVBLxMerc0+gw=="],
 
-    "@opentelemetry/propagator-jaeger/@opentelemetry/core": ["@opentelemetry/core@2.7.1", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-QAqIj32AtK6+pEVNG7EOVxHdE06RP+FM5qpiEJ4RtDcFIqKUZHYhl7/7UY5efhwmwNAg7j8QbJVBLxMerc0+gw=="],
+    "@opentelemetry/propagator-jaeger/@opentelemetry/core": ["@opentelemetry/core@2.10.0", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-/wNZ8twnEQQA4HoHu22+vcsdru6pWPWxW+7w+FlxT6Id7PE/WIbZmVKkte+PF72e0F2dnImFeHD2syyE1Mw6MQ=="],
 
     "@opentelemetry/resources/@opentelemetry/core": ["@opentelemetry/core@1.30.1", "", { "dependencies": { "@opentelemetry/semantic-conventions": "1.28.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-OOCM2C/QIURhJMuKaekP3TRBxBKxG/TWWA0TL2J6nXUtDnuCtccy49LUJF8xPFXMX+0LMcxFpCo8M9cGY1W6rQ=="],
 
@@ -2494,8 +2496,6 @@
 
     "@types/stream-buffers/@types/node/undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 
-    "@typescript-eslint/typescript-estree/minimatch/brace-expansion": ["brace-expansion@5.0.7", "", { "dependencies": { "balanced-match": "^4.0.2" } }, "sha512-7oFy703dxfY3/NLxC1fh2SUCQ0H9rmAY+5EpDVfXjUTTs+HEwR2nYaqLv+GWcTsumwxPfiz6CzCNkwXwBUwqCA=="],
-
     "bl/readable-stream/string_decoder": ["string_decoder@1.3.0", "", { "dependencies": { "safe-buffer": "~5.2.0" } }, "sha512-hkRX8U1WjJFd8LsDJ2yQ/wWWxaopEsABU1XfkM8A+j0+85JAGppt16cr1Whg6KIbb4okU6Mql6BOj+uup/wKeA=="],
 
     "cliui/string-width/emoji-regex": ["emoji-regex@8.0.0", "", {}, "sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A=="],
@@ -2509,8 +2509,6 @@
     "fastify/pino/thread-stream": ["thread-stream@4.2.0", "", { "dependencies": { "real-require": "^1.0.0" } }, "sha512-e2zZ96wSChazBsbENf/Pcm/4swHt2cEKQ92rhUjkL9GCKiTDJIaTBenjE/m9DXi0QBmTMDkFDdOomUy20A1tDQ=="],
 
     "form-data/mime-types/mime-db": ["mime-db@1.52.0", "", {}, "sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg=="],
-
-    "glob/minimatch/brace-expansion": ["brace-expansion@5.0.7", "", { "dependencies": { "balanced-match": "^4.0.2" } }, "sha512-7oFy703dxfY3/NLxC1fh2SUCQ0H9rmAY+5EpDVfXjUTTs+HEwR2nYaqLv+GWcTsumwxPfiz6CzCNkwXwBUwqCA=="],
 
     "inquirer/ora/is-unicode-supported": ["is-unicode-supported@1.3.0", "", {}, "sha512-43r2mRvz+8JRIKnWJ+3j8JtjRKZ6GmjzfaE/qiBJnikNnYv/6bagRJ1kUhNk8R5EX/GkobD+r+sfxCPJsiKBLQ=="],
 
@@ -2532,13 +2530,9 @@
 
     "@radix-ui/react-radio-group/@radix-ui/react-roving-focus/@radix-ui/react-collection/@radix-ui/react-slot": ["@radix-ui/react-slot@1.2.2", "", { "dependencies": { "@radix-ui/react-compose-refs": "1.1.2" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-y7TBO4xN4Y94FvcWIOIh18fM4R1A8S4q1jhoz4PNzOoHsFcN8pogcFmZrTYAm4F9VRUrWP/Mw7xSKybIeRI+CQ=="],
 
-    "@typescript-eslint/typescript-estree/minimatch/brace-expansion/balanced-match": ["balanced-match@4.0.4", "", {}, "sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA=="],
-
     "bl/readable-stream/string_decoder/safe-buffer": ["safe-buffer@5.2.1", "", {}, "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ=="],
 
     "fastify/pino/thread-stream/real-require": ["real-require@1.0.0", "", {}, "sha512-P4nbQYQfePJxRSmY+v/KINxVucm4NF3p3s7pJveMTtom52FR4YGltUQLB8idDXwDDWW+eYrWDFbuzUnjoWHF7g=="],
-
-    "glob/minimatch/brace-expansion/balanced-match": ["balanced-match@4.0.4", "", {}, "sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA=="],
 
     "pino/pino-abstract-transport/readable-stream/string_decoder": ["string_decoder@1.3.0", "", { "dependencies": { "safe-buffer": "~5.2.0" } }, "sha512-hkRX8U1WjJFd8LsDJ2yQ/wWWxaopEsABU1XfkM8A+j0+85JAGppt16cr1Whg6KIbb4okU6Mql6BOj+uup/wKeA=="],
 
