@@ -51,10 +51,6 @@ When adding features or making changes:
 - Keep `README.md` accurate if the change affects user-facing behavior
 - Update `docs/CHANGELOG.md` with notable changes
 
-## Contributor License Agreement
-
-All contributors must sign the [Contributor License Agreement](CLA.md) before their contributions can be merged. See [CLA.md](CLA.md) for details.
-
 ## License
 
-This project is licensed under the [Business Source License 1.1](LICENSE). By contributing, you agree that your contributions will be licensed under the same terms.
+This project is licensed under the [GNU General Public License v2.0](LICENSE) (GPL-2.0). By contributing, you agree that your contributions will be licensed under the same terms.

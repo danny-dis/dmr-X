@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Universal AI routing and orchestration platform",
-  "license": "BSL-1.1",
+  "license": "GPL-2.0",
   "workspaces": [
     "apps/*",
     "services/*",

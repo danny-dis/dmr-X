@@ -1,6 +1,6 @@
 # License & Dependency Policy
 
-DMR-X is licensed under **BSL-1.1** (Business Source License). The
+DMR-X is licensed under **GPL-2.0** (GNU General Public License v2.0). The
 following policy governs which licenses we accept in our dependency
 tree and how we generate the Software Bill of Materials (SBOM) for
 each release.
@@ -15,14 +15,12 @@ each release.
 | **ISC** | Many small utility packages | Default acceptable |
 | **MPL-2.0** | Mozilla Public License | Acceptable for file-level copyleft deps |
 | **LGPL-2.1 / LGPL-3.0** | Weak copyleft | Only acceptable for dynamically linked libraries (not used directly in DMR-X) |
-| **BSL-1.1 / BSL-compatible** | DMR-X's own license | We accept our own license |
+| **GPL-2.0** | DMR-X's own license | We use GPL-2.0 |
 
-## Disallowed licenses
+## Notes
 
-| License | Reason |
-|---------|--------|
-| **GPL-2.0 / GPL-3.0** | Strong copyleft, incompatible with our distribution model |
-| **AGPL-3.0** | Network copyleft, incompatible with our SaaS model |
+- DMR-X itself is GPL-2.0. Dependencies must be compatible with GPL-2.0.
+- AGPL-3.0 dependencies are disallowed (incompatible with GPL-2.0 distribution).
 | **SSPL** | Server Side Public License — restricts commercial use |
 | **Commons Clause** | Adds commercial restrictions on top of permissive licenses |
 | **Unlicense / Public Domain** | License ambiguity in some jurisdictions |

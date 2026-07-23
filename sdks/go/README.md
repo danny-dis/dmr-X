@@ -159,4 +159,4 @@ single source of truth for the DMR-X public API contract.
 
 ## License
 
-MIT — same as the DMR-X core SDK packages. The DMR-X platform itself is licensed under BSL-1.1.
+MIT — same as the DMR-X core SDK packages. The DMR-X platform itself is licensed under GPL-2.0.
