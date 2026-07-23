@@ -1,7 +1,7 @@
 {
   "name": "@dmr-x/ui",
   "private": true,
-  "version": "0.5.11",
+  "version": "0.5.12",
   "type": "module",
   "scripts": {
     "dev": "bunx vite",

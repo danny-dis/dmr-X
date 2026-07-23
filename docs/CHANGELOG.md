@@ -2,6 +2,23 @@
 
 > **Counts current as of v0.5.7:** the gateway registers **57+ provider adapters** (older entries referencing "18 adapters" reflect earlier releases) and ships **45 SQL migrations**. The full provider catalog lives in `docs/AI_PROVIDER_REFERENCE.md`.
 
+## v0.5.12 — Godmode Relay & DB Singleton (2026-07-23)
+
+### Features
+- **Godmode relay mode** — G0DM0D3 can now relay LLM calls through DMR-X itself (`llmBaseUrl`/`llmApiKey`), eliminating the OpenRouter key requirement. The `GODMODE_RELAY=1` env var signals the child it's running as an internal proxy.
+- **DB globalThis singleton** — `@dmr-x/db` stores the sql.js handle on `globalThis` so multiple bun workspace copies share one in-memory database (fixes gateway/server-manager visibility gap).
+- **Provider key seeding** — `seedEnvKeysToProviderKeys()` upserts a Default key row for every provider whose catalog `envKey` is set in `.env` on boot. Idempotent; survives DB wipes.
+- **Meta-model godmode flag** — `auto-free` now routes through the G0DM0D3 godmode proxy for persona wrapping; `auto-eco` is free-only.
+- **Model discovery enrichment** — discovered models are enriched with catalog data (costs, context, capabilities) and a new `POST /admin/providers/:id/discover` endpoint.
+- **Batch free verification** — `POST /admin/providers/:id/verify-free-batch` probes each model with a minimal chat completion to classify free/paid.
+- **DMRX_FREE_PROVIDERS auto-classification** — models for providers listed in `DMRX_FREE_PROVIDERS` are classified as free at boot.
+
+### Fixes
+- Agent chat evaluation logic removed; `runtime` and `conversationId` added to agent context.
+- Godmode routes now accept `llmBaseUrl`/`llmApiKey` on install/start and auto-initialize the proxy.
+- `server-manager` constructs the return object directly (sql.js read-back inconsistency fix).
+- Version bumped all workspace packages to 0.5.12.
+
 ## v0.5.10 — Current (2026-07-14)
 
 ### Features

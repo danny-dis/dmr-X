@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/plugin-loader",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Plugin loader for DMR-X",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
