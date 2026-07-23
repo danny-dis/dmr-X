@@ -14,9 +14,6 @@ import {
   extractZipMdFiles,
   importAgentsWithSkills,
   type AgentDefinitionCreate,
-  listEvaluations,
-  getEvaluation,
-  deleteEvaluation,
 } from '@dmr-x/agent-registry';
 import { getDb } from '@dmr-x/db';
 import type { FastifyInstance } from 'fastify';
@@ -175,7 +172,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     const tenant = (request as any).tenant;
 
     const { id } = request.params as { id: string };
-    const evaluations = await listEvaluations(id, tenant.id);
+    const evaluations = await agentRegistryService.listEvaluations(id, tenant.id);
     return reply.send(evaluations);
   });
 
@@ -183,7 +180,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     const tenant = (request as any).tenant;
 
     const { id } = request.params as { id: string };
-    const evaluation = await getEvaluation(id, tenant.id);
+    const evaluation = await agentRegistryService.getEvaluation(id, tenant.id);
     if (!evaluation) return reply.code(404).send({ error: { message: 'Evaluation not found' } });
     return reply.send(evaluation);
   });
@@ -192,7 +189,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     const tenant = (request as any).tenant;
 
     const { id } = request.params as { id: string };
-    const deleted = await deleteEvaluation(id, tenant.id);
+    const deleted = await agentRegistryService.deleteEvaluation(id, tenant.id);
     if (!deleted) return reply.code(404).send({ error: { message: 'Evaluation not found' } });
     return reply.code(204).send();
   });

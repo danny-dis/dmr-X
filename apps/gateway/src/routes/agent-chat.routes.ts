@@ -198,6 +198,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         Date.now() - startTime,
       );
 
+
       if (body.stream) {
         writeSSE(reply, 'done', {
           status: 'completed',
