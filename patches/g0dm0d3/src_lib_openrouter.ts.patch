@@ -1,0 +1,102 @@
+diff --git a/src/lib/openrouter.ts b/src/lib/openrouter.ts
+index b4822ad..199a691 100644
+--- a/src/lib/openrouter.ts
++++ b/src/lib/openrouter.ts
+@@ -3,9 +3,35 @@
+  * Routes requests to multiple AI models via OpenRouter
+  */
+ 
+-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+ const VENICE_API_URL = 'https://api.venice.ai/api/v1/chat/completions'
+ 
++/**
++ * Upstream chat endpoint. In relay mode (DMR-X internal proxy) this points at
++ * G0DM0D3_LLM_BASE_URL instead of OpenRouter, so the host gateway owns
++ * provider selection and key rotation. Resolved per call because the env is
++ * set by the parent process at spawn time.
++ */
++function openrouterApiUrl(): string {
++  const base = (process.env.G0DM0D3_LLM_BASE_URL || '').replace(/\/+$/, '')
++  if (!base) return 'https://openrouter.ai/api/v1/chat/completions'
++  return /\/chat\/completions$/.test(base) ? base : `${base}/chat/completions`
++}
++
++function isRelay(): boolean {
++  return process.env.GODMODE_RELAY === '1' || !!process.env.G0DM0D3_LLM_BASE_URL
++}
++
++/** Upstream headers; OpenRouter attribution is omitted when relaying. */
++function upstreamHeadersFor(apiKey: string): Record<string, string> {
++  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
++  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
++  if (!isRelay()) {
++    headers['HTTP-Referer'] = 'https://godmod3.ai'
++    headers['X-Title'] = 'GODMOD3.AI'
++  }
++  return headers
++}
++
+ /**
+  * Maps API error responses to specific, actionable user-facing messages.
+  */
+@@ -109,7 +135,7 @@ export async function sendMessage({
+   presence_penalty,
+   repetition_penalty
+ }: SendMessageOptions): Promise<string> {
+-  if (!apiKey) {
++  if (!apiKey && !isRelay()) {
+     throw new Error('No API key set. Go to Settings → API Key and enter your OpenRouter key from [openrouter.ai/keys](https://openrouter.ai/keys).')
+   }
+ 
+@@ -141,14 +167,9 @@ export async function sendMessage({
+     body.provider = providerOptions
+   }
+ 
+-  const response = await fetch(OPENROUTER_API_URL, {
++  const response = await fetch(openrouterApiUrl(), {
+     method: 'POST',
+-    headers: {
+-      'Authorization': `Bearer ${apiKey}`,
+-      'Content-Type': 'application/json',
+-      'HTTP-Referer': 'https://godmod3.ai',
+-      'X-Title': 'GODMOD3.AI'
+-    },
++    headers: upstreamHeadersFor(apiKey),
+     body: JSON.stringify(body),
+     signal
+   })
+@@ -185,7 +206,7 @@ export async function* streamMessage({
+   presence_penalty,
+   repetition_penalty
+ }: SendMessageOptions): AsyncGenerator<string, void, unknown> {
+-  if (!apiKey) {
++  if (!apiKey && !isRelay()) {
+     throw new Error('No API key set. Go to Settings → API Key and enter your OpenRouter key from [openrouter.ai/keys](https://openrouter.ai/keys).')
+   }
+ 
+@@ -203,14 +224,9 @@ export async function* streamMessage({
+   if (presence_penalty !== undefined) streamBody.presence_penalty = presence_penalty
+   if (repetition_penalty !== undefined) streamBody.repetition_penalty = repetition_penalty
+ 
+-  const response = await fetch(OPENROUTER_API_URL, {
++  const response = await fetch(openrouterApiUrl(), {
+     method: 'POST',
+-    headers: {
+-      'Authorization': `Bearer ${apiKey}`,
+-      'Content-Type': 'application/json',
+-      'HTTP-Referer': 'https://godmod3.ai',
+-      'X-Title': 'GODMOD3.AI'
+-    },
++    headers: upstreamHeadersFor(apiKey),
+     body: JSON.stringify(streamBody),
+     signal
+   })
+@@ -727,7 +743,7 @@ export async function sendMessageViaVenice({
+   frequency_penalty,
+   presence_penalty,
+ }: VeniceMessageOptions): Promise<string> {
+-  if (!apiKey) {
++  if (!apiKey && !isRelay()) {
+     throw new Error('No Venice API key set. Go to Settings → Venice API Key and enter your key from [venice.ai](https://venice.ai/settings).')
+   }
+ 
