@@ -22,6 +22,19 @@ export type PlaygroundMode =
   | 'tool-loop'
   | 'godmode';
 
+/**
+ * Modes that behave like a chat transcript (turn-based, streamed into the
+ * message list) as opposed to one-shot generators such as image/embed/tts.
+ * `playgroundCaps.isCapabilityChatMode` imports this; it was referenced but
+ * never exported, so that module failed to compile.
+ */
+export const CHAT_FAMILY_MODES: ReadonlySet<PlaygroundMode> = new Set<PlaygroundMode>([
+  'chat',
+  'agentic',
+  'tool-loop',
+  'godmode',
+]);
+
 export interface StreamingEvent {
   name: string;
   data: any;
@@ -70,6 +83,8 @@ export interface Message {
   content: string;
   audioUrl?: string;
   imageUrl?: string;
+  /** Set by video generation flows (GenerateButtons, VideoView). */
+  videoUrl?: string;
   embeddingData?: string;
   model?: string;
   provider?: string;

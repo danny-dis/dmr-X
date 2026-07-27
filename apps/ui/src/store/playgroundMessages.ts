@@ -33,6 +33,14 @@ export interface MessagesSlice {
     assistantMessageId: string;
   }) => Promise<void>;
   addMessagesBatch: (conversationId: string, messages: Message[]) => Promise<void>;
+  /**
+   * Append an already-formed message to the transcript without triggering a
+   * completion. Used by flows that produce their own content (image/video
+   * generation) and just need it rendered in the conversation.
+   */
+  appendMessage: (
+    message: Pick<Message, 'role' | 'content'> & Partial<Omit<Message, 'role' | 'content'>>,
+  ) => Promise<void>;
 }
 
 export const createMessagesSlice: StateCreator<PlaygroundState, [], [], MessagesSlice> = (set, get) => ({
@@ -163,6 +171,33 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
       return { messages: next };
     });
     return newId;
+  },
+
+  // GenerateButtons calls this on every image/video generation. It was never
+  // implemented, so `s.appendMessage` resolved to undefined and clicking
+  // Generate threw "appendMessage is not a function".
+  appendMessage: async (message) => {
+    let conversationId = get().currentConversationId;
+    if (!conversationId) {
+      conversationId = await get().createConversation();
+    }
+
+    const full: Message = {
+      id: crypto.randomUUID(),
+      conversationId: conversationId!,
+      createdAt: new Date().toISOString(),
+      ...message,
+    };
+
+    set({ messages: [...get().messages, full] });
+
+    // Best-effort persistence: the message is already on screen, so a failed
+    // write should not surface as a thrown error mid-generation.
+    try {
+      await get().addMessagesBatch(conversationId!, [full]);
+    } catch {
+      /* transcript stays in memory for this session */
+    }
   },
 
   addMessagesBatch: async (conversationId: string, messages: Message[]) => {
