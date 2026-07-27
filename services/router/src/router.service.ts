@@ -260,7 +260,7 @@ export class Router {
     }
 
     // Step 1: Check for sticky session
-    const conversationHash = hashConversation(messages);
+    const conversationHash = hashConversation(messages, request.model);
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
     const effectiveFreeTierStrategy = freeTierStrategy;
 
@@ -571,10 +571,30 @@ export class Router {
 
     // Step 5: Set sticky session for this conversation
     if (conversationHash) {
+      // Pin the provider/model that ACTUALLY served the response, not the one
+      // we planned to use. When the primary fails and `executeWithFallback`
+      // recovers via a chain entry, the caller still gets a 200 — but pinning
+      // `plan.primary` here would poison the sticky cache with the model that
+      // just died. The next turn then takes the sticky fast path, which builds
+      // a chain-less plan, re-calls the dead model, and 502s instantly.
+      //
+      // `response.providerId` is the adapter/provider NAME (e.g. "google"),
+      // while candidates and plans are keyed by the DB provider UUID, so the
+      // name has to be resolved back to a UUID — a raw name would be stored
+      // fine but never match a candidate on the next turn, silently disabling
+      // stickiness altogether.
+      const servedModelId = response.modelId || plan.primary.modelId;
+      const servedCandidate =
+        this.candidates.find(
+          (c) => c.modelId === servedModelId &&
+            (c.providerId === response.providerId || c.providerName === response.providerId)
+        ) ?? this.candidates.find((c) => c.modelId === servedModelId);
+      const servedProviderId = servedCandidate?.providerId ?? plan.primary.providerId;
+
       // Get RPM for TTL adjustment if rate limit service is available
       let rateLimitRpm: number | undefined;
       if (this.config.rateLimitService) {
-        const check = this.config.rateLimitService.checkLimit(plan.primary.providerId, plan.primary.modelId, 0);
+        const check = this.config.rateLimitService.checkLimit(servedProviderId, servedModelId, 0);
         // Extract RPM from reason string if rate-limited, otherwise use a default
         if (!check.allowed && check.reason) {
           const rpmMatch = check.reason.match(/RPM limit \((\d+)\)/);
@@ -584,8 +604,8 @@ export class Router {
 
       await setStickyProvider(
         conversationHash,
-        plan.primary.providerId,
-        plan.primary.modelId,
+        servedProviderId,
+        servedModelId,
         undefined,
         rateLimitRpm
       );

@@ -200,7 +200,13 @@ function trackModelError(providerId: string, modelId: string, category: string):
   logger.warn({ providerId, modelId, category, ttl }, 'Tracked model error — will skip for cooldown period');
 }
 
-function isModelOnErrorCooldown(providerId: string, modelId: string): boolean {
+/**
+ * Whether a provider/model is currently on an error cooldown (404/410, bad
+ * auth, overload). Exported so callers that build chain-less plans — notably
+ * the sticky-session fast path — can avoid re-calling a model already known
+ * to be dead, which would otherwise fail with no fallback available.
+ */
+export function isModelOnErrorCooldown(providerId: string, modelId: string): boolean {
   const key = `${providerId}:${modelId}`;
   const entry = modelErrorCache.get(key);
   if (!entry) return false;
