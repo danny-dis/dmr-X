@@ -38,13 +38,26 @@ import type {
 const tracer = trace.getTracer('dmr-x-gateway', '0.4.0');
 
 /**
- * HTTP status codes that trigger automatic retry.
- * 429 = Too Many Requests (rate limiting)
+ * HTTP status codes retried against the SAME provider.
+ *
  * 502 = Bad Gateway (upstream failure)
  * 503 = Service Unavailable (transient outage)
  * 504 = Gateway Timeout (upstream timeout)
+ *
+ * These are transient server-side hiccups where the same provider is likely
+ * to succeed shortly, so sleeping and retrying in place is worthwhile.
+ *
+ * 429 is deliberately NOT here. A rate limit means "this key has no capacity
+ * right now" — waiting does not change that, and DMR-X almost always has other
+ * providers and other keys ready. Retrying in place burned the full
+ * `maxElapsedTime` budget per provider before the fallback chain was even
+ * consulted; with several rate-limited providers in a chain (cohere and
+ * zukijourney each hit attempt 4 dozens of times in one run) a single request
+ * took 22-47s while idle models sat unused. Returning immediately lets the
+ * fallback executor move to the next candidate, which IS the correct retry for
+ * a quota error. Free-tier keys make this the common path, not the rare one.
  */
-const RETRYABLE_STATUS_CODES = ['429', '502', '503', '504'];
+const RETRYABLE_STATUS_CODES = ['502', '503', '504'];
 
 export abstract class BaseAdapter implements ProviderAdapter {
   abstract readonly providerId: string;
@@ -58,7 +71,8 @@ export abstract class BaseAdapter implements ProviderAdapter {
    * Retry configuration for all HTTP requests made by this adapter.
    *
    * Defaults to exponential backoff: 1 s initial delay, 2x exponent, 10 s max
-   * interval, 30 s total budget. Retries on HTTP 429/502/503/504, connection
+   * interval, 30 s total budget. Retries on HTTP 502/503/504 (NOT 429 — that
+   * fails over to the next provider instead, see RETRYABLE_STATUS_CODES), connection
    * errors (ECONNRESET, "fetch failed"), and timeout errors.  Respects
    * Retry-After headers when present.
    *
@@ -414,7 +428,6 @@ export abstract class BaseAdapter implements ProviderAdapter {
    * resilience for free.
    *
    * Retryable (temporary) errors -- retried with backoff:
-   * - HTTP 429 (Too Many Requests / rate limiting)
    * - HTTP 502 (Bad Gateway)
    * - HTTP 503 (Service Unavailable)
    * - HTTP 504 (Gateway Timeout)
@@ -422,12 +435,14 @@ export abstract class BaseAdapter implements ProviderAdapter {
    * - Timeout errors
    *
    * Permanent errors -- thrown immediately, no retry:
-   * - HTTP 4xx client errors other than 429 (400, 401, 403, 404, etc.)
+   * - HTTP 429 (rate limited — the router fails over to another provider/key,
+   *   which is the correct retry for a quota error)
+   * - HTTP 4xx client errors (400, 401, 403, 404, etc.)
    * - HTTP 500/501/5xx not listed above
    * - Any other unexpected error
    *
-   * Uses exponential backoff with jitter. Respects Retry-After headers on
-   * 429 responses. Subclasses can override `retryConfig` to customise.
+   * Uses exponential backoff with jitter. Subclasses can override
+   * `retryConfig` to customise.
    */
   protected async fetchWithTimeout(
     url: string,
