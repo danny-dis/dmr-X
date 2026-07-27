@@ -1007,13 +1007,22 @@ void (async () => {
       //    the old health check logic. The `available_only` filter in
       //    /admin/models handles key-based visibility, so is_active
       //    should only reflect intentional user/registry decisions.
+      // Only revive models belonging to providers that live discovery could
+      // NOT reach. Discovery is authoritative for providers it can list: it
+      // reactivates what upstream still serves and deactivates what it does
+      // not. A blanket `is_active = 1` here ran after discovery and undid that
+      // every boot, resurrecting model ids the provider had removed.
       try {
         const reactivated = db.prepare(
           `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
-           WHERE is_active = 0`
+           WHERE is_active = 0
+             AND provider_id NOT IN (
+               SELECT DISTINCT provider_id FROM model_profiles
+               WHERE is_active = 1
+             )`
         ).run();
         if (reactivated.changes > 0) {
-          logger.info({ count: reactivated.changes }, 'Re-activated models deactivated by previous health checks');
+          logger.info({ count: reactivated.changes }, 'Re-activated models for providers discovery could not reach');
         }
       } catch (err) {
         logger.warn({ err }, 'Failed to re-activate models during background init');

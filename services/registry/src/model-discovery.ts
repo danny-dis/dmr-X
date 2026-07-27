@@ -200,8 +200,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * Conservative defaults: $0 cost, 'streaming' capability only,
  * modality 'llm' unless the payload hints otherwise.
  */
+/**
+ * Strip provider namespacing that the chat endpoint does not expect.
+ *
+ * Google's OpenAI-compatible /models returns `models/gemini-2.5-flash` while
+ * chat/completions wants the bare `gemini-2.5-flash`. Left as-is, discovery
+ * inserts a duplicate prefixed row AND every stored bare id looks stale,
+ * so cleanup would try to deactivate the entire provider.
+ */
+function canonicalModelId(rawId: string): string {
+  return rawId.replace(/^models\//, '');
+}
+
 function normalizeModel(raw: Record<string, unknown>): DiscoveredModel {
-  const id = String(raw.id ?? raw.name ?? '').trim();
+  const id = canonicalModelId(String(raw.id ?? raw.name ?? '').trim());
   if (!id) {
     return {
       modelId: '',

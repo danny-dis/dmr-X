@@ -17,11 +17,50 @@ const FREE_PROVIDERS_ENV = (process.env.DMRX_FREE_PROVIDERS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+/**
+ * Free means "known to cost nothing", never "we have no price".
+ *
+ * Most provider /v1/models endpoints publish no pricing at all, so live
+ * discovery stores 0 for cost — which is indistinguishable from a genuinely
+ * free model. Treating a bare 0 as free made every discovered model qualify
+ * and turned the free-only aliases (`free`, `auto-eco`, `free-*`) into
+ * no-ops that happily routed to paid models.
+ *
+ * A zero cost only counts as free when something corroborates it: an explicit
+ * pricing tier, free-tier metadata from the catalog, a `:free` model id, or an
+ * operator-declared free provider via DMRX_FREE_PROVIDERS.
+ */
+/**
+ * Speed prior for a candidate with no measured latency yet, in the same 0-1
+ * space as the measured term (1 = fastest).
+ *
+ * Providers do not publish latency, so it cannot be discovered — but the
+ * capability tier and the vendor's own size/speed naming ("flash", "lite",
+ * "mini", "turbo") are strong signals, and both are already derived from
+ * discovered data rather than hand-maintained per-model tables.
+ */
+const speedPrior = (c: any): number => {
+  const id = String(c.modelId ?? '').toLowerCase();
+  if (/flash-lite|nano|mini|tiny|-8b|1b|3b/.test(id)) return 0.95;
+  if (/flash|lite|turbo|fast|instant|haiku|small/.test(id)) return 0.85;
+  if (/pro|opus|large|ultra|405b|235b|70b/.test(id)) return 0.25;
+  const tier = String(c.capabilityTier ?? '');
+  if (tier === 'fast') return 0.85;
+  if (tier === 'economy') return 0.8;
+  if (tier === 'balanced') return 0.5;
+  if (tier === 'strong') return 0.35;
+  if (tier === 'frontier') return 0.2;
+  return 0.5;
+};
+
 const isFree = (c: any) => {
   if (c.pricingTier === 'free' || c.pricingTier === 'free_with_limits') return true;
   if (c.freeTierMetadata) return true;
-  if ((c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0) return true;
   if (FREE_PROVIDERS_ENV.includes(c.providerName) || FREE_PROVIDERS_ENV.includes(c.providerId)) return true;
+  // Providers that namespace their free tier in the model id (OpenRouter's
+  // `…:free`, opencode-zen's `…-free`).
+  const id = String(c.modelId ?? '');
+  if (/:free$|-free$/.test(id)) return true;
   return false;
 };
 
@@ -82,10 +121,23 @@ export const META_MODELS: MetaModelDefinition[] = [
       const filter = costFilterOverride ?? 'all';
       const MIN_QUALITY = 0.5;
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      const scored = pool
-        .filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY)
+      // The quality floor is a preference, not a hard gate: applying it to an
+      // empty-ish pool returned zero candidates and 502'd the request outright.
+      const aboveFloor = pool.filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY);
+      const usable = aboveFloor.length > 0 ? aboveFloor : pool;
+
+      const scored = usable
         .map(c => {
-          const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.6;
+          // Prefer a measured latency. When none has been recorded yet, fall
+          // back to the model's own speed signals rather than assuming the
+          // 5000ms worst case — that made speedComponent 0 for every candidate
+          // and left `auto-fast` ranking on quality alone, which is how it
+          // ended up selecting a 25s model.
+          const measured = c.avgLatencyMs;
+          const speedComponent =
+            typeof measured === 'number' && measured > 0
+              ? Math.max(0, 1 - measured / 5000) * 0.6
+              : speedPrior(c) * 0.6;
           const qualityComponent = (c.qualityScore ?? 0) * 0.25;
           const totalCost = (c.costPerInputToken ?? 0) + (c.costPerOutputToken ?? 0);
           const costComponent = Math.max(0, 1 - Math.min(totalCost * 1000, 1)) * 0.15;

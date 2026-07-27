@@ -760,6 +760,7 @@ export async function discoverMissingModels(): Promise<number> {
   // can corrupt the prepared-statement cache.
   let totalInserted = 0;
   let totalRefreshed = 0;
+  let totalDeactivated = 0;
   // Only overwrite a stored value when the provider actually published one —
   // a silent API (google/opencode/nvidia return just an id) must not blank out
   // what the catalog supplied.
@@ -768,6 +769,7 @@ export async function discoverMissingModels(): Promise<number> {
        context_window = COALESCE(?, context_window),
        max_output_tokens = COALESCE(?, max_output_tokens),
        display_name = COALESCE(NULLIF(?, ''), display_name),
+       is_active = 1,
        updated_at = datetime('now')
      WHERE provider_id = ? AND model_id = ?`,
   );
@@ -794,6 +796,48 @@ export async function discoverMissingModels(): Promise<number> {
       if (res.changes > 0) totalRefreshed += 1;
     }
 
+    // Deactivate models the provider no longer lists. Stale ids linger
+    // otherwise (the catalog's gemini-3.5-flash / gemini-3-flash 404 upstream)
+    // and keep getting picked by the router.
+    //
+    // Guarded, because a truncated or partially-failed listing would otherwise
+    // deactivate live models: only run when discovery returned a plausible
+    // list, and never when it would deactivate the majority of what we have.
+    const live = new Set(enriched.map((m) => m.modelId).filter(Boolean));
+    if (live.size > 0) {
+      const existing = db
+        .prepare('SELECT model_id FROM model_profiles WHERE provider_id = ? AND is_active = 1')
+        .all(providerId) as Array<{ model_id: string }>;
+      const stale = existing.filter((r) => !live.has(r.model_id));
+      // A truncated/partial listing is short. A long listing that happens to
+      // invalidate most stored rows is the expected one-off correction when a
+      // provider's real catalogue finally replaces hand-written entries —
+      // Google served 57 models against 122 stored, most of them fictional.
+      // So trust any substantial listing, and fall back to the ratio check
+      // only when the response was small enough to be suspect.
+      const SUBSTANTIAL_LISTING = 10;
+      const looksPartial =
+        live.size < SUBSTANTIAL_LISTING && existing.length > 0 && stale.length > existing.length / 2;
+
+      if (stale.length > 0 && !looksPartial) {
+        const deactivate = db.prepare(
+          `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now')
+           WHERE provider_id = ? AND model_id = ?`,
+        );
+        for (const s of stale) deactivate.run(providerId, s.model_id);
+        totalDeactivated += stale.length;
+        logger.info(
+          { provider: templateId, deactivated: stale.length, stale: stale.slice(0, 5).map((s) => s.model_id) },
+          'Deactivated models no longer listed by provider',
+        );
+      } else if (looksPartial) {
+        logger.warn(
+          { provider: templateId, existing: existing.length, wouldDeactivate: stale.length },
+          'Skipped stale-model cleanup — discovery looks partial (would deactivate the majority)',
+        );
+      }
+    }
+
     if (inserted > 0 || totalRefreshed > 0) {
       logger.info(
         { provider: templateId, inserted, discovered: enriched.length },
@@ -804,6 +848,9 @@ export async function discoverMissingModels(): Promise<number> {
 
   if (totalRefreshed > 0) {
     logger.info({ count: totalRefreshed }, 'Refreshed model metadata from live discovery');
+  }
+  if (totalDeactivated > 0) {
+    logger.info({ count: totalDeactivated }, 'Deactivated stale models no longer served upstream');
   }
   return totalInserted;
 }
