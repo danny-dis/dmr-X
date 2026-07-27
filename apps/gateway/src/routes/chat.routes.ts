@@ -683,6 +683,30 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
     const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined;
 
+    // The cache stores the internal UnifiedResponse, but this endpoint is the
+    // OpenAI-compatible surface. Returning the cached value verbatim shipped
+    // `{modality, providerId, message}` with no `choices[]`, so any OpenAI
+    // client (SDKs, LangChain, external agents) read
+    // `choices[0].message.content` as undefined the moment a request hit the
+    // cache. Both paths now go through the same envelope.
+    const toOpenAIChatCompletion = (res: any) => {
+      if (res && Array.isArray(res.choices)) return res; // already converted
+      return {
+        id: requestId,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: res?.modelId,
+        choices: [
+          {
+            index: 0,
+            message: res?.message,
+            finish_reason: res?.finishReason,
+          },
+        ],
+        usage: res?.usage,
+      };
+    };
+
     if (useCache) {
       // First check semantic cache
       if (semanticCacheService.isEnabled()) {
@@ -691,7 +715,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           logger.debug({ requestId, model: body.model, similarity: semanticCached.similarity }, 'Semantic cache hit for chat request');
           reply.header('X-Cache', 'HIT');
           reply.header('X-Semantic-Similarity', String(semanticCached.similarity));
-          return semanticCached.entry.response;
+          return toOpenAIChatCompletion(semanticCached.entry.response);
         }
       }
 
@@ -701,7 +725,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       if (cached) {
         logger.debug({ requestId, model: body.model }, 'Exact cache hit for chat request');
         reply.header('X-Cache', 'HIT');
-        return cached.response;
+        return toOpenAIChatCompletion(cached.response);
       }
     }
 
@@ -768,19 +792,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       } : undefined,
     };
 
-    return {
-      id: requestId,
-      object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
-      model: response.modelId,
-      choices: [
-        {
-          index: 0,
-          message: response.message,
-          finish_reason: response.finishReason,
-        },
-      ],
-      usage: response.usage,
-    };
+    return toOpenAIChatCompletion(response);
   });
 }
