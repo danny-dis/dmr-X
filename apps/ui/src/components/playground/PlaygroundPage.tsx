@@ -10,14 +10,16 @@ import { Button } from '@/components/primitives/Button';
 import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
-// Lazy-load the heavy views so the initial Chat tab loads fast
+// Non-chat tab views. Only the tabs listed in TOP_LEVEL_TABS are reachable —
+// keep this list and that one in sync when adding a new view.
 import { CompletionsView } from './CompletionsView';
 import { ImagesView } from './ImagesView';
-import { AudioHub } from './audio/AudioHub';
 import { VideoView } from './VideoView';
-import { ToolsHub } from './tools/ToolsHub';
-import { PlatformHub } from './platform/PlatformHub';
-import { GodmodeHub } from './godmode/GodmodeHub';
+
+// activeTab is persisted, so a tab id left over from an older build (audio,
+// tools, platform, godmode) can still come back from localStorage. Anything
+// that isn't a known non-chat view falls back to Chat instead of a blank pane.
+const NON_CHAT_TABS = new Set(['completions', 'images', 'video']);
 
 export function PlaygroundPage() {
   const showSidebar = usePlaygroundStore(s => s.showSidebar);
@@ -87,7 +89,7 @@ export function PlaygroundPage() {
 
           {/* Tab content */}
           <div className="flex min-h-0 flex-1 flex-col bg-[radial-gradient(circle_at_top_left,rgba(6,182,212,0.08),transparent_26rem),linear-gradient(180deg,var(--surface),var(--bg))]">
-            {activeTab === 'chat' && (
+            {!NON_CHAT_TABS.has(activeTab) && (
               <>
                 <PlaygroundMain />
                 <PlaygroundInput />
@@ -95,11 +97,7 @@ export function PlaygroundPage() {
             )}
             {activeTab === 'completions' && <CompletionsView />}
             {activeTab === 'images' && <ImagesView />}
-            {activeTab === 'audio' && <AudioHub />}
             {activeTab === 'video' && <VideoView />}
-            {activeTab === 'tools' && <ToolsHub />}
-            {activeTab === 'platform' && <PlatformHub />}
-            {activeTab === 'godmode' && <GodmodeHub />}
           </div>
         </section>
       </div>

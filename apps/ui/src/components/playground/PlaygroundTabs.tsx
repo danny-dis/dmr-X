@@ -2,16 +2,11 @@ import {
   MessageSquare,
   FileText,
   Image as ImageIcon,
-  Volume2,
   Video,
-  Wrench,
-  Boxes,
-  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives';
-import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 export interface TopLevelTab {
@@ -20,15 +15,14 @@ export interface TopLevelTab {
   icon: LucideIcon;
 }
 
+// Only tabs with a view rendered by PlaygroundPage belong here. The Audio,
+// Tools, Platform and Godmode hubs were referenced but never written, so those
+// tabs are omitted until their views exist rather than rendering blank panes.
 export const TOP_LEVEL_TABS: TopLevelTab[] = [
   { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'completions', label: 'Completions', icon: FileText },
   { id: 'images', label: 'Images', icon: ImageIcon },
-  { id: 'audio', label: 'Audio', icon: Volume2 },
   { id: 'video', label: 'Video', icon: Video },
-  { id: 'tools', label: 'Tools', icon: Wrench },
-  { id: 'platform', label: 'Platform', icon: Boxes },
-  { id: 'godmode', label: 'Godmode', icon: Sparkles },
 ];
 
 export function PlaygroundTabs() {

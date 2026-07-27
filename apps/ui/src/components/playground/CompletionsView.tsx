@@ -3,7 +3,8 @@ import * as React from 'react';
 
 import { Button, Textarea } from '@/components/primitives';
 import { useApiData } from '@/hooks/useApiData';
-import { Admin, fetchAuthenticated } from '@/lib/admin';
+import { Admin } from '@/lib/admin';
+import { fetchAuthenticated } from '@/lib/api';
 import type { ApiModel } from '@/types/api';
 
 export function CompletionsView() {
