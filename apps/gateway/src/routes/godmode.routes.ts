@@ -17,7 +17,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ValidationError } from '@dmr-x/core';
-import { logger } from '@dmr-x/utils';
+import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 import { getGodmodeService, setGodmodeConfig } from '@dmr-x/godmode';
 import { serverManager } from '@dmr-x/server-manager';
 import type {
@@ -265,7 +265,7 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       const body = (request.body ?? {}) as { openrouterApiKey?: string; llmBaseUrl?: string; llmApiKey?: string };
       // No OpenRouter key and no explicit relay → default to routing through
       // DMR-X itself (reuses the host's provider vault, incl. LOCAL MODE).
-      const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+      const gatewayUrl = resolveGatewayUrl();
       const useRelay = !body.openrouterApiKey && !process.env.OPENROUTER_API_KEY;
       const llmBaseUrl = body.llmBaseUrl ?? (useRelay ? `${gatewayUrl}/v1` : undefined);
       const res = await serverManager.start({

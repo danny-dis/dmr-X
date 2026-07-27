@@ -130,10 +130,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               reply.raw.end();
               return;
             }
-            if (wrapOrder[0]) {
-              body.model = wrapOrder[0];
-              logger.info({ requestId, concrete: wrapOrder[0] }, 'auto-free fallback → concrete model (no godmode)');
-            }
+            // Same rationale as the non-streaming path: keep the meta-model so
+            // the router walks its full free-candidate fallback chain.
+            logger.info(
+              { requestId, wrapOrder },
+              'auto-free fallback → router free-candidate chain (no godmode)',
+            );
           } else {
             const result = await wrapAutoFreeViaGodmode({
               requestId,
@@ -167,11 +169,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 },
               });
             }
-            const concrete = result.wrapOrder?.[0] ?? buildGodmodeWrapOrder(candidates, costFilter)[0];
-            if (concrete) {
-              body.model = concrete;
-              logger.info({ requestId, concrete }, 'auto-free fallback → concrete model (no godmode)');
-            }
+            // Leave body.model as the `auto-free` meta-model so the router's
+            // own ranked fallback chain runs over EVERY free candidate.
+            // Pinning wrapOrder[0] collapsed that chain to a single concrete
+            // model, so one unroutable top pick (e.g. a provider whose key is
+            // exhausted) failed the whole request even though other free
+            // models were available.
+            logger.info(
+              { requestId, wrapOrder: result.wrapOrder },
+              'auto-free fallback → router free-candidate chain (no godmode)',
+            );
           }
         }
       } catch (err) {

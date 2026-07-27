@@ -831,6 +831,40 @@ function upsertDefaultKey(
  * of the new table. Falls back to the legacy config.apiKey column for
  * providers that haven't been migrated yet.
  */
+/**
+ * Every active API key for a provider, highest priority first.
+ *
+ * `loadActiveProviderCredential` deliberately returns a single credential, so
+ * adapters used to receive exactly one key no matter how many the operator had
+ * stored. That made `provider_keys` a pool in name only: rotation across the
+ * vault never happened, and one exhausted free-tier key failed the request
+ * instead of falling through to its siblings. Adapters take the full list via
+ * `setKeys()` and rotate locally.
+ */
+export function loadAllActiveProviderKeys(providerId: string): string[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT api_key_encrypted FROM provider_keys
+       WHERE provider_id = ? AND is_active = 1 AND api_key_encrypted IS NOT NULL
+       ORDER BY priority DESC, created_at ASC`,
+    )
+    .all(providerId) as Array<{ api_key_encrypted: string | null }>;
+
+  const keys: string[] = [];
+  for (const row of rows) {
+    if (!row.api_key_encrypted) continue;
+    try {
+      const plain = decrypt(row.api_key_encrypted);
+      if (plain) keys.push(plain);
+    } catch {
+      // A key encrypted under a rotated DMRX_ENCRYPTION_KEY is unusable —
+      // skip it rather than failing every other key on the provider.
+    }
+  }
+  return keys;
+}
+
 export function loadActiveProviderCredential(providerId: string): {
   apiKey: string;
   accessToken: string;

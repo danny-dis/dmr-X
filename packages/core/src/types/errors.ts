@@ -39,13 +39,22 @@ export class QuotaExhaustedError extends DMRXError {
   }
 }
 
+/**
+ * Transport/upstream statuses worth another attempt. Mirrors
+ * RETRYABLE_STATUS_CODES in services/adapters/src/base.adapter.ts, which is
+ * what actually drives the retry loop; this keeps the flag on the error
+ * object truthful for anything that reads or serialises it.
+ */
+const RETRYABLE_PROVIDER_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
 export class ProviderError extends DMRXError {
   constructor(
     message: string,
     public readonly providerId: string,
-    statusCode: number = 502
+    statusCode: number = 502,
+    isRetryable: boolean = RETRYABLE_PROVIDER_STATUSES.has(statusCode)
   ) {
-    super(message, 'PROVIDER_ERROR', statusCode, true, { providerId });
+    super(message, 'PROVIDER_ERROR', statusCode, isRetryable, { providerId });
     this.name = 'ProviderError';
   }
 }

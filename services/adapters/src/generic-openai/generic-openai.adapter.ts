@@ -32,6 +32,8 @@ export class GenericOpenAIAdapter extends BaseAdapter {
   readonly supportedModalities: Modality[] = ['llm', 'embedding'];
 
   private apiKey = '';
+  /** Credential this adapter was initialised with (provider vault / OAuth). */
+  private configuredKey = '';
   private apiKeys: string[] = [];
   private keyIndex = 0;
   healthCheckTimeoutMs: number = 30000;
@@ -43,13 +45,23 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
   async initialize(config: ProviderConfig): Promise<void> {
     await super.initialize(config);
-    this.apiKey = (config.accessToken as string) || (config.apiKey as string) || '';
+    this.configuredKey = (config.accessToken as string) || (config.apiKey as string) || '';
+    this.apiKey = this.configuredKey;
 
-    // Load keys from rotation service
+    // Load keys from rotation service.
+    //
+    // Rotation exists to spread load across a POOL of keys
+    // (`X_API_KEYS=a,b,c` or `X_API_KEY_1..n`). A single ambient env var is
+    // not a pool, and must not replace the credential this adapter was
+    // initialised with from the provider vault — an OS-level env var that had
+    // gone stale silently shadowed the working vault key and 401'd every chat
+    // request, while `/v1/models` health checks kept passing because they run
+    // before rotation is consulted.
     const loadedKeys = keyRotationService.loadKeys(this.providerId);
-    if (loadedKeys.length > 0) {
+    if (loadedKeys.length > 1 || (loadedKeys.length === 1 && !this.configuredKey)) {
       this.apiKeys = loadedKeys;
       this.keyIndex = 0;
+      this.apiKey = loadedKeys[0];
     } else if (this.apiKey) {
       this.apiKeys = [this.apiKey];
     }
@@ -80,15 +92,16 @@ export class GenericOpenAIAdapter extends BaseAdapter {
    * Get the current key for requests — delegates to key rotation service
    */
   private getCurrentKey(): string {
-    // Use smart rotation if multiple keys available
+    // Single credential (the common case) → use it as-is. Consulting the
+    // rotation service here would hand back an unrelated ambient env var.
+    if (this.apiKeys.length <= 1) return this.apiKey;
+
+    // A real pool → prefer quota-aware smart rotation, else round-robin.
     const rotated = keyRotationService.getNextKey(this.providerId);
     if (rotated) {
       this.apiKey = rotated;
       return rotated;
     }
-
-    // Fallback to local round-robin
-    if (this.apiKeys.length <= 1) return this.apiKey;
     const key = this.apiKeys[this.keyIndex % this.apiKeys.length];
     this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
     this.apiKey = key;

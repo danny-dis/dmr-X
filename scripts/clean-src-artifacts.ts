@@ -16,8 +16,20 @@
 import { join, dirname } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
-const BUILD_ARTIFACTS = ['.js', '.d.ts', '.js.map', '.d.ts.map'];
+// Longest-first so `.d.ts.map` and `.js.map` match before `.d.ts` / `.js`.
+const BUILD_ARTIFACTS = ['.d.ts.map', '.js.map', '.d.ts', '.js'];
 const SRC_DIR = 'src';
+
+/**
+ * Directories never worth descending into. `.venv` alone holds thousands of
+ * Python site-package dirs named `src`, which made every `clean:src` run (and
+ * therefore every build/test/dev start) walk the whole virtualenv.
+ */
+const SKIP_DIRS = [
+  'node_modules', 'dist', '.git', '.turbo', '.bun', '.venv', '__pycache__',
+  '.gitnexus', '.hermes', '.dmrx-data', '.dmrx-data-mcp', '.ruff_cache',
+  'jan-repo', 'temp-clawrouter',
+];
 
 /**
  * Remove a file if it exists
@@ -35,24 +47,44 @@ async function removeFile(filePath: string): Promise<boolean> {
 }
 
 /**
- * Remove build artifact files from a directory
+ * Remove build artifact files from a directory.
+ *
+ * A file only counts as an artifact when a sibling TypeScript source with the
+ * same basename exists — `foo.js`/`foo.d.ts` are emitted from `foo.ts`. Files
+ * without that sibling are hand-written and must be preserved: deleting every
+ * `.d.ts` unconditionally removed `apps/ui/src/vite-env.d.ts` (Vite's ambient
+ * client types) on every build, test, and dev run.
  */
 async function cleanDirectory(dirPath: string): Promise<void> {
   try {
-    const entries = await import('node:fs/promises').then(fs => fs.readdir(dirPath, { withFileTypes: true }));
-    
+    const fs = await import('node:fs/promises');
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const names = new Set(entries.filter(e => e.isFile()).map(e => e.name));
+
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name);
-      
+
       if (entry.isDirectory()) {
-        await cleanDirectory(fullPath);
-      } else if (entry.isFile()) {
-        for (const ext of BUILD_ARTIFACTS) {
-          if (entry.name.endsWith(ext)) {
-            await import('node:fs/promises').then(fs => fs.unlink(fullPath));
-            console.log(`Removed: ${fullPath}`);
-          }
+        if (!SKIP_DIRS.includes(entry.name)) {
+          await cleanDirectory(fullPath);
         }
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const ext = BUILD_ARTIFACTS.find(e => entry.name.endsWith(e));
+      if (!ext) continue;
+
+      const base = entry.name.slice(0, -ext.length);
+      if (!names.has(`${base}.ts`) && !names.has(`${base}.tsx`)) {
+        continue; // hand-written, not a compiled artifact
+      }
+
+      try {
+        await fs.unlink(fullPath);
+        console.log(`Removed: ${fullPath}`);
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     }
   } catch (error: unknown) {
@@ -75,12 +107,12 @@ async function findSrcDirectories(rootDir: string): Promise<string[]> {
       for (const entry of entries) {
         const fullPath = join(dir, entry.name);
         
-        if (entry.name === SRC_DIR && entry.isDirectory()) {
+        if (!entry.isDirectory() || SKIP_DIRS.includes(entry.name)) continue;
+
+        if (entry.name === SRC_DIR) {
           srcDirs.push(fullPath);
-        } else if (entry.isDirectory()) {
-          if (!['node_modules', 'dist', '.git', '.turbo', '.bun', 'jan-repo', 'temp-clawrouter'].includes(entry.name)) {
-            await walk(fullPath);
-          }
+        } else {
+          await walk(fullPath);
         }
       }
     } catch (error: unknown) {

@@ -31,7 +31,7 @@ import { authMiddleware, DEPLOYMENT_MODE } from './middleware/auth.middleware.js
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { registerSiemForwarding } from './middleware/siem-forward.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
-import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
+import { adminRoutes, loadActiveProviderCredential, loadAllActiveProviderKeys } from './routes/admin.routes.js';
 import { agenticRoutes } from './routes/agentic.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
 import { audioSeparationRoutes } from './routes/audio-separation.routes.js';
@@ -977,6 +977,22 @@ void (async () => {
               baseUrl,
               apiKey: apiKey || '',
             });
+            // Hand the adapter the FULL vault pool so it can rotate when one
+            // free-tier key is exhausted. initialize() only ever receives a
+            // single credential, so without this every extra key an operator
+            // stored sat unused and a 429 failed the request outright.
+            const pool = loadAllActiveProviderKeys(row.id);
+            const withEnvFirst = apiKey && !pool.includes(apiKey) ? [apiKey, ...pool] : pool;
+            if (withEnvFirst.length > 1) {
+              const setKeys = (adapter as { setKeys?: (k: string[]) => void }).setKeys;
+              if (typeof setKeys === 'function') {
+                setKeys.call(adapter, withEnvFirst);
+                logger.info(
+                  { providerId: row.name, keyCount: withEnvFirst.length },
+                  'Loaded multi-key rotation pool from provider vault',
+                );
+              }
+            }
             logger.info({ providerId: row.name }, 'Initialized adapter from DB/Env');
           } catch (err) {
             logger.warn(

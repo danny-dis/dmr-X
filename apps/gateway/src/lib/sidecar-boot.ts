@@ -12,8 +12,39 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 
-import { logger } from '@dmr-x/utils';
+import { logger, resolveGatewayUrl } from '@dmr-x/utils';
+
+/**
+ * Resolve bun executable path. On Windows, uv_spawn can't find executables
+ * via PATH when launched from a compiled Bun binary, so we resolve the full
+ * path eagerly and cache it.
+ */
+let _bunPath: string | null = null;
+function bunPath(): string {
+  if (_bunPath) return _bunPath;
+  // Prefer the bun that's running this process (embedded Bun runtime)
+  const bunExe = process.execPath;
+  if (bunExe && bunExe.toLowerCase().includes('bun') && fs.existsSync(bunExe)) {
+    _bunPath = bunExe;
+    return _bunPath;
+  }
+  // Fallback: resolve from PATH
+  try {
+    const resolved = execSync(
+      process.platform === 'win32' ? 'where bun' : 'which bun',
+      { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] },
+    ).trim().split('\n')[0];
+    if (resolved && fs.existsSync(resolved)) {
+      _bunPath = resolved;
+      return _bunPath;
+    }
+  } catch { /* ignore */ }
+  // Last resort: return bare name (will fail the same as before)
+  _bunPath = 'bun';
+  return _bunPath;
+}
 
 type ChildLike = {
   pid: number | null;
@@ -31,10 +62,16 @@ function repoRootFromHere(): string {
 }
 
 function resolveMcpEntry(root: string): string | null {
+  // Built output is preferred, but Bun executes TypeScript directly, so an
+  // unbuilt checkout must still be able to boot the sidecar. Without the
+  // src/index.ts fallback a missing dist/ silently disabled MCP autostart.
   const candidates = [
     path.join(root, 'services/mcp-server/dist/index.js'),
     path.join(process.cwd(), 'services/mcp-server/dist/index.js'),
     path.join(process.cwd(), '../../services/mcp-server/dist/index.js'),
+    path.join(root, 'services/mcp-server/src/index.ts'),
+    path.join(process.cwd(), 'services/mcp-server/src/index.ts'),
+    path.join(process.cwd(), '../../services/mcp-server/src/index.ts'),
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
@@ -58,7 +95,7 @@ async function httpOk(url: string, timeoutMs = 2000): Promise<boolean> {
 function spawnMcpProcess(entry: string, env: NodeJS.ProcessEnv, cwd: string): ChildLike {
   const BunCtor = (globalThis as { Bun?: { spawn: (cmd: string[], opts: Record<string, unknown>) => ChildLike } }).Bun;
   if (BunCtor?.spawn) {
-    return BunCtor.spawn(['bun', entry], {
+    return BunCtor.spawn([bunPath(), entry], {
       cwd,
       env,
       stdout: 'inherit',
@@ -66,11 +103,12 @@ function spawnMcpProcess(entry: string, env: NodeJS.ProcessEnv, cwd: string): Ch
     });
   }
 
-  const cp: ChildProcess = spawn('bun', [entry], {
+  const cp: ChildProcess = spawn(bunPath(), [entry], {
     cwd,
     env,
     stdio: 'ignore',
     detached: false,
+    shell: process.platform === 'win32',
   });
   return {
     pid: cp.pid ?? null,
@@ -138,8 +176,7 @@ export async function deferMcpBoot(): Promise<void> {
     return;
   }
 
-  const gatewayPort = process.env.PORT || '47113';
-  const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${gatewayPort}`;
+  const gatewayUrl = resolveGatewayUrl();
   const agentKey =
     process.env.DMRX_MCP_AGENT_API_KEY ||
     process.env.DMRX_ADMIN_API_KEY ||
@@ -224,7 +261,7 @@ export async function deferGodmodeBoot(): Promise<void> {
     }
     // Also accept a live process even if server_instances row is missing (fresh DB).
     if (await httpOk('http://127.0.0.1:7860/v1/health', 2000)) {
-      const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+      const gatewayUrl = resolveGatewayUrl();
       setGodmodeConfig({
         baseUrl: 'http://localhost:7860',
         openrouterApiKey: '',
@@ -235,7 +272,7 @@ export async function deferGodmodeBoot(): Promise<void> {
       return;
     }
 
-    const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+    const gatewayUrl = resolveGatewayUrl();
     const started = await serverManager.start({
       openrouterApiKey: '',
       llmBaseUrl: `${gatewayUrl}/v1`,
