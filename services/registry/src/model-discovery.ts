@@ -219,18 +219,69 @@ function normalizeModel(raw: Record<string, unknown>): DiscoveredModel {
 
   const capabilities = inferCapabilities(raw);
   const modality = inferModality(raw, id);
+  const pricing = extractPricing(raw);
 
   return {
     modelId: id,
-    displayName: id,
+    displayName: String(raw.display_name ?? raw.name ?? id),
     modality,
-    contextWindow: numberOrNull(raw.context_window ?? raw.contextWindow ?? raw.context_length),
-    maxOutputTokens: numberOrNull(raw.max_output_tokens ?? raw.maxOutputTokens),
-    inputCostPer1M: 0,
-    outputCostPer1M: 0,
-    costPerImage: 0,
+    // Spellings observed in the wild: OpenAI-style `context_window`,
+    // OpenRouter `context_length`, Mistral `max_context_length`,
+    // gitlawb `context_window`. Anything a provider publishes is used
+    // verbatim; the static catalog is only consulted when the API is silent.
+    contextWindow: numberOrNull(
+      raw.context_window ??
+        raw.contextWindow ??
+        raw.context_length ??
+        raw.max_context_length ??
+        raw.maxContextLength,
+    ),
+    maxOutputTokens: numberOrNull(
+      raw.max_output_tokens ?? raw.maxOutputTokens ?? raw.max_completion_tokens,
+    ),
+    inputCostPer1M: pricing.inputPer1M,
+    outputCostPer1M: pricing.outputPer1M,
+    costPerImage: pricing.perImage,
     capabilities,
     specializations: [],
+  };
+}
+
+/**
+ * Read pricing when the provider publishes it (gitlawb exposes `pricing`,
+ * OpenRouter exposes per-token strings). Values are normalised to cost per
+ * 1M tokens. Returns zeros when nothing is published — never invents a price.
+ */
+function extractPricing(raw: Record<string, unknown>): {
+  inputPer1M: number;
+  outputPer1M: number;
+  perImage: number;
+} {
+  const src = (raw.pricing ?? raw.effective_pricing) as Record<string, unknown> | undefined;
+  if (!src || typeof src !== 'object') {
+    return { inputPer1M: 0, outputPer1M: 0, perImage: 0 };
+  }
+  // OpenRouter publishes per-token decimals as strings; per-1M variants are
+  // already scaled. Detect which by field name rather than by magnitude.
+  const perToken = (v: unknown): number => {
+    const n = numberOrNull(v);
+    return n === null ? 0 : n * 1_000_000;
+  };
+  const per1M = (v: unknown): number => numberOrNull(v) ?? 0;
+
+  const input =
+    src.input_per_1m !== undefined || src.prompt_per_1m !== undefined
+      ? per1M(src.input_per_1m ?? src.prompt_per_1m)
+      : perToken(src.input ?? src.prompt);
+  const output =
+    src.output_per_1m !== undefined || src.completion_per_1m !== undefined
+      ? per1M(src.output_per_1m ?? src.completion_per_1m)
+      : perToken(src.output ?? src.completion);
+
+  return {
+    inputPer1M: Number.isFinite(input) ? input : 0,
+    outputPer1M: Number.isFinite(output) ? output : 0,
+    perImage: numberOrNull(src.image ?? src.per_image) ?? 0,
   };
 }
 
@@ -261,6 +312,25 @@ function inferCapabilities(raw: Record<string, unknown>): string[] {
       for (const item of v) {
         if (typeof item === 'string') caps.add(item);
       }
+    }
+  }
+
+  // Capability OBJECTS. Mistral publishes
+  //   capabilities: { completion_chat, function_calling, reasoning, vision, ... }
+  // which the array branch above silently skipped, so tool_use/reasoning/vision
+  // were dropped for every Mistral model and had to come from the catalog.
+  const capObj = raw.capabilities;
+  if (capObj && typeof capObj === 'object' && !Array.isArray(capObj)) {
+    const flags = capObj as Record<string, unknown>;
+    const on = (k: string): boolean => flags[k] === true;
+    if (on('function_calling') || on('tool_use') || on('tools')) caps.add('tool_use');
+    if (on('function_calling')) caps.add('function_call');
+    if (on('vision') || on('image_understanding')) caps.add('vision');
+    if (on('reasoning')) caps.add('reasoning');
+    if (on('json_mode') || on('structured_outputs')) caps.add('json_mode');
+    // Anything else that is simply true is carried through by name.
+    for (const [k, v] of Object.entries(flags)) {
+      if (v === true && !k.startsWith('completion_')) caps.add(k);
     }
   }
   return Array.from(caps);

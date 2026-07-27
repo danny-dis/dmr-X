@@ -520,7 +520,36 @@ export async function autoRegisterProviders(): Promise<string[]> {
         speedRank?: number;
       }> = [];
 
-      if (template.models.length > 0) {
+      // Live discovery is the source of truth for WHICH models exist and what
+      // their context windows are — a hand-maintained catalog goes stale and
+      // silently lists models the provider has removed (the Gemini entries
+      // listed several ids that 404 upstream). The catalog is kept only to
+      // enrich what the API does not publish (costs, ranks, free-tier limits).
+      const canDiscover = template.apiFormat === 'openai' && !!template.baseUrl;
+      let discoveredLive = false;
+      if (canDiscover && !isLocalProviderUnconfigured(template)) {
+        try {
+          const discovered = await discoverOpenAIModels({
+            baseUrl: template.baseUrl!,
+            apiKey: apiKey || '',
+          });
+          if (discovered.length > 0) {
+            modelsForInsert = discovered.map((m) => enrichFromCatalog(template.id, m, catalogLookup));
+            discoveredLive = true;
+            logger.info(
+              { provider: template.id, count: discovered.length },
+              'Discovered models from provider /v1/models',
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            { err, provider: template.id },
+            'Live model discovery failed; falling back to catalog list',
+          );
+        }
+      }
+
+      if (!discoveredLive && template.models.length > 0) {
         for (const m of template.models) {
           modelsForInsert.push({
             modelId: m.id,
@@ -539,7 +568,7 @@ export async function autoRegisterProviders(): Promise<string[]> {
             speedRank: m.freeTier?.speedRank,
           });
         }
-      } else if (template.apiFormat === 'openai' && template.baseUrl) {
+      } else if (!discoveredLive && canDiscover) {
         // Live discovery for catalog entries that don't pre-declare models.
         // Skip unconfigured local providers (ollama/vllm/llamacpp/localai with
         // no env var set) — they'd just ECONNREFUSED against a closed port and
@@ -675,7 +704,7 @@ export async function discoverMissingModels(): Promise<number> {
   const catalogLookup = buildCatalogLookup();
 
   // Phase 1: collect eligible providers via sync DB lookups (cheap, no I/O)
-  const eligible: Array<{ providerId: string; templateId: string; baseUrl: string }> = [];
+  const eligible: Array<{ providerId: string; templateId: string; baseUrl: string; apiKey: string }> = [];
   for (const template of PROVIDER_CATALOG) {
     if (template.apiFormat !== 'openai' || !template.baseUrl) continue;
     // Skip unconfigured local providers — their /v1/models is guaranteed to
@@ -687,21 +716,27 @@ export async function discoverMissingModels(): Promise<number> {
       .get(template.id) as { id: string } | undefined;
     if (!row) continue;
 
-    const hasAny = db
-      .prepare('SELECT 1 FROM model_profiles WHERE provider_id = ? LIMIT 1')
-      .get(row.id);
-    if (hasAny) continue;
-
-    eligible.push({ providerId: row.id, templateId: template.id, baseUrl: template.baseUrl });
+    // Every discoverable provider is refreshed, not only those with zero
+    // models. Providers registered before this ran kept whatever the static
+    // catalog said forever — including model ids the upstream has since
+    // removed and context windows that were never accurate.
+    // Most /v1/models endpoints require auth; discovering with an empty key
+    // just 401s and yields nothing for every keyed provider.
+    eligible.push({
+      providerId: row.id,
+      templateId: template.id,
+      baseUrl: template.baseUrl,
+      apiKey: (template.envKey ? process.env[template.envKey] : '') ?? '',
+    });
   }
 
   // Phase 2: discover models in parallel. Each fetch is capped by its own
   // 1s AbortController timeout inside discoverOpenAIModels, so the total wait
   // is bounded by ~1s regardless of how many providers are in the catalog.
   const discoveries = await Promise.all(
-    eligible.map(async ({ templateId, baseUrl }) => {
+    eligible.map(async ({ templateId, baseUrl, apiKey }) => {
       try {
-        const discovered = await discoverOpenAIModels({ baseUrl, apiKey: '' });
+        const discovered = await discoverOpenAIModels({ baseUrl, apiKey });
         if (discovered.length === 0) {
           logger.warn(
             { provider: templateId },
@@ -724,20 +759,52 @@ export async function discoverMissingModels(): Promise<number> {
   // is single-threaded and concurrent inserts from the parallel discoveries
   // can corrupt the prepared-statement cache.
   let totalInserted = 0;
+  let totalRefreshed = 0;
+  // Only overwrite a stored value when the provider actually published one —
+  // a silent API (google/opencode/nvidia return just an id) must not blank out
+  // what the catalog supplied.
+  const refresh = db.prepare(
+    `UPDATE model_profiles SET
+       context_window = COALESCE(?, context_window),
+       max_output_tokens = COALESCE(?, max_output_tokens),
+       display_name = COALESCE(NULLIF(?, ''), display_name),
+       updated_at = datetime('now')
+     WHERE provider_id = ? AND model_id = ?`,
+  );
+
   for (let i = 0; i < discoveries.length; i++) {
     const result = discoveries[i];
     if (!result) continue;
     const { providerId, templateId } = eligible[i];
-    // Enrich discovered models with catalog data (costs, context, capabilities)
+    // Enrich discovered models with catalog data (costs, ranks, free-tier
+    // limits) — discovery wins for anything the API publishes.
     const enriched = result.discovered.map(m => enrichFromCatalog(templateId, m, catalogLookup));
     const inserted = insertModelProfiles(providerId, enriched, true);
     totalInserted += inserted;
-    logger.info(
-      { provider: templateId, inserted },
-      'Backfilled model profiles via discovery',
-    );
+
+    for (const m of enriched) {
+      if (!m.modelId) continue;
+      const res = refresh.run(
+        m.contextWindow ?? null,
+        m.maxOutputTokens ?? null,
+        m.displayName ?? '',
+        providerId,
+        m.modelId,
+      );
+      if (res.changes > 0) totalRefreshed += 1;
+    }
+
+    if (inserted > 0 || totalRefreshed > 0) {
+      logger.info(
+        { provider: templateId, inserted, discovered: enriched.length },
+        'Refreshed model profiles from provider /v1/models',
+      );
+    }
   }
 
+  if (totalRefreshed > 0) {
+    logger.info({ count: totalRefreshed }, 'Refreshed model metadata from live discovery');
+  }
   return totalInserted;
 }
 
