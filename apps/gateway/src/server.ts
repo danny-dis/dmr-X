@@ -664,6 +664,18 @@ void (async () => {
     if (!indexHtml) {
       return reply.status(404).send({ error: 'Not Found' });
     }
+    // `/.well-known/*` is a machine-discovery namespace (RFC 8615), never a UI
+    // route. Answering it with the SPA shell makes a client probing for an
+    // agent card read `200 text/html` as "endpoint exists but is broken".
+    if (pathname.startsWith('/.well-known/')) {
+      return reply.status(404).send({ error: 'Not Found' });
+    }
+    // Only browser navigations get the SPA shell. Every browser sends
+    // `text/html` in Accept; API clients (curl, fetch, SDKs) do not — and
+    // handing them a 200 HTML page for a mistyped API path hides the 404.
+    if (!String(request.headers.accept ?? '').includes('text/html')) {
+      return reply.status(404).send({ error: 'Not Found' });
+    }
     return reply.type('text/html').send(indexHtml);
   });
 
