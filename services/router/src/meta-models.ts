@@ -61,6 +61,16 @@ const isFree = (c: any) => {
   // `…:free`, opencode-zen's `…-free`).
   const id = String(c.modelId ?? '');
   if (/:free$|-free$/.test(id)) return true;
+  // KNOWN LIMITATION: model_profiles.input_cost_per_1k is REAL NOT NULL
+  // DEFAULT 0, so a model whose provider publishes no pricing is stored as 0 —
+  // indistinguishable from a genuinely free one, and most /v1/models endpoints
+  // publish nothing. Zero cost is still honoured because it is the documented
+  // contract (tests/unit/meta-models.test.ts, "should exclude paid models when
+  // costFilter=free"); dropping it broke that for callers who supply real
+  // pricing. Closing the ambiguity needs a migration making the cost columns
+  // nullable so "unpriced" and "free" stop sharing a representation. Until
+  // then DMRX_FREE_PROVIDERS is the authoritative operator-side override.
+  if ((c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0) return true;
   return false;
 };
 
