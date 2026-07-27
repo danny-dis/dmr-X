@@ -446,8 +446,14 @@ async function buildConfig(): Promise<BuiltConfig> {
 
   // Parse external MCP servers from config file or env var
   let externalServers: MCPServerConfig[] = [];
-  // First try aggregation.servers (new path from UI)
-  if (configFile?.aggregation?.servers?.length) {
+  // First try aggregation.servers (new path from UI).
+  // `aggregation.enabled` is authoritative: with it false the operator has
+  // switched aggregation off, and the servers list is inert config (the
+  // shipped default is a demo filesystem entry pointing at /demo-data).
+  // Ignoring the flag meant every boot tried to spawn that demo server and
+  // logged a -32000 connect failure that looked like a real aggregator fault.
+  const aggregationEnabled = configFile?.aggregation?.enabled !== false;
+  if (aggregationEnabled && configFile?.aggregation?.servers?.length) {
     externalServers = configFile.aggregation.servers.filter(
       (s): s is MCPServerConfig =>
         typeof s.id === 'string' &&
@@ -684,11 +690,14 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     if (url.pathname === '/tools') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
-      // Create temp server/state to get full tools list
-      const { state: tempState } = createDMRXMcpServer({
+      // Create temp server/state to get full tools list. Await ready so the
+      // subagent-tool refresh has landed — otherwise /tools can return a short
+      // list on a cold process.
+      const { state: tempState, ready: tempReady } = createDMRXMcpServer({
         ...config,
         allowedTools: authResult.allowedTools,
       });
+      await tempReady;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ tools: tempState.sdkTools }));
       return;
@@ -740,6 +749,10 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   // on a single source of truth — not a throwaway instance per connection.
   if (!liveHandle) {
     const built = createDMRXMcpServer(config);
+    // Wait for the initial subagent-tool refresh before publishing the shared
+    // handle. startStdio and startSSE already await this; omitting it here meant
+    // the A2A agent card below was built from a partially-populated sdkTools.
+    await built.ready;
     liveHandle = { server: built.server, state: built.state };
   }
   const sharedHandle = liveHandle;
@@ -834,11 +847,14 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
     if (url.pathname === '/tools') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
-      // Create temp server/state to get full tools list
-      const { state: tempState } = createDMRXMcpServer({
+      // Create temp server/state to get full tools list. Await ready so the
+      // subagent-tool refresh has landed — otherwise /tools can return a short
+      // list on a cold process.
+      const { state: tempState, ready: tempReady } = createDMRXMcpServer({
         ...config,
         allowedTools: authResult.allowedTools,
       });
+      await tempReady;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ tools: tempState.sdkTools }));
       return;
