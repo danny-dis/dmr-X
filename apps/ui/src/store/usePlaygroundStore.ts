@@ -32,6 +32,16 @@ export interface PlaygroundConfig {
   maxTokens?: number;
   stream: boolean;
   tools: any[];
+  // Advanced sampling / generation params (OpenAI-style). All optional;
+  // only sent on the wire when non-default — see _buildRequest.
+  topP?: number;
+  topK?: number;
+  repeatPenalty?: number;
+  seed?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  stop?: string[];
+  responseFormat?: { type: 'text' | 'json_object' } | null;
   godmode?: {
     autotune: boolean;
     parseltongue: boolean;
@@ -93,6 +103,8 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         config: state.config,
         isTemporary: state.isTemporary,
         showSidebar: state.showSidebar,
+        activeTab: state.activeTab,
+        systemPrompt: state.systemPrompt,
       }),
     }
   )

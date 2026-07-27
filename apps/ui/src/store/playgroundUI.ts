@@ -13,6 +13,10 @@ export interface UISlice {
   isTemporary: boolean;
   showSidebar: boolean;
   pendingPrompt: string;
+  /** Top-level playground view — controls which full-page tab is shown. */
+  activeTab: string;
+  /** System prompt for chat mode (persisted). */
+  systemPrompt: string;
   toggleTemporary: () => void;
   setMode: (mode: PlaygroundMode) => void;
   setModel: (model: string) => void;
@@ -23,6 +27,8 @@ export interface UISlice {
   setShowSidebar: (show: boolean) => void;
   setPromptSeed: (prompt: string) => void;
   consumePromptSeed: () => string | null;
+  setActiveTab: (tab: string) => void;
+  setSystemPrompt: (prompt: string) => void;
 }
 
 export const createUISlice: StateCreator<PlaygroundState, [], [], UISlice> = (set, get) => ({
@@ -44,6 +50,8 @@ export const createUISlice: StateCreator<PlaygroundState, [], [], UISlice> = (se
   isTemporary: false,
   showSidebar: true,
   pendingPrompt: '',
+  activeTab: 'chat',
+  systemPrompt: '',
 
   toggleTemporary: () => {
     set(state => ({ isTemporary: !state.isTemporary }));
@@ -91,5 +99,13 @@ export const createUISlice: StateCreator<PlaygroundState, [], [], UISlice> = (se
     if (!pendingPrompt) return null;
     set({ pendingPrompt: '' });
     return pendingPrompt;
+  },
+
+  setActiveTab: (tab: string) => {
+    set({ activeTab: tab });
+  },
+
+  setSystemPrompt: (prompt: string) => {
+    set({ systemPrompt: prompt });
   },
 });

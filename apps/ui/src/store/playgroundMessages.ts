@@ -11,6 +11,10 @@ export interface MessagesSlice {
   sendMessage: (content: string) => Promise<void>;
   regenerateMessage: (messageId: string) => Promise<void>;
   clearMessages: () => void;
+  updateMessageContent: (messageId: string, content: string) => void;
+  deleteMessage: (messageId: string) => void;
+  setMessageRole: (messageId: string, role: 'user' | 'assistant' | 'system') => void;
+  insertMessageAfter: (messageId: string, role: 'user' | 'assistant') => string;
   _createAssistantPlaceholder: (conversationId: string) => Message;
   _buildRequest: (opts: {
     content: string;
@@ -120,6 +124,47 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
     set({ messages: [], currentConversationId: null });
   },
 
+  updateMessageContent: (messageId: string, content: string) => {
+    set(state => ({
+      messages: state.messages.map(m =>
+        m.id === messageId ? { ...m, content } : m
+      ),
+    }));
+  },
+
+  deleteMessage: (messageId: string) => {
+    set(state => ({
+      messages: state.messages.filter(m => m.id !== messageId),
+    }));
+  },
+
+  setMessageRole: (messageId: string, role: 'user' | 'assistant' | 'system') => {
+    set(state => ({
+      messages: state.messages.map(m =>
+        m.id === messageId ? { ...m, role } : m
+      ),
+    }));
+  },
+
+  insertMessageAfter: (messageId: string, role: 'user' | 'assistant') => {
+    const newId = crypto.randomUUID();
+    const newMsg: Message = {
+      id: newId,
+      conversationId: '',
+      role,
+      content: '',
+      createdAt: new Date().toISOString(),
+    };
+    set(state => {
+      const idx = state.messages.findIndex(m => m.id === messageId);
+      if (idx === -1) return { messages: [...state.messages, newMsg] };
+      const next = [...state.messages];
+      next.splice(idx + 1, 0, newMsg);
+      return { messages: next };
+    });
+    return newId;
+  },
+
   addMessagesBatch: async (conversationId: string, messages: Message[]) => {
     await Admin.batchAddMessages(conversationId, messages);
     set(state => ({
@@ -155,11 +200,25 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
     let body: any = { model, stream: config.stream };
 
     if (mode === 'chat') {
+      const sp = (get as any)().systemPrompt ?? '';
       const hist = history.map(m => ({ role: m.role, content: m.content }));
-      body.messages = [...hist, { role: 'user', content }];
+      body.messages = [
+        ...(sp ? [{ role: 'system', content: sp }] : []),
+        ...hist,
+        { role: 'user', content },
+      ];
       body.temperature = config.temperature;
       if (config.maxTokens) body.max_tokens = config.maxTokens;
       if (Array.isArray(config.tools) && config.tools.length > 0) body.tools = config.tools;
+      // Advanced params — only sent when non-default
+      if (config.topP !== undefined && config.topP !== 1) body.top_p = config.topP;
+      if (config.topK !== undefined && config.topK > 0) body.top_k = config.topK;
+      if (config.repeatPenalty !== undefined && config.repeatPenalty !== 1) body.repeat_penalty = config.repeatPenalty;
+      if (config.seed !== undefined) body.seed = config.seed;
+      if (config.presencePenalty !== undefined && config.presencePenalty !== 0) body.presence_penalty = config.presencePenalty;
+      if (config.frequencyPenalty !== undefined && config.frequencyPenalty !== 0) body.frequency_penalty = config.frequencyPenalty;
+      if (config.stop?.length && config.stop.some(s => s.trim())) body.stop = config.stop.filter(s => s.trim());
+      if (config.responseFormat) body.response_format = config.responseFormat;
     } else if (mode === 'image') {
       endpoint = '/v1/images/generations';
       body.prompt = content;
