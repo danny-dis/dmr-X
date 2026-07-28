@@ -2,6 +2,7 @@ export {
   serverManager,
   createServerManager,
   detectRuntime,
+  killTree,
   ServerManagerService,
 } from './server-manager.service.js';
 export type {
