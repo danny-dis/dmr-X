@@ -31,7 +31,7 @@ import { authMiddleware, DEPLOYMENT_MODE } from './middleware/auth.middleware.js
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { registerSiemForwarding } from './middleware/siem-forward.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
-import { adminRoutes, loadActiveProviderCredential } from './routes/admin.routes.js';
+import { adminRoutes, loadActiveProviderCredential, loadAllActiveProviderKeys } from './routes/admin.routes.js';
 import { agenticRoutes } from './routes/agentic.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
 import { audioSeparationRoutes } from './routes/audio-separation.routes.js';
@@ -44,7 +44,7 @@ import { ocrRoutes } from './routes/ocr.routes.js';
 import { rerankRoutes } from './routes/rerank.routes.js';
 import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers, sweepStaleSandboxes } from './routes/tools.routes.js';
 import { videoRoutes } from './routes/video.routes.js';
-import { geminiRoutes } from './routes/gemini.routes.js';
+import { geminiRoutes, geminiNativeRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
 import { compressionRoutes } from './routes/compression.routes.js';
 import { routeDecisionRoutes } from './routes/route.routes.js';
@@ -561,6 +561,10 @@ void (async () => {
    await server.register(chatRoutes, { prefix: '/v1' });
    await server.register(anthropicRoutes, { prefix: '/v1' });
    await server.register(geminiRoutes, { prefix: '/v1' });
+   // Google-native Gemini paths (/v1beta/models/<model>:generateContent).
+   // Registered at the root, not under /v1, because the Gemini SDKs build
+   // those URLs themselves and cannot be pointed at /v1/gemini/*.
+   await server.register(geminiNativeRoutes);
    await server.register(modelsRoutes, { prefix: '/v1' });
    await server.register(imagesRoutes, { prefix: '/v1' });
    await server.register(embeddingsRoutes, { prefix: '/v1' });
@@ -662,6 +666,18 @@ void (async () => {
       return reply.status(404).send({ error: 'Not Found' });
     }
     if (!indexHtml) {
+      return reply.status(404).send({ error: 'Not Found' });
+    }
+    // `/.well-known/*` is a machine-discovery namespace (RFC 8615), never a UI
+    // route. Answering it with the SPA shell makes a client probing for an
+    // agent card read `200 text/html` as "endpoint exists but is broken".
+    if (pathname.startsWith('/.well-known/')) {
+      return reply.status(404).send({ error: 'Not Found' });
+    }
+    // Only browser navigations get the SPA shell. Every browser sends
+    // `text/html` in Accept; API clients (curl, fetch, SDKs) do not — and
+    // handing them a 200 HTML page for a mistyped API path hides the 404.
+    if (!String(request.headers.accept ?? '').includes('text/html')) {
       return reply.status(404).send({ error: 'Not Found' });
     }
     return reply.type('text/html').send(indexHtml);
@@ -977,6 +993,22 @@ void (async () => {
               baseUrl,
               apiKey: apiKey || '',
             });
+            // Hand the adapter the FULL vault pool so it can rotate when one
+            // free-tier key is exhausted. initialize() only ever receives a
+            // single credential, so without this every extra key an operator
+            // stored sat unused and a 429 failed the request outright.
+            const pool = loadAllActiveProviderKeys(row.id);
+            const withEnvFirst = apiKey && !pool.includes(apiKey) ? [apiKey, ...pool] : pool;
+            if (withEnvFirst.length > 1) {
+              const setKeys = (adapter as { setKeys?: (k: string[]) => void }).setKeys;
+              if (typeof setKeys === 'function') {
+                setKeys.call(adapter, withEnvFirst);
+                logger.info(
+                  { providerId: row.name, keyCount: withEnvFirst.length },
+                  'Loaded multi-key rotation pool from provider vault',
+                );
+              }
+            }
             logger.info({ providerId: row.name }, 'Initialized adapter from DB/Env');
           } catch (err) {
             logger.warn(
@@ -991,13 +1023,22 @@ void (async () => {
       //    the old health check logic. The `available_only` filter in
       //    /admin/models handles key-based visibility, so is_active
       //    should only reflect intentional user/registry decisions.
+      // Only revive models belonging to providers that live discovery could
+      // NOT reach. Discovery is authoritative for providers it can list: it
+      // reactivates what upstream still serves and deactivates what it does
+      // not. A blanket `is_active = 1` here ran after discovery and undid that
+      // every boot, resurrecting model ids the provider had removed.
       try {
         const reactivated = db.prepare(
           `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
-           WHERE is_active = 0`
+           WHERE is_active = 0
+             AND provider_id NOT IN (
+               SELECT DISTINCT provider_id FROM model_profiles
+               WHERE is_active = 1
+             )`
         ).run();
         if (reactivated.changes > 0) {
-          logger.info({ count: reactivated.changes }, 'Re-activated models deactivated by previous health checks');
+          logger.info({ count: reactivated.changes }, 'Re-activated models for providers discovery could not reach');
         }
       } catch (err) {
         logger.warn({ err }, 'Failed to re-activate models during background init');

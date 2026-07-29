@@ -130,10 +130,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               reply.raw.end();
               return;
             }
-            if (wrapOrder[0]) {
-              body.model = wrapOrder[0];
-              logger.info({ requestId, concrete: wrapOrder[0] }, 'auto-free fallback → concrete model (no godmode)');
-            }
+            // Same rationale as the non-streaming path: keep the meta-model so
+            // the router walks its full free-candidate fallback chain.
+            logger.info(
+              { requestId, wrapOrder },
+              'auto-free fallback → router free-candidate chain (no godmode)',
+            );
           } else {
             const result = await wrapAutoFreeViaGodmode({
               requestId,
@@ -167,11 +169,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 },
               });
             }
-            const concrete = result.wrapOrder?.[0] ?? buildGodmodeWrapOrder(candidates, costFilter)[0];
-            if (concrete) {
-              body.model = concrete;
-              logger.info({ requestId, concrete }, 'auto-free fallback → concrete model (no godmode)');
-            }
+            // Leave body.model as the `auto-free` meta-model so the router's
+            // own ranked fallback chain runs over EVERY free candidate.
+            // Pinning wrapOrder[0] collapsed that chain to a single concrete
+            // model, so one unroutable top pick (e.g. a provider whose key is
+            // exhausted) failed the whole request even though other free
+            // models were available.
+            logger.info(
+              { requestId, wrapOrder: result.wrapOrder },
+              'auto-free fallback → router free-candidate chain (no godmode)',
+            );
           }
         }
       } catch (err) {
@@ -676,6 +683,34 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
     const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined;
 
+    // The cache stores the internal UnifiedResponse, but this endpoint is the
+    // OpenAI-compatible surface. Returning the cached value verbatim shipped
+    // `{modality, providerId, message}` with no `choices[]`, so any OpenAI
+    // client (SDKs, LangChain, external agents) read
+    // `choices[0].message.content` as undefined the moment a request hit the
+    // cache. Both paths now go through the same envelope.
+    const toOpenAIChatCompletion = (res: any) => {
+      if (res && Array.isArray(res.choices)) return res; // already converted
+      return {
+        id: requestId,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: res?.modelId,
+        choices: [
+          {
+            index: 0,
+            message: res?.message,
+            finish_reason: res?.finishReason,
+          },
+        ],
+        usage: res?.usage,
+        // Additive, namespaced field — OpenAI SDKs ignore unknown keys, so
+        // this is safe for existing clients while giving anyone who looks a
+        // machine-readable record that the router switched models mid-request.
+        ...(res?.fallback ? { dmrx_fallback: res.fallback } : {}),
+      };
+    };
+
     if (useCache) {
       // First check semantic cache
       if (semanticCacheService.isEnabled()) {
@@ -684,7 +719,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           logger.debug({ requestId, model: body.model, similarity: semanticCached.similarity }, 'Semantic cache hit for chat request');
           reply.header('X-Cache', 'HIT');
           reply.header('X-Semantic-Similarity', String(semanticCached.similarity));
-          return semanticCached.entry.response;
+          return toOpenAIChatCompletion(semanticCached.entry.response);
         }
       }
 
@@ -694,7 +729,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       if (cached) {
         logger.debug({ requestId, model: body.model }, 'Exact cache hit for chat request');
         reply.header('X-Cache', 'HIT');
-        return cached.response;
+        return toOpenAIChatCompletion(cached.response);
       }
     }
 
@@ -713,6 +748,17 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     }
     if (unifiedRequest.metadata?.freeTierStrategy) {
       reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
+    }
+
+    // Announce a provider/model switch. Clients that only read headers (proxies,
+    // dashboards, curl) see it here; the same information is repeated in the
+    // response body by toOpenAIChatCompletion for SDK callers.
+    if (response?.fallback) {
+      reply.header('X-DMRX-Fallback', 'true');
+      reply.header('X-DMRX-Fallback-From', response.fallback.fromModelId);
+      reply.header('X-DMRX-Fallback-Reason', response.fallback.reason);
+      reply.header('X-DMRX-Fallback-Attempts', String(response.fallback.attempts));
+      reply.header('X-DMRX-Served-By', response.modelId);
     }
 
     if (useCache && response) {
@@ -761,19 +807,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       } : undefined,
     };
 
-    return {
-      id: requestId,
-      object: 'chat.completion',
-      created: Math.floor(Date.now() / 1000),
-      model: response.modelId,
-      choices: [
-        {
-          index: 0,
-          message: response.message,
-          finish_reason: response.finishReason,
-        },
-      ],
-      usage: response.usage,
-    };
+    return toOpenAIChatCompletion(response);
   });
 }

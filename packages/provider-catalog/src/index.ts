@@ -1082,7 +1082,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     ],
     streaming: true,
     toolCalling: true,
-    envKey: '',
+    envKey: 'GITLAWB_API_KEY',
     description: 'Self-hosted OpenGateway (gitlawb) OpenAI-compatible endpoint. Tencent Hunyuan 3 free tier.',
     region: 'global',
     signupUrl: 'https://opengateway.gitlawb.com',

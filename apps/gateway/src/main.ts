@@ -194,6 +194,16 @@ async function main(): Promise<void> {
     logger.info('Starting DMR-X Gateway (plain HTTP)');
   }
 
+  // Reap companions stranded by a previous hard kill BEFORE binding. They can
+  // still hold this port via an inherited socket handle, which would otherwise
+  // make listen() fail on every restart until someone intervenes by hand.
+  try {
+    const { reapStaleCompanions } = await import('./lib/sidecar-boot.js');
+    reapStaleCompanions();
+  } catch (err) {
+    logger.warn({ err }, 'Stale companion reap skipped');
+  }
+
   try {
     await server.listen(listenOptions);
     logger.info({ port }, 'DMR-X Gateway running');
@@ -208,7 +218,7 @@ async function main(): Promise<void> {
   // Deferred companion boots (MCP+A2A, G0DM0D3): after listen so they never
   // block /health. Gated by DMRX_MCP_AUTOSTART / DMRX_GODMODE_AUTOSTART
   // (both default true). Skip-if-healthy so an external supervisor can own them.
-  const { startCompanionServices, stopMcpSidecar } = await import('./lib/sidecar-boot.js');
+  const { startCompanionServices, stopMcpSidecar, stopGodmode } = await import('./lib/sidecar-boot.js');
   startCompanionServices();
 
   // Graceful shutdown with 30-second timeout
@@ -230,6 +240,14 @@ async function main(): Promise<void> {
       stopMcpSidecar();
     } catch (err) {
       logger.error({ err }, 'Error stopping MCP sidecar');
+    }
+
+    // Tear down G0DM0D3 too, otherwise its process tree outlives every restart
+    // and keeps port 7860 held by a process nothing supervises.
+    try {
+      await stopGodmode();
+    } catch (err) {
+      logger.error({ err }, 'Error stopping G0DM0D3');
     }
 
     try {

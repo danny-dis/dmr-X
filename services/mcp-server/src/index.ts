@@ -361,6 +361,16 @@ interface LiveServerHandle {
 
 let liveHandle: LiveServerHandle | null = null;
 
+/**
+ * The config object every transport closes over.
+ *
+ * Streamable HTTP and SSE build a fresh McpServer per client session from this
+ * object, so anything the config watcher changes at runtime (notably enabling
+ * aggregation) has to be written back here — otherwise new sessions keep being
+ * constructed from the boot-time config and never see the upstream servers.
+ */
+let liveConfig: DMRXMcpServerConfig | null = null;
+
 const MCP_CONFIG_WATCH_INTERVAL = 2000; // 2 seconds
 
 async function buildConfig(): Promise<BuiltConfig> {
@@ -446,8 +456,14 @@ async function buildConfig(): Promise<BuiltConfig> {
 
   // Parse external MCP servers from config file or env var
   let externalServers: MCPServerConfig[] = [];
-  // First try aggregation.servers (new path from UI)
-  if (configFile?.aggregation?.servers?.length) {
+  // First try aggregation.servers (new path from UI).
+  // `aggregation.enabled` is authoritative: with it false the operator has
+  // switched aggregation off, and the servers list is inert config (the
+  // shipped default is a demo filesystem entry pointing at /demo-data).
+  // Ignoring the flag meant every boot tried to spawn that demo server and
+  // logged a -32000 connect failure that looked like a real aggregator fault.
+  const aggregationEnabled = configFile?.aggregation?.enabled !== false;
+  if (aggregationEnabled && configFile?.aggregation?.servers?.length) {
     externalServers = configFile.aggregation.servers.filter(
       (s): s is MCPServerConfig =>
         typeof s.id === 'string' &&
@@ -604,11 +620,15 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
 
-  // Get tools for Agent Card (from the shared handle so it reflects upstream state)
-  const toolsForAgentCard = sharedHandle.state.sdkTools.map((t) => ({
-    name: t.name,
-    description: t.description,
-  }));
+  // Tools for the Agent Card, resolved per request. This used to be a `.map()`
+  // taken once at boot, which froze the card at whatever was registered at
+  // startup — aggregated upstream tools that connected (or dropped) later never
+  // showed up, despite the card being the A2A discovery surface.
+  const toolsForAgentCard = () =>
+    sharedHandle.state.sdkTools.map((t) => ({
+      name: t.name,
+      description: t.description,
+    }));
 
   const httpServer = http.createServer(async (req, res) => {
     // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
@@ -620,7 +640,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 
     // Handle A2A routes
     if (config.a2a?.enabled) {
-      const a2aHandled = await handleA2ARoutes(req, res, config.a2a, toolsForAgentCard);
+      const a2aHandled = await handleA2ARoutes(req, res, config.a2a, toolsForAgentCard());
       if (a2aHandled) return;
     }
 
@@ -684,11 +704,14 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     if (url.pathname === '/tools') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
-      // Create temp server/state to get full tools list
-      const { state: tempState } = createDMRXMcpServer({
+      // Create temp server/state to get full tools list. Await ready so the
+      // subagent-tool refresh has landed — otherwise /tools can return a short
+      // list on a cold process.
+      const { state: tempState, ready: tempReady } = createDMRXMcpServer({
         ...config,
         allowedTools: authResult.allowedTools,
       });
+      await tempReady;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ tools: tempState.sdkTools }));
       return;
@@ -740,6 +763,10 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   // on a single source of truth — not a throwaway instance per connection.
   if (!liveHandle) {
     const built = createDMRXMcpServer(config);
+    // Wait for the initial subagent-tool refresh before publishing the shared
+    // handle. startStdio and startSSE already await this; omitting it here meant
+    // the A2A agent card below was built from a partially-populated sdkTools.
+    await built.ready;
     liveHandle = { server: built.server, state: built.state };
   }
   const sharedHandle = liveHandle;
@@ -753,11 +780,15 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
 
-  // Get tools for Agent Card (from the shared handle so it reflects upstream state)
-  const toolsForAgentCard = sharedHandle.state.sdkTools.map((t) => ({
-    name: t.name,
-    description: t.description,
-  }));
+  // Tools for the Agent Card, resolved per request. This used to be a `.map()`
+  // taken once at boot, which froze the card at whatever was registered at
+  // startup — aggregated upstream tools that connected (or dropped) later never
+  // showed up, despite the card being the A2A discovery surface.
+  const toolsForAgentCard = () =>
+    sharedHandle.state.sdkTools.map((t) => ({
+      name: t.name,
+      description: t.description,
+    }));
 
   const httpServer = http.createServer(async (req, res) => {
     // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
@@ -769,7 +800,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 
     // Handle A2A routes
     if (config.a2a?.enabled) {
-      const a2aHandled = await handleA2ARoutes(req, res, config.a2a, toolsForAgentCard);
+      const a2aHandled = await handleA2ARoutes(req, res, config.a2a, toolsForAgentCard());
       if (a2aHandled) return;
     }
 
@@ -834,11 +865,14 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
     if (url.pathname === '/tools') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
-      // Create temp server/state to get full tools list
-      const { state: tempState } = createDMRXMcpServer({
+      // Create temp server/state to get full tools list. Await ready so the
+      // subagent-tool refresh has landed — otherwise /tools can return a short
+      // list on a cold process.
+      const { state: tempState, ready: tempReady } = createDMRXMcpServer({
         ...config,
         allowedTools: authResult.allowedTools,
       });
+      await tempReady;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ tools: tempState.sdkTools }));
       return;
@@ -962,6 +996,10 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+  // Publish the config the transports close over so the config watcher can
+  // write runtime changes (e.g. aggregation being enabled) back into it.
+  liveConfig = mcpConfig;
+
   switch (transport) {
     case 'stdio':
       await startStdio(mcpConfig);
@@ -1019,7 +1057,11 @@ function startUpstreamLivenessWatcher(): void {
         try {
           await server.client.listTools();
         } catch (err) {
-          console.error(`[upstream-watcher] Upstream '${id}' unresponsive, scheduling reconnect:`, err);
+          // Log the message only. Passing the raw error made Bun print the
+          // offending source line ("615 | return new Promise(...)") in place of
+          // anything diagnostic about the upstream.
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`[upstream-watcher] Upstream '${id}' unresponsive, scheduling reconnect: ${reason}`);
           // Drop it from the live map so reconnect re-adds it, then reconnect.
           try {
             await client.disconnectServer(id);
@@ -1080,7 +1122,6 @@ function startConfigWatcher(): void {
       }
 
       const desiredIds = new Set(desiredServers.map(s => s.id));
-      const currentClient = handle.state.externalMcpClient;
 
       // Quick check: if server IDs are identical, no change needed
       if (knownServerIds.size === desiredIds.size &&
@@ -1089,6 +1130,21 @@ function startConfigWatcher(): void {
       }
 
       console.error(`[config-watcher] Aggregation servers changed: ${knownServerIds.size} -> ${desiredIds.size}`);
+
+      // Create the outbound client on demand. When the process boots with
+      // aggregation disabled there is no client, and the connect loop below
+      // used to be skipped entirely — so enabling aggregation by editing the
+      // config could never take effect without a restart, and knownServerIds
+      // was still advanced, silently swallowing every later edit too.
+      let currentClient = handle.state.externalMcpClient;
+      if (!currentClient && desiredServers.length > 0) {
+        currentClient = new MCPClient();
+        handle.state.externalMcpClient = currentClient;
+        // Also publish it on the shared config so per-session servers created
+        // from here on register the aggregated tools too.
+        if (liveConfig) liveConfig.externalMcpClient = currentClient;
+        console.error('[config-watcher] Aggregation enabled at runtime — created external MCP client');
+      }
 
       // Disconnect servers no longer in config
       if (currentClient) {

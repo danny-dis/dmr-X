@@ -24,8 +24,20 @@ export interface StickySession {
 
 /**
  * Hash a conversation's first user message to create a stable session key.
+ *
+ * `requestedModel` is part of the key because the pin is only valid for the
+ * model target it was created under. Keying on the prompt alone made every
+ * requested model share a single pin, so two callers that happen to open with
+ * the same first message cross-contaminate: a free-only alias (`auto-eco`,
+ * `free-*`) could inherit a paid pin set by `auto-smart`, silently breaking its
+ * cost contract, and one alias's dead pin would surface as a 502 on a
+ * completely different alias. A real multi-turn client keeps `model` constant
+ * across turns, so including it here does not weaken stickiness.
  */
-export function hashConversation(messages: Array<{ role: string; content: string | any }>): string | null {
+export function hashConversation(
+  messages: Array<{ role: string; content: string | any }>,
+  requestedModel?: string
+): string | null {
   const firstUserMessage = messages.find((m) => m.role === 'user');
   if (!firstUserMessage) return null;
 
@@ -33,7 +45,9 @@ export function hashConversation(messages: Array<{ role: string; content: string
     ? firstUserMessage.content
     : JSON.stringify(firstUserMessage.content);
 
-  return createHash('sha1').update(content).digest('hex');
+  // Newline separator: a model id can never contain one, so the two fields
+  // cannot run together into an ambiguous key.
+  return createHash('sha1').update(`${requestedModel ?? ''}\n${content}`).digest('hex');
 }
 
 /**

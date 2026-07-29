@@ -14,13 +14,12 @@
  * pure protocol logic operating on the task store + dispatch bridge.
  */
 
-import type { ServerResponse } from 'node:http';
-
 import type { RequestHeaders } from '../tenant-key.js';
 import { dispatchTask } from './dispatch.js';
 import {
   getTaskManager,
   isTerminal,
+  newMessageId,
   type PushNotificationConfig,
   type Task,
   type TaskMessage,
@@ -74,20 +73,56 @@ export interface StreamSink {
   end(): void;
 }
 
+const VALID_PART_KINDS = new Set(['text', 'file', 'data']);
+
 function validateMessage(params: any): TaskMessage | null {
   const msg = params?.message;
-  if (!msg || typeof msg !== 'object') return null;
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return null;
   if (msg.role !== 'user' && msg.role !== 'agent') return null;
   if (!Array.isArray(msg.parts)) return null;
+  // Reject structurally invalid parts rather than storing junk that later
+  // serializes back to the client as a spec-invalid Message.
+  for (const part of msg.parts) {
+    if (!part || typeof part !== 'object' || !VALID_PART_KINDS.has(part.kind)) return null;
+    if (part.kind === 'text' && typeof part.text !== 'string') return null;
+  }
+  if (msg.taskId !== undefined && typeof msg.taskId !== 'string') return null;
+  if (msg.contextId !== undefined && typeof msg.contextId !== 'string') return null;
   return {
     role: msg.role,
     parts: msg.parts,
-    messageId: msg.messageId || undefined,
+    // `messageId` is REQUIRED on a spec Message. Previously an omitted id was
+    // stored as `undefined` and dropped on serialization, so the task history
+    // handed back to the client contained Messages with no messageId at all.
+    messageId: typeof msg.messageId === 'string' && msg.messageId ? msg.messageId : newMessageId(),
     kind: 'message',
     taskId: msg.taskId,
     contextId: msg.contextId,
     metadata: msg.metadata,
   } as TaskMessage;
+}
+
+/** Validate an optional `historyLength` param. Returns `false` when malformed. */
+function readHistoryLength(raw: unknown): number | undefined | false {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return false;
+  return raw;
+}
+
+/**
+ * Register a push config supplied inline on message/send|stream
+ * (`params.configuration.pushNotificationConfig`).
+ *
+ * This is the only workable path: dispatch runs to completion inside the same
+ * call, so a config set afterwards via tasks/pushNotificationConfig/set can
+ * never fire. Registering here — before dispatch — makes the advertised
+ * `pushNotifications: true` capability real.
+ */
+function registerInlinePushConfig(taskId: string, params: any): void {
+  const cfg = params?.configuration?.pushNotificationConfig as PushNotificationConfig | undefined;
+  if (cfg?.url && typeof cfg.url === 'string') {
+    getTaskManager().setPushConfig(taskId, cfg);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,25 +140,41 @@ export async function handleRpc(
     case 'message/send': {
       const message = validateMessage(req.params);
       if (!message) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Invalid or missing message');
-      const task = tm.createTask(message, {
+      const { task, error } = tm.createTask(message, {
         contextId: req.params?.message?.contextId,
         metadata: req.params?.metadata,
       });
+      if (error === 'terminal-task' || !task) {
+        return rpcError(
+          id,
+          A2A_ERR.INVALID_PARAMS,
+          'Task is in a terminal state and cannot accept further messages; start a new task with the same contextId',
+        );
+      }
+      registerInlinePushConfig(task.id, req.params);
       const finalTask = await dispatchTask(task.id, headers);
       return rpcResult(id, finalTask);
     }
 
     case 'tasks/get': {
       const taskId = req.params?.id;
-      if (!taskId) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing task id');
-      const task = tm.getTask(taskId, req.params?.historyLength);
+      if (!taskId || typeof taskId !== 'string') {
+        return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing task id');
+      }
+      const historyLength = readHistoryLength(req.params?.historyLength);
+      if (historyLength === false) {
+        return rpcError(id, A2A_ERR.INVALID_PARAMS, 'historyLength must be a non-negative integer');
+      }
+      const task = tm.getTask(taskId, historyLength);
       if (!task) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
       return rpcResult(id, task);
     }
 
     case 'tasks/cancel': {
       const taskId = req.params?.id;
-      if (!taskId) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing task id');
+      if (!taskId || typeof taskId !== 'string') {
+        return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing task id');
+      }
       const { task, error } = tm.cancelTask(taskId);
       if (error === 'not-found') return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
       if (error === 'not-cancelable') return rpcError(id, A2A_ERR.TASK_NOT_CANCELABLE, 'Task not cancelable');
@@ -141,8 +192,13 @@ export async function handleRpc(
     case 'tasks/pushNotificationConfig/get': {
       const taskId = req.params?.taskId ?? req.params?.id;
       if (!taskId) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing taskId');
+      // -32003 means "this agent does not support push notifications at all",
+      // which is a lie here — we do, this task simply has no config yet.
+      if (!tm.getTask(taskId)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
       const config = tm.getPushConfig(taskId);
-      if (!config) return rpcError(id, A2A_ERR.PUSH_NOT_SUPPORTED, 'No push config for task');
+      if (!config) {
+        return rpcError(id, A2A_ERR.INVALID_PARAMS, 'No push notification config set for this task');
+      }
       return rpcResult(id, { taskId, pushNotificationConfig: config });
     }
 
@@ -182,31 +238,58 @@ export async function handleRpcStream(
         sink.send(rpcError(id, A2A_ERR.INVALID_PARAMS, 'Invalid or missing message'));
         return;
       }
-      const task = tm.createTask(message, {
+      const { task, error } = tm.createTask(message, {
         contextId: req.params?.message?.contextId,
         metadata: req.params?.metadata,
       });
-      // Emit the initial submitted task, then working, then the terminal task.
+      if (error === 'terminal-task' || !task) {
+        sink.send(
+          rpcError(
+            id,
+            A2A_ERR.INVALID_PARAMS,
+            'Task is in a terminal state and cannot accept further messages; start a new task with the same contextId',
+          ),
+        );
+        return;
+      }
+      registerInlinePushConfig(task.id, req.params);
+
+      // First event is the Task itself (spec), then one status-update per real
+      // state change. Previously the second event re-sent the *same* `submitted`
+      // snapshot — `working` was never observable because it is only set inside
+      // dispatchTask, which had not run yet.
       sink.send(rpcResult(id, task));
-      const working = tm.getTask(task.id)!;
-      sink.send(rpcResult(id, { ...working, status: { ...working.status } }));
-      const finalTask = await dispatchTask(task.id, headers);
-      sink.send(rpcResult(id, statusUpdateEvent(finalTask)));
+      const seen = new Set<string>([task.status.timestamp + task.status.state]);
+      const unsubscribe = tm.subscribe(task.id, (updated) => {
+        const key = updated.status.timestamp + updated.status.state;
+        if (seen.has(key)) return;
+        seen.add(key);
+        sink.send(rpcResult(id, statusUpdateEvent(updated)));
+      });
+      try {
+        const finalTask = await dispatchTask(task.id, headers);
+        const finalKey = finalTask.status.timestamp + finalTask.status.state;
+        if (!seen.has(finalKey)) sink.send(rpcResult(id, statusUpdateEvent(finalTask)));
+      } finally {
+        unsubscribe();
+      }
       return;
     }
 
     if (req.method === 'tasks/resubscribe') {
       const taskId = req.params?.id;
-      const task = taskId ? tm.getTask(taskId) : null;
+      const task = taskId && typeof taskId === 'string' ? tm.getTask(taskId) : null;
       if (!task) {
         sink.send(rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found'));
         return;
       }
-      // Task store is synchronous-terminal here (no long-running background
-      // work), so resubscribe replays the current state as one event.
-      // ponytail: single replay event; wire a real pub/sub if dispatch ever
-      // becomes async/long-lived.
+      // Replay current state, then follow the task to its terminal state.
+      // A single replay event used to be the whole implementation, so a client
+      // resubscribing to an in-flight task got one `working` frame and an
+      // immediate close instead of the completion it was waiting for.
       sink.send(rpcResult(id, statusUpdateEvent(task)));
+      if (isTerminal(task.status.state)) return;
+      await followToTerminal(tm, task.id, id, sink);
       return;
     }
 
@@ -214,6 +297,37 @@ export async function handleRpcStream(
   } finally {
     sink.end();
   }
+}
+
+/** Max time a resubscribe stream stays open waiting for a terminal state (ms). */
+const RESUBSCRIBE_TIMEOUT_MS = 5 * 60_000;
+
+/** Stream status updates for `taskId` until it reaches a terminal state. */
+function followToTerminal(
+  tm: ReturnType<typeof getTaskManager>,
+  taskId: string,
+  rpcId: string | number | null,
+  sink: StreamSink,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const timer = setTimeout(finish, RESUBSCRIBE_TIMEOUT_MS);
+    // `unref` so a dangling subscriber can never hold the process open.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    const unsubscribe = tm.subscribe(taskId, (updated) => {
+      sink.send(rpcResult(rpcId, statusUpdateEvent(updated)));
+      if (isTerminal(updated.status.state)) finish();
+    });
+    // Guard against the task having terminated between the replay and subscribe.
+    if (tm.isTaskTerminal(taskId)) finish();
+  });
 }
 
 /** Build a TaskStatusUpdateEvent (spec streaming event shape). */

@@ -4,7 +4,7 @@ import { logger } from '@dmr-x/utils';
 import { trace } from '@opentelemetry/api';
 
 import { getStickyProvider, breakStickySession } from './sticky/sticky-session.js';
-import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
+import { executeWithFallback, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { runPipeline } from './pipeline/pipeline.js';
 import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
 import { planStayOrSwitch } from './planner/ev-planner.js';
@@ -67,6 +67,14 @@ export async function handleStickySession(
   );
 
   if (!sticky) return { used: false };
+
+  // A pinned model that is on an error cooldown (404/410, bad auth, overload)
+  // must not be re-called: the sticky plan carries no fallback chain, so the
+  // request would hard-fail with 502 instead of being routed normally.
+  if (isModelOnErrorCooldown(sticky.providerId, sticky.modelId)) {
+    await breakStickySession(conversationHash, 'Pinned model is on error cooldown');
+    return { used: false };
+  }
 
   // Check if sticky provider is still in candidates and healthy
   const stickyCandidate = candidates.find(
@@ -179,9 +187,13 @@ export async function handleStickySession(
         });
         return { used: true, result: { plan, response } };
       } catch (error) {
-        // Break sticky session on provider failure
+        // Break sticky session on provider failure and fall through to normal
+        // routing. The pin is an optimisation, not a contract — the plan built
+        // here has no fallback chain, so rethrowing turned one dead pinned
+        // model into a hard 502 even though the full candidate pool was
+        // healthy. Every other exit from this function degrades the same way.
         await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
-        throw error;
+        return { used: false };
       }
     }
   } else {
@@ -217,9 +229,10 @@ export async function handleStickySession(
       });
       return { used: true, result: { plan, response } };
     } catch (error) {
-      // Break sticky session on provider failure
+      // Break sticky session on provider failure and fall through to normal
+      // routing (see the rationale on the equivalent branch above).
       await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
-      throw error;
+      return { used: false };
     }
   }
 

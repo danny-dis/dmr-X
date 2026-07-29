@@ -1,0 +1,20 @@
+diff --git a/api/middleware/rateLimit.ts b/api/middleware/rateLimit.ts
+index 6bd5569..fca5206 100644
+--- a/api/middleware/rateLimit.ts
++++ b/api/middleware/rateLimit.ts
+@@ -46,6 +46,15 @@ setInterval(() => {
+ }, 10 * 60 * 1000)
+ 
+ export function rateLimit(req: Request, res: Response, next: NextFunction): void {
++  // Relay mode: this process is DMR-X's internal proxy, single-tenant and not
++  // publicly reachable. The host gateway already enforces its own per-provider
++  // and per-key quotas, so limiting here just caps the host at the research
++  // preview's 5-request lifetime default (RATE_LIMIT_TOTAL) and breaks it.
++  if (process.env.GODMODE_RELAY === '1' || process.env.G0DM0D3_LLM_BASE_URL) {
++    next()
++    return
++  }
++
+   const keyId = req.apiKeyId || 'unknown'
+   const tierConfig: TierConfig | undefined = req.tierConfig
+   const now = Date.now()

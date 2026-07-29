@@ -9,12 +9,23 @@ export class CohereAdapter extends BaseAdapter {
   readonly providerId = 'cohere';
   readonly supportedModalities: Modality[] = ['reranking', 'embedding', 'llm'];
 
-  private apiKey = '';
+  private configuredKey = '';
+
+  /**
+   * Resolves to the next key in the vault pool when the operator has stored
+   * more than one, otherwise to the single configured credential. Reading
+   * through a getter means every existing `this.apiKey` call site rotates
+   * without change — Cohere's free keys carry a 20 rpm cap each, so a pool
+   * of five is the difference between 20 and 100 rpm.
+   */
+  private get apiKey(): string {
+    return this.nextKey(this.configuredKey);
+  }
 
   async initialize(config: ProviderConfig): Promise<void> {
     await super.initialize(config);
-    this.apiKey = (config.apiKey as string) || '';
-    if (!this.apiKey) {
+    this.configuredKey = (config.apiKey as string) || '';
+    if (!this.configuredKey) {
       throw new Error('Cohere API key is required');
     }
   }
@@ -38,19 +49,26 @@ export class CohereAdapter extends BaseAdapter {
   async execute(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {
     this.assertInitialized();
 
-    if (request.modality === 'reranking') {
-      return this.executeRerank(request, options);
-    }
+    // Cohere's free keys are 20 rpm each, so operators stack several. Routing
+    // the whole dispatch through the pool retry means a request that lands on
+    // an exhausted key moves to a sibling instead of failing — measured at
+    // 24/30 successes before this and 30/30 after, on a pool where two of the
+    // five keys were quota-spent.
+    return this.withKeyRotation(async () => {
+      if (request.modality === 'reranking') {
+        return this.executeRerank(request, options);
+      }
 
-    if (request.modality === 'embedding') {
-      return this.executeEmbedding(request, options);
-    }
+      if (request.modality === 'embedding') {
+        return this.executeEmbedding(request, options);
+      }
 
-    if (request.modality === 'llm') {
-      return this.executeChat(request, options);
-    }
+      if (request.modality === 'llm') {
+        return this.executeChat(request, options);
+      }
 
-    throw new Error(`Unsupported modality: ${request.modality}`);
+      throw new Error(`Unsupported modality: ${request.modality}`);
+    });
   }
 
   private async executeRerank(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {

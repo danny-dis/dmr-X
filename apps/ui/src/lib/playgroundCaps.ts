@@ -18,9 +18,25 @@ import {
 import type { PlaygroundMode } from '@/store/usePlaygroundStore';
 import { CHAT_FAMILY_MODES } from '@/store/usePlaygroundStore';
 
+/**
+ * Platform panels are addressed by the same `mode` field as chat tabs but are
+ * not completion modes — they drive admin/agent surfaces, not the router. They
+ * therefore live outside PlaygroundMode rather than polluting it.
+ */
+export type PlatformPanel =
+  | 'agents'
+  | 'skills'
+  | 'workflows'
+  | 'routing'
+  | 'context'
+  | 'mcp'
+  | 'observability';
+
+export type CapabilityMode = PlaygroundMode | PlatformPanel;
+
 export interface CapabilityTab {
-  /** Must match a PlaygroundMode value. */
-  mode: PlaygroundMode;
+  /** A PlaygroundMode for chat tabs, or a PlatformPanel for platform tabs. */
+  mode: CapabilityMode;
   label: string;
   icon: LucideIcon;
   group: 'chat' | 'platform';

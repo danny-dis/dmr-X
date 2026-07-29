@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { ProviderModel, CandidateSet } from '@dmr-x/core';
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
+import { PROVIDER_CATALOG } from '@dmr-x/provider-catalog';
 import {
   lookupModelPricing,
   fetchModelsDevData,
@@ -11,6 +12,26 @@ import {
 import { classifyModel, type ModelClassification } from './model-classification.js';
 
 const cache = createNamespacedCache('registry');
+
+/**
+ * Providers that authenticate with nothing at all. Two catalog shapes mean
+ * "no credential", and `providers.api_key_ref` distinguishes neither — it is
+ * empty for keyed providers too, so it cannot be used here:
+ *
+ *   * `envKey: ''`            — keyless by design (Pollinations, needle-local).
+ *   * `envKey: '*_BASE_URL'`  — a self-hosted endpoint whose env var carries a
+ *                               URL, not a secret (Ollama, vLLM, llama.cpp,
+ *                               LocalAI). These read as "keyed" to a naive
+ *                               `!!envKey` check even though no key exists.
+ *
+ * They matter because the candidate query requires an active row in
+ * `provider_keys`, and a keyless provider has none by construction. Without
+ * this set every free keyless and local backend was silently unroutable no
+ * matter how healthy it was.
+ */
+const KEYLESS_PROVIDER_NAMES: readonly string[] = PROVIDER_CATALOG.filter(
+  (t) => t.envKey === '' || /_BASE_URL$/.test(t.envKey ?? ''),
+).map((t) => t.id);
 
 export class RegistryService {
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -40,6 +61,11 @@ export class RegistryService {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+    // Restricted to names actually present in the allowlist (when one is set)
+    // so the keyless exemption can never widen the operator's known-good set.
+    const keyless = allowlist.length
+      ? KEYLESS_PROVIDER_NAMES.filter((n) => allowlist.includes(n))
+      : KEYLESS_PROVIDER_NAMES;
     const query = `
       SELECT
         p.id as "providerId",
@@ -88,13 +114,23 @@ export class RegistryService {
         -- just wastes the retry/backoff budget and trips client timeouts
         -- (e.g. the pi agent). This is what makes DMR-X "smooth" failures
         -- instead of hanging on dead providers.
-        AND EXISTS (SELECT 1 FROM provider_keys pk WHERE pk.provider_id = p.id AND pk.is_active = 1)
+        --
+        -- Keyless-by-design providers are the exception: they serve
+        -- completions with no credential at all, so demanding a
+        -- provider_keys row excluded every one of them (Pollinations,
+        -- Ollama, vLLM, llama.cpp) from routing permanently.
+        AND (
+          EXISTS (SELECT 1 FROM provider_keys pk WHERE pk.provider_id = p.id AND pk.is_active = 1)
+          ${keyless.length ? 'OR p.name IN (' + keyless.map(() => '?').join(',') + ')' : ''}
+        )
         ${allowlist.length ? 'AND p.name IN (' + allowlist.map(() => '?').join(',') + ')' : ''}
       ${modality ? 'AND mp.modality = ?' : ''}
       ORDER BY mp.quality_score DESC
     `;
 
-    const params: any[] = [...allowlist];
+    // Bind order must mirror the placeholder order in the query above:
+    // keyless exemption, then allowlist, then modality.
+    const params: any[] = [...keyless, ...allowlist];
     if (modality) params.push(modality);
     const rows = db.prepare(query).all(...params);
 

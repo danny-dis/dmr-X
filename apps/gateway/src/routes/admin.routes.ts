@@ -831,6 +831,40 @@ function upsertDefaultKey(
  * of the new table. Falls back to the legacy config.apiKey column for
  * providers that haven't been migrated yet.
  */
+/**
+ * Every active API key for a provider, highest priority first.
+ *
+ * `loadActiveProviderCredential` deliberately returns a single credential, so
+ * adapters used to receive exactly one key no matter how many the operator had
+ * stored. That made `provider_keys` a pool in name only: rotation across the
+ * vault never happened, and one exhausted free-tier key failed the request
+ * instead of falling through to its siblings. Adapters take the full list via
+ * `setKeys()` and rotate locally.
+ */
+export function loadAllActiveProviderKeys(providerId: string): string[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT api_key_encrypted FROM provider_keys
+       WHERE provider_id = ? AND is_active = 1 AND api_key_encrypted IS NOT NULL
+       ORDER BY priority DESC, created_at ASC`,
+    )
+    .all(providerId) as Array<{ api_key_encrypted: string | null }>;
+
+  const keys: string[] = [];
+  for (const row of rows) {
+    if (!row.api_key_encrypted) continue;
+    try {
+      const plain = decrypt(row.api_key_encrypted);
+      if (plain) keys.push(plain);
+    } catch {
+      // A key encrypted under a rotated DMRX_ENCRYPTION_KEY is unusable —
+      // skip it rather than failing every other key on the provider.
+    }
+  }
+  return keys;
+}
+
 export function loadActiveProviderCredential(providerId: string): {
   apiKey: string;
   accessToken: string;
@@ -4158,6 +4192,33 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Quota states
+  /**
+   * Per-key rotation distribution for every provider holding a key pool.
+   *
+   * Answers "are all my keys actually being used?" — a key with a count of 0
+   * is stored but carrying no traffic, which is the failure mode multi-key
+   * setups hit silently.
+   */
+  server.get('/admin/key-rotation', async () => {
+    const { keyRotationService } = await import('@dmr-x/quota');
+    const stats = keyRotationService.getRotationStats();
+    return {
+      pools: stats.map((s) => {
+        const counts = s.selections.map((x) => x.count);
+        const total = counts.reduce((a, b) => a + b, 0);
+        const used = counts.filter((c) => c > 0).length;
+        return {
+          ...s,
+          totalSelections: total,
+          keysUsed: used,
+          // 1.0 = perfectly even. Computed as (min/max) so a single hot key
+          // in a pool of five reads as ~0, not as a flattering average.
+          balance: total === 0 ? null : Math.min(...counts) / Math.max(...counts),
+        };
+      }),
+    };
+  });
+
   server.get('/admin/quota', async (request) => {
     const db = getDb();
     const query = request.query as Record<string, string | undefined>;
@@ -4982,6 +5043,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         context_window = COALESCE(?, context_window),
         max_output_tokens = COALESCE(?, max_output_tokens),
         is_active = COALESCE(?, is_active),
+        -- Toggling is_active through this endpoint is a human decision, so
+        -- record it. Live discovery re-activates anything the provider still
+        -- lists, which silently undid every manual disable on the next
+        -- restart; operator_disabled is what makes the choice stick.
+        operator_disabled = CASE WHEN ? IS NULL THEN operator_disabled
+                                 WHEN ? = 0 THEN 1 ELSE 0 END,
         updated_at = datetime('now')
       WHERE id = ?`
     ).run(
@@ -4990,6 +5057,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       modality ?? null,
       context_window ?? null,
       max_output_tokens ?? null,
+      is_active != null ? (is_active ? 1 : 0) : null,
+      is_active != null ? (is_active ? 1 : 0) : null,
       is_active != null ? (is_active ? 1 : 0) : null,
       id,
     );

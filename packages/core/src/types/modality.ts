@@ -127,6 +127,10 @@ export const MODALITY_ENDPOINTS: Record<string, Modality> = {
   '/v1/tools/loop': 'llm',
   '/v1/messages': 'llm',
   '/v1/gemini/generateContent': 'llm',
+  // Routing-preview endpoint (route.routes.ts). It runs a real classification
+  // pass, so it goes through detectModality like any completion — omitting it
+  // made every /v1/route call 500 with "Unknown API path".
+  '/v1/route': 'llm',
   '/v1/completions': 'llm',
   '/v1/embeddings': 'embedding',
   '/v1/images/generations': 'diffusion',

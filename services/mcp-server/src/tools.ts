@@ -564,7 +564,10 @@ export const dmrxStatusOutput = z
     version: z.string(),
     uptime: z.string(),
     uptimeMs: z.number(),
+    /** Requests handled by this process across all sessions. */
     requestsHandled: z.number(),
+    /** Requests handled by the calling session alone. */
+    sessionRequestsHandled: z.number().optional(),
     lastError: z.string().nullable(),
     router: z.object({
       candidateCount: z.number(),

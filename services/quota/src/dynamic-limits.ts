@@ -114,13 +114,22 @@ const PROVIDER_HEADER_CONFIGS: Record<string, ProviderHeaderConfig> = {
     tokensRemaining: ['x-ratelimit-remaining-tokens'],
     tokensReset: ['x-ratelimit-reset-tokens'],
   },
+  // Mistral does NOT use the OpenAI header names. Verified against
+  // api.mistral.ai on 2026-07-27, which returns:
+  //   x-ratelimit-limit-req-minute: 50
+  //   x-ratelimit-limit-tokens-minute: 50000
+  //   x-ratelimit-remaining-req-minute / -tokens-minute
+  // The OpenAI spellings are kept as trailing fallbacks in case Mistral
+  // aligns later. Without these, every quota read returned null and the
+  // "unknown = assume available" default let smart rotation keep picking
+  // an exhausted key.
   mistral: {
-    requestsLimit: ['x-ratelimit-limit-requests'],
-    requestsRemaining: ['x-ratelimit-remaining-requests'],
-    requestsReset: ['x-ratelimit-reset-requests'],
-    tokensLimit: ['x-ratelimit-limit-tokens'],
-    tokensRemaining: ['x-ratelimit-remaining-tokens'],
-    tokensReset: ['x-ratelimit-reset-tokens'],
+    requestsLimit: ['x-ratelimit-limit-req-minute', 'x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-ratelimit-remaining-req-minute', 'x-ratelimit-remaining-requests'],
+    requestsReset: ['x-ratelimit-reset-req-minute', 'x-ratelimit-reset-requests'],
+    tokensLimit: ['x-ratelimit-limit-tokens-minute', 'x-ratelimit-limit-tokens'],
+    tokensRemaining: ['x-ratelimit-remaining-tokens-minute', 'x-ratelimit-remaining-tokens'],
+    tokensReset: ['x-ratelimit-reset-tokens-minute', 'x-ratelimit-reset-tokens'],
   },
   xai: {
     requestsLimit: ['x-ratelimit-limit-requests'],
@@ -171,9 +180,13 @@ const PROVIDER_HEADER_CONFIGS: Record<string, ProviderHeaderConfig> = {
     tokensRemaining: ['x-ratelimit-remaining-tokens'],
     tokensReset: ['x-ratelimit-reset-tokens'],
   },
+  // Cohere trial keys report quota via x-trial-endpoint-call-*. Verified
+  // against api.cohere.com on 2026-07-27 (limit 40, remaining 39). Cohere
+  // exposes no token-based headers, so those stay on the OpenAI spellings
+  // and simply resolve to null.
   cohere: {
-    requestsLimit: ['x-ratelimit-limit-requests'],
-    requestsRemaining: ['x-ratelimit-remaining-requests'],
+    requestsLimit: ['x-trial-endpoint-call-limit', 'x-ratelimit-limit-requests'],
+    requestsRemaining: ['x-trial-endpoint-call-remaining', 'x-ratelimit-remaining-requests'],
     requestsReset: ['x-ratelimit-reset-requests'],
     tokensLimit: ['x-ratelimit-limit-tokens'],
     tokensRemaining: ['x-ratelimit-remaining-tokens'],

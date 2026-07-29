@@ -200,8 +200,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * Conservative defaults: $0 cost, 'streaming' capability only,
  * modality 'llm' unless the payload hints otherwise.
  */
+/**
+ * Strip provider namespacing that the chat endpoint does not expect.
+ *
+ * Google's OpenAI-compatible /models returns `models/gemini-2.5-flash` while
+ * chat/completions wants the bare `gemini-2.5-flash`. Left as-is, discovery
+ * inserts a duplicate prefixed row AND every stored bare id looks stale,
+ * so cleanup would try to deactivate the entire provider.
+ */
+function canonicalModelId(rawId: string): string {
+  return rawId.replace(/^models\//, '');
+}
+
 function normalizeModel(raw: Record<string, unknown>): DiscoveredModel {
-  const id = String(raw.id ?? raw.name ?? '').trim();
+  const id = canonicalModelId(String(raw.id ?? raw.name ?? '').trim());
   if (!id) {
     return {
       modelId: '',
@@ -219,18 +231,69 @@ function normalizeModel(raw: Record<string, unknown>): DiscoveredModel {
 
   const capabilities = inferCapabilities(raw);
   const modality = inferModality(raw, id);
+  const pricing = extractPricing(raw);
 
   return {
     modelId: id,
-    displayName: id,
+    displayName: String(raw.display_name ?? raw.name ?? id),
     modality,
-    contextWindow: numberOrNull(raw.context_window ?? raw.contextWindow ?? raw.context_length),
-    maxOutputTokens: numberOrNull(raw.max_output_tokens ?? raw.maxOutputTokens),
-    inputCostPer1M: 0,
-    outputCostPer1M: 0,
-    costPerImage: 0,
+    // Spellings observed in the wild: OpenAI-style `context_window`,
+    // OpenRouter `context_length`, Mistral `max_context_length`,
+    // gitlawb `context_window`. Anything a provider publishes is used
+    // verbatim; the static catalog is only consulted when the API is silent.
+    contextWindow: numberOrNull(
+      raw.context_window ??
+        raw.contextWindow ??
+        raw.context_length ??
+        raw.max_context_length ??
+        raw.maxContextLength,
+    ),
+    maxOutputTokens: numberOrNull(
+      raw.max_output_tokens ?? raw.maxOutputTokens ?? raw.max_completion_tokens,
+    ),
+    inputCostPer1M: pricing.inputPer1M,
+    outputCostPer1M: pricing.outputPer1M,
+    costPerImage: pricing.perImage,
     capabilities,
     specializations: [],
+  };
+}
+
+/**
+ * Read pricing when the provider publishes it (gitlawb exposes `pricing`,
+ * OpenRouter exposes per-token strings). Values are normalised to cost per
+ * 1M tokens. Returns zeros when nothing is published — never invents a price.
+ */
+function extractPricing(raw: Record<string, unknown>): {
+  inputPer1M: number;
+  outputPer1M: number;
+  perImage: number;
+} {
+  const src = (raw.pricing ?? raw.effective_pricing) as Record<string, unknown> | undefined;
+  if (!src || typeof src !== 'object') {
+    return { inputPer1M: 0, outputPer1M: 0, perImage: 0 };
+  }
+  // OpenRouter publishes per-token decimals as strings; per-1M variants are
+  // already scaled. Detect which by field name rather than by magnitude.
+  const perToken = (v: unknown): number => {
+    const n = numberOrNull(v);
+    return n === null ? 0 : n * 1_000_000;
+  };
+  const per1M = (v: unknown): number => numberOrNull(v) ?? 0;
+
+  const input =
+    src.input_per_1m !== undefined || src.prompt_per_1m !== undefined
+      ? per1M(src.input_per_1m ?? src.prompt_per_1m)
+      : perToken(src.input ?? src.prompt);
+  const output =
+    src.output_per_1m !== undefined || src.completion_per_1m !== undefined
+      ? per1M(src.output_per_1m ?? src.completion_per_1m)
+      : perToken(src.output ?? src.completion);
+
+  return {
+    inputPer1M: Number.isFinite(input) ? input : 0,
+    outputPer1M: Number.isFinite(output) ? output : 0,
+    perImage: numberOrNull(src.image ?? src.per_image) ?? 0,
   };
 }
 
@@ -263,8 +326,59 @@ function inferCapabilities(raw: Record<string, unknown>): string[] {
       }
     }
   }
+
+  // Capability OBJECTS. Mistral publishes
+  //   capabilities: { completion_chat, function_calling, reasoning, vision, ... }
+  // which the array branch above silently skipped, so tool_use/reasoning/vision
+  // were dropped for every Mistral model and had to come from the catalog.
+  const capObj = raw.capabilities;
+  if (capObj && typeof capObj === 'object' && !Array.isArray(capObj)) {
+    const flags = capObj as Record<string, unknown>;
+    const on = (k: string): boolean => flags[k] === true;
+    if (on('function_calling') || on('tool_use') || on('tools')) caps.add('tool_use');
+    if (on('function_calling')) caps.add('function_call');
+    if (on('vision') || on('image_understanding')) caps.add('vision');
+    if (on('reasoning')) caps.add('reasoning');
+    if (on('json_mode') || on('structured_outputs')) caps.add('json_mode');
+    // Anything else that is simply true is carried through by name.
+    for (const [k, v] of Object.entries(flags)) {
+      if (v === true && !k.startsWith('completion_')) caps.add(k);
+    }
+  }
   return Array.from(caps);
 }
+
+/**
+ * Model-id patterns for non-chat families, checked in order.
+ *
+ * Most `/v1/models` endpoints describe every entry identically — Google's
+ * OpenAI-compatible listing returns `object: "model"` for all 57 of its
+ * models — so the id is the only signal available. Previously only "embed"
+ * and "vision" were recognised and everything else defaulted to `llm`, which
+ * registered Veo (video), Imagen, Lyria (music), TTS and native-audio models
+ * as chat candidates. The router could then pick `veo-3.1-generate-preview`
+ * to answer a chat request, which fails 100% of the time.
+ *
+ * Ordering matters: image/video/music suffixes are checked before the
+ * generic families so `gemini-3.1-flash-image` resolves to diffusion rather
+ * than falling through to llm on the strength of "flash".
+ */
+const MODALITY_ID_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/embed/i, 'embedding'],
+  [/(^|[-_/])(veo|sora|kling|wan|hunyuan-video)|[-_]video($|[-_])/i, 'video'],
+  [/lyria|musicgen|suno|audiocraft/i, 'music'],
+  [/imagen|dall-?e|stable-?diffusion|sdxl|nano-banana|flux/i, 'diffusion'],
+  // Trailing "-image" / "-image-preview" marks an image-OUTPUT variant of an
+  // otherwise chat-shaped family (gemini-3.1-flash-image).
+  [/[-_]image([-_](preview|latest|\d{2}-\d{4}))?$/i, 'diffusion'],
+  [/[-_]tts([-_]|$)|(^|[-_])tts[-_]|text-to-speech/i, 'audio_tts'],
+  [/whisper|transcri|[-_]stt([-_]|$)/i, 'audio_stt'],
+  // Realtime / bidirectional audio sessions are not chat-completions models.
+  [/native-audio|[-_]live([-_]|$)|realtime/i, 'audio'],
+  [/rerank/i, 'reranking'],
+  [/moderat|[-_]guard([-_]|$)|shield/i, 'moderation'],
+  [/vision/i, 'multimodal'],
+];
 
 function inferModality(raw: Record<string, unknown>, id: string): string {
   const v = raw.modality ?? raw.type ?? raw.object;
@@ -274,9 +388,14 @@ function inferModality(raw: Record<string, unknown>, id: string): string {
     if (lower.includes('image') || lower.includes('diffusion')) return 'diffusion';
     if (lower.includes('audio')) return 'audio';
     if (lower.includes('vision') || lower.includes('multimodal')) return 'multimodal';
-    if (lower === 'llm' || lower === 'chat' || lower === 'model') return 'llm';
+    // `object: "model"` is what nearly every OpenAI-compatible endpoint
+    // returns for everything, so it carries no information — fall through to
+    // the id patterns rather than declaring it a chat model.
+    if (lower === 'llm' || lower === 'chat') return 'llm';
   }
-  if (id.toLowerCase().includes('embed')) return 'embedding';
-  if (id.toLowerCase().includes('vision')) return 'multimodal';
+
+  for (const [pattern, modality] of MODALITY_ID_PATTERNS) {
+    if (pattern.test(id)) return modality;
+  }
   return 'llm';
 }

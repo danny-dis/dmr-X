@@ -21,7 +21,7 @@ import {
   type Result,
 } from '@dmr-x/utils';
 import { trace, SpanStatusCode, SpanKind, propagation, context } from '@opentelemetry/api';
-import { getRateLimitTracker, supportsRateLimitHeaders } from '@dmr-x/quota';
+import { getRateLimitTracker, supportsRateLimitHeaders, keyRotationService } from '@dmr-x/quota';
 
 import type {
   ProviderAdapter,
@@ -38,13 +38,26 @@ import type {
 const tracer = trace.getTracer('dmr-x-gateway', '0.4.0');
 
 /**
- * HTTP status codes that trigger automatic retry.
- * 429 = Too Many Requests (rate limiting)
+ * HTTP status codes retried against the SAME provider.
+ *
  * 502 = Bad Gateway (upstream failure)
  * 503 = Service Unavailable (transient outage)
  * 504 = Gateway Timeout (upstream timeout)
+ *
+ * These are transient server-side hiccups where the same provider is likely
+ * to succeed shortly, so sleeping and retrying in place is worthwhile.
+ *
+ * 429 is deliberately NOT here. A rate limit means "this key has no capacity
+ * right now" — waiting does not change that, and DMR-X almost always has other
+ * providers and other keys ready. Retrying in place burned the full
+ * `maxElapsedTime` budget per provider before the fallback chain was even
+ * consulted; with several rate-limited providers in a chain (cohere and
+ * zukijourney each hit attempt 4 dozens of times in one run) a single request
+ * took 22-47s while idle models sat unused. Returning immediately lets the
+ * fallback executor move to the next candidate, which IS the correct retry for
+ * a quota error. Free-tier keys make this the common path, not the rare one.
  */
-const RETRYABLE_STATUS_CODES = ['429', '502', '503', '504'];
+const RETRYABLE_STATUS_CODES = ['502', '503', '504'];
 
 export abstract class BaseAdapter implements ProviderAdapter {
   abstract readonly providerId: string;
@@ -58,7 +71,8 @@ export abstract class BaseAdapter implements ProviderAdapter {
    * Retry configuration for all HTTP requests made by this adapter.
    *
    * Defaults to exponential backoff: 1 s initial delay, 2x exponent, 10 s max
-   * interval, 30 s total budget. Retries on HTTP 429/502/503/504, connection
+   * interval, 30 s total budget. Retries on HTTP 502/503/504 (NOT 429 — that
+   * fails over to the next provider instead, see RETRYABLE_STATUS_CODES), connection
    * errors (ECONNRESET, "fetch failed"), and timeout errors.  Respects
    * Retry-After headers when present.
    *
@@ -80,6 +94,12 @@ export abstract class BaseAdapter implements ProviderAdapter {
     retryConnectionErrors: true,
   };
 
+  /**
+   * Every credential the operator has stored for this provider, highest
+   * priority first. Populated by `setKeys()`; empty for single-key providers.
+   */
+  protected keyPool: string[] = [];
+
   async initialize(config: ProviderConfig): Promise<void> {
     this.config = config;
     this.initialized = true;
@@ -88,6 +108,102 @@ export abstract class BaseAdapter implements ProviderAdapter {
       this.enableRateLimitTracking();
     }
     logger.info({ providerId: this.providerId }, 'Adapter initialized');
+  }
+
+  /**
+   * Hand this adapter the full credential pool from the `provider_keys`
+   * vault so requests can spread across keys instead of pinning to one.
+   *
+   * This lives on the base class because only the two generic adapters
+   * implemented it. Every dedicated adapter — Cohere among them — silently
+   * ignored the extra keys, so a provider with five free-tier keys got the
+   * throughput of one and 429'd as soon as that single key's quota ran out.
+   * The gateway feature-detects `setKeys`, so defining it here is what makes
+   * the pool reach those adapters at all.
+   */
+  setKeys(keys: string[]): void {
+    const deduped = [...new Set(keys.filter(Boolean))];
+    if (deduped.length === 0) return;
+    this.keyPool = deduped;
+    keyRotationService.registerKeys(this.providerId, deduped);
+    this.config = { ...this.config, apiKey: deduped[0] };
+    if (deduped.length > 1) this.enableRateLimitTracking();
+  }
+
+  /**
+   * When set, `nextKey` returns this pool index instead of consulting
+   * rotation. Used by `withKeyRotation` to walk the pool deterministically —
+   * quota-aware rotation scores by remaining quota and would happily return
+   * the key that just failed, burning every retry on one credential.
+   */
+  private pinnedKeyIndex?: number;
+
+  /**
+   * The credential to use for the next outbound request.
+   *
+   * With no pool (or a pool of one) this returns `fallback` unchanged, so
+   * single-key adapters behave exactly as before — importantly it does NOT
+   * consult the rotation service in that case, which would hand back an
+   * unrelated ambient env var and shadow the vault credential.
+   */
+  protected nextKey(fallback: string): string {
+    if (this.keyPool.length <= 1) return fallback;
+    if (this.pinnedKeyIndex !== undefined) {
+      return this.keyPool[this.pinnedKeyIndex % this.keyPool.length];
+    }
+    return keyRotationService.getNextKey(this.providerId) ?? fallback;
+  }
+
+  /**
+   * Statuses that describe the CREDENTIAL rather than the request, and so are
+   * worth retrying on a different key: revoked/unscoped (401/403), model not
+   * enabled for that key's project (404), and spent quota (429).
+   */
+  protected static readonly KEY_SCOPED_STATUSES: ReadonlySet<number> = new Set([401, 403, 404, 429]);
+
+  /**
+   * Run `operation` against the key pool, advancing to the next key whenever
+   * the failure is key-scoped.
+   *
+   * Adapters that hold several free-tier keys otherwise threw away most of
+   * their capacity: rotation spread requests across keys, but a request that
+   * happened to land on an exhausted key failed outright instead of trying a
+   * sibling. With a pool of five where two are spent, that is a ~40% error
+   * rate on traffic the pool could have served.
+   *
+   * With no pool this is a single call and adds nothing.
+   */
+  protected async withKeyRotation<T>(operation: () => Promise<T>): Promise<T> {
+    const attempts = Math.max(1, this.keyPool.length);
+    if (attempts === 1) return operation();
+
+    let lastError: unknown;
+    try {
+      for (let i = 0; i < attempts; i++) {
+        // First attempt uses normal quota-aware rotation; retries walk the pool.
+        this.pinnedKeyIndex = i === 0 ? undefined : i;
+        try {
+          return await operation();
+        } catch (error) {
+          lastError = error;
+          const status = (error as { statusCode?: number })?.statusCode;
+          if (
+            i === attempts - 1 ||
+            !status ||
+            !BaseAdapter.KEY_SCOPED_STATUSES.has(status)
+          ) {
+            throw error;
+          }
+          logger.warn(
+            { providerId: this.providerId, status, attempt: i + 1, of: attempts },
+            'Key-scoped failure — retrying on the next key in the pool',
+          );
+        }
+      }
+    } finally {
+      this.pinnedKeyIndex = undefined;
+    }
+    throw lastError;
   }
 
   async healthCheck(): Promise<HealthStatus> {
@@ -414,7 +530,6 @@ export abstract class BaseAdapter implements ProviderAdapter {
    * resilience for free.
    *
    * Retryable (temporary) errors -- retried with backoff:
-   * - HTTP 429 (Too Many Requests / rate limiting)
    * - HTTP 502 (Bad Gateway)
    * - HTTP 503 (Service Unavailable)
    * - HTTP 504 (Gateway Timeout)
@@ -422,12 +537,14 @@ export abstract class BaseAdapter implements ProviderAdapter {
    * - Timeout errors
    *
    * Permanent errors -- thrown immediately, no retry:
-   * - HTTP 4xx client errors other than 429 (400, 401, 403, 404, etc.)
+   * - HTTP 429 (rate limited — the router fails over to another provider/key,
+   *   which is the correct retry for a quota error)
+   * - HTTP 4xx client errors (400, 401, 403, 404, etc.)
    * - HTTP 500/501/5xx not listed above
    * - Any other unexpected error
    *
-   * Uses exponential backoff with jitter. Respects Retry-After headers on
-   * 429 responses. Subclasses can override `retryConfig` to customise.
+   * Uses exponential backoff with jitter. Subclasses can override
+   * `retryConfig` to customise.
    */
   protected async fetchWithTimeout(
     url: string,

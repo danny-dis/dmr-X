@@ -4,25 +4,38 @@ import * as React from 'react';
 import { PlaygroundInput } from './PlaygroundInput';
 import { PlaygroundMain } from './PlaygroundMain';
 import { PlaygroundSidebar } from './PlaygroundSidebar';
+import { PlaygroundTabs } from './PlaygroundTabs';
 
 import { Button } from '@/components/primitives/Button';
 import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
+// Non-chat tab views. Only the tabs listed in TOP_LEVEL_TABS are reachable —
+// keep this list and that one in sync when adding a new view.
+import { CompletionsView } from './CompletionsView';
+import { ImagesView } from './ImagesView';
+import { VideoView } from './VideoView';
+
+// activeTab is persisted, so a tab id left over from an older build (audio,
+// tools, platform, godmode) can still come back from localStorage. Anything
+// that isn't a known non-chat view falls back to Chat instead of a blank pane.
+const NON_CHAT_TABS = new Set(['completions', 'images', 'video']);
+
 export function PlaygroundPage() {
   const showSidebar = usePlaygroundStore(s => s.showSidebar);
   const setShowSidebar = usePlaygroundStore(s => s.setShowSidebar);
-  const mode = usePlaygroundStore(s => s.mode);
   const model = usePlaygroundStore(s => s.model);
   const messages = usePlaygroundStore(s => s.messages);
   const isStreaming = usePlaygroundStore(s => s.isStreaming);
-  
+  const activeTab = usePlaygroundStore(s => s.activeTab);
+
   return (
     <div className="h-[calc(100dvh-64px)] overflow-hidden bg-bg">
       <div className="flex h-full min-h-0">
         <PlaygroundSidebar />
 
         <section className="flex min-w-0 flex-1 flex-col">
+          {/* Header */}
           <header className="shrink-0 border-b border-border bg-surface-1/95 px-4 py-3 shadow-sm backdrop-blur sm:px-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
@@ -42,12 +55,7 @@ export function PlaygroundPage() {
                 </div>
 
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h1 className="truncate text-lg font-semibold text-fg">Playground</h1>
-                    <span className="rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-primary">
-                      {mode}
-                    </span>
-                  </div>
+                  <h1 className="truncate text-lg font-semibold text-fg">Playground</h1>
                   <p className="truncate text-xs text-fg-muted">{model}</p>
                 </div>
               </div>
@@ -76,9 +84,20 @@ export function PlaygroundPage() {
             </div>
           </header>
 
+          {/* Top-level tab bar */}
+          <PlaygroundTabs />
+
+          {/* Tab content */}
           <div className="flex min-h-0 flex-1 flex-col bg-[radial-gradient(circle_at_top_left,rgba(6,182,212,0.08),transparent_26rem),linear-gradient(180deg,var(--surface),var(--bg))]">
-            <PlaygroundMain />
-            <PlaygroundInput />
+            {!NON_CHAT_TABS.has(activeTab) && (
+              <>
+                <PlaygroundMain />
+                <PlaygroundInput />
+              </>
+            )}
+            {activeTab === 'completions' && <CompletionsView />}
+            {activeTab === 'images' && <ImagesView />}
+            {activeTab === 'video' && <VideoView />}
           </div>
         </section>
       </div>

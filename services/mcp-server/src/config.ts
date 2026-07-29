@@ -82,6 +82,12 @@ export interface McpConfigFile {
 
   /** MCP aggregation configuration */
   aggregation?: {
+    /**
+     * Master switch for upstream aggregation. Absent means enabled (the
+     * historical behaviour); false leaves `servers` as inert configuration
+     * so the shipped demo entry is not spawned on every boot.
+     */
+    enabled?: boolean;
     /** Aggregated external MCP servers */
     servers?: Array<{
       id: string;

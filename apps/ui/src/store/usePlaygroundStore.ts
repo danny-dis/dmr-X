@@ -22,6 +22,19 @@ export type PlaygroundMode =
   | 'tool-loop'
   | 'godmode';
 
+/**
+ * Modes that behave like a chat transcript (turn-based, streamed into the
+ * message list) as opposed to one-shot generators such as image/embed/tts.
+ * `playgroundCaps.isCapabilityChatMode` imports this; it was referenced but
+ * never exported, so that module failed to compile.
+ */
+export const CHAT_FAMILY_MODES: ReadonlySet<PlaygroundMode> = new Set<PlaygroundMode>([
+  'chat',
+  'agentic',
+  'tool-loop',
+  'godmode',
+]);
+
 export interface StreamingEvent {
   name: string;
   data: any;
@@ -32,6 +45,16 @@ export interface PlaygroundConfig {
   maxTokens?: number;
   stream: boolean;
   tools: any[];
+  // Advanced sampling / generation params (OpenAI-style). All optional;
+  // only sent on the wire when non-default — see _buildRequest.
+  topP?: number;
+  topK?: number;
+  repeatPenalty?: number;
+  seed?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  stop?: string[];
+  responseFormat?: { type: 'text' | 'json_object' } | null;
   godmode?: {
     autotune: boolean;
     parseltongue: boolean;
@@ -60,6 +83,8 @@ export interface Message {
   content: string;
   audioUrl?: string;
   imageUrl?: string;
+  /** Set by video generation flows (GenerateButtons, VideoView). */
+  videoUrl?: string;
   embeddingData?: string;
   model?: string;
   provider?: string;
@@ -93,6 +118,8 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         config: state.config,
         isTemporary: state.isTemporary,
         showSidebar: state.showSidebar,
+        activeTab: state.activeTab,
+        systemPrompt: state.systemPrompt,
       }),
     }
   )

@@ -10,7 +10,7 @@
  *  - persist instance state in server_instances (via @dmr-x/db)
  */
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,6 +18,33 @@ import path from 'node:path';
 
 import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
+
+/**
+ * Resolve bun executable path. On Windows, uv_spawn can't find executables
+ * via PATH when launched from a compiled Bun binary, so we resolve the full
+ * path eagerly and cache it.
+ */
+let _bunPath: string | null = null;
+function bunPath(): string {
+  if (_bunPath) return _bunPath;
+  const bunExe = process.execPath;
+  if (bunExe && bunExe.toLowerCase().includes('bun') && fs.existsSync(bunExe)) {
+    _bunPath = bunExe;
+    return _bunPath;
+  }
+  try {
+    const resolved = execSync(
+      process.platform === 'win32' ? 'where bun' : 'which bun',
+      { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] },
+    ).trim().split('\n')[0];
+    if (resolved && fs.existsSync(resolved)) {
+      _bunPath = resolved;
+      return _bunPath;
+    }
+  } catch { /* ignore */ }
+  _bunPath = 'bun';
+  return _bunPath;
+}
 
 const G0DM0D3_REPO = 'https://github.com/elder-plinius/G0DM0D3.git';
 const SERVER_TYPE = 'g0dm0d3';
@@ -94,6 +121,31 @@ function isBun(): boolean {
   return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
 }
 
+/**
+ * Kill a process AND its descendants.
+ *
+ * G0DM0D3 runs three processes deep (`bun x tsx` → `tsx/cli.mjs` → `node`), so
+ * killing only the direct child orphans the two that actually hold port 7860.
+ * On Windows there are no process groups, and `process.kill(-pid)` throws
+ * outright — `taskkill /T` is the only way to reach the whole tree.
+ */
+export function killTree(pid: number | null | undefined): void {
+  if (!pid || pid <= 0) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGTERM'); // negative pid = process group
+  } catch {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 /** Returns true when running inside a Docker/containerd container. */
 export function detectRuntime(): ServerRuntime {
   if (fs.existsSync('/.dockerenv')) return 'docker';
@@ -137,7 +189,7 @@ class ServerManagerService {
   async installDeps(): Promise<void> {
     const dir = g0dm0d3Dir();
     logger.info({ dir }, 'Running bun install for G0DM0D3');
-    const res = spawnSync('bun', ['install'], { cwd: dir, stdio: 'inherit' });
+    const res = spawnSync(bunPath(), ['install'], { cwd: dir, stdio: 'inherit' });
     if (res.status !== 0) {
       throw new Error(`bun install failed (exit ${res.status})`);
     }
@@ -430,7 +482,7 @@ class ServerManagerService {
       // Use Bun.spawn for a managed, killable child.
       const BunCtor = (globalThis as { Bun?: { spawn: (cmd: unknown[], opts: Record<string, unknown>) => ChildLike } }).Bun;
       if (BunCtor && BunCtor.spawn) {
-        this.child = BunCtor.spawn(['bunx', 'tsx', 'api/server.ts'], {
+        this.child = BunCtor.spawn([bunPath(), 'x', 'tsx', 'api/server.ts'], {
           cwd: dir,
           env,
           stdout: 'inherit',
@@ -442,14 +494,15 @@ class ServerManagerService {
 
     // Node fallback. Detach + unref so the managed server survives a gateway
     // restart (otherwise it is reaped when the gateway process exits).
-    const cp = spawn('bunx', ['tsx', 'api/server.ts'], {
+    const cp = spawn(bunPath(), ['x', 'tsx', 'api/server.ts'], {
       cwd: dir,
       env,
       stdio: 'ignore',
       detached: true,
+      shell: process.platform === 'win32',
     });
     cp.unref();
-    this.child = { pid: cp.pid ?? null, kill: (s?: string) => { try { process.kill(-cp.pid!, s as NodeJS.Signals); } catch { /* already gone */ } } } as ChildLike;
+    this.child = { pid: cp.pid ?? null, kill: () => killTree(cp.pid) } as ChildLike;
     return Promise.resolve();
   }
 
@@ -458,11 +511,15 @@ class ServerManagerService {
     if (runtime === 'docker') {
       spawnSync('docker', ['stop', CONTAINER_NAME], { stdio: 'ignore' });
       spawnSync('docker', ['rm', '-f', CONTAINER_NAME], { stdio: 'ignore' });
-    } else if (this.child) {
-      try {
-        this.child.kill();
-      } catch {
-        /* already gone */
+    } else {
+      // Kill by recorded PID, not just the in-memory handle. After a gateway
+      // restart the previous G0DM0D3 is adopted (deferGodmodeBoot sees port
+      // 7860 already healthy and wires the proxy to it) without repopulating
+      // `this.child` — so a handle-only stop left the process running forever
+      // while marking the row 'stopped'. That is how ghosts accumulated.
+      const known = this.getRunningInstance();
+      for (const pid of new Set([this.child?.pid, known?.pid].filter(Boolean) as number[])) {
+        killTree(pid);
       }
       this.child = null;
     }

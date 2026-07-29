@@ -260,7 +260,7 @@ export class Router {
     }
 
     // Step 1: Check for sticky session
-    const conversationHash = hashConversation(messages);
+    const conversationHash = hashConversation(messages, request.model);
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
     const effectiveFreeTierStrategy = freeTierStrategy;
 
@@ -344,19 +344,40 @@ export class Router {
         if (modelTarget.modelId && !isMetaModel(modelTarget.modelId)) {
           // pipelineCandidates is already scoped to the pinned provider (if any),
           // so this exact-match is naturally constrained to that provider.
-          const directMatch = pipelineCandidates.find(
+          const directMatches = pipelineCandidates.filter(
             (c) => c.modelId === modelTarget.modelId && c.isHealthy
           );
+          const directMatch = directMatches[0];
           if (directMatch) {
             span.setAttribute('router.selection', 'direct_model');
             span.setAttribute('router.selected_provider', directMatch.providerId);
             span.setAttribute('router.selected_model', directMatch.modelId);
-            logger.info({ model: modelTarget.modelId, provider: directMatch.providerName }, 'Direct model selection');
+            span.setAttribute('router.direct_alternates', directMatches.length - 1);
+            logger.info(
+              {
+                model: modelTarget.modelId,
+                provider: directMatch.providerName,
+                alternates: directMatches.length - 1,
+              },
+              'Direct model selection',
+            );
             return {
               providerId: directMatch.providerId,
               modelId: directMatch.modelId,
               adapterType: directMatch.providerName,
               score: 1,
+              // Every OTHER provider serving this exact model id, so the
+              // pinned-model path still has somewhere to fail over to. It
+              // used to build `chain: []`, which meant naming a model
+              // explicitly silently opted out of failover entirely: one
+              // provider hiccup 502'd the request even when three other
+              // providers served the same model.
+              alternates: directMatches.slice(1).map((c) => ({
+                providerId: c.providerId,
+                modelId: c.modelId,
+                adapterType: c.providerName,
+                score: 0.9,
+              })),
             } as const;
           }
         }
@@ -391,9 +412,19 @@ export class Router {
     if (directSelection) {
       // We picked a specific provider above — bypass the scoring pipeline
       // and go straight to execution.
+      const { alternates, ...primary } = directSelection as typeof directSelection & {
+        alternates?: Array<{ providerId: string; modelId: string; adapterType: string; score: number }>;
+      };
       const plan: RoutingPlan = {
-        primary: { ...directSelection, score: 1 },
-        chain: [],
+        primary: { ...primary, score: 1 },
+        // Same model id on other healthy providers. `trigger: 'error'` matches
+        // how the pipeline path builds its chain, so executeWithFallback
+        // treats these identically to a scored fallback.
+        chain: (alternates ?? []).map((a) => ({
+          provider: a,
+          trigger: 'error' as const,
+          waitMs: 0,
+        })),
         timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
         maxRetries: 1,
       };
@@ -571,10 +602,30 @@ export class Router {
 
     // Step 5: Set sticky session for this conversation
     if (conversationHash) {
+      // Pin the provider/model that ACTUALLY served the response, not the one
+      // we planned to use. When the primary fails and `executeWithFallback`
+      // recovers via a chain entry, the caller still gets a 200 — but pinning
+      // `plan.primary` here would poison the sticky cache with the model that
+      // just died. The next turn then takes the sticky fast path, which builds
+      // a chain-less plan, re-calls the dead model, and 502s instantly.
+      //
+      // `response.providerId` is the adapter/provider NAME (e.g. "google"),
+      // while candidates and plans are keyed by the DB provider UUID, so the
+      // name has to be resolved back to a UUID — a raw name would be stored
+      // fine but never match a candidate on the next turn, silently disabling
+      // stickiness altogether.
+      const servedModelId = response.modelId || plan.primary.modelId;
+      const servedCandidate =
+        this.candidates.find(
+          (c) => c.modelId === servedModelId &&
+            (c.providerId === response.providerId || c.providerName === response.providerId)
+        ) ?? this.candidates.find((c) => c.modelId === servedModelId);
+      const servedProviderId = servedCandidate?.providerId ?? plan.primary.providerId;
+
       // Get RPM for TTL adjustment if rate limit service is available
       let rateLimitRpm: number | undefined;
       if (this.config.rateLimitService) {
-        const check = this.config.rateLimitService.checkLimit(plan.primary.providerId, plan.primary.modelId, 0);
+        const check = this.config.rateLimitService.checkLimit(servedProviderId, servedModelId, 0);
         // Extract RPM from reason string if rate-limited, otherwise use a default
         if (!check.allowed && check.reason) {
           const rpmMatch = check.reason.match(/RPM limit \((\d+)\)/);
@@ -584,8 +635,8 @@ export class Router {
 
       await setStickyProvider(
         conversationHash,
-        plan.primary.providerId,
-        plan.primary.modelId,
+        servedProviderId,
+        servedModelId,
         undefined,
         rateLimitRpm
       );

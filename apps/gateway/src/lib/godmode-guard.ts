@@ -11,7 +11,7 @@
  */
 import type { CandidateSet } from '@dmr-x/core';
 import { resolveMetaModel } from '@dmr-x/router';
-import { logger } from '@dmr-x/utils';
+import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 
 /** Last-resort concrete models when the vault has no `auto-free` candidates. */
 export const GODMODE_WRAP_FALLBACK = ['codestral-latest', 'gemini-3.1-flash-lite'];
@@ -77,7 +77,7 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
     const { getGodmodeService, setGodmodeConfig } = await import('@dmr-x/godmode');
     const { serverManager } = await import('@dmr-x/server-manager');
     const godmode = getGodmodeService();
-    const gatewayUrl = process.env.DMRX_GATEWAY_URL || `http://localhost:${process.env.PORT || 47113}`;
+    const gatewayUrl = resolveGatewayUrl();
 
     const live = serverManager.getRunningInstance();
     const liveHealthy = live?.url

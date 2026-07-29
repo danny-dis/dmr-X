@@ -52,9 +52,18 @@ gw-*.log
 # ─── Local data / cache ─────────────────────────────────────────────────────
 .data/
 .dmrx-data/
+# The MCP sidecar runs against its own database so it cannot clobber the
+# gateway's (see DMRX_DATA_DIR in sidecar-boot.ts). It is encrypted at rest, so
+# the *.db rules below do not match `data.db.enc` — it needs its own entry.
+.dmrx-data-mcp/
 *.db
+*.db.enc
+*.db.enc.lastgood
 *.db-wal
 *.db-shm
+
+# ─── Agent tooling scratch ─────────────────────────────────────────────────
+.hermes/
 
 # ─── Ad-hoc QA / debug reports ──────────────────────────────────────────────
 QA_REPORT_*.md

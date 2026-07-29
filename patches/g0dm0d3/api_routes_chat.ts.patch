@@ -1,0 +1,99 @@
+diff --git a/api/routes/chat.ts b/api/routes/chat.ts
+index ca4d037..109b106 100644
+--- a/api/routes/chat.ts
++++ b/api/routes/chat.ts
+@@ -40,6 +40,7 @@ import {
+   type ConsortiumResponse,
+ } from '../lib/consortium'
+ import { addEntry } from '../lib/dataset'
++import { chatCompletionsUrl, hasUsableUpstream, upstreamApiKey, upstreamHeaders, isRelayMode } from '../lib/relay'
+ import { recordEvent, categorizeError } from '../lib/metadata'
+ 
+ export const chatRoutes = Router()
+@@ -51,6 +52,39 @@ function estimateTokens(text: string): number {
+   return Math.ceil(text.length / 4)
+ }
+ 
++/**
++ * Safely coerce a chat message `content` into a string.
++ *
++ * The OpenAI-compatible message schema (and DMR-X's dmrx_chat MCP tool)
++ * allows `content` to be either a string OR an array of multimodal parts
++ * (e.g. `[{ type: 'text', text: '...' }, { type: 'image_url', ... }]`).
++ * Naively calling `String(content)` on an array of objects collapses it to
++ * `"[object Object]"`, which then reaches the model as the literal prompt and
++ * triggers a bogus "MALFORMED QUERY DETECTED" hallucination instead of a real
++ * answer. Flatten array parts to their text; JSON-stringify anything else.
++ */
++function coerceContent(content: unknown): string {
++  if (typeof content === 'string') return content
++  if (content == null) return ''
++  if (Array.isArray(content)) {
++    return content
++      .map((part) => {
++        if (part == null) return ''
++        if (typeof part === 'string') return part
++        // OpenAI multimodal part: { type: 'text', text: '...' }
++        if (typeof part === 'object' && 'text' in (part as any)) {
++          return String((part as any).text ?? '')
++        }
++        // image_url / input_audio / unknown part — keep a readable note, never [object Object]
++        const type = (part as any)?.type ?? 'part'
++        return `[${type}]`
++      })
++      .join(' ')
++  }
++  if (typeof content === 'object') return JSON.stringify(content)
++  return String(content)
++}
++
+ /**
+  * Build the G0DM0D3 pipeline: resolve params, system prompt, parseltongue, etc.
+  * Returns everything needed to send to the LLM and build the response.
+@@ -84,7 +118,7 @@ function runPipeline(opts: {
+   // Normalize messages
+   const normalizedMessages = messages.map((m: any) => ({
+     role: m.role as 'system' | 'user' | 'assistant',
+-    content: String(m.content || ''),
++    content: coerceContent(m.content),
+   }))
+ 
+   // Build system prompt
+@@ -254,12 +288,16 @@ chatRoutes.post('/completions', async (req, res) => {
+       return
+     }
+ 
+-    // Resolve OpenRouter key
+-    const openrouter_api_key = caller_key || process.env.OPENROUTER_API_KEY || ''
+-    if (!openrouter_api_key) {
++    // Resolve the upstream credential. In relay mode the upstream is DMR-X
++    // (or whatever G0DM0D3_LLM_BASE_URL points at), which may legitimately
++    // need no bearer at all — so the OpenRouter-key requirement must not apply.
++    const openrouter_api_key = upstreamApiKey(caller_key)
++    if (!hasUsableUpstream(caller_key)) {
+       res.status(400).json({
+         error: {
+-          message: 'No OpenRouter API key available. Either pass openrouter_api_key in the request body, or set OPENROUTER_API_KEY on the server.',
++          message: isRelayMode()
++            ? 'Relay mode is enabled but G0DM0D3_LLM_BASE_URL is not set.'
++            : 'No OpenRouter API key available. Either pass openrouter_api_key in the request body, or set OPENROUTER_API_KEY on the server.',
+           type: 'invalid_request_error',
+           code: 'missing_api_key',
+         }
+@@ -659,14 +697,9 @@ chatRoutes.post('/completions', async (req, res) => {
+         // Retry on 429 with exponential backoff (addresses rate-limit failures)
+         let upstreamRes: Response | undefined
+         for (let attempt = 0; attempt <= 2; attempt++) {
+-          upstreamRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
++          upstreamRes = await fetch(chatCompletionsUrl(), {
+             method: 'POST',
+-            headers: {
+-              'Authorization': `Bearer ${openrouter_api_key}`,
+-              'Content-Type': 'application/json',
+-              'HTTP-Referer': 'https://godmod3.ai',
+-              'X-Title': 'GODMOD3.AI',
+-            },
++            headers: upstreamHeaders(caller_key),
+             body: JSON.stringify(streamBody),
+           })
+ 
