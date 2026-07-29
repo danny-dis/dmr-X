@@ -244,6 +244,17 @@ function mcpLog(server: McpServer, level: LoggingLevel, data: unknown, loggerNam
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Process start time and request counter.
+ *
+ * Streamable HTTP builds a fresh McpServer (and a fresh ServerState) per
+ * client session, so a per-state counter reports the age of the *session*, not
+ * of the server. `dmrx_status` is a diagnostics tool — it must report the
+ * process, so these live at module scope.
+ */
+const PROCESS_START_TIME = Date.now();
+let processRequestCount = 0;
+
 /** Map a modality to the API endpoint path expected by the task classifier */
 const MODALITY_TO_PATH: Record<Modality, string> = {
   llm: '/v1/chat/completions',
@@ -657,6 +668,7 @@ function createExternalToolProxyHandler(
   return async (params: any) => {
     const namespacedName = `${serverId}__${toolName}`;
     state.requestCount++;
+    processRequestCount++;
     const rateLimitResponse = checkRateLimit(state, namespacedName);
     if (rateLimitResponse) return rateLimitResponse;
 
@@ -770,6 +782,145 @@ function computeExternalToolCount(state: ServerState): number {
 }
 
 /**
+ * Record a tool in `state.sdkTools`, keyed by name.
+ *
+ * Upserts rather than pushes so that a re-registration (e.g. an upstream
+ * server reconnecting, or a subagent tool being refreshed) updates the entry
+ * in place instead of producing a duplicate. `dmrx_tool_list` and
+ * `dmrx_tool_search` read this array directly, so duplicates there surface as
+ * duplicated tools in discovery output.
+ */
+function recordSdkTool(
+  state: ServerState,
+  name: string,
+  description: string,
+  params: unknown
+): void {
+  const entry = { name, description, params };
+  const existing = state.sdkTools.findIndex((t) => t.name === name);
+  if (existing >= 0) {
+    state.sdkTools[existing] = entry;
+  } else {
+    state.sdkTools.push(entry);
+  }
+}
+
+/**
+ * Drop a tool from `state.sdkTools` by exact name.
+ */
+function forgetSdkTool(state: ServerState, name: string): void {
+  state.sdkTools = state.sdkTools.filter((t) => t.name !== name);
+}
+
+/**
+ * True when `name` is a proxied upstream tool (`<serverId>__<tool>`).
+ *
+ * Matches against the registered external server ids rather than just looking
+ * for a `__` separator, so an internal tool that happens to contain a double
+ * underscore is never misclassified as external.
+ */
+function isProxiedToolName(state: ServerState, name: string): boolean {
+  for (const serverId of state.externalToolRegistrations.keys()) {
+    if (name.startsWith(`${serverId}__`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Convert an upstream MCP tool's JSON Schema into a Zod shape so the proxied
+ * tool advertises the upstream's real parameters instead of an opaque blob.
+ *
+ * Returns `null` when the schema is missing or is not a plain object schema,
+ * in which case callers fall back to the permissive record type.
+ */
+function upstreamSchemaToZod(inputSchema: unknown): z.ZodTypeAny | null {
+  const schema = inputSchema as
+    | { type?: string; properties?: Record<string, any>; required?: string[] }
+    | undefined;
+  if (!schema || schema.type !== 'object' || !schema.properties) return null;
+
+  const shape: Record<string, z.ZodTypeAny> = {};
+  const required = new Set(schema.required ?? []);
+
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    let field = jsonSchemaPropToZod(prop);
+    if (prop?.description) field = field.describe(String(prop.description));
+    shape[key] = required.has(key) ? field : field.optional();
+  }
+
+  // Upstream servers routinely accept keys beyond those they advertise, so the
+  // proxy stays permissive rather than rejecting calls the upstream would take.
+  return z.object(shape).passthrough();
+}
+
+/**
+ * Map a single JSON Schema property node to a Zod type. Unknown or unsupported
+ * constructs degrade to `z.unknown()` so an exotic upstream schema can never
+ * make a tool unregisterable.
+ */
+function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
+  if (!prop || typeof prop !== 'object') return z.unknown();
+
+  if (Array.isArray(prop.enum) && prop.enum.length > 0) {
+    const literals = prop.enum.map((v: unknown) => z.literal(v as any));
+    return literals.length === 1
+      ? literals[0]
+      : z.union(literals as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+  }
+
+  const type = Array.isArray(prop.type) ? prop.type[0] : prop.type;
+  switch (type) {
+    case 'string':
+      return z.string();
+    case 'number':
+      return z.number();
+    case 'integer':
+      return z.number().int();
+    case 'boolean':
+      return z.boolean();
+    case 'array':
+      return z.array(prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown());
+    case 'object': {
+      const nested = upstreamSchemaToZod(prop);
+      return nested ?? z.record(z.unknown());
+    }
+    default:
+      return z.unknown();
+  }
+}
+
+/**
+ * Build the wire schema for a proxied upstream tool.
+ *
+ * The `{ args: ... }` envelope is the established calling convention for
+ * proxied tools, so it is preserved; what changes is that `args` now carries
+ * the upstream's actual parameter shape when one is available, making required
+ * fields discoverable in `tools/list` instead of only at call time.
+ */
+function buildProxySchema(
+  serverId: string,
+  toolName: string,
+  inputSchema: unknown
+): Record<string, z.ZodTypeAny> {
+  const upstream = upstreamSchemaToZod(inputSchema);
+  if (upstream) {
+    return {
+      args: upstream
+        .optional()
+        .describe(`Tool arguments (passed through to ${serverId}/${toolName})`),
+    };
+  }
+  return {
+    args: z
+      .record(z.unknown())
+      .optional()
+      .describe(
+        `Tool arguments (passed through to ${serverId}/${toolName}; upstream exposes no inputSchema)`
+      ),
+  };
+}
+
+/**
  * Register tools for a single external server on the McpServer instance.
  * Captures the RegisteredTool references for later live removal.
  */
@@ -795,15 +946,10 @@ function registerServerToolsOnMcpServer(
 
     const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
-    // Pass upstream inputSchema through verbatim (MCP.md #1). Fall back to the
-    // args-wrapper only when the upstream omits a schema.
-    const passthroughSchema = tool.inputSchema
-      ? { args: z.record(z.unknown()).optional().describe(
-          `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
-        ) }
-      : { args: z.record(z.unknown()).optional().describe(
-          `Tool arguments (passed through to ${serverId}/${tool.name}; upstream exposes no inputSchema)`
-        ) };
+    // Project the upstream inputSchema onto the `args` envelope (MCP.md #1) so
+    // callers can see the upstream's real parameters in tools/list. Falls back
+    // to a permissive record when the upstream omits or exports an exotic schema.
+    const passthroughSchema = buildProxySchema(serverId, tool.name, tool.inputSchema);
 
     const registered = server.tool(
       namespacedName,
@@ -813,12 +959,7 @@ function registerServerToolsOnMcpServer(
     );
 
     registrations.push(registered as RegisteredTool);
-
-    state.sdkTools.push({
-      name: namespacedName,
-      description,
-      params: passthroughSchema,
-    });
+    // sdkTools recording happens inside the server.tool interceptor.
   }
 
   state.externalToolRegistrations.set(serverId, registrations);
@@ -903,13 +1044,7 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
       if (!isServerToolAllowed(connected.config, tool.name)) continue;
       const description = `[Proxied via MCP server '${serverId}'] ${tool.description ?? tool.name}`;
 
-      const passthroughSchema = {
-        args: z.record(z.unknown()).optional().describe(
-          tool.inputSchema
-            ? `Tool arguments (passed through to ${serverId}/${tool.name}; see upstream inputSchema for shape)`
-            : `Tool arguments (passed through to ${serverId}/${tool.name}; upstream exposes no inputSchema)`
-        ),
-      };
+      const passthroughSchema = buildProxySchema(serverId, tool.name, tool.inputSchema);
 
       const registered = server.tool(
         namespacedName,
@@ -919,12 +1054,7 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
       );
 
       registrations.push(registered as RegisteredTool);
-
-      state.sdkTools.push({
-        name: namespacedName,
-        description,
-        params: passthroughSchema,
-      });
+      // sdkTools recording happens inside the server.tool interceptor.
     }
 
     state.externalToolRegistrations.set(serverId, registrations);
@@ -1205,36 +1335,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     externalToolRegistrations: new Map(),
   };
 
-  // SDK tool definitions for programmatic access and discovery
-  const sdkToolDefs: Array<{ name: string; description: string; params: unknown }> = [
-    { name: TOOL_NAMES.CHAT, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT], params: chatParams },
-    { name: TOOL_NAMES.GENERATE_IMAGE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE], params: imageParams },
-    { name: TOOL_NAMES.GENERATE_VIDEO, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO], params: videoParams },
-    { name: TOOL_NAMES.GENERATE_MUSIC, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_MUSIC], params: musicParams },
-    { name: TOOL_NAMES.EMBED, description: TOOL_DESCRIPTIONS[TOOL_NAMES.EMBED], params: embedParams },
-    { name: TOOL_NAMES.TRANSCRIBE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.TRANSCRIBE], params: transcribeParams },
-    { name: TOOL_NAMES.SPEAK, description: TOOL_DESCRIPTIONS[TOOL_NAMES.SPEAK], params: speakParams },
-    { name: TOOL_NAMES.RERANK, description: TOOL_DESCRIPTIONS[TOOL_NAMES.RERANK], params: rerankParams },
-    { name: TOOL_NAMES.MODELS, description: TOOL_DESCRIPTIONS[TOOL_NAMES.MODELS], params: modelsParams },
-    { name: TOOL_NAMES.STATUS, description: TOOL_DESCRIPTIONS[TOOL_NAMES.STATUS], params: statusParams },
-    { name: TOOL_NAMES.BATCH, description: TOOL_DESCRIPTIONS[TOOL_NAMES.BATCH], params: batchParams },
-    { name: TOOL_NAMES.CONTEXT_SAVE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SAVE], params: contextSaveParams },
-    { name: TOOL_NAMES.CONTEXT_LOAD, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LOAD], params: contextLoadParams },
-    { name: TOOL_NAMES.CONTEXT_LIST, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_LIST], params: contextListParams },
-    { name: TOOL_NAMES.CONTEXT_SUMMARIZE, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_SUMMARIZE], params: contextSummarizeParams },
-    { name: TOOL_NAMES.CONTEXT_COMPRESS, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CONTEXT_COMPRESS], params: contextCompressParams },
-    { name: TOOL_NAMES.CHAT_STREAM, description: TOOL_DESCRIPTIONS[TOOL_NAMES.CHAT_STREAM], params: chatStreamParams },
-    { name: TOOL_NAMES.GENERATE_IMAGE_STREAM, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_IMAGE_STREAM], params: imageStreamParams },
-    { name: TOOL_NAMES.GENERATE_VIDEO_STREAM, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_VIDEO_STREAM], params: videoStreamParams },
-    { name: TOOL_NAMES.WORKFLOW, description: TOOL_DESCRIPTIONS[TOOL_NAMES.WORKFLOW], params: workflowParams },
-    { name: TOOL_NAMES.GENERATE_3D, description: TOOL_DESCRIPTIONS[TOOL_NAMES.GENERATE_3D], params: threeDParams },
-  ];
-
-  for (const def of sdkToolDefs) {
-    if (isToolAllowed(def.name, config.allowedTools)) {
-      state.sdkTools.push(def);
-    }
-  }
+  // NOTE: `state.sdkTools` is populated automatically by the registerTool /
+  // tool interceptors installed below, so it can never drift from what is
+  // actually registered on the McpServer. It used to be a hand-maintained
+  // array here, which silently fell 21 tools behind the real registrations —
+  // hiding every filesystem, shell, template, preset and subagent tool from
+  // `/tools`, the A2A agent card, `dmrx_tool_list` and `dmrx_tool_search`.
 
   // Wire up adapter executor for fallback
   router.setAdapterExecutor({
@@ -1277,11 +1383,16 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     version: '0.1.0',
   });
 
-  // Intercept tool registration to filter by allowed tools
+  // Intercept tool registration to (a) filter by allowed tools and (b) record
+  // every successful registration into state.sdkTools. Recording here — rather
+  // than in a parallel hand-written list — is what keeps discovery surfaces
+  // (`/tools`, agent card, dmrx_tool_list, dmrx_tool_search) in sync.
   const originalRegisterTool = server.registerTool.bind(server);
   (server as any).registerTool = (name: string, spec: any, handler: any) => {
     if (isToolAllowed(name, config.allowedTools)) {
-      return originalRegisterTool(name, spec, handler);
+      const registered = originalRegisterTool(name, spec, handler);
+      recordSdkTool(state, name, spec?.description ?? '', spec?.inputSchema);
+      return registered;
     }
     return undefined as any;
   };
@@ -1289,7 +1400,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   const originalTool = server.tool.bind(server);
   (server as any).tool = (name: string, description: any, schema?: any, handler?: any) => {
     if (isToolAllowed(name, config.allowedTools)) {
-      return originalTool(name, description, schema, handler);
+      const registered = originalTool(name, description, schema, handler);
+      recordSdkTool(state, name, typeof description === 'string' ? description : '', schema);
+      return registered;
     }
     return undefined as any;
   };
@@ -1313,6 +1426,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const requestId = crypto.randomUUID();
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CHAT);
       if (rateLimitResponse) return rateLimitResponse;
@@ -1461,6 +1575,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_IMAGE);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1538,6 +1653,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.EMBED);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1597,6 +1713,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TRANSCRIBE);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1656,6 +1773,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.SPEAK);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1715,6 +1833,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.RERANK);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1784,6 +1903,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_VIDEO);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1843,6 +1963,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_VIDEO_STREAM);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1916,6 +2037,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_MUSIC);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -1975,6 +2097,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_3D);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2034,6 +2157,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.MODELS);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2150,11 +2274,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.STATUS);
       if (rateLimitResponse) return rateLimitResponse;
 
       try {
-        const uptimeMs = Date.now() - state.startTime;
+        // Process-wide, not per-session: a Streamable HTTP client gets its own
+        // ServerState, so state.startTime would report the age of this session.
+        const uptimeMs = Date.now() - PROCESS_START_TIME;
         const uptimeHours = Math.floor(uptimeMs / 3600000);
         const uptimeMinutes = Math.floor((uptimeMs % 3600000) / 60000);
 
@@ -2163,7 +2290,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           version: '0.1.0',
           uptime: `${uptimeHours}h ${uptimeMinutes}m`,
           uptimeMs,
-          requestsHandled: state.requestCount,
+          requestsHandled: processRequestCount,
+          sessionRequestsHandled: state.requestCount,
           lastError: state.lastError,
           router: {
             candidateCount: state.candidates.length,
@@ -2268,6 +2396,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.BATCH);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2330,6 +2459,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_SAVE);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2390,6 +2520,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_LOAD);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2435,6 +2566,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_LIST);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2496,6 +2628,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_SUMMARIZE);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2548,6 +2681,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CONTEXT_COMPRESS);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2606,6 +2740,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.CHAT_STREAM);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2684,6 +2819,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.GENERATE_IMAGE_STREAM);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -2758,6 +2894,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.WORKFLOW);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -3197,6 +3334,8 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             }
           } catch { /* ignore unregister failures */ }
           registeredSubagentTools.delete(slug);
+          // Keep discovery surfaces in step with the actual registrations.
+          forgetSdkTool(state, slug);
         }
       }
 
@@ -3313,6 +3452,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const requestId = crypto.randomUUID();
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TOOL_SEARCH);
       if (rateLimitResponse) return rateLimitResponse;
@@ -3320,28 +3460,21 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.TOOL_SEARCH, requestId }, 'tool-search');
 
-        // Build tool documents from SDK tools and external tools
+        // Build tool documents from SDK tools and external tools.
+        // state.sdkTools contains BOTH internal and proxied external tools, so
+        // the external names are collected first and skipped in the internal
+        // pass — otherwise every aggregated tool is indexed twice, once
+        // mislabelled as internal.
         const documents: ToolDocument[] = [];
-        
-        // Add internal tools
-        for (const tool of state.sdkTools) {
-          documents.push({
-            id: tool.name,
-            name: tool.name,
-            description: tool.description || tool.name,
-            serverId: 'dmr-x',
-            serverName: 'DMR-X',
-          });
-        }
+        const externalNames = new Set<string>();
 
-        // Add external tools if enabled
         if (params.include_external !== false && state.externalMcpClient) {
           const registry = state.externalMcpClient.getRegistry();
-          const allServers = registry.listAll();
-          for (const connected of allServers) {
+          for (const connected of registry.listAll()) {
             const serverId = connected.config.id;
             for (const tool of connected.tools) {
               const namespacedName = `${serverId}__${tool.name}`;
+              externalNames.add(namespacedName);
               documents.push({
                 id: namespacedName,
                 name: namespacedName,
@@ -3351,6 +3484,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               });
             }
           }
+        }
+
+        // Add internal tools (anything in sdkTools that is not a proxied tool)
+        for (const tool of state.sdkTools) {
+          if (externalNames.has(tool.name)) continue;
+          if (params.include_external === false && isProxiedToolName(state, tool.name)) continue;
+          documents.push({
+            id: tool.name,
+            name: tool.name,
+            description: tool.description || tool.name,
+            serverId: 'dmr-x',
+            serverName: 'DMR-X',
+          });
         }
 
         // Initialize and populate search engine
@@ -3414,6 +3560,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       await initAdapters();
       state.requestCount++;
+      processRequestCount++;
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.TOOL_LIST);
       if (rateLimitResponse) return rateLimitResponse;
 
@@ -3428,23 +3575,19 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           modality?: string;
         }> = [];
 
-        // Add internal tools
-        for (const tool of state.sdkTools) {
-          tools.push({
-            name: tool.name,
-            description: params.include_descriptions !== false ? tool.description : undefined,
-            source: 'internal',
-          });
-        }
+        // External tools are listed first so their namespaced names can be
+        // excluded from the internal pass. state.sdkTools holds both kinds, so
+        // without this every aggregated tool appeared twice — once correctly as
+        // "external" and once mislabelled as "internal".
+        const externalNames = new Set<string>();
 
-        // Add external tools if enabled
         if (params.include_external !== false && state.externalMcpClient) {
           const registry = state.externalMcpClient.getRegistry();
-          const allServers = registry.listAll();
-          for (const connected of allServers) {
+          for (const connected of registry.listAll()) {
             const serverId = connected.config.id;
             for (const tool of connected.tools) {
               const namespacedName = `${serverId}__${tool.name}`;
+              externalNames.add(namespacedName);
               tools.push({
                 name: namespacedName,
                 description: params.include_descriptions !== false
@@ -3455,6 +3598,17 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               });
             }
           }
+        }
+
+        // Add internal tools (anything in sdkTools that is not a proxied tool)
+        for (const tool of state.sdkTools) {
+          if (externalNames.has(tool.name)) continue;
+          if (params.include_external === false && isProxiedToolName(state, tool.name)) continue;
+          tools.push({
+            name: tool.name,
+            description: params.include_descriptions !== false ? tool.description : undefined,
+            source: 'internal',
+          });
         }
 
         const internalCount = tools.filter((t) => t.source === 'internal').length;

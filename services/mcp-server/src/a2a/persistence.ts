@@ -56,6 +56,20 @@ export function initPersistence(config: A2APersistenceConfig = {}): void {
             updated_at INTEGER
           );
         `);
+        // Rehydrate push configs. The table was written but never read, so a
+        // restart silently dropped every registered webhook while
+        // pushNotificationConfig/get kept reporting success from memory.
+        try {
+          const rows = db
+            .prepare('SELECT task_id, url, token FROM a2a_push_configs')
+            .all() as Array<{ task_id: string; url: string; token: string | null }>;
+          for (const row of rows) {
+            if (!row.url) continue;
+            pushConfigs.set(row.task_id, { url: row.url, ...(row.token ? { token: row.token } : {}) });
+          }
+        } catch {
+          // A missing/legacy table is not fatal — continue with memory only.
+        }
       } catch (e) {
         console.error('[a2a] persistence init failed, falling back to memory:', (e as Error).message);
         db = null;

@@ -81,8 +81,22 @@ module.exports = {
   apps: [
     {
       name: 'dmrx-gateway',
-      script: 'apps/gateway/src/main.ts',
-      interpreter: bunExe,
+      // Run bun as the script with the entrypoint as an argument, rather than
+      // `script: main.ts` + `interpreter: bun.exe`.
+      //
+      // With the interpreter form, PM2 on Windows builds the child command
+      // itself and repeatedly lost track of the resulting process: `pm2 list`
+      // showed `pid 0 / waiting restart` with a restart counter climbing into
+      // the dozens while a perfectly healthy gateway was still bound to the
+      // port. Because PM2 believed the app was down it kept launching more,
+      // and two generations then raced each other over the same SQLite file —
+      // which is how admin writes silently vanished on restart.
+      //
+      // Invoking the executable directly keeps the spawned pid the one PM2
+      // tracks, so its bookkeeping stays correct.
+      script: bunExe,
+      args: ['apps/gateway/src/main.ts'],
+      interpreter: 'none',
       cwd: root,
 
       // Fork, never cluster: a single SQLite writer and a single bound port.

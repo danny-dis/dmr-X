@@ -44,7 +44,7 @@ import { ocrRoutes } from './routes/ocr.routes.js';
 import { rerankRoutes } from './routes/rerank.routes.js';
 import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers, sweepStaleSandboxes } from './routes/tools.routes.js';
 import { videoRoutes } from './routes/video.routes.js';
-import { geminiRoutes } from './routes/gemini.routes.js';
+import { geminiRoutes, geminiNativeRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
 import { compressionRoutes } from './routes/compression.routes.js';
 import { routeDecisionRoutes } from './routes/route.routes.js';
@@ -561,6 +561,10 @@ void (async () => {
    await server.register(chatRoutes, { prefix: '/v1' });
    await server.register(anthropicRoutes, { prefix: '/v1' });
    await server.register(geminiRoutes, { prefix: '/v1' });
+   // Google-native Gemini paths (/v1beta/models/<model>:generateContent).
+   // Registered at the root, not under /v1, because the Gemini SDKs build
+   // those URLs themselves and cannot be pointed at /v1/gemini/*.
+   await server.register(geminiNativeRoutes);
    await server.register(modelsRoutes, { prefix: '/v1' });
    await server.register(imagesRoutes, { prefix: '/v1' });
    await server.register(embeddingsRoutes, { prefix: '/v1' });

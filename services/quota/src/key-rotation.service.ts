@@ -91,23 +91,119 @@ export class KeyRotationService {
   }
 
   /**
+   * Register a key pool from a source other than the environment — in
+   * practice the encrypted `provider_keys` vault, handed over by the
+   * adapter's `setKeys()`.
+   *
+   * Without this, `loadKeys` was the only way into the pool map, so the
+   * vault was invisible to rotation: a provider with one env key and five
+   * vault keys resolved `getNextKey()` against the single env key and
+   * returned it for every request. Smart rotation looked healthy while
+   * actually pinning all traffic to one credential, which is precisely
+   * what exhausts a free tier.
+   *
+   * Re-registering an identical pool is a no-op so repeated adapter
+   * initialisation does not reset the round-robin cursor or the
+   * last-used timestamps that drive LRU and smart selection.
+   */
+  registerKeys(providerId: string, keys: string[]): void {
+    const deduped = [...new Set(keys.filter(Boolean))];
+    if (deduped.length === 0) return;
+
+    const existing = this.keys.get(providerId);
+    if (
+      existing &&
+      existing.length === deduped.length &&
+      existing.every((k, i) => k === deduped[i])
+    ) {
+      return;
+    }
+
+    this.keys.set(providerId, deduped);
+    this.currentIndex.set(providerId, 0);
+    this.initKeyMetadata(providerId, deduped);
+    logger.info(
+      { providerId, keyCount: deduped.length },
+      'Registered API key pool from provider vault',
+    );
+  }
+
+  /**
+   * Per-key selection counts, `providerId -> keyHash -> count`.
+   *
+   * Rotation was previously unobservable: nothing recorded which credential
+   * served a request, so "is the pool actually balancing?" could only be
+   * guessed at from upstream 429 rates. These counters make the distribution
+   * directly inspectable (see `getRotationStats`).
+   */
+  private selectionCounts = new Map<string, Map<string, number>>();
+
+  private recordSelection(providerId: string, key: string): void {
+    let perKey = this.selectionCounts.get(providerId);
+    if (!perKey) {
+      perKey = new Map();
+      this.selectionCounts.set(providerId, perKey);
+    }
+    const id = this.maskKey(key);
+    perKey.set(id, (perKey.get(id) ?? 0) + 1);
+  }
+
+  /**
+   * Selection counts per provider, for operators checking that a multi-key
+   * pool is spreading load rather than pinning to one credential.
+   */
+  getRotationStats(): Array<{
+    providerId: string;
+    keyCount: number;
+    strategy: RotationStrategy;
+    selections: Array<{ key: string; count: number }>;
+  }> {
+    const out: Array<{
+      providerId: string;
+      keyCount: number;
+      strategy: RotationStrategy;
+      selections: Array<{ key: string; count: number }>;
+    }> = [];
+    for (const [providerId, keys] of this.keys) {
+      const perKey = this.selectionCounts.get(providerId);
+      // Include every key in the pool, even ones never chosen — a zero is the
+      // most important number here, because it means that key is dead weight.
+      const selections = keys.map((k) => ({
+        key: this.maskKey(k),
+        count: perKey?.get(this.maskKey(k)) ?? 0,
+      }));
+      out.push({ providerId, keyCount: keys.length, strategy: this.rotationStrategy, selections });
+    }
+    return out;
+  }
+
+  /**
    * Get the next available key using the configured rotation strategy
    */
   getNextKey(providerId: string, modelId?: string): string | null {
     const keys = this.keys.get(providerId);
     if (!keys || keys.length === 0) return null;
 
-    if (keys.length === 1) return keys[0];
+    if (keys.length === 1) {
+      this.recordSelection(providerId, keys[0]);
+      return keys[0];
+    }
 
+    let selected: string | null;
     switch (this.rotationStrategy) {
       case 'smart':
-        return this.getSmartKey(providerId, modelId);
+        selected = this.getSmartKey(providerId, modelId);
+        break;
       case 'least-recently-used':
-        return this.getLRUKey(providerId);
+        selected = this.getLRUKey(providerId);
+        break;
       case 'round-robin':
       default:
-        return this.getRoundRobinKey(providerId);
+        selected = this.getRoundRobinKey(providerId);
+        break;
     }
+    if (selected) this.recordSelection(providerId, selected);
+    return selected;
   }
 
   /**

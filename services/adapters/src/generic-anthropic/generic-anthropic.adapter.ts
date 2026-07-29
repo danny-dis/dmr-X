@@ -62,11 +62,17 @@ export class GenericAnthropicAdapter extends BaseAdapter {
     this.enableRateLimitTracking();
   }
 
+  /**
+   * See GenericOpenAIAdapter.setKeys — the pool must also reach
+   * `keyRotationService`, which `getCurrentKey` consults first and which
+   * otherwise only knows the environment's single key.
+   */
   setKeys(keys: string[]): void {
     this.apiKeys = keys;
     this.keyIndex = 0;
     if (keys.length > 0) {
       this.apiKey = keys[0];
+      keyRotationService.registerKeys(this.providerId, keys);
     }
   }
 

@@ -25,6 +25,58 @@ export interface DispatchResult {
   task: Task;
 }
 
+/** Default wall-clock ceiling for one gateway dispatch (ms). */
+const DEFAULT_TASK_TIMEOUT_MS = 60_000;
+
+function taskTimeoutMs(): number {
+  const raw = Number(process.env.DMRX_A2A_TASK_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TASK_TIMEOUT_MS;
+}
+
+/** Max conversation turns forwarded downstream (newest kept). */
+const MAX_CONTEXT_MESSAGES = 20;
+
+/**
+ * Build the full downstream conversation for a task, so multi-turn actually
+ * carries context. Previously every turn was dispatched as a bare task string,
+ * so the agent had amnesia between turns of the same `contextId`.
+ *
+ * The CURRENT turn is included as the final entry: `/v1/agentic/dispatch`
+ * treats `messages` as a full override of `task` (it only falls back to `task`
+ * when `messages` is absent), so omitting the current turn here would send the
+ * model the history and never the actual question.
+ *
+ * Returns `null` when there is no prior context — the caller then sends the
+ * plain `task` field and lets the gateway build the message list.
+ */
+function buildContextMessages(
+  task: Task,
+  currentText: string,
+): Array<{ role: 'user' | 'assistant'; content: string }> | null {
+  const tm = getTaskManager();
+  const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  const siblings = tm
+    .getContextTasks(task.contextId)
+    .filter((t) => t.id !== task.id)
+    .sort((a, b) => a.status.timestamp.localeCompare(b.status.timestamp));
+
+  // Prior tasks in this context, then earlier turns of the current task.
+  for (const t of [...siblings, task]) {
+    const history = t === task ? task.history.slice(0, -1) : t.history;
+    for (const msg of history) {
+      const content = messageText(msg);
+      if (!content) continue;
+      out.push({ role: msg.role === 'agent' ? 'assistant' : 'user', content });
+    }
+  }
+  if (out.length === 0) return null;
+
+  // Keep the newest turns, then append the turn being dispatched.
+  const trimmed = out.slice(-MAX_CONTEXT_MESSAGES);
+  trimmed.push({ role: 'user', content: currentText });
+  return trimmed;
+}
+
 /**
  * Run a task to completion against the gateway dispatcher and update its state.
  * Never throws — failures land as a `failed` task status so callers can just
@@ -49,11 +101,20 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
     return finalize(taskId, 'failed', 'A2A agent key not configured (DMRX_MCP_AGENT_API_KEY / X-DMR-Tenant-Key)');
   }
 
+  const messages = buildContextMessages(task, taskText);
+
   try {
     const res = await fetch(`${gatewayUrl}/v1/agentic/dispatch`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ task: taskText, run: true }),
+      body: JSON.stringify({
+        task: taskText,
+        run: true,
+        ...(messages ? { messages } : {}),
+      }),
+      // Without a deadline a wedged gateway pins the A2A request open forever;
+      // the client sees a hang instead of a `failed` task.
+      signal: AbortSignal.timeout(taskTimeoutMs()),
     });
     const json: any = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -63,13 +124,27 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
       typeof json.content === 'string' ? json.content : JSON.stringify(json.content ?? json);
     return finalize(taskId, 'completed', resultText);
   } catch (err) {
-    return finalize(taskId, 'failed', `Dispatch error: ${err instanceof Error ? err.message : String(err)}`);
+    const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    const text = timedOut
+      ? `Dispatch timed out after ${taskTimeoutMs()}ms`
+      : `Dispatch error: ${err instanceof Error ? err.message : String(err)}`;
+    return finalize(taskId, 'failed', text);
   }
 }
 
-/** Attach a result/error artifact + agent message and set terminal status. */
+/**
+ * Attach a result/error artifact + agent message and set terminal status.
+ *
+ * If the task already reached a terminal state while the dispatch was in flight
+ * (the client called `tasks/cancel`), the late result is DROPPED — a canceled
+ * task must never be resurrected as `completed`.
+ */
 function finalize(taskId: string, state: 'completed' | 'failed', text: string): Task {
   const tm = getTaskManager();
+  if (tm.isTaskTerminal(taskId)) {
+    logger.info({ taskId, attempted: state }, 'A2A dispatch result discarded — task already terminal');
+    return tm.getTask(taskId)!;
+  }
   const artifact: TaskArtifact = {
     artifactId: state === 'completed' ? 'result' : 'error',
     name: state === 'completed' ? 'result' : 'error',
@@ -79,5 +154,7 @@ function finalize(taskId: string, state: 'completed' | 'failed', text: string): 
   const task = tm.setStatus(taskId, state, textMessage('agent', text, { taskId }));
   // Fire push notification (best-effort) on terminal state.
   if (task) void firePushNotification(task);
-  return task!;
+  // setStatus returns null only if the task vanished or raced into a terminal
+  // state between the guard above and here; fall back to the stored task.
+  return task ?? tm.getTask(taskId)!;
 }

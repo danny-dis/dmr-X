@@ -92,21 +92,67 @@ export async function handleA2ARoutes(
 // ---------------------------------------------------------------------------
 
 async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-  let rpc: JsonRpcRequest;
+  let parsed: unknown;
   try {
     const body = await readRaw(req);
-    rpc = body ? JSON.parse(body) : ({} as JsonRpcRequest);
-  } catch {
+    parsed = body ? JSON.parse(body) : {};
+  } catch (err) {
+    if (err instanceof PayloadTooLargeError) {
+      sendJsonAndClose(req, res, 413, rpcError(null, A2A_ERR.INVALID_REQUEST, err.message));
+      return true;
+    }
     sendJson(res, 200, rpcError(null, A2A_ERR.PARSE, 'Parse error'));
     return true;
   }
 
-  if (rpc.jsonrpc !== '2.0' || typeof rpc.method !== 'string') {
-    sendJson(res, 200, rpcError(rpc.id ?? null, A2A_ERR.INVALID_REQUEST, 'Invalid JSON-RPC request'));
+  const headers = req.headers as RequestHeaders;
+
+  // JSON-RPC 2.0 batch: an array of requests answered with an array of
+  // responses. Previously any array was rejected outright as -32600.
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) {
+      sendJson(res, 200, rpcError(null, A2A_ERR.INVALID_REQUEST, 'Invalid JSON-RPC request'));
+      return true;
+    }
+    const responses: JsonRpcResponse[] = [];
+    for (const entry of parsed) {
+      const item = entry as JsonRpcRequest;
+      if (!item || typeof item !== 'object' || item.jsonrpc !== '2.0' || typeof item.method !== 'string') {
+        responses.push(rpcError((item as JsonRpcRequest)?.id ?? null, A2A_ERR.INVALID_REQUEST, 'Invalid JSON-RPC request'));
+        continue;
+      }
+      if (isStreamMethod(item.method)) {
+        responses.push(rpcError(item.id ?? null, A2A_ERR.UNSUPPORTED_OPERATION, 'Streaming methods cannot be batched'));
+        continue;
+      }
+      try {
+        const result = await handleRpc(item, headers);
+        // Notifications (no `id`) get no response entry, per JSON-RPC 2.0.
+        if (item.id !== undefined && item.id !== null) responses.push(result);
+      } catch (err) {
+        logger.error({ err, method: item.method }, 'A2A JSON-RPC batch entry error');
+        if (item.id !== undefined && item.id !== null) {
+          responses.push(rpcError(item.id, A2A_ERR.INTERNAL, 'Internal error'));
+        }
+      }
+    }
+    if (responses.length === 0) {
+      res.writeHead(204).end();
+      return true;
+    }
+    sendJson(res, 200, responses);
     return true;
   }
 
-  const headers = req.headers as RequestHeaders;
+  const rpc = parsed as JsonRpcRequest;
+  if (!rpc || typeof rpc !== 'object' || rpc.jsonrpc !== '2.0' || typeof rpc.method !== 'string') {
+    sendJson(res, 200, rpcError(rpc?.id ?? null, A2A_ERR.INVALID_REQUEST, 'Invalid JSON-RPC request'));
+    return true;
+  }
+
+  // A request without `id` is a JSON-RPC notification — the server MUST NOT
+  // reply. It previously got a full response body with `id: null`.
+  const isNotification = rpc.id === undefined;
 
   // Streaming methods → SSE.
   const accept = String(req.headers.accept || '');
@@ -131,10 +177,12 @@ async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise
   // Blocking methods → single JSON response.
   try {
     const result = await handleRpc(rpc, headers);
-    sendJson(res, 200, result);
+    if (isNotification) res.writeHead(204).end();
+    else sendJson(res, 200, result);
   } catch (err) {
     logger.error({ err, method: rpc.method }, 'A2A JSON-RPC handler error');
-    sendJson(res, 200, rpcError(rpc.id ?? null, A2A_ERR.INTERNAL, 'Internal error'));
+    if (isNotification) res.writeHead(204).end();
+    else sendJson(res, 200, rpcError(rpc.id ?? null, A2A_ERR.INTERNAL, 'Internal error'));
   }
   return true;
 }
@@ -150,7 +198,11 @@ async function legacyShim(
   try {
     const raw = await readRaw(req);
     body = raw ? JSON.parse(raw) : {};
-  } catch {
+  } catch (err) {
+    if (err instanceof PayloadTooLargeError) {
+      sendJsonAndClose(req, res, 413, { error: err.message });
+      return true;
+    }
     sendJson(res, 400, { error: 'Invalid JSON body' });
     return true;
   }
@@ -174,23 +226,104 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data, null, 2));
 }
 
+/**
+ * Answer a request whose body was rejected part-way through.
+ *
+ * The remaining upload is never drained, so the connection must be closed after
+ * the response — otherwise keep-alive would try to parse the unread body bytes
+ * as the next request.
+ */
+function sendJsonAndClose(
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  data: unknown,
+): void {
+  res.writeHead(status, { 'Content-Type': 'application/json', Connection: 'close' });
+  res.end(JSON.stringify(data, null, 2), () => {
+    req.destroy();
+  });
+}
+
 function openSse(res: ServerResponse): void {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
+    // Stop reverse proxies from buffering the stream into a single blob.
+    'X-Accel-Buffering': 'no',
   });
+  res.flushHeaders?.();
 }
 
 function writeSse(res: ServerResponse, event: unknown): void {
+  if (res.writableEnded || res.destroyed) return;
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
+/** Raised by readRaw when the request body exceeds the configured ceiling. */
+class PayloadTooLargeError extends Error {
+  constructor(limit: number) {
+    super(`Request body exceeds the ${limit} byte A2A limit`);
+    this.name = 'PayloadTooLargeError';
+  }
+}
+
+/** Default max A2A request body (bytes). Override with DMRX_A2A_MAX_BODY_BYTES. */
+const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+function maxBodyBytes(): number {
+  const raw = Number(process.env.DMRX_A2A_MAX_BODY_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_BODY_BYTES;
+}
+
+/**
+ * Buffer the request body, bounded.
+ *
+ * The unbounded version let any unauthenticated client stream arbitrarily many
+ * bytes straight into process memory (a 50MB POST was accepted and retained in
+ * full), so the endpoint was a trivial memory-exhaustion vector.
+ */
 async function readRaw(req: IncomingMessage): Promise<string> {
+  const limit = maxBodyBytes();
+
+  // Reject on the declared Content-Length before a single body byte is read, so
+  // an oversized upload costs nothing and the client gets its 413 immediately
+  // instead of after streaming the whole payload.
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > limit) {
+    throw new PayloadTooLargeError(limit);
+  }
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(chunk as Buffer));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
-    req.on('error', reject);
+    let size = 0;
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      // Stop reading but do NOT destroy the socket here — the caller still has
+      // to write the error response, and destroying first loses it.
+      req.pause();
+      reject(err);
+    };
+    req.on('data', (chunk) => {
+      if (settled) return;
+      const buf = chunk as Buffer;
+      size += buf.length;
+      // Enforced independently of Content-Length: a chunked (or lying) client
+      // can otherwise stream unbounded bytes into memory.
+      if (size > limit) {
+        fail(new PayloadTooLargeError(limit));
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString());
+    });
+    req.on('error', fail);
   });
 }

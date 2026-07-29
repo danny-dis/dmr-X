@@ -62,8 +62,25 @@ const GeminiGenerateContentRequestSchema = z.object({
   stream: z.boolean().optional().default(false),
 });
 
-export async function geminiRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/gemini/generateContent', async (request, reply) => {
+/**
+ * Shared handler for both the DMR-X path (`/v1/gemini/generateContent`) and
+ * the Google-native path (`/v1beta/models/<model>:generateContent`).
+ *
+ * `modelOverride` carries the model the caller named in the URL. The Gemini
+ * wire format has no `model` field in the body — Google puts it in the path —
+ * so without this the converter always emitted `model: undefined` and the
+ * router picked whatever it liked. A client asking for `gemini-2.5-flash`
+ * silently got some other model.
+ *
+ * `forceStream` lets `:streamGenerateContent` stream even though the body has
+ * no `stream` flag, which again is how the real API works.
+ */
+async function handleGenerateContent(
+  server: FastifyInstance,
+  request: any,
+  reply: any,
+  opts: { modelOverride?: string; forceStream?: boolean; routePath: string } ,
+): Promise<unknown> {
     const parsed = GeminiGenerateContentRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid Gemini request', {
@@ -72,6 +89,7 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data;
+    if (opts.forceStream) body.stream = true;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
@@ -113,17 +131,23 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
       }
     }
 
-    const unifiedRequest = convertGeminiRequestToUnified(body, {
+    const converted = convertGeminiRequestToUnified(body, {
       requestId,
       tenant: (request as any).tenant,
       apiFormat: 'gemini',
       costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
     });
+    // Honour the model named in the URL. Meta aliases ("auto", "free", …) are
+    // passed through untouched so `/v1beta/models/auto:generateContent` routes
+    // exactly like the OpenAI surface does.
+    const unifiedRequest = opts.modelOverride
+      ? { ...converted, model: opts.modelOverride }
+      : converted;
 
     if (body.stream) {
       // Streaming: get routing plan only, then stream from adapter
       const { plan } = await router.route(unifiedRequest, {
-        path: '/v1/gemini/generateContent',
+        path: opts.routePath,
         qualityTarget,
         planOnly: true,
       });
@@ -183,7 +207,7 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
 
     // Non-streaming: route and execute
     const { plan, response } = await router.route(unifiedRequest, {
-      path: '/v1/gemini/generateContent',
+      path: opts.routePath,
       qualityTarget,
     });
     if (!plan.primary) {
@@ -191,5 +215,65 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
     }
 
     return convertUnifiedResponseToGemini(response);
-  });
+}
+
+export async function geminiRoutes(server: FastifyInstance): Promise<void> {
+  // DMR-X's own path. Kept verbatim — existing clients depend on it, and it
+  // has no model in the URL, so the router chooses as it always has.
+  server.post('/gemini/generateContent', async (request, reply) =>
+    handleGenerateContent(server, request, reply, {
+      routePath: '/v1/gemini/generateContent',
+    }),
+  );
+}
+
+/**
+ * Google-native surface, mounted at the server root so the paths match
+ * `generativelanguage.googleapis.com` exactly:
+ *
+ *   POST /v1beta/models/gemini-2.5-flash:generateContent
+ *   POST /v1beta/models/gemini-2.5-flash:streamGenerateContent
+ *   POST /v1/models/gemini-2.5-flash:generateContent
+ *
+ * Without these, pointing a real Gemini SDK at DMR-X 404'd: the SDK builds
+ * that URL itself and cannot be told to call `/v1/gemini/generateContent`.
+ * Supporting them is what makes "Gemini wire format" true for actual clients
+ * rather than only for hand-rolled requests.
+ *
+ * Fastify cannot express the `<model>:<action>` segment as two params, so the
+ * whole segment is captured and split on the LAST colon — model ids may
+ * themselves contain colons (e.g. `tencent/hy3:free`).
+ */
+export async function geminiNativeRoutes(server: FastifyInstance): Promise<void> {
+  const handler = async (request: any, reply: any) => {
+    const segment = String((request.params as { modelAction: string }).modelAction ?? '');
+    const sep = segment.lastIndexOf(':');
+    if (sep <= 0) {
+      throw new ValidationError(
+        `Malformed Gemini path segment "${segment}" — expected "<model>:generateContent"`,
+      );
+    }
+    const model = decodeURIComponent(segment.slice(0, sep));
+    const action = segment.slice(sep + 1);
+
+    if (action !== 'generateContent' && action !== 'streamGenerateContent') {
+      reply.status(404);
+      return {
+        error: {
+          message: `Unsupported Gemini action "${action}". Supported: generateContent, streamGenerateContent.`,
+          type: 'not_found',
+          code: 'unsupported_gemini_action',
+        },
+      };
+    }
+
+    return handleGenerateContent(server, request, reply, {
+      modelOverride: model,
+      forceStream: action === 'streamGenerateContent',
+      routePath: `/v1beta/models/${model}:${action}`,
+    });
+  };
+
+  server.post('/v1beta/models/:modelAction', handler);
+  server.post('/v1/models/:modelAction', handler);
 }

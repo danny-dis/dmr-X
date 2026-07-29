@@ -8,9 +8,30 @@ import { logger } from '@dmr-x/utils';
 // NOT come back on its own — skipping it for a year (effectively permanent)
 // prevents the router from re-selecting a dead model and burning a fallback
 // slot every hour. `auth_error` (bad/expired key) may recover, so 24h. Others 5m.
+/**
+ * How long a provider/model pair stays on cooldown after a failure.
+ *
+ * These are recovery windows, not verdicts. The cache is in-memory, so a
+ * long TTL is effectively permanent for the lifetime of the process, and
+ * both of the long ones were reachable from a single transient failure:
+ *
+ *   model_not_found — was ~1 year. A 404 does not reliably mean "the model
+ *     was removed". Measured on Google's free tier, five keys list the same
+ *     57 models but only some can actually call a given one, so one unlucky
+ *     key 404'd `gemini-2.5-flash` and the model was gone for the process's
+ *     whole life even though four other keys served it. Cohere's working
+ *     `command-r-plus` was blacklisted for a year the same way. Six hours is
+ *     long enough to stop wasting retries on a genuinely dead model and
+ *     short enough that a wrong call self-heals.
+ *
+ *   auth_error — was 24 hours. The usual cause is a mis-set key, and the
+ *     usual fix is the operator correcting it within minutes; blinding the
+ *     router to that model for a day afterwards turns a two-minute config
+ *     error into a day-long outage.
+ */
 const MODEL_ERROR_TTL: Record<string, number> = {
-  'model_not_found': 365 * 24 * 60 * 60_000,  // ~1 year (permanent skip for removed models)
-  'auth_error': 24 * 60 * 60_000,     // 24 hours
+  'model_not_found': 6 * 60 * 60_000, // 6 hours
+  'auth_error': 15 * 60_000,          // 15 minutes
   'provider_overloaded': 5 * 60_000,  // 5 minutes
 };
 const modelErrorCache = new Map<string, { category: string; expiresAt: number }>();
@@ -466,6 +487,16 @@ export async function executeWithFallback(
         { provider: step.provider.providerId, modelId: step.provider.modelId, errorCategory, trigger: step.trigger },
         'Fallback succeeded'
       );
+      // Tell the caller this was not the model they were first routed to.
+      // Without it the switch is invisible: a different model answers, with
+      // different latency and cost, and nothing in the response says so.
+      response.fallback = {
+        fromProviderId: plan.primary.providerId,
+        fromModelId: plan.primary.modelId,
+        attempts: tried.length,
+        reason: errorCategory,
+        errors: [...triedErrors],
+      };
       return response;
     } catch (error) {
       // Record circuit breaker failure (wrapped in try/catch)

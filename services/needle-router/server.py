@@ -147,7 +147,14 @@ async def chat_completions(request: Request):
     try:
         from needle import generate
 
-        raw = generate(
+        # `generate` is synchronous CPU inference that takes tens of seconds.
+        # Calling it directly from this coroutine blocked the uvicorn event
+        # loop for its whole duration, so concurrent requests serialised
+        # behind it and even /health stopped answering. Off-loading to the
+        # default thread pool keeps the loop responsive and lets the two
+        # workers actually overlap work.
+        raw = await asyncio.to_thread(
+            generate,
             _MODEL,
             _PARAMS,
             _TOKENIZER,
@@ -281,7 +288,11 @@ async def batch_chat_completions(request: Request):
         try:
             from needle import generate
 
-            raw = generate(
+            # Off the event loop for the same reason as the single-shot
+            # endpoint — a batch of N queries would otherwise pin the loop
+            # for N x inference time.
+            raw = await asyncio.to_thread(
+                generate,
                 _MODEL,
                 _PARAMS,
                 _TOKENIZER,

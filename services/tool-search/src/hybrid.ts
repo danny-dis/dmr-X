@@ -55,6 +55,10 @@ export class HybridSearchEngine {
   private embedding: EmbeddingEngine | null = null;
   private config: Required<HybridSearchConfig>;
   private initialized = false;
+  /** True once the embedding backend has failed; search then runs lexical-only. */
+  private semanticDegraded = false;
+  /** Last embedding-backend error message, surfaced for diagnostics. */
+  private lastSemanticError: string | null = null;
 
   constructor(config?: HybridSearchConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -75,7 +79,12 @@ export class HybridSearchEngine {
     if (this.initialized) return;
 
     if (this.embedding) {
-      await this.embedding.initialize();
+      try {
+        await this.embedding.initialize();
+      } catch (err) {
+        this.semanticDegraded = true;
+        this.lastSemanticError = err instanceof Error ? err.message : String(err);
+      }
     }
 
     this.initialized = true;
@@ -91,8 +100,17 @@ export class HybridSearchEngine {
       }
     }
 
+    // Semantic indexing is best-effort: the embedding backend (Ollama/OpenAI)
+    // is an optional external dependency. If it is unreachable the BM25 index
+    // above is still valid, so degrade to lexical-only instead of throwing and
+    // taking the whole tool-discovery surface down with it.
     if (this.embedding) {
-      await this.embedding.addDocuments(tools);
+      try {
+        await this.embedding.addDocuments(tools);
+      } catch (err) {
+        this.semanticDegraded = true;
+        this.lastSemanticError = err instanceof Error ? err.message : String(err);
+      }
     }
   }
 
@@ -115,18 +133,45 @@ export class HybridSearchEngine {
     const limit = maxResults ?? this.config.maxResults;
     const results: SearchResult[] = [];
 
-    // Run searches in parallel
-    const [bm25Results, semanticResults] = await Promise.all([
+    // Run searches in parallel. `allSettled` (not `all`) is deliberate: the
+    // semantic leg talks to an optional external embedding backend, and a
+    // rejection there must not fail a search that BM25 could still answer.
+    const [bm25Settled, semanticSettled] = await Promise.allSettled([
       this.config.enableBM25 && this.bm25
         ? this.bm25.search(query, limit * 2)
-        : Promise.resolve([]),
-      this.config.enableSemantic && this.embedding
+        : Promise.resolve([] as SearchResult[]),
+      this.config.enableSemantic && this.embedding && !this.semanticDegraded
         ? this.embedding.search(query, limit * 2)
-        : Promise.resolve([]),
+        : Promise.resolve([] as SearchResult[]),
     ]);
 
-    // If only one search method is enabled, return its results directly
-    if (!this.config.enableBM25 || !this.config.enableSemantic) {
+    let bm25Results: SearchResult[] = [];
+    if (bm25Settled.status === 'fulfilled') {
+      bm25Results = bm25Settled.value;
+    }
+
+    let semanticResults: SearchResult[] = [];
+    if (semanticSettled.status === 'fulfilled') {
+      semanticResults = semanticSettled.value;
+    } else {
+      this.semanticDegraded = true;
+      this.lastSemanticError =
+        semanticSettled.reason instanceof Error
+          ? semanticSettled.reason.message
+          : String(semanticSettled.reason);
+    }
+
+    const semanticOk = semanticSettled.status === 'fulfilled' && !this.semanticDegraded;
+
+    // If BM25 also failed there is nothing left to fuse — surface the real
+    // cause rather than silently returning an empty result set.
+    if (bm25Settled.status === 'rejected' && !semanticOk) {
+      throw bm25Settled.reason;
+    }
+
+    // Only one search method is usable (either disabled by config, or the
+    // semantic backend is unavailable) — return its results directly.
+    if (!this.config.enableBM25 || !this.config.enableSemantic || !semanticOk) {
       const singleResults = this.config.enableBM25 ? bm25Results : semanticResults;
       return singleResults
         .filter((r) => r.score >= this.config.minScore)
@@ -161,6 +206,18 @@ export class HybridSearchEngine {
 
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, limit);
+  }
+
+  /**
+   * Report whether semantic search is currently usable. When `degraded` is
+   * true the engine is answering from BM25 alone and `error` holds the reason.
+   */
+  getSemanticStatus(): { enabled: boolean; degraded: boolean; error: string | null } {
+    return {
+      enabled: this.config.enableSemantic && this.embedding !== null,
+      degraded: this.semanticDegraded,
+      error: this.lastSemanticError,
+    };
   }
 
   /**

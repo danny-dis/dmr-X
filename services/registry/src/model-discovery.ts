@@ -348,6 +348,38 @@ function inferCapabilities(raw: Record<string, unknown>): string[] {
   return Array.from(caps);
 }
 
+/**
+ * Model-id patterns for non-chat families, checked in order.
+ *
+ * Most `/v1/models` endpoints describe every entry identically — Google's
+ * OpenAI-compatible listing returns `object: "model"` for all 57 of its
+ * models — so the id is the only signal available. Previously only "embed"
+ * and "vision" were recognised and everything else defaulted to `llm`, which
+ * registered Veo (video), Imagen, Lyria (music), TTS and native-audio models
+ * as chat candidates. The router could then pick `veo-3.1-generate-preview`
+ * to answer a chat request, which fails 100% of the time.
+ *
+ * Ordering matters: image/video/music suffixes are checked before the
+ * generic families so `gemini-3.1-flash-image` resolves to diffusion rather
+ * than falling through to llm on the strength of "flash".
+ */
+const MODALITY_ID_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/embed/i, 'embedding'],
+  [/(^|[-_/])(veo|sora|kling|wan|hunyuan-video)|[-_]video($|[-_])/i, 'video'],
+  [/lyria|musicgen|suno|audiocraft/i, 'music'],
+  [/imagen|dall-?e|stable-?diffusion|sdxl|nano-banana|flux/i, 'diffusion'],
+  // Trailing "-image" / "-image-preview" marks an image-OUTPUT variant of an
+  // otherwise chat-shaped family (gemini-3.1-flash-image).
+  [/[-_]image([-_](preview|latest|\d{2}-\d{4}))?$/i, 'diffusion'],
+  [/[-_]tts([-_]|$)|(^|[-_])tts[-_]|text-to-speech/i, 'audio_tts'],
+  [/whisper|transcri|[-_]stt([-_]|$)/i, 'audio_stt'],
+  // Realtime / bidirectional audio sessions are not chat-completions models.
+  [/native-audio|[-_]live([-_]|$)|realtime/i, 'audio'],
+  [/rerank/i, 'reranking'],
+  [/moderat|[-_]guard([-_]|$)|shield/i, 'moderation'],
+  [/vision/i, 'multimodal'],
+];
+
 function inferModality(raw: Record<string, unknown>, id: string): string {
   const v = raw.modality ?? raw.type ?? raw.object;
   if (typeof v === 'string') {
@@ -356,9 +388,14 @@ function inferModality(raw: Record<string, unknown>, id: string): string {
     if (lower.includes('image') || lower.includes('diffusion')) return 'diffusion';
     if (lower.includes('audio')) return 'audio';
     if (lower.includes('vision') || lower.includes('multimodal')) return 'multimodal';
-    if (lower === 'llm' || lower === 'chat' || lower === 'model') return 'llm';
+    // `object: "model"` is what nearly every OpenAI-compatible endpoint
+    // returns for everything, so it carries no information — fall through to
+    // the id patterns rather than declaring it a chat model.
+    if (lower === 'llm' || lower === 'chat') return 'llm';
   }
-  if (id.toLowerCase().includes('embed')) return 'embedding';
-  if (id.toLowerCase().includes('vision')) return 'multimodal';
+
+  for (const [pattern, modality] of MODALITY_ID_PATTERNS) {
+    if (pattern.test(id)) return modality;
+  }
   return 'llm';
 }

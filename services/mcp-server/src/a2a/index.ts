@@ -22,6 +22,7 @@ export {
   type AgentAuthentication,
   type AgentSkill,
   type AgentCard,
+  type AgentProvider,
 } from './agent-card.js';
 
 export {
@@ -32,6 +33,8 @@ export {
   textMessage,
   messageText,
   newMessageId,
+  type CreateTaskResult,
+  type TaskListener,
   type TaskState,
   type TaskMessage,
   type TaskPart,

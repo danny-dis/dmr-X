@@ -78,13 +78,20 @@ export class GenericOpenAIAdapter extends BaseAdapter {
   }
 
   /**
-   * Set multiple keys for round-robin rotation
+   * Set multiple keys for round-robin rotation.
+   *
+   * The pool is also handed to `keyRotationService`, because `getCurrentKey`
+   * asks that service first. The service only ever learned keys from the
+   * environment, so a provider that had one env key plus a vault pool
+   * rotated over the env key alone — every request went to the same
+   * credential and the other keys never took any load.
    */
   setKeys(keys: string[]): void {
     this.apiKeys = keys;
     this.keyIndex = 0;
     if (keys.length > 0) {
       this.apiKey = keys[0];
+      keyRotationService.registerKeys(this.providerId, keys);
     }
   }
 
@@ -262,12 +269,63 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     }
   }
 
+  /**
+   * Try the request across the key pool.
+   *
+   * Before this, a single key-scoped failure failed the whole request even
+   * when a sibling key would have served it, and the router then blacklisted
+   * the model for a year on the strength of that one 404. With five free-tier
+   * keys per provider that is the difference between a working pool and an
+   * effectively single-key setup.
+   *
+   * This adapter keeps its own loop rather than using `BaseAdapter.withKeyRotation`
+   * because its credential lives in `apiKeys` (fed by `getCurrentKey`'s
+   * quota-aware rotation) rather than in the base `keyPool`. The retry policy —
+   * `KEY_SCOPED_STATUSES` — is shared with the base class.
+   *
+   * With no pool (or one key) this is exactly one attempt — same as before.
+   */
   private async executeChat(
     request: UnifiedRequest,
     options?: ExecuteOptions
   ): Promise<UnifiedResponse> {
+    const attempts = Math.max(1, this.apiKeys.length);
+    let lastError: unknown;
+    // First attempt goes through normal (quota-aware) rotation. Retries walk
+    // the pool explicitly from there: smart rotation scores by remaining
+    // quota and would happily hand back the key that just failed, which
+    // would burn every attempt on the same credential.
+    const firstKey = this.getCurrentKey();
+    const startIndex = Math.max(0, this.apiKeys.indexOf(firstKey));
+
+    for (let i = 0; i < attempts; i++) {
+      const key = i === 0 ? firstKey : this.apiKeys[(startIndex + i) % this.apiKeys.length];
+      try {
+        return await this.executeChatOnce(request, options, key);
+      } catch (error) {
+        lastError = error;
+        const status = (error as { statusCode?: number })?.statusCode;
+        const isLast = i === attempts - 1;
+        if (isLast || !status || !GenericOpenAIAdapter.KEY_SCOPED_STATUSES.has(status)) {
+          throw error;
+        }
+        logger.warn(
+          { providerId: this.providerId, model: request.model, status, attempt: i + 1, of: attempts },
+          'Key-scoped failure — retrying on the next key in the pool',
+        );
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async executeChatOnce(
+    request: UnifiedRequest,
+    options?: ExecuteOptions,
+    keyOverride?: string,
+  ): Promise<UnifiedResponse> {
     const start = Date.now();
-    const key = this.getCurrentKey();
+    const key = keyOverride ?? this.getCurrentKey();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };

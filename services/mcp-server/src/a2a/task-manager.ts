@@ -11,7 +11,6 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  initPersistence,
   persistTask,
   loadPersistedTasks,
   setPushConfig as persistPushConfig,
@@ -101,7 +100,7 @@ export interface Task {
 // ---------------------------------------------------------------------------
 
 export function newMessageId(): string {
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 export function textMessage(role: 'user' | 'agent', text: string, extra?: Partial<TaskMessage>): TaskMessage {
@@ -127,12 +126,35 @@ export function messageText(msg: TaskMessage | undefined): string {
 // Store
 // ---------------------------------------------------------------------------
 
+/** Outcome of createTask — `error` set when the request is not admissible. */
+export interface CreateTaskResult {
+  task?: Task;
+  /** Client referenced `message.taskId` of an already-terminal task. */
+  error?: 'terminal-task';
+}
+
+/** Callback invoked on every state change of a subscribed task. */
+export type TaskListener = (task: Task) => void;
+
+/**
+ * Hard ceiling on retained tasks. Without it the store is an unbounded memory
+ * leak: every inbound message/send permanently retains its full text (a single
+ * request may legally carry megabytes). Oldest terminal tasks are evicted first;
+ * live (non-terminal) tasks are never evicted.
+ */
+const DEFAULT_MAX_TASKS = 1000;
+
 export class A2ATaskManager {
   private tasks = new Map<string, Task>();
   private contexts = new Map<string, Set<string>>();
   private push = new Map<string, PushNotificationConfig>();
+  private listeners = new Map<string, Set<TaskListener>>();
+  private readonly maxTasks: number;
 
-  constructor() {
+  constructor(opts?: { maxTasks?: number }) {
+    const envMax = Number(process.env.DMRX_A2A_MAX_TASKS);
+    this.maxTasks =
+      opts?.maxTasks ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_TASKS);
     // Rehydrate tasks persisted from a previous run (survives restart).
     for (const t of loadPersistedTasks()) {
       this.tasks.set(t.id, t);
@@ -140,12 +162,37 @@ export class A2ATaskManager {
       set.add(t.id);
       this.contexts.set(t.contextId, set);
     }
+    this.evict();
   }
 
-  /** Create a task from an inbound user message (spec: message/send). */
-  createTask(message: TaskMessage, opts?: { contextId?: string; metadata?: Record<string, unknown> }): Task {
-    const id = message.taskId || crypto.randomUUID();
-    const contextId = opts?.contextId || message.contextId || crypto.randomUUID();
+  /**
+   * Create a task from an inbound user message (spec: message/send).
+   *
+   * If `message.taskId` names a task that already exists, this CONTINUES that
+   * task (appends to its history) rather than silently replacing it — replacing
+   * destroyed all prior history and artifacts, breaking multi-turn. Continuing a
+   * task that already reached a terminal state is rejected: per spec a terminal
+   * task is immutable and follow-up turns belong to a NEW task sharing the same
+   * `contextId`.
+   */
+  createTask(
+    message: TaskMessage,
+    opts?: { contextId?: string; metadata?: Record<string, unknown> },
+  ): CreateTaskResult {
+    const existing = message.taskId ? this.tasks.get(message.taskId) : undefined;
+    if (existing) {
+      if (isTerminal(existing.status.state)) return { error: 'terminal-task' };
+      existing.history.push({ ...message, taskId: existing.id, contextId: existing.contextId });
+      existing.status = { state: 'submitted', timestamp: new Date().toISOString() };
+      if (opts?.metadata) existing.metadata = { ...existing.metadata, ...opts.metadata };
+      persistTask(existing);
+      this.emit(existing);
+      logger.info({ taskId: existing.id, contextId: existing.contextId }, 'A2A task continued');
+      return { task: existing };
+    }
+
+    const id = message.taskId || randomUUID();
+    const contextId = opts?.contextId || message.contextId || randomUUID();
     const now = new Date().toISOString();
 
     const task: Task = {
@@ -163,9 +210,10 @@ export class A2ATaskManager {
     set.add(id);
     this.contexts.set(contextId, set);
     persistTask(task);
+    this.evict();
 
     logger.info({ taskId: id, contextId }, 'A2A task created');
-    return task;
+    return { task };
   }
 
   getTask(id: string, historyLength?: number): Task | null {
@@ -175,12 +223,40 @@ export class A2ATaskManager {
     return { ...task, history: task.history.slice(-Math.max(0, historyLength)) };
   }
 
+  /** All tasks sharing a contextId, oldest first (used to rebuild multi-turn context). */
+  getContextTasks(contextId: string): Task[] {
+    const ids = this.contexts.get(contextId);
+    if (!ids) return [];
+    const out: Task[] = [];
+    for (const id of ids) {
+      const t = this.tasks.get(id);
+      if (t) out.push(t);
+    }
+    return out;
+  }
+
+  /**
+   * Move a task to a new state.
+   *
+   * Terminal states are FINAL: once a task is completed/canceled/failed/rejected
+   * it can never transition again. Without this guard an in-flight dispatch that
+   * finished after a `tasks/cancel` would resurrect the canceled task as
+   * `completed`, which the spec forbids and which silently lies to the client.
+   */
   setStatus(id: string, state: TaskState, message?: TaskMessage): Task | null {
     const task = this.tasks.get(id);
     if (!task) return null;
+    if (isTerminal(task.status.state)) {
+      logger.info(
+        { taskId: id, from: task.status.state, attempted: state },
+        'A2A task already terminal — status change ignored',
+      );
+      return null;
+    }
     task.status = { state, message, timestamp: new Date().toISOString() };
     if (message) task.history.push(message);
     persistTask(task);
+    this.emit(task);
     logger.info({ taskId: id, state }, 'A2A task status');
     return task;
   }
@@ -188,7 +264,11 @@ export class A2ATaskManager {
   addArtifact(id: string, artifact: TaskArtifact): Task | null {
     const task = this.tasks.get(id);
     if (!task) return null;
+    if (isTerminal(task.status.state)) return null;
     task.artifacts.push(artifact);
+    // Artifacts were previously held only in memory — a restart lost every
+    // result while the task row still claimed `completed`.
+    persistTask(task);
     return task;
   }
 
@@ -197,9 +277,21 @@ export class A2ATaskManager {
     const task = this.tasks.get(id);
     if (!task) return { error: 'not-found' };
     if (isTerminal(task.status.state)) return { error: 'not-cancelable' };
-    task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+    task.status = {
+      state: 'canceled',
+      message: textMessage('agent', 'Task canceled by client request', { taskId: id }),
+      timestamp: new Date().toISOString(),
+    };
+    persistTask(task);
+    this.emit(task);
     logger.info({ taskId: id }, 'A2A task canceled');
     return { task };
+  }
+
+  /** True if the task exists and has already reached a terminal state. */
+  isTaskTerminal(id: string): boolean {
+    const task = this.tasks.get(id);
+    return !!task && isTerminal(task.status.state);
   }
 
   setPushConfig(id: string, config: PushNotificationConfig): boolean {
@@ -210,7 +302,54 @@ export class A2ATaskManager {
   }
 
   getPushConfig(id: string): PushNotificationConfig | null {
-    return loadPushConfig(id) ?? this.push.get(id) ?? null;
+    return this.push.get(id) ?? loadPushConfig(id) ?? null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Live subscriptions (used by message/stream + tasks/resubscribe)
+  // -------------------------------------------------------------------------
+
+  /** Subscribe to state changes of a task. Returns an unsubscribe function. */
+  subscribe(id: string, listener: TaskListener): () => void {
+    const set = this.listeners.get(id) ?? new Set<TaskListener>();
+    set.add(listener);
+    this.listeners.set(id, set);
+    return () => {
+      const cur = this.listeners.get(id);
+      if (!cur) return;
+      cur.delete(listener);
+      if (cur.size === 0) this.listeners.delete(id);
+    };
+  }
+
+  private emit(task: Task): void {
+    const set = this.listeners.get(task.id);
+    if (!set) return;
+    for (const listener of [...set]) {
+      try {
+        listener(task);
+      } catch (err) {
+        logger.warn({ err, taskId: task.id }, 'A2A task listener threw');
+      }
+    }
+    if (isTerminal(task.status.state)) this.listeners.delete(task.id);
+  }
+
+  /** Drop oldest terminal tasks once the store exceeds `maxTasks`. */
+  private evict(): void {
+    if (this.tasks.size <= this.maxTasks) return;
+    for (const [id, task] of this.tasks) {
+      if (this.tasks.size <= this.maxTasks) break;
+      if (!isTerminal(task.status.state)) continue;
+      this.tasks.delete(id);
+      this.push.delete(id);
+      this.listeners.delete(id);
+      const set = this.contexts.get(task.contextId);
+      if (set) {
+        set.delete(id);
+        if (set.size === 0) this.contexts.delete(task.contextId);
+      }
+    }
   }
 }
 

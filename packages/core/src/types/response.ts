@@ -146,4 +146,34 @@ export interface UnifiedResponse {
 
   // Quality
   qualitySignals?: QualitySignal[];
+
+  /**
+   * Set only when the request was NOT served by the first provider/model the
+   * router picked. Absent on the happy path.
+   *
+   * DMR-X's whole value is that it silently survives a provider failing — but
+   * silently is the problem: a caller who asked for model X, got model Y, and
+   * was never told cannot explain the latency spike, the different answer
+   * shape, or the changed cost. This is the signal that a switch happened,
+   * what it switched away from, and why.
+   */
+  fallback?: FallbackInfo;
+}
+
+/**
+ * Describes a provider/model switch that occurred while serving a request.
+ */
+export interface FallbackInfo {
+  /** Provider actually used, when it differs from the router's first choice. */
+  fromProviderId: string;
+  fromModelId: string;
+  /** How many providers were attempted in total, including the successful one. */
+  attempts: number;
+  /**
+   * Why the original choice was abandoned — the classified category of the
+   * primary's failure (`rate_limit`, `model_not_found`, `auth_error`, …).
+   */
+  reason: string;
+  /** Per-provider failure detail, oldest first. */
+  errors: Array<{ provider: string; status?: number; message: string }>;
 }

@@ -704,6 +704,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           },
         ],
         usage: res?.usage,
+        // Additive, namespaced field — OpenAI SDKs ignore unknown keys, so
+        // this is safe for existing clients while giving anyone who looks a
+        // machine-readable record that the router switched models mid-request.
+        ...(res?.fallback ? { dmrx_fallback: res.fallback } : {}),
       };
     };
 
@@ -744,6 +748,17 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     }
     if (unifiedRequest.metadata?.freeTierStrategy) {
       reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
+    }
+
+    // Announce a provider/model switch. Clients that only read headers (proxies,
+    // dashboards, curl) see it here; the same information is repeated in the
+    // response body by toOpenAIChatCompletion for SDK callers.
+    if (response?.fallback) {
+      reply.header('X-DMRX-Fallback', 'true');
+      reply.header('X-DMRX-Fallback-From', response.fallback.fromModelId);
+      reply.header('X-DMRX-Fallback-Reason', response.fallback.reason);
+      reply.header('X-DMRX-Fallback-Attempts', String(response.fallback.attempts));
+      reply.header('X-DMRX-Served-By', response.modelId);
     }
 
     if (useCache && response) {

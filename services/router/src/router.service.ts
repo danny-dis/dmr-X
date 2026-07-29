@@ -344,19 +344,40 @@ export class Router {
         if (modelTarget.modelId && !isMetaModel(modelTarget.modelId)) {
           // pipelineCandidates is already scoped to the pinned provider (if any),
           // so this exact-match is naturally constrained to that provider.
-          const directMatch = pipelineCandidates.find(
+          const directMatches = pipelineCandidates.filter(
             (c) => c.modelId === modelTarget.modelId && c.isHealthy
           );
+          const directMatch = directMatches[0];
           if (directMatch) {
             span.setAttribute('router.selection', 'direct_model');
             span.setAttribute('router.selected_provider', directMatch.providerId);
             span.setAttribute('router.selected_model', directMatch.modelId);
-            logger.info({ model: modelTarget.modelId, provider: directMatch.providerName }, 'Direct model selection');
+            span.setAttribute('router.direct_alternates', directMatches.length - 1);
+            logger.info(
+              {
+                model: modelTarget.modelId,
+                provider: directMatch.providerName,
+                alternates: directMatches.length - 1,
+              },
+              'Direct model selection',
+            );
             return {
               providerId: directMatch.providerId,
               modelId: directMatch.modelId,
               adapterType: directMatch.providerName,
               score: 1,
+              // Every OTHER provider serving this exact model id, so the
+              // pinned-model path still has somewhere to fail over to. It
+              // used to build `chain: []`, which meant naming a model
+              // explicitly silently opted out of failover entirely: one
+              // provider hiccup 502'd the request even when three other
+              // providers served the same model.
+              alternates: directMatches.slice(1).map((c) => ({
+                providerId: c.providerId,
+                modelId: c.modelId,
+                adapterType: c.providerName,
+                score: 0.9,
+              })),
             } as const;
           }
         }
@@ -391,9 +412,19 @@ export class Router {
     if (directSelection) {
       // We picked a specific provider above — bypass the scoring pipeline
       // and go straight to execution.
+      const { alternates, ...primary } = directSelection as typeof directSelection & {
+        alternates?: Array<{ providerId: string; modelId: string; adapterType: string; score: number }>;
+      };
       const plan: RoutingPlan = {
-        primary: { ...directSelection, score: 1 },
-        chain: [],
+        primary: { ...primary, score: 1 },
+        // Same model id on other healthy providers. `trigger: 'error'` matches
+        // how the pipeline path builds its chain, so executeWithFallback
+        // treats these identically to a scored fallback.
+        chain: (alternates ?? []).map((a) => ({
+          provider: a,
+          trigger: 'error' as const,
+          waitMs: 0,
+        })),
         timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
         maxRetries: 1,
       };

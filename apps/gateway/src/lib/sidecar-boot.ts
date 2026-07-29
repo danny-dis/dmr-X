@@ -342,14 +342,32 @@ async function httpOk(url: string, timeoutMs = 2000): Promise<boolean> {
   }
 }
 
+/**
+ * Under PM2, companions must NOT inherit the gateway's stdio.
+ *
+ * PM2 treats end-of-stdio as part of "the process is gone". A companion that
+ * inherited those pipes keeps them open after the gateway itself exits, so PM2
+ * never sees the stream close: it reports the app as `waiting restart` with a
+ * climbing restart counter while a perfectly healthy gateway is still serving
+ * the port, and its bookkeeping never re-converges. Detaching the companion's
+ * stdio is what lets PM2 reap the gateway cleanly.
+ *
+ * Outside PM2 (plain `bun run`, debugging) inheriting is genuinely useful —
+ * the sidecar's startup banner and errors land in the same terminal — so the
+ * behaviour is conditional rather than unconditionally dropped.
+ */
+function companionStdio(): 'inherit' | 'ignore' {
+  return process.env.pm_id !== undefined ? 'ignore' : 'inherit';
+}
+
 function spawnMcpProcess(entry: string, env: NodeJS.ProcessEnv, cwd: string): ChildLike {
   const BunCtor = (globalThis as { Bun?: { spawn: (cmd: string[], opts: Record<string, unknown>) => ChildLike } }).Bun;
   if (BunCtor?.spawn) {
     return BunCtor.spawn([bunPath(), entry], {
       cwd,
       env,
-      stdout: 'inherit',
-      stderr: 'inherit',
+      stdout: companionStdio(),
+      stderr: companionStdio(),
     });
   }
 
@@ -358,7 +376,11 @@ function spawnMcpProcess(entry: string, env: NodeJS.ProcessEnv, cwd: string): Ch
     env,
     stdio: 'ignore',
     detached: false,
-    shell: process.platform === 'win32',
+    // No shell. `bunPath()` is already a fully-resolved executable, and going
+    // through cmd.exe put a shell between us and bun: `cp.kill()` then
+    // terminated the shell while bun survived holding the inherited listening
+    // socket — the orphan-that-wedges-the-port case this file exists to avoid.
+    shell: false,
   });
   return {
     pid: cp.pid ?? null,

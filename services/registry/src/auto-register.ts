@@ -465,7 +465,8 @@ export async function autoRegisterProviders(): Promise<string[]> {
             `UPDATE providers SET is_healthy = 1, config = ?, updated_at = datetime('now') WHERE id = ?`
           ).run(JSON.stringify(cfg), existing.id);
           db.prepare(
-            `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now') WHERE provider_id = ?`
+            `UPDATE model_profiles SET is_active = 1, updated_at = datetime('now')
+             WHERE provider_id = ? AND operator_disabled = 0`
           ).run(existing.id);
           logger.info({ provider: template.id }, 'Re-activated provider — api_key_ref/env key now available');
         }
@@ -703,13 +704,30 @@ export async function discoverMissingModels(): Promise<number> {
   const db = getDb();
   const catalogLookup = buildCatalogLookup();
 
+  // When the operator has declared a known-good provider set, discovery has no
+  // reason to look anywhere else. Without this every boot fired ~100 parallel
+  // /v1/models requests at providers with no credentials, which produced a wall
+  // of "Unable to connect" warnings and enough event-loop pressure to make
+  // /health time out for the first minute or so after a restart.
+  const allowlist = new Set(
+    (process.env.DMRX_PROVIDER_ALLOWLIST ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+
   // Phase 1: collect eligible providers via sync DB lookups (cheap, no I/O)
   const eligible: Array<{ providerId: string; templateId: string; baseUrl: string; apiKey: string }> = [];
+  let skippedNotAllowlisted = 0;
   for (const template of PROVIDER_CATALOG) {
     if (template.apiFormat !== 'openai' || !template.baseUrl) continue;
     // Skip unconfigured local providers — their /v1/models is guaranteed to
     // ECONNREFUSED on every boot until the user actually runs the local stack.
     if (isLocalProviderUnconfigured(template)) continue;
+    if (allowlist.size > 0 && !allowlist.has(template.id)) {
+      skippedNotAllowlisted++;
+      continue;
+    }
 
     const row = db
       .prepare('SELECT id FROM providers WHERE name = ?')
@@ -728,6 +746,13 @@ export async function discoverMissingModels(): Promise<number> {
       baseUrl: template.baseUrl,
       apiKey: (template.envKey ? process.env[template.envKey] : '') ?? '',
     });
+  }
+
+  if (skippedNotAllowlisted > 0) {
+    logger.info(
+      { discovering: eligible.length, skipped: skippedNotAllowlisted },
+      'Model discovery scoped to DMRX_PROVIDER_ALLOWLIST',
+    );
   }
 
   // Phase 2: discover models in parallel. Each fetch is capped by its own
@@ -769,7 +794,11 @@ export async function discoverMissingModels(): Promise<number> {
        context_window = COALESCE(?, context_window),
        max_output_tokens = COALESCE(?, max_output_tokens),
        display_name = COALESCE(NULLIF(?, ''), display_name),
-       is_active = 1,
+       -- Never re-enable what an operator turned off. Upstream still LISTING
+       -- a model is not a reason to route to it: Google lists several models
+       -- that cannot be called at all, and re-activating them each boot put
+       -- guaranteed-failing candidates back in front of the router.
+       is_active = CASE WHEN operator_disabled = 1 THEN 0 ELSE 1 END,
        updated_at = datetime('now')
      WHERE provider_id = ? AND model_id = ?`,
   );

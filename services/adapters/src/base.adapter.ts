@@ -21,7 +21,7 @@ import {
   type Result,
 } from '@dmr-x/utils';
 import { trace, SpanStatusCode, SpanKind, propagation, context } from '@opentelemetry/api';
-import { getRateLimitTracker, supportsRateLimitHeaders } from '@dmr-x/quota';
+import { getRateLimitTracker, supportsRateLimitHeaders, keyRotationService } from '@dmr-x/quota';
 
 import type {
   ProviderAdapter,
@@ -94,6 +94,12 @@ export abstract class BaseAdapter implements ProviderAdapter {
     retryConnectionErrors: true,
   };
 
+  /**
+   * Every credential the operator has stored for this provider, highest
+   * priority first. Populated by `setKeys()`; empty for single-key providers.
+   */
+  protected keyPool: string[] = [];
+
   async initialize(config: ProviderConfig): Promise<void> {
     this.config = config;
     this.initialized = true;
@@ -102,6 +108,102 @@ export abstract class BaseAdapter implements ProviderAdapter {
       this.enableRateLimitTracking();
     }
     logger.info({ providerId: this.providerId }, 'Adapter initialized');
+  }
+
+  /**
+   * Hand this adapter the full credential pool from the `provider_keys`
+   * vault so requests can spread across keys instead of pinning to one.
+   *
+   * This lives on the base class because only the two generic adapters
+   * implemented it. Every dedicated adapter — Cohere among them — silently
+   * ignored the extra keys, so a provider with five free-tier keys got the
+   * throughput of one and 429'd as soon as that single key's quota ran out.
+   * The gateway feature-detects `setKeys`, so defining it here is what makes
+   * the pool reach those adapters at all.
+   */
+  setKeys(keys: string[]): void {
+    const deduped = [...new Set(keys.filter(Boolean))];
+    if (deduped.length === 0) return;
+    this.keyPool = deduped;
+    keyRotationService.registerKeys(this.providerId, deduped);
+    this.config = { ...this.config, apiKey: deduped[0] };
+    if (deduped.length > 1) this.enableRateLimitTracking();
+  }
+
+  /**
+   * When set, `nextKey` returns this pool index instead of consulting
+   * rotation. Used by `withKeyRotation` to walk the pool deterministically —
+   * quota-aware rotation scores by remaining quota and would happily return
+   * the key that just failed, burning every retry on one credential.
+   */
+  private pinnedKeyIndex?: number;
+
+  /**
+   * The credential to use for the next outbound request.
+   *
+   * With no pool (or a pool of one) this returns `fallback` unchanged, so
+   * single-key adapters behave exactly as before — importantly it does NOT
+   * consult the rotation service in that case, which would hand back an
+   * unrelated ambient env var and shadow the vault credential.
+   */
+  protected nextKey(fallback: string): string {
+    if (this.keyPool.length <= 1) return fallback;
+    if (this.pinnedKeyIndex !== undefined) {
+      return this.keyPool[this.pinnedKeyIndex % this.keyPool.length];
+    }
+    return keyRotationService.getNextKey(this.providerId) ?? fallback;
+  }
+
+  /**
+   * Statuses that describe the CREDENTIAL rather than the request, and so are
+   * worth retrying on a different key: revoked/unscoped (401/403), model not
+   * enabled for that key's project (404), and spent quota (429).
+   */
+  protected static readonly KEY_SCOPED_STATUSES: ReadonlySet<number> = new Set([401, 403, 404, 429]);
+
+  /**
+   * Run `operation` against the key pool, advancing to the next key whenever
+   * the failure is key-scoped.
+   *
+   * Adapters that hold several free-tier keys otherwise threw away most of
+   * their capacity: rotation spread requests across keys, but a request that
+   * happened to land on an exhausted key failed outright instead of trying a
+   * sibling. With a pool of five where two are spent, that is a ~40% error
+   * rate on traffic the pool could have served.
+   *
+   * With no pool this is a single call and adds nothing.
+   */
+  protected async withKeyRotation<T>(operation: () => Promise<T>): Promise<T> {
+    const attempts = Math.max(1, this.keyPool.length);
+    if (attempts === 1) return operation();
+
+    let lastError: unknown;
+    try {
+      for (let i = 0; i < attempts; i++) {
+        // First attempt uses normal quota-aware rotation; retries walk the pool.
+        this.pinnedKeyIndex = i === 0 ? undefined : i;
+        try {
+          return await operation();
+        } catch (error) {
+          lastError = error;
+          const status = (error as { statusCode?: number })?.statusCode;
+          if (
+            i === attempts - 1 ||
+            !status ||
+            !BaseAdapter.KEY_SCOPED_STATUSES.has(status)
+          ) {
+            throw error;
+          }
+          logger.warn(
+            { providerId: this.providerId, status, attempt: i + 1, of: attempts },
+            'Key-scoped failure — retrying on the next key in the pool',
+          );
+        }
+      }
+    } finally {
+      this.pinnedKeyIndex = undefined;
+    }
+    throw lastError;
   }
 
   async healthCheck(): Promise<HealthStatus> {
