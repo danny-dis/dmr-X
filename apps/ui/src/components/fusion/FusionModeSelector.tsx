@@ -82,7 +82,7 @@ export function FusionModeSelector({ value, onChange, disabled }: FusionModeSele
         </Badge>
       )}
       {value === 'consortium' && (
-        <Badge tone="accent" size="sm">
+        <Badge tone="info" size="sm">
           <Brain className="size-3 mr-1" />
           Synthesis
         </Badge>

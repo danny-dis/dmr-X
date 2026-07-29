@@ -2,12 +2,14 @@ import { DollarSign, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
+import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { chartColor } from '@/lib/chartPalette';
 import { formatCurrency, formatNumber } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 
@@ -42,8 +44,8 @@ interface CostDashboardData {
 
 export function CostDashboardPage() {
   const [days, setDays] = React.useState(30);
-  const { data, loading, refetch } = useApiData<CostDashboardData>(
-    () => Admin.getCostDashboard(days),
+  const { data, isLoading, refetch } = useApiData<CostDashboardData>(
+    () => Admin.getCostDashboard<CostDashboardData>(days),
     [days],
     { refetchInterval: 60000 }
   );
@@ -72,7 +74,7 @@ export function CostDashboardPage() {
         }
       />
 
-      {loading ? (
+      {isLoading ? (
         <div className="space-y-4">
           <Skeleton className="h-32" />
           <Skeleton className="h-64" />
@@ -97,19 +99,19 @@ export function CostDashboardPage() {
                 icon={<TrendingDown className="h-4 w-4" />}
                 label="Free Tier Cost"
                 value={formatCurrency(data.freeTierCost)}
-                className="text-green-600"
+                className="text-success"
               />
               <StatTile
                 icon={<TrendingUp className="h-4 w-4" />}
                 label="Paid Cost"
                 value={formatCurrency(data.paidCost)}
-                className="text-orange-600"
+                className="text-warning"
               />
               <StatTile
                 icon={<DollarSign className="h-4 w-4" />}
                 label="Cost Savings"
                 value={formatCurrency(data.costSavings)}
-                className="text-blue-600"
+                className="text-info"
               />
             </div>
           </Card>
@@ -138,7 +140,7 @@ export function CostDashboardPage() {
                       <td className="py-2 text-right">
                         <span className={cn(
                           'font-medium',
-                          stats.freePercent > 50 ? 'text-green-600' : 'text-muted-foreground'
+                          stats.freePercent > 50 ? 'text-success' : 'text-muted-foreground'
                         )}>
                           {stats.freePercent.toFixed(1)}%
                         </span>
@@ -170,7 +172,7 @@ export function CostDashboardPage() {
                       <tr key={tenant.tenantId} className="border-b last:border-0">
                         <td className="py-2 font-medium">{tenant.tenantName}</td>
                         <td className="py-2 text-right">{formatCurrency(tenant.totalCost)}</td>
-                        <td className="py-2 text-right text-green-600">{formatCurrency(tenant.freeTierCost)}</td>
+                        <td className="py-2 text-right text-success">{formatCurrency(tenant.freeTierCost)}</td>
                         <td className="py-2 text-right">{formatCurrency(tenant.paidCost)}</td>
                         <td className="py-2 text-right">{formatNumber(tenant.totalRequests)}</td>
                       </tr>
@@ -185,34 +187,20 @@ export function CostDashboardPage() {
           {data.dailyCosts.length > 0 && (
             <Card className="p-6">
               <h3 className="text-lg font-semibold mb-4">Daily Costs</h3>
-              <div className="h-64 flex items-end gap-1">
-                {data.dailyCosts.map((day, i) => {
-                  const maxCost = Math.max(...data.dailyCosts.map(d => d.cost));
-                  const height = maxCost > 0 ? (day.cost / maxCost) * 100 : 0;
-                  return (
-                    <div
-                      key={day.date}
-                      className="flex-1 flex flex-col items-center gap-1"
-                      title={`${day.date}: $${day.cost.toFixed(4)}`}
-                    >
-                      <div className="w-full flex flex-col">
-                        <div
-                          className="w-full bg-success rounded-t"
-                          style={{ height: maxCost > 0 ? (day.freeCost / maxCost) * 100 * (height / 100) : 0 }}
-                        />
-                        <div
-                          className="w-full bg-orange-500 rounded-b"
-                          style={{ height: maxCost > 0 ? (day.paidCost / maxCost) * 100 * (height / 100) : 0 }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="flex justify-between text-xs text-muted-foreground mt-2">
-                <span>{data.dailyCosts[0]?.date}</span>
-                <span>{data.dailyCosts[data.dailyCosts.length - 1]?.date}</span>
-              </div>
+              <BarSeriesChart
+                data={data.dailyCosts.map((day) => ({
+                  date: day.date,
+                  freeCost: day.freeCost,
+                  paidCost: day.paidCost,
+                }))}
+                bars={[
+                  { key: 'freeCost', name: 'Free', color: chartColor('success') },
+                  { key: 'paidCost', name: 'Paid', color: chartColor('warning') },
+                ]}
+                xKey="date"
+                height={256}
+                yFormatter={(n) => formatCurrency(n)}
+              />
             </Card>
           )}
         </div>

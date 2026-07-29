@@ -77,8 +77,10 @@ export function AntigravityPage() {
     ])
       .then(([providerList, config]) => {
         setProviders(providerList);
-        if (config.antigravity) {
-          const ag = config.antigravity;
+        // Antigravity (agy) speaks Google's Cloud Code protocol, so its
+        // settings are stored under the shared "gemini-cli" integration key.
+        if (config.geminiCli) {
+          const ag = config.geminiCli;
           setIsEnabled((ag.isEnabled as boolean) ?? false);
           setPreferredProviderId((ag.preferredProviderId as string) ?? null);
         }
@@ -120,7 +122,7 @@ export function AntigravityPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await Admin.updateAgentIntegrationConfig('antigravity', {
+      await Admin.updateAgentIntegrationConfig('gemini-cli', {
         isEnabled,
         preferredProviderId,
       });
@@ -141,7 +143,7 @@ export function AntigravityPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await Admin.testIntegration('antigravity');
+      const result = await Admin.testIntegration('gemini-cli');
       setTestResult(result);
       if (result.success) {
         toast.success('Connection successful', {

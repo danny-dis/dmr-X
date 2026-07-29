@@ -21,7 +21,6 @@ import { useUIStore } from '@/store/useUIStore';
 import type { ApiCatalogEntry, ApiProvider } from '@/types/api';
 
 // Lazy-load Free Tier tab content
-const FreeTierTab = React.lazy(() => import('@/pages/FreeTier').then(m => ({ default: m.FreeTierPage })));
 
 export function ProvidersPage() {
   const [query, setQuery] = useUrlState('q', '');
@@ -97,10 +96,6 @@ export function ProvidersPage() {
         <Tabs defaultValue="providers">
           <TabsList>
             <TabsTrigger value="providers">Providers</TabsTrigger>
-            <TabsTrigger value="free-tier">
-              <Gift className="size-3" />
-              Free Tier
-            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="providers">
@@ -268,11 +263,6 @@ export function ProvidersPage() {
 
           </TabsContent>
 
-          <TabsContent value="free-tier">
-            <React.Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
-              <FreeTierTab />
-            </React.Suspense>
-          </TabsContent>
         </Tabs>
       </div>
     </PageContainer>

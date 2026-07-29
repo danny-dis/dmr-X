@@ -7,9 +7,11 @@ interface BackLinkProps {
   to: string;
   label?: string;
   className?: string;
+  /** Overrides `label`. Lets call sites write <BackLink to="/x">Label</BackLink>. */
+  children?: React.ReactNode;
 }
 
-export function BackLink({ to, label = 'Back', className }: BackLinkProps) {
+export function BackLink({ to, label = 'Back', className, children }: BackLinkProps) {
   return (
     <Link
       to={to}
@@ -19,7 +21,7 @@ export function BackLink({ to, label = 'Back', className }: BackLinkProps) {
       )}
     >
       <ArrowLeft className="size-3.5" />
-      {label}
+      {children ?? label}
     </Link>
   );
 }

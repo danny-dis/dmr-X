@@ -1,5 +1,6 @@
 import { Bot, Boxes, Gauge, PanelLeftClose, PanelLeft, Radio } from 'lucide-react';
 import * as React from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router';
 
 import { PlaygroundInput } from './PlaygroundInput';
 import { PlaygroundMain } from './PlaygroundMain';
@@ -8,7 +9,7 @@ import { PlaygroundTabs } from './PlaygroundTabs';
 
 import { Button } from '@/components/primitives/Button';
 import { cn } from '@/lib/utils';
-import { usePlaygroundStore } from '@/store/usePlaygroundStore';
+import { isPlaygroundMode, usePlaygroundStore } from '@/store/usePlaygroundStore';
 
 // Non-chat tab views. Only the tabs listed in TOP_LEVEL_TABS are reachable —
 // keep this list and that one in sync when adding a new view.
@@ -22,12 +23,44 @@ import { VideoView } from './VideoView';
 const NON_CHAT_TABS = new Set(['completions', 'images', 'video']);
 
 export function PlaygroundPage() {
+  const navigate = useNavigate();
+  const { mode: modeParam } = useParams<{ mode: string }>();
+  const [searchParams] = useSearchParams();
+
   const showSidebar = usePlaygroundStore(s => s.showSidebar);
   const setShowSidebar = usePlaygroundStore(s => s.setShowSidebar);
   const model = usePlaygroundStore(s => s.model);
+  const mode = usePlaygroundStore(s => s.mode);
+  const setMode = usePlaygroundStore(s => s.setMode);
+  const setAgentInstanceId = usePlaygroundStore(s => s.setAgentInstanceId);
   const messages = usePlaygroundStore(s => s.messages);
   const isStreaming = usePlaygroundStore(s => s.isStreaming);
   const activeTab = usePlaygroundStore(s => s.activeTab);
+
+  // Mode lives in the URL (`/playground/:mode`) so a conversation in
+  // agent/godmode/agentic can be linked to directly — this is the one place
+  // that reads the route param and syncs it into the store. An invalid
+  // segment (old bookmark, typo) redirects to chat instead of leaving the
+  // page on a mode nothing else recognizes.
+  React.useEffect(() => {
+    if (!modeParam) return;
+    if (isPlaygroundMode(modeParam)) {
+      if (modeParam !== mode) setMode(modeParam);
+    } else {
+      navigate('/playground/chat', { replace: true });
+    }
+    // Only the route param should retrigger this — `mode` is read for the
+    // no-op check, not to resubscribe the effect to every store change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeParam]);
+
+  // AgentsPage links here as `/playground/agent?instance=<id>` (its "Chat"
+  // button) — adopt that as the initial instance selection.
+  React.useEffect(() => {
+    const instanceParam = searchParams.get('instance');
+    if (instanceParam) setAgentInstanceId(instanceParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   return (
     <div className="h-[calc(100dvh-64px)] overflow-hidden bg-bg">

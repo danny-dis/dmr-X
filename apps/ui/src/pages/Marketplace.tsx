@@ -9,7 +9,7 @@ import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
+import { apiGet, apiPost } from '@/lib/admin';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,7 +52,7 @@ function ListingCard({ listing, onInstall }: { listing: MarketplaceListing; onIn
             </div>
           </div>
           {listing.priceCents > 0 && (
-            <Badge variant="default">${(listing.priceCents / 100).toFixed(2)}</Badge>
+            <Badge tone="primary" variant="solid">${(listing.priceCents / 100).toFixed(2)}</Badge>
           )}
         </div>
       </CardHeader>
@@ -105,8 +105,9 @@ export function MarketplacePage() {
     return params.toString();
   }, [search, category]);
 
-  const { data, loading, refetch } = useApiData<{ items: MarketplaceListing[]; total: number }>(
-    `/v1/marketplace?${queryParams}`
+  const { data, isLoading, refetch } = useApiData<{ items: MarketplaceListing[]; total: number }>(
+    () => apiGet(`/v1/marketplace?${queryParams}`),
+    [queryParams]
   );
 
   const listings = data?.items ?? [];
@@ -114,7 +115,7 @@ export function MarketplacePage() {
   const handleInstall = async (id: string) => {
     setInstalling(id);
     try {
-      await Admin.fetch(`/v1/marketplace/${id}/install`, { method: 'POST' });
+      await apiPost(`/v1/marketplace/${id}/install`);
       refetch();
     } catch (e) {
       console.error('Install failed:', e);
@@ -151,7 +152,7 @@ export function MarketplacePage() {
           </div>
           <div className="flex gap-2 flex-wrap">
             <Button
-              variant={category === '' ? 'default' : 'outline'}
+              variant={category === '' ? 'primary' : 'outline'}
               size="sm"
               onClick={() => setCategory('')}
             >
@@ -160,7 +161,7 @@ export function MarketplacePage() {
             {categories.map(cat => (
               <Button
                 key={cat}
-                variant={category === cat ? 'default' : 'outline'}
+                variant={category === cat ? 'primary' : 'outline'}
                 size="sm"
                 onClick={() => setCategory(cat === category ? '' : cat)}
               >
@@ -171,7 +172,7 @@ export function MarketplacePage() {
         </div>
 
         {/* Listings grid */}
-        {loading ? (
+        {isLoading ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {[1, 2, 3, 4, 5, 6].map(i => <Skeleton key={i} className="h-64" />)}
           </div>

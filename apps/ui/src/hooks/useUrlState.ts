@@ -7,9 +7,19 @@ import { useSearchParams } from 'react-router';
  * is persisted in the URL search params so it survives page refreshes
  * and can be shared via URL.
  */
-export function useUrlState<T extends string>(
+/**
+ * `NoInfer` on `defaultValue` is what makes this usable.
+ *
+ * Without it, `useUrlState('tab', 'overview')` infers `T` as the literal
+ * `'overview'`, so the returned setter accepts only that one string and every
+ * call site that actually changes the value fails to typecheck. Blocking
+ * inference at that position lets `T` fall back to `string`, while a caller
+ * who wants a narrow union still gets it by passing the type argument
+ * explicitly: `useUrlState<'a' | 'b'>('mode', 'a')`.
+ */
+export function useUrlState<T extends string = string>(
   key: string,
-  defaultValue: T
+  defaultValue: NoInfer<T>
 ): [T, (value: T | ((prev: T) => T)) => void] {
   const [searchParams, setSearchParams] = useSearchParams();
 

@@ -62,7 +62,7 @@ export function RoutingPage() {
   }));
 
   const series = (usage.data?.points ?? []).slice(-24).map((p) => ({
-    t: p.t,
+    t: p.t ?? 0,
     routed: p.requests ?? 0,
     cache_hits: (p.cacheHits ?? 0),
     fallbacks: (p.fallbacks ?? 0),

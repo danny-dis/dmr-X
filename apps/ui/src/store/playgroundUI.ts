@@ -17,6 +17,12 @@ export interface UISlice {
   activeTab: string;
   /** System prompt for chat mode (persisted). */
   systemPrompt: string;
+  /**
+   * Selected agent instance for `agent` mode (`/v1/agents/:instanceId/chat`).
+   * Seeded from the `?instance=` search param when arriving via
+   * `/playground/agent?instance=<id>` (AgentsPage's "Chat" button).
+   */
+  agentInstanceId: string | null;
   toggleTemporary: () => void;
   setMode: (mode: PlaygroundMode) => void;
   setModel: (model: string) => void;
@@ -29,6 +35,7 @@ export interface UISlice {
   consumePromptSeed: () => string | null;
   setActiveTab: (tab: string) => void;
   setSystemPrompt: (prompt: string) => void;
+  setAgentInstanceId: (id: string | null) => void;
 }
 
 export const createUISlice: StateCreator<PlaygroundState, [], [], UISlice> = (set, get) => ({
@@ -52,6 +59,7 @@ export const createUISlice: StateCreator<PlaygroundState, [], [], UISlice> = (se
   pendingPrompt: '',
   activeTab: 'chat',
   systemPrompt: '',
+  agentInstanceId: null,
 
   toggleTemporary: () => {
     set(state => ({ isTemporary: !state.isTemporary }));
@@ -107,5 +115,9 @@ export const createUISlice: StateCreator<PlaygroundState, [], [], UISlice> = (se
 
   setSystemPrompt: (prompt: string) => {
     set({ systemPrompt: prompt });
+  },
+
+  setAgentInstanceId: (id: string | null) => {
+    set({ agentInstanceId: id });
   },
 });

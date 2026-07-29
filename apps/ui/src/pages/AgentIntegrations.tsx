@@ -58,7 +58,9 @@ export function AgentIntegrationsPage() {
           },
           'antigravity': {
             ...prev['antigravity'],
-            configured: !!(config.antigravity?.isEnabled),
+            // Antigravity (agy) shares the "gemini-cli" integration config —
+            // it speaks Google's Cloud Code protocol, same as the Gemini CLI.
+            configured: !!(config.geminiCli?.isEnabled),
           },
           'opencode': {
             ...prev['opencode'],

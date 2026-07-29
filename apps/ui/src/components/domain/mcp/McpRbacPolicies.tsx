@@ -11,10 +11,13 @@ import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import type { ApiMcpRbacConfig } from '@/types/api';
+import type { ApiRbacPolicy } from '@/types/api';
 
 export function McpRbacPolicies() {
-  const config = useApiData<ApiMcpRbacConfig>(Admin.listRbacPolicies, []);
+  // /admin/mcp/rbac/policies only returns { policies }. The `enabled` flag
+  // lives on the combined /admin/mcp/config `rbac.enabled` field, so this
+  // toggle is local-only until that's wired up.
+  const config = useApiData<{ policies: ApiRbacPolicy[] }>(Admin.listRbacPolicies, []);
   const [saving, setSaving] = React.useState(false);
   const [enabled, setEnabled] = React.useState(true);
   const [dialogOpen, setDialogOpen] = React.useState(false);
@@ -27,12 +30,6 @@ export function McpRbacPolicies() {
   const [policyResources, setPolicyResources] = React.useState('');
 
   const policies = config.data?.policies ?? [];
-
-  React.useEffect(() => {
-    if (config.data) {
-      setEnabled(config.data.enabled);
-    }
-  }, [config.data]);
 
   const resetForm = () => {
     setPolicyName('');

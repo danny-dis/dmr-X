@@ -13,7 +13,7 @@ import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
 import { Progress } from '@/components/primitives/Progress';
-import { StatusPill } from '@/components/primitives/StatusPill';
+import { StatusPill, type StatusKind } from '@/components/primitives/StatusPill';
 import { formatTokens } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiProvider } from '@/types/api';
@@ -36,10 +36,26 @@ export function FreeProviderCard({
   className,
 }: FreeProviderCardProps) {
   const health = provider.health;
-  const healthStatus = health?.status ?? provider.enabled ? 'online' : 'offline';
+  // `health?.status` uses the wire vocabulary ('ok' | 'degraded' | 'down' |
+  // 'unknown'); StatusPill expects its own StatusKind union. Map explicitly
+  // instead of passing the value straight through — the previous
+  // `health?.status ?? provider.enabled ? 'online' : 'offline'` bound `??`
+  // tighter than `?:`, so any truthy status collapsed to 'online'.
+  const healthStatus: StatusKind =
+    health?.status === 'ok'
+      ? 'online'
+      : health?.status === 'down'
+        ? 'offline'
+        : health?.status === 'degraded'
+          ? 'degraded'
+          : health?.status === 'unknown'
+            ? 'unknown'
+            : provider.enabled
+              ? 'online'
+              : 'offline';
   const latency = health?.latencyMs;
   const config = provider.config as Record<string, unknown> | undefined;
-  const signupUrl = (provider as Record<string, unknown>).signupUrl as string | undefined;
+  const signupUrl = (provider as unknown as Record<string, unknown>).signupUrl as string | undefined;
   const monthlyBudget = (config?.monthlyTokenBudget as number | undefined) ?? 1000000;
 
   return (

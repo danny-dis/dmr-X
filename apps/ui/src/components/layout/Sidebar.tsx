@@ -4,7 +4,7 @@ import { NavLink, useLocation } from 'react-router';
 
 import { Button } from '@/components/primitives/Button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/primitives/Tooltip';
-import { NAV_GROUPS } from '@/constants/nav';
+import { NAV_GROUPS, findNavItem } from '@/constants/nav';
 import { useMediaQuery } from '@/hooks/useMisc';
 import { BrandMark, BrandWordmark } from '@/icons/SidebarIcons';
 import { cn } from '@/lib/utils';
@@ -16,6 +16,7 @@ export function Sidebar() {
   const location = useLocation();
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const expanded = !collapsed && isDesktop;
+  const activeItem = findNavItem(location.pathname);
 
   return (
     <aside
@@ -39,7 +40,11 @@ export function Sidebar() {
             )}
             <ul className="flex flex-col gap-0.5">
               {group.items.map((item) => {
-                const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
+                // Exactly one item may be active. A plain `startsWith` check
+                // lit up both "Agents" (/agents) and "Analytics"
+                // (/agents/analytics) on the nested route; findNavItem resolves
+                // a single owner by exact match then longest prefix.
+                const isActive = activeItem === item;
                 const link = (
                   <NavLink
                     key={item.path}

@@ -488,10 +488,10 @@ export function BenchmarksPage() {
 
         <TabsContent value="validation" className="mt-4">
           <div className="flex gap-2 mb-4">
-            <Button size="sm" variant={validationTab === 'review' ? 'default' : 'ghost'} onClick={() => setValidationTab('review')}>
+            <Button size="sm" variant={validationTab === 'review' ? 'primary' : 'ghost'} onClick={() => setValidationTab('review')}>
               Review Battle
             </Button>
-            <Button size="sm" variant={validationTab === 'history' ? 'default' : 'ghost'} onClick={() => { setValidationTab('history'); fetchValidationStats(); }}>
+            <Button size="sm" variant={validationTab === 'history' ? 'primary' : 'ghost'} onClick={() => { setValidationTab('history'); fetchValidationStats(); }}>
               Validation History
             </Button>
           </div>

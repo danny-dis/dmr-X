@@ -227,7 +227,7 @@ export function FreeTierDrawer({ provider, open, onOpenChange, onCreated }: Free
                             </Badge>
                           )}
                           {ft?.speedRank != null && ft.speedRank > 0 && (
-                            <Badge tone="accent" size="sm" icon={<Timer className="size-2" />}>
+                            <Badge tone="info" size="sm" icon={<Timer className="size-2" />}>
                               SPD {ft.speedRank}
                             </Badge>
                           )}

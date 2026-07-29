@@ -1,9 +1,11 @@
+import { QueryClientProvider } from '@tanstack/react-query';
 import { lazy, Suspense } from 'react';
-import { HashRouter, Routes, Route } from 'react-router';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 
 import { Shell } from '@/components/layout';
 import { ErrorBoundary } from '@/components/primitives/ErrorBoundary';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { queryClient } from '@/lib/queryClient';
 
 // Lazy-load all page components for code splitting
 const DashboardPage = lazy(() => import('@/pages/Dashboard').then(m => ({ default: m.DashboardPage })));
@@ -20,28 +22,38 @@ const InfrastructurePage = lazy(() => import('@/pages/Infrastructure').then(m =>
 const SettingsTabsPage = lazy(() => import('@/pages/SettingsTabs').then(m => ({ default: m.SettingsTabsPage })));
 const NotFoundPage = lazy(() => import('@/pages/NotFound').then(m => ({ default: m.NotFoundPage })));
 
+// Agent platform
+const AgentsPage = lazy(() => import('@/pages/agents/AgentsPage').then(m => ({ default: m.AgentsPage })));
+const AgentDetailPage = lazy(() => import('@/pages/agents/AgentDetailPage').then(m => ({ default: m.AgentDetailPage })));
+const AgentCreatePage = lazy(() => import('@/pages/agents/AgentCreatePage').then(m => ({ default: m.AgentCreatePage })));
+const AgentAnalyticsPage = lazy(() => import('@/pages/agents/AgentAnalyticsPage').then(m => ({ default: m.AgentAnalyticsPage })));
+const MarketplacePage = lazy(() => import('@/pages/Marketplace').then(m => ({ default: m.MarketplacePage })));
+
+// MCP + A2A
+const McpPage = lazy(() => import('@/pages/mcp/McpPage').then(m => ({ default: m.McpPage })));
+const McpDiscoverPage = lazy(() => import('@/pages/mcp/McpDiscoverPage').then(m => ({ default: m.McpDiscoverPage })));
+const McpToolsPage = lazy(() => import('@/pages/mcp/McpToolsPage').then(m => ({ default: m.McpToolsPage })));
+const McpSettingsPage = lazy(() => import('@/pages/mcp/McpSettingsPage').then(m => ({ default: m.McpSettingsPage })));
+const A2APage = lazy(() => import('@/pages/A2A').then(m => ({ default: m.A2APage })));
+
+// Free tier
+const FreeTierPage = lazy(() => import('@/pages/free-tier/FreeTierPage').then(m => ({ default: m.FreeTierPage })));
+
 // Sub-pages lazy-loaded by tabbed containers (hidden routes for code splitting)
 const UsagePage = lazy(() => import('@/pages/Usage').then(m => ({ default: m.UsagePage })));
 const CreditsPage = lazy(() => import('@/pages/Credits').then(m => ({ default: m.CreditsPage })));
 const QuotaPage = lazy(() => import('@/pages/Quota').then(m => ({ default: m.QuotaPage })));
 const BenchmarksPage = lazy(() => import('@/pages/Benchmarks').then(m => ({ default: m.BenchmarksPage })));
 const MemoryPage = lazy(() => import('@/pages/Memory').then(m => ({ default: m.MemoryPage })));
-const MCPPage = lazy(() => import('@/pages/MCP').then(m => ({ default: m.MCPPage })));
 const ToolsPage = lazy(() => import('@/pages/Tools').then(m => ({ default: m.ToolsPage })));
 const WorkersPage = lazy(() => import('@/pages/Workers').then(m => ({ default: m.WorkersPage })));
 const FederationPage = lazy(() => import('@/pages/Federation').then(m => ({ default: m.FederationPage })));
 const SandboxPage = lazy(() => import('@/pages/Sandbox').then(m => ({ default: m.SandboxPage })));
-const SettingsPage = lazy(() => import('@/pages/Settings').then(m => ({ default: m.SettingsPage })));
 const CompressionPage = lazy(() => import('@/pages/Compression').then(m => ({ default: m.CompressionPage })));
 const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
 const AgentIntegrationsPage = lazy(() => import('@/pages/AgentIntegrations').then(m => ({ default: m.AgentIntegrationsPage })));
-const FreeTierPage = lazy(() => import('@/pages/FreeTier').then(m => ({ default: m.FreeTierPage })));
-const FreeTierDashboardPage = lazy(() => import('@/pages/FreeTierDashboard').then(m => ({ default: m.FreeTierDashboardPage })));
 const CostDashboardPage = lazy(() => import('@/pages/CostDashboard').then(m => ({ default: m.CostDashboardPage })));
 const ObservabilityPage = lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
-const AgentsPage = lazy(() => import('@/pages/Agents').then(m => ({ default: m.AgentsPage })));
-const MarketplacePage = lazy(() => import('@/pages/Marketplace').then(m => ({ default: m.MarketplacePage })));
-const AgentAnalyticsPage = lazy(() => import('@/pages/AgentAnalytics').then(m => ({ default: m.AgentAnalyticsPage })));
 
 function PageLoader() {
   return (
@@ -53,52 +65,90 @@ function PageLoader() {
 
 export default function App() {
   return (
-    <HashRouter>
-      <ErrorBoundary>
-        <Suspense fallback={<PageLoader />}>
-          <Routes>
-            <Route element={<Shell />}>
-              {/* Primary routes — visible in sidebar */}
-              <Route index element={<DashboardPage />} />
-              <Route path="/playground" element={<PlaygroundPage />} />
-              <Route path="/requests" element={<RequestsPage />} />
-              <Route path="/routing" element={<RoutingPage />} />
-              <Route path="/policies" element={<PoliciesPage />} />
-              <Route path="/fusion" element={<FusionPanelPage />} />
-              <Route path="/providers" element={<ProvidersPage />} />
-              <Route path="/models" element={<ModelsPage />} />
-              <Route path="/tenants" element={<TenantsPage />} />
-              <Route path="/billing" element={<BillingPage />} />
-              <Route path="/infrastructure" element={<InfrastructurePage />} />
-              <Route path="/settings" element={<SettingsTabsPage />} />
-              <Route path="/agents" element={<AgentsPage />} />
-              <Route path="/marketplace" element={<MarketplacePage />} />
-              <Route path="/agent-analytics" element={<AgentAnalyticsPage />} />
+    <QueryClientProvider client={queryClient}>
+      {/*
+        BrowserRouter, not HashRouter: real paths make routes linkable and
+        bookmarkable, and the gateway already serves an SPA fallback for
+        non-API GETs (server.ts), so a deep link resolves on refresh.
+      */}
+      <BrowserRouter>
+        <ErrorBoundary>
+          <Suspense fallback={<PageLoader />}>
+            <Routes>
+              <Route element={<Shell />}>
+                {/* Overview */}
+                <Route index element={<DashboardPage />} />
+                {/*
+                  Playground mode lives in the path so a conversation in agent
+                  or godmode can be linked to. Bare /playground redirects to
+                  chat rather than 404ing.
+                */}
+                <Route path="/playground" element={<Navigate to="/playground/chat" replace />} />
+                <Route path="/playground/:mode" element={<PlaygroundPage />} />
 
-              {/* Sub-pages (hidden routes — lazy-imported by tabbed containers) */}
-              <Route path="/usage" element={<UsagePage />} />
-              <Route path="/credits" element={<CreditsPage />} />
-              <Route path="/quota" element={<QuotaPage />} />
-              <Route path="/benchmarks" element={<BenchmarksPage />} />
-              <Route path="/memory" element={<MemoryPage />} />
-              <Route path="/mcp" element={<MCPPage />} />
-              <Route path="/tools" element={<ToolsPage />} />
-              <Route path="/workers" element={<WorkersPage />} />
-              <Route path="/federation" element={<FederationPage />} />
-              <Route path="/sandbox" element={<SandboxPage />} />
-              <Route path="/compression" element={<CompressionPage />} />
-              <Route path="/connect" element={<ConnectPage />} />
-              <Route path="/integrations" element={<AgentIntegrationsPage />} />
-              <Route path="/free-tier" element={<FreeTierPage />} />
-              <Route path="/free-tier/dashboard" element={<FreeTierDashboardPage />} />
-              <Route path="/cost" element={<CostDashboardPage />} />
-              <Route path="/observability" element={<ObservabilityPage />} />
+                {/* Traffic */}
+                <Route path="/requests" element={<RequestsPage />} />
+                <Route path="/routing" element={<RoutingPage />} />
+                <Route path="/policies" element={<PoliciesPage />} />
+                <Route path="/fusion" element={<FusionPanelPage />} />
 
-              <Route path="*" element={<NotFoundPage />} />
-            </Route>
-          </Routes>
-        </Suspense>
-      </ErrorBoundary>
-    </HashRouter>
+                {/* Monitor */}
+                <Route path="/observability" element={<ObservabilityPage />} />
+
+                {/* Resources — Free Tier and Models are siblings, not tabs */}
+                <Route path="/providers" element={<ProvidersPage />} />
+                <Route path="/models" element={<ModelsPage />} />
+                <Route path="/free-tier" element={<FreeTierPage />} />
+                <Route path="/tenants" element={<TenantsPage />} />
+
+                {/* Agents */}
+                <Route path="/agents" element={<AgentsPage />} />
+                <Route path="/agents/new" element={<AgentCreatePage />} />
+                <Route path="/agents/analytics" element={<AgentAnalyticsPage />} />
+                <Route path="/agents/:id" element={<AgentDetailPage />} />
+                <Route path="/marketplace" element={<MarketplacePage />} />
+                <Route path="/integrations" element={<AgentIntegrationsPage />} />
+
+                {/* MCP + A2A */}
+                <Route path="/mcp" element={<McpPage />} />
+                <Route path="/mcp/discover" element={<McpDiscoverPage />} />
+                <Route path="/mcp/tools" element={<McpToolsPage />} />
+                <Route path="/mcp/settings" element={<McpSettingsPage />} />
+                <Route path="/a2a" element={<A2APage />} />
+
+                {/* Billing */}
+                <Route path="/billing" element={<BillingPage />} />
+                <Route path="/cost" element={<CostDashboardPage />} />
+                <Route path="/usage" element={<UsagePage />} />
+                <Route path="/credits" element={<CreditsPage />} />
+                <Route path="/quota" element={<QuotaPage />} />
+
+                {/* Infrastructure */}
+                <Route path="/infrastructure" element={<InfrastructurePage />} />
+                <Route path="/workers" element={<WorkersPage />} />
+                <Route path="/federation" element={<FederationPage />} />
+                <Route path="/sandbox" element={<SandboxPage />} />
+                <Route path="/memory" element={<MemoryPage />} />
+                <Route path="/tools" element={<ToolsPage />} />
+                <Route path="/benchmarks" element={<BenchmarksPage />} />
+                <Route path="/compression" element={<CompressionPage />} />
+                <Route path="/connect" element={<ConnectPage />} />
+
+                {/* Settings */}
+                <Route path="/settings" element={<SettingsTabsPage />} />
+
+                {/*
+                  The old free-tier dashboard was an orphan route nothing linked
+                  to; its content now lives on the Free Tier page.
+                */}
+                <Route path="/free-tier/dashboard" element={<Navigate to="/free-tier" replace />} />
+
+                <Route path="*" element={<NotFoundPage />} />
+              </Route>
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
+      </BrowserRouter>
+    </QueryClientProvider>
   );
 }

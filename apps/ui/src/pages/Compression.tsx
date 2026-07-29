@@ -12,7 +12,7 @@ import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
+import { api } from '@/lib/admin';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */
@@ -44,25 +44,22 @@ const DEFAULT_CONFIG: CompressionConfig = {
 /* -------------------------------------------------------------------------- */
 
 async function fetchCompressionConfig(): Promise<CompressionConfig> {
-  const res = await Admin.request('/v1/compression/config');
-  return res as CompressionConfig;
+  return api<CompressionConfig>('/v1/compression/config');
 }
 
 async function updateCompressionConfig(config: Partial<CompressionConfig>): Promise<CompressionConfig> {
-  const res = await Admin.request('/v1/compression/config', {
+  return api<CompressionConfig>('/v1/compression/config', {
     method: 'PUT',
-    body: JSON.stringify(config),
+    body: config,
   });
-  return res as CompressionConfig;
 }
 
 async function fetchCompressionStats(): Promise<CompressionStats> {
-  const res = await Admin.request('/v1/compression/stats');
-  return res as CompressionStats;
+  return api<CompressionStats>('/v1/compression/stats');
 }
 
 async function cleanupCompressionCache(): Promise<void> {
-  await Admin.request('/v1/compression/cleanup', { method: 'POST' });
+  await api('/v1/compression/cleanup', { method: 'POST' });
 }
 
 /* -------------------------------------------------------------------------- */

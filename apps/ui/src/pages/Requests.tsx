@@ -11,11 +11,10 @@ import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { toast } from '@/components/primitives/Toast';
 import { Toggle } from '@/components/primitives/Toggle';
-import { useApiData, useDebounce } from '@/hooks';
-import { Admin } from '@/lib/admin';
+import { useDebounce } from '@/hooks';
+import { useTelemetryEvents } from '@/lib/queries/observability';
 import { useLiveStore } from '@/store/useLiveStore';
 import { useUIStore } from '@/store/useUIStore';
-import type { ApiTelemetryEvent } from '@/types/api';
 
 export function RequestsPage() {
   const [query, setQuery] = React.useState('');
@@ -26,20 +25,12 @@ export function RequestsPage() {
   const pageSize = 50;
   const liveMode = useUIStore((s) => s.liveMode);
 
-  const events = useApiData<ApiTelemetryEvent[]>(
-    () => Admin.listTelemetry(),
-    [],
-    { refetchInterval: liveMode ? 3000 : false }
-  );
+  // Slow-poll fallback for the initial snapshot — the live tail is fed by
+  // the one SSE subscription mounted in the app shell (useLiveStream), not a
+  // per-page stream or poll. Opening a second `streamTelemetry` connection
+  // here used to duplicate that subscription.
+  const events = useTelemetryEvents();
   const liveEvents = useLiveStore((s) => s.events);
-  const pushTelemetry = useLiveStore((s) => s.pushTelemetry);
-
-  React.useEffect(() => {
-    if (!liveMode) return;
-    const controller = new AbortController();
-    Admin.streamTelemetry(controller.signal, pushTelemetry);
-    return () => controller.abort();
-  }, [liveMode, pushTelemetry]);
 
   const merged = liveMode ? [...liveEvents, ...(events.data ?? [])] : (events.data ?? []);
   const all = Array.from(new Map(merged.map((e) => [e.id, e])).values());
@@ -54,7 +45,8 @@ export function RequestsPage() {
 
   const counts = filtered.reduce(
     (acc, e) => {
-      acc[e.kind] = (acc[e.kind] ?? 0) + 1;
+      const kind = e.kind ?? 'unknown';
+      acc[kind] = (acc[kind] ?? 0) + 1;
       return acc;
     },
     {} as Record<string, number>

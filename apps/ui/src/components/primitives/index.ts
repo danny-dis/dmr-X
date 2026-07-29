@@ -27,3 +27,8 @@ export * from './Textarea';
 export * from './Toast';
 export * from './Toggle';
 export * from './Tooltip';
+// These were deep-import-only, which is why call sites reached past the
+// barrel for them.
+export * from './BackLink';
+export * from './ErrorBoundary';
+export * from './LoadingTimeout';

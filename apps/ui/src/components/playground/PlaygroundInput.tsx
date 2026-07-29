@@ -1,8 +1,10 @@
-import { Send, Settings2, MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Square, Cpu, Workflow, Wrench, X, Coins, Search, Clock, ChevronDown, Check, Sparkles } from 'lucide-react';
+import { Send, Settings2, MessageSquare, Square, Cpu, Wrench, X, Coins, Search, Clock, ChevronDown, Check, Sparkles, Bot } from 'lucide-react';
 import * as React from 'react';
+import { useNavigate } from 'react-router';
 
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
@@ -10,47 +12,62 @@ import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { useAgentInstances } from '@/lib/queries/agents';
 import { cn } from '@/lib/utils';
-import { usePlaygroundStore, PlaygroundMode } from '@/store/usePlaygroundStore';
+import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 import type { ApiModel } from '@/types/api';
 import { GodmodePanel } from './GodmodePanel';
 import { PromptLibrary } from './PromptLibrary';
 import { GenerateButtons } from './GenerateButtons';
 import { ImportButton, type ImportedFile } from './ImportButton';
 
-const modeOptions = [
+// The four modes that behave like a chat transcript and are reachable
+// through the URL (`/playground/:mode`) — one tab each. `tool-loop` and the
+// one-shot generator modes (image/embed/tts/rerank/moderate) exist in
+// `PlaygroundMode` for API/back-compat reasons but have no tab here.
+const MODE_TABS: ReadonlyArray<{ value: 'chat' | 'agent' | 'godmode' | 'agentic'; label: string; icon: typeof MessageSquare }> = [
   { value: 'chat', label: 'Chat', icon: MessageSquare },
-  { value: 'image', label: 'Image', icon: Image },
-  { value: 'embed', label: 'Embed', icon: ArrowUpDown },
-  { value: 'tts', label: 'TTS', icon: Volume2 },
-  { value: 'rerank', label: 'Rerank', icon: Zap },
-  { value: 'moderate', label: 'Moderate', icon: ShieldAlert },
-  // SSE-streaming modes. `agentic` posts to /v1/agentic/chat (multi-turn
-  // tool-calling loop) and `tool-loop` posts to /v1/tools/loop (multi-turn
-  // tool-execution loop). Both render an event trace under the response.
-  { value: 'agentic', label: 'Agentic', icon: Cpu },
-  { value: 'tool-loop', label: 'Tool loop', icon: Workflow },
-  // G0DM0D3 integration — multi-model chat with ULTRAPLINIAN/CONSORTIUM
+  { value: 'agent', label: 'Agent', icon: Bot },
   { value: 'godmode', label: 'Godmode', icon: Sparkles },
+  { value: 'agentic', label: 'Agentic', icon: Cpu },
 ];
 
 export function PlaygroundInput() {
+  const navigate = useNavigate();
   const mode = usePlaygroundStore(s => s.mode);
   const model = usePlaygroundStore(s => s.model);
   const config = usePlaygroundStore(s => s.config);
   const costFilter = usePlaygroundStore(s => s.costFilter);
   const isTemporary = usePlaygroundStore(s => s.isTemporary);
   const isStreaming = usePlaygroundStore(s => s.isStreaming);
-  const setMode = usePlaygroundStore(s => s.setMode);
+  const agentInstanceId = usePlaygroundStore(s => s.agentInstanceId);
   const setModel = usePlaygroundStore(s => s.setModel);
   const setCostFilter = usePlaygroundStore(s => s.setCostFilter);
   const setConfig = usePlaygroundStore(s => s.setConfig);
   const setTools = usePlaygroundStore(s => s.setTools);
+  const setAgentInstanceId = usePlaygroundStore(s => s.setAgentInstanceId);
   const toggleTemporary = usePlaygroundStore(s => s.toggleTemporary);
   const sendMessage = usePlaygroundStore(s => s.sendMessage);
   const cancelStreaming = usePlaygroundStore(s => s.cancelStreaming);
   const consumePromptSeed = usePlaygroundStore(s => s.consumePromptSeed);
   const pendingPrompt = usePlaygroundStore(s => s.pendingPrompt);
+
+  // Mode lives in the URL (`/playground/:mode`) so a conversation in
+  // agent/godmode/agentic can be linked to directly. `PlaygroundPage` reads
+  // the route param and syncs it into the store; clicking a tab here just
+  // navigates — the store update happens via that same sync effect, so the
+  // URL is always the source of truth rather than two places disagreeing.
+  const handleModeChange = (next: string) => {
+    if (next === mode) return;
+    const suffix = next === 'agent' && agentInstanceId ? `?instance=${agentInstanceId}` : '';
+    navigate(`/playground/${next}${suffix}`);
+  };
+
+  // Agent mode's instance picker. Only active instances are dispatch
+  // candidates server-side, so those are what a user should be able to pick.
+  const agentInstances = useAgentInstances('active');
+  const instanceOptions = agentInstances.data?.items ?? [];
+  const selectedInstance = instanceOptions.find(i => i.id === agentInstanceId) ?? null;
 
   const [prompt, setPrompt] = React.useState('');
   const [showConfig, setShowConfig] = React.useState(false);
@@ -257,16 +274,21 @@ export function PlaygroundInput() {
   
   const handleSend = async () => {
     if (!prompt.trim() || isStreaming) return;
-    
+
+    if (mode === 'agent' && !agentInstanceId) {
+      toast.error('Select an agent instance before sending a message.');
+      return;
+    }
+
     const message = prompt;
     setPrompt('');
     setAttachments([]);
-    
+
     try {
       await sendMessage(message);
     } catch (error) {
       console.error('Failed to send message:', error);
-      toast.error('Failed to send message');
+      toast.error(error instanceof Error ? error.message : 'Failed to send message');
     }
   };
   
@@ -280,10 +302,73 @@ export function PlaygroundInput() {
   return (
     <div className="shrink-0 border-t border-border bg-surface-1/95 p-3 shadow-[0_-10px_30px_-24px_rgba(15,23,42,0.45)] backdrop-blur sm:p-4">
       <div className="mx-auto w-full max-w-[960px]">
+        {/* Mode Tabs — Chat / Agent / Godmode / Agentic. Switching tabs
+            navigates so the URL (`/playground/:mode`) stays the source of
+            truth; `PlaygroundPage` syncs the route param back into the
+            store's `mode`. */}
+        <div className="mb-3">
+          <Tabs value={mode} onValueChange={handleModeChange}>
+            <TabsList variant="pills">
+              {MODE_TABS.map((tab) => (
+                <TabsTrigger
+                  key={tab.value}
+                  value={tab.value}
+                  className="flex items-center gap-1.5"
+                >
+                  <tab.icon className="size-3.5" />
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+
         {/* Config Row */}
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
+            {/* Agent Instance Selector — replaces the model combobox in
+                agent mode, since the instance (not a free model choice)
+                determines what runs. */}
+            {mode === 'agent' && (
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="min-w-0 w-[min(100vw-4.5rem,280px)] sm:w-[280px]">
+                  <Select
+                    value={agentInstanceId ?? undefined}
+                    onValueChange={(v) => setAgentInstanceId(v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={agentInstances.isLoading ? 'Loading instances…' : 'Select an agent instance…'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {instanceOptions.length === 0 ? (
+                        <div className="px-2 py-4 text-center text-xs text-fg-subtle">
+                          {agentInstances.isLoading ? 'Loading…' : 'No active agent instances. Deploy one from the Agents page.'}
+                        </div>
+                      ) : (
+                        instanceOptions.map((instance) => (
+                          <SelectItem key={instance.id} value={instance.id}>
+                            {instance.definitionHumanName || instance.definitionName || instance.id}
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {selectedInstance && (
+                  <Badge
+                    tone={selectedInstance.status === 'active' ? 'success' : 'muted'}
+                    size="sm"
+                    variant="soft"
+                    className="shrink-0"
+                  >
+                    {selectedInstance.status}
+                  </Badge>
+                )}
+              </div>
+            )}
+
             {/* Model Selector Combobox */}
+            {mode !== 'agent' && (
             <div className="relative min-w-0" ref={modelDropdownRef}>
               <button
                 type="button"
@@ -393,7 +478,8 @@ export function PlaygroundInput() {
                 </div>
               )}
             </div>
-            
+            )}
+
             {/* Config Toggle */}
             <Button
               variant="ghost"
@@ -403,8 +489,11 @@ export function PlaygroundInput() {
               <Settings2 className="size-4" />
             </Button>
 
-            {/* Cost Filter Toggle — only visible for meta-model aliases */}
-            {model.startsWith('auto') && (
+            {/* Cost Filter Toggle — promoted to always-available. Previously
+                gated on `model.startsWith('auto')`, so it vanished the moment
+                a user picked a concrete model even though `x-cost-filter`
+                is honored server-side regardless of model choice. */}
+            {mode !== 'agent' && (
               <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 p-0.5">
                 <button
                   type="button"
@@ -474,11 +563,55 @@ export function PlaygroundInput() {
               </div>
             </div>
 
+            {/* Agent-mode run limits — enforced server-side by
+                AgentChatRequestSchema (maxSteps 1-50, max_cost_budget > 0). */}
+            {mode === 'agent' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="flex items-center justify-between text-xs mb-2">
+                    <span className="text-fg-muted">Max steps</span>
+                    <span className="font-mono">{config.maxSteps ?? 10}</span>
+                  </div>
+                  <Slider
+                    value={[config.maxSteps ?? 10]}
+                    onValueChange={(v) => setConfig({ maxSteps: v[0] })}
+                    min={1}
+                    max={50}
+                    step={1}
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between text-xs mb-2">
+                    <span className="text-fg-muted">Max cost budget</span>
+                  </div>
+                  <div className="flex items-center gap-1 rounded-lg border border-border bg-surface-1 px-2 h-7">
+                    <span className="text-xs text-fg-subtle">$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      value={config.maxCostBudget ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setConfig({ maxCostBudget: v === '' ? undefined : Math.max(0, Number(v)) });
+                      }}
+                      placeholder="No limit"
+                      className="w-full bg-transparent text-xs text-fg outline-none placeholder:text-fg-subtle"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Tools picker. The user pastes an OpenAI-format `tools`
                 array as JSON; we parse + validate and push it into the
                 store. `tool-loop` mode requires at least one tool
                 server-side (Zod `min(1)`), so the indicator below the
-                textarea doubles as a visual gate for that mode. */}
+                textarea doubles as a visual gate for that mode. Hidden in
+                agent mode — an agent instance's tools come from its
+                `allowedTools` server-side, not a client-supplied list. */}
+            {mode !== 'agent' && (
             <div>
               <div className="flex items-center justify-between mb-2">
                 <button
@@ -566,9 +699,10 @@ export function PlaygroundInput() {
                 </div>
               )}
             </div>
+            )}
           </div>
         )}
-        
+
         {/* Godmode Settings & Prompt Library — shown when in godmode mode */}
         {mode === 'godmode' && (
           <div className="mb-3 space-y-3">
@@ -593,7 +727,11 @@ export function PlaygroundInput() {
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Send a ${mode} message...`}
+            placeholder={
+              mode === 'agent'
+                ? (agentInstanceId ? 'Send a message to the agent...' : 'Select an agent instance above to start...')
+                : `Send a ${mode} message...`
+            }
             className="min-h-[68px] max-h-[220px] resize-none border-0 bg-transparent pr-28 shadow-none focus:ring-0"
             disabled={isStreaming}
           />
@@ -613,7 +751,7 @@ export function PlaygroundInput() {
               <Button
                 size="sm"
                 onClick={handleSend}
-                disabled={!prompt.trim()}
+                disabled={!prompt.trim() || (mode === 'agent' && !agentInstanceId)}
               >
                 <Send className="size-3" />
                 Send

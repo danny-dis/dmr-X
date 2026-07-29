@@ -1,4 +1,4 @@
-import { Bell, Activity, FileText, AlertCircle, CheckCircle2, Download } from 'lucide-react';
+import { Bell, Activity, FileText, AlertCircle, CheckCircle2, Download, Pause, Play } from 'lucide-react';
 import * as React from 'react';
 
 import { AlertCard } from '@/components/domain/AlertCard';
@@ -12,34 +12,47 @@ import { EmptyState } from '@/components/primitives/EmptyState';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
-import { useUIStore } from '@/store/useUIStore';
-import type { ApiAlert, ApiAuditEvent, ApiTelemetryEvent } from '@/types/api';
+import {
+  useAcknowledgeAlert,
+  useAlerts,
+  useAuditEvents,
+  useResolveAlert,
+  useTelemetryEvents,
+} from '@/lib/queries/observability';
+import { useLiveStore } from '@/store/useLiveStore';
+import type { ApiTelemetryEvent } from '@/types/api';
 
 export function ObservabilityPage() {
   const [tab, setTab] = React.useState('alerts');
   const [exporting, setExporting] = React.useState(false);
-  const liveMode = useUIStore((s) => s.liveMode);
 
-  const alerts = useApiData<ApiAlert[]>(
-    () => Admin.listAlerts(),
-    [],
-    { refetchInterval: 10000 }
-  );
-  const audit = useApiData<ApiAuditEvent[]>(
-    () => Admin.listAudit(),
-    [],
-    { refetchInterval: 30000 }
-  );
-  const telemetry = useApiData<ApiTelemetryEvent[]>(
-    () => Admin.listTelemetry(),
-    [],
-    { refetchInterval: liveMode ? 3000 : false }
-  );
+  const alerts = useAlerts();
+  const audit = useAuditEvents();
+  // Slow-poll fallback for the telemetry tab's first paint — the live tail
+  // below is fed by the one SSE subscription mounted in the app shell, not a
+  // per-page poll.
+  const telemetryQuery = useTelemetryEvents();
+  const liveEvents = useLiveStore((s) => s.events);
+  const paused = useLiveStore((s) => s.paused);
+  const setPaused = useLiveStore((s) => s.setPaused);
+  const connection = useLiveStore((s) => s.connection);
 
-  const activeData = tab === 'alerts' ? alerts.data : tab === 'audit' ? audit.data : telemetry.data;
-  const activeIsLoading = tab === 'alerts' ? alerts.isLoading : tab === 'audit' ? audit.isLoading : telemetry.isLoading;
+  const ackMutation = useAcknowledgeAlert();
+  const resolveMutation = useResolveAlert();
+
+  // Live tail merged with the initial poll snapshot, de-duped by id.
+  const telemetryEvents = React.useMemo<ApiTelemetryEvent[]>(() => {
+    const merged = [...liveEvents, ...(telemetryQuery.data ?? [])];
+    return Array.from(new Map(merged.map((e) => [e.id, e])).values());
+  }, [liveEvents, telemetryQuery.data]);
+
+  const activeData = tab === 'alerts' ? alerts.data : tab === 'audit' ? audit.data : telemetryEvents;
+  const activeIsLoading =
+    tab === 'alerts'
+      ? alerts.isLoading
+      : tab === 'audit'
+        ? audit.isLoading
+        : telemetryQuery.isLoading && telemetryEvents.length === 0;
 
   const handleExport = React.useCallback(() => {
     if (!activeData || activeData.length === 0) {
@@ -74,6 +87,12 @@ export function ObservabilityPage() {
       setExporting(false);
     }
   }, [activeData, tab]);
+
+  const liveBadge = paused
+    ? { tone: 'muted' as const, label: 'paused' }
+    : connection === 'open'
+      ? { tone: 'success' as const, label: 'live' }
+      : { tone: 'warning' as const, label: connection === 'connecting' ? 'connecting' : 'reconnecting' };
 
   return (
     <PageContainer size="wide">
@@ -111,7 +130,7 @@ export function ObservabilityPage() {
             <TabsTrigger value="telemetry">
               <Activity className="size-3" />
               Telemetry
-              <Badge tone={liveMode ? 'success' : 'muted'} size="sm">{liveMode ? 'live' : 'paused'}</Badge>
+              <Badge tone={liveBadge.tone} size="sm">{liveBadge.label}</Badge>
             </TabsTrigger>
           </TabsList>
 
@@ -129,12 +148,28 @@ export function ObservabilityPage() {
                     key={a.id}
                     alert={a}
                     onAcknowledge={() => {
-                      Admin.acknowledgeAlert(a.id);
-                      toast.info('Acknowledged', { description: 'Action is in-memory only and will not persist across refreshes.' });
+                      ackMutation.mutate(a.id, {
+                        onSuccess: () =>
+                          toast.info('Acknowledged', {
+                            description: 'Action is in-memory only and will not persist across refreshes.',
+                          }),
+                        onError: (err) =>
+                          toast.error('Failed to acknowledge', {
+                            description: err instanceof Error ? err.message : String(err),
+                          }),
+                      });
                     }}
                     onResolve={() => {
-                      Admin.resolveAlert(a.id);
-                      toast.info('Resolved', { description: 'Action is in-memory only and will not persist across refreshes.' });
+                      resolveMutation.mutate(a.id, {
+                        onSuccess: () =>
+                          toast.info('Resolved', {
+                            description: 'Action is in-memory only and will not persist across refreshes.',
+                          }),
+                        onError: (err) =>
+                          toast.error('Failed to resolve', {
+                            description: err instanceof Error ? err.message : String(err),
+                          }),
+                      });
                     }}
                   />
                 ))}
@@ -171,16 +206,27 @@ export function ObservabilityPage() {
           </TabsContent>
 
           <TabsContent value="telemetry">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-2xs text-fg-subtle">
+                {paused
+                  ? 'Live tail paused — the stream keeps running elsewhere in the app, but this list stops updating.'
+                  : 'Streaming live from the gateway.'}
+              </p>
+              <Button variant="outline" size="sm" onClick={() => setPaused(!paused)}>
+                {paused ? <Play className="size-3" /> : <Pause className="size-3" />}
+                {paused ? 'Resume' : 'Pause'}
+              </Button>
+            </div>
             <Card padding="none">
-              {telemetry.isLoading ? (
+              {activeIsLoading ? (
                 <div className="p-3 flex flex-col gap-1.5">
                   {Array.from({ length: 10 }).map((_, i) => (
                     <Skeleton key={i} className="h-4 w-full" />
                   ))}
                 </div>
-              ) : telemetry.data && telemetry.data.length > 0 ? (
+              ) : telemetryEvents.length > 0 ? (
                 <div className="p-1 max-h-[700px] overflow-y-auto font-mono">
-                  {telemetry.data.map((e) => (
+                  {telemetryEvents.map((e) => (
                     <TelemetryEventRow key={e.id} event={e} />
                   ))}
                 </div>

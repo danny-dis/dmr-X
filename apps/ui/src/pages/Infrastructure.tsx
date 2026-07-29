@@ -7,7 +7,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitive
 import { Skeleton } from '@/components/primitives/Skeleton';
 
 // Lazy-load tab content for code splitting
-const McpTab = React.lazy(() => import('@/pages/MCP').then(m => ({ default: m.MCPPage })));
 const ToolsTab = React.lazy(() => import('@/pages/Tools').then(m => ({ default: m.ToolsPage })));
 const WorkersTab = React.lazy(() => import('@/pages/Workers').then(m => ({ default: m.WorkersPage })));
 const FederationTab = React.lazy(() => import('@/pages/Federation').then(m => ({ default: m.FederationPage })));
@@ -32,20 +31,13 @@ export function InfrastructurePage() {
       />
 
       <div className="mt-5">
-        <Tabs defaultValue="mcp">
+        <Tabs defaultValue="tools">
           <TabsList>
-            <TabsTrigger value="mcp">MCP</TabsTrigger>
             <TabsTrigger value="tools">Tools</TabsTrigger>
             <TabsTrigger value="workers">Workers</TabsTrigger>
             <TabsTrigger value="federation">Federation</TabsTrigger>
             <TabsTrigger value="sandbox">Sandbox</TabsTrigger>
           </TabsList>
-
-          <TabsContent value="mcp">
-            <React.Suspense fallback={<TabLoader />}>
-              <McpTab />
-            </React.Suspense>
-          </TabsContent>
 
           <TabsContent value="tools">
             <React.Suspense fallback={<TabLoader />}>

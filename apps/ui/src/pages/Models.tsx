@@ -1,7 +1,10 @@
-import { Database, Search, ChevronRight, RefreshCw, Plus, KeyRound, Key } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { Database, Search, ChevronRight, RefreshCw, Plus, KeyRound, Key, Zap } from 'lucide-react';
 import * as React from 'react';
+import { Link } from 'react-router';
 
 import { CreateModelDialog } from '@/components/domain/CreateModelDialog';
+import { LiveTokenCounter } from '@/components/domain/LiveTokenCounter';
 import { ModelDetailDrawer } from '@/components/domain/ModelDetailDrawer';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
@@ -11,11 +14,20 @@ import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
 import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
-import { useApiData, useUrlState, useUrlNullableState } from '@/hooks';
+import { useUrlState, useUrlNullableState } from '@/hooks';
 import { ModalityBadge } from '@/icons/Modality';
-import { Admin } from '@/lib/admin';
+import { keys } from '@/lib/queryClient';
 import { formatNumber } from '@/lib/formatters';
-import type { ApiModel, ApiProvider } from '@/types/api';
+import {
+  buildPricingTierIndex,
+  resolvePricingTier,
+  useModelClassifications,
+  useModels,
+  type PricingTier,
+} from '@/lib/queries/models';
+import { useProviders } from '@/lib/queries/providers';
+import type { ApiModel } from '@/types/api';
+import type { UsageWindow } from '@/lib/queries/usage';
 
 const PRICING_TIER_CONFIG: Record<string, { label: string; tone: 'success' | 'info' | 'warning' | 'danger' | 'muted' }> = {
   free: { label: 'Free', tone: 'success' },
@@ -39,6 +51,14 @@ const DEPLOYMENT_CONFIG: Record<string, { label: string; icon: string }> = {
   on_device: { label: 'On-device', icon: 'Device' },
 };
 
+const CONTEXT_TIER_CONFIG: Record<string, string> = {
+  short: 'Short',
+  medium: 'Medium',
+  long: 'Long',
+  ultra: 'Ultra',
+  massive: 'Massive',
+};
+
 const REASONING_MODE_CONFIG: Record<string, { label: string; description: string }> = {
   fixed: { label: 'Fixed', description: 'Standard inference' },
   adaptive: { label: 'Adaptive', description: 'Auto-switches thinking depth' },
@@ -57,22 +77,38 @@ const AGENTIC_LEVEL_CONFIG: Record<string, { label: string; description: string 
   autonomous: { label: 'Autonomous', description: 'Can take actions independently' },
 };
 
+const FREE_TIERS = new Set<PricingTier>(['free', 'free_with_limits']);
+
 export function ModelsPage() {
+  const qc = useQueryClient();
   const [query, setQuery] = useUrlState('q', '');
   const [modality, setModality] = useUrlNullableState('modality');
   const [providerFilter, setProviderFilter] = useUrlNullableState('provider');
   const [capabilityTierFilter, setCapabilityTierFilter] = useUrlNullableState('tier');
   const [pricingTierFilter, setPricingTierFilter] = useUrlNullableState('pricing');
   const [deploymentFilter, setDeploymentFilter] = useUrlNullableState('deployment');
+  const [contextTierFilter, setContextTierFilter] = useUrlNullableState('context');
+  const [reasoningModeFilter, setReasoningModeFilter] = useUrlNullableState('reasoning');
+  const [safetyTierFilter, setSafetyTierFilter] = useUrlNullableState('safety');
+  const [agenticLevelFilter, setAgenticLevelFilter] = useUrlNullableState('agentic');
   const [showUnavailable, setShowUnavailable] = useUrlState('unavailable', 'false');
+  // Free models have their own page (/free-tier) with savings and rate-limit
+  // budgets. This page answers "what am I paying for" — free rows are
+  // hidden by default so they don't dilute a registry that's meant to be
+  // paid/mixed, but the toggle keeps them one click away when needed.
+  const [showFreeToo, setShowFreeToo] = useUrlState('showFree', 'false');
+  const [tokenWindow, setTokenWindow] = useUrlState<UsageWindow>('window', '24h');
   const [page, setPage] = React.useState(1);
   const [selectedModel, setSelectedModel] = React.useState<ApiModel | null>(null);
   const [createModelOpen, setCreateModelOpen] = React.useState(false);
   const pageSize = 24;
 
+  const invalidateModels = () => void qc.invalidateQueries({ queryKey: keys.models.all });
+
   // Fetch all models (with provider_available flag from backend)
-  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: showUnavailable === 'true' ? 'false' : 'true' }), [], { refetchInterval: 30000 });
-  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
+  const models = useModels({ available_only: showUnavailable === 'true' ? 'false' : 'true' });
+  const providers = useProviders();
+  const classifications = useModelClassifications();
 
   // Build a lookup of provider key status
   const providerKeyStatus = React.useMemo(() => {
@@ -83,12 +119,25 @@ export function ModelsPage() {
     return map;
   }, [providers.data]);
 
+  // `/admin/models` doesn't carry a pricing tier column — it's looked up
+  // from `/admin/models/classifications` by provider_id:model_id.
+  const pricingIndex = React.useMemo(
+    () => buildPricingTierIndex(classifications.data?.classifications),
+    [classifications.data],
+  );
+  const pricingTierOf = React.useCallback(
+    (m: ApiModel) => resolvePricingTier(m, pricingIndex),
+    [pricingIndex],
+  );
+
   const filtered = (models.data ?? []).filter((m) => {
+    const pricingTier = pricingTierOf(m);
+    if (showFreeToo !== 'true' && FREE_TIERS.has(pricingTier)) return false;
     if (query && !m.name.toLowerCase().includes(query.toLowerCase())) return false;
     if (modality && m.modality !== modality) return false;
     if (providerFilter && m.provider_id !== providerFilter) return false;
     if (capabilityTierFilter && m.capability_tier !== capabilityTierFilter) return false;
-    if (pricingTierFilter && (m as any).pricing_tier !== pricingTierFilter) return false;
+    if (pricingTierFilter && pricingTier !== pricingTierFilter) return false;
     if (contextTierFilter && m.context_tier !== contextTierFilter) return false;
     if (deploymentFilter && m.deployment !== deploymentFilter) return false;
     if (reasoningModeFilter && m.reasoning_mode !== reasoningModeFilter) return false;
@@ -103,12 +152,13 @@ export function ModelsPage() {
 
   const availableCount = (models.data ?? []).filter(m => providerKeyStatus.get(m.provider_id) !== false).length;
   const unavailableCount = (models.data ?? []).length - availableCount;
+  const freeHiddenCount = (models.data ?? []).filter(m => FREE_TIERS.has(pricingTierOf(m))).length;
 
   return (
     <PageContainer size="wide">
       <PageHeader
         title="Models"
-        description="Model registry — models from providers with active API keys"
+        description="Model registry — paid & mixed models from providers with active API keys"
         icon={<Database className="size-5" />}
         actions={
           <>
@@ -139,8 +189,12 @@ export function ModelsPage() {
         }
       />
 
+      <div className="mt-5">
+        <LiveTokenCounter tier="paid" window={tokenWindow} onWindowChange={setTokenWindow} />
+      </div>
+
       <Card padding="none" className="mt-5">
-        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border flex-wrap">
           <div className="flex-1 max-w-sm">
             <Input
               value={query}
@@ -176,6 +230,23 @@ export function ModelsPage() {
               {showUnavailable === 'true' ? 'Hide' : 'Show'} unavailable
             </button>
           )}
+          <button
+            onClick={() => setShowFreeToo(showFreeToo === 'true' ? 'false' : 'true')}
+            className={`h-7 px-2.5 rounded-md text-[11px] font-medium transition-colors ${
+              showFreeToo === 'true'
+                ? 'bg-success/10 text-success border border-success/20'
+                : 'text-fg-muted hover:bg-surface-2 border border-transparent'
+            }`}
+            title={
+              showFreeToo === 'true'
+                ? 'Hide free models (see them on the Free Tier page)'
+                : `Show free models too (${freeHiddenCount} hidden)`
+            }
+          >
+            <Zap className="size-3 inline mr-1" />
+            {showFreeToo === 'true' ? 'Hide free' : 'Show free too'}
+            {showFreeToo !== 'true' && freeHiddenCount > 0 ? ` (${freeHiddenCount})` : ''}
+          </button>
           <div className="flex items-center gap-1">
             <button
               onClick={() => setModality(null)}
@@ -256,20 +327,76 @@ export function ModelsPage() {
             >
               all pricing
             </button>
-            {Object.entries(PRICING_TIER_CONFIG).filter(([k]) => k !== 'unknown').map(([key, config]) => (
-              <button
-                key={key}
-                onClick={() => setPricingTierFilter(key === pricingTierFilter ? null : key)}
-                className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
-                  pricingTierFilter === key
-                    ? 'bg-primary/10 text-primary border border-primary/20'
-                    : 'text-fg-muted hover:bg-surface-2 border border-transparent'
-                }`}
-              >
-                {config.label}
-              </button>
-            ))}
+            {Object.entries(PRICING_TIER_CONFIG)
+              .filter(([k]) => k !== 'unknown')
+              .filter(([k]) => showFreeToo === 'true' || !FREE_TIERS.has(k as PricingTier))
+              .map(([key, config]) => (
+                <button
+                  key={key}
+                  onClick={() => setPricingTierFilter(key === pricingTierFilter ? null : key)}
+                  className={`h-7 px-2.5 rounded-md text-[11px] font-medium ${
+                    pricingTierFilter === key
+                      ? 'bg-primary/10 text-primary border border-primary/20'
+                      : 'text-fg-muted hover:bg-surface-2 border border-transparent'
+                  }`}
+                >
+                  {config.label}
+                </button>
+              ))}
           </div>
+        </div>
+
+        {/* 9-dimension taxonomy: context window, reasoning mode, safety tier,
+            agentic level. Compact selects rather than another button row —
+            these are secondary filters most sessions won't touch. */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border flex-wrap text-[11px]">
+          <select
+            value={contextTierFilter ?? ''}
+            onChange={(e) => setContextTierFilter(e.target.value || null)}
+            className="h-7 rounded-md border border-border bg-surface-2 px-2 text-fg"
+          >
+            <option value="">All context windows</option>
+            {Object.entries(CONTEXT_TIER_CONFIG).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
+          <select
+            value={reasoningModeFilter ?? ''}
+            onChange={(e) => setReasoningModeFilter(e.target.value || null)}
+            className="h-7 rounded-md border border-border bg-surface-2 px-2 text-fg"
+          >
+            <option value="">All reasoning modes</option>
+            {Object.entries(REASONING_MODE_CONFIG).map(([key, config]) => (
+              <option key={key} value={key} title={config.description}>{config.label}</option>
+            ))}
+          </select>
+          <select
+            value={safetyTierFilter ?? ''}
+            onChange={(e) => setSafetyTierFilter(e.target.value || null)}
+            className="h-7 rounded-md border border-border bg-surface-2 px-2 text-fg"
+          >
+            <option value="">All safety tiers</option>
+            {Object.entries(SAFETY_TIER_CONFIG).map(([key, config]) => (
+              <option key={key} value={key} title={config.description}>{config.label}</option>
+            ))}
+          </select>
+          <select
+            value={agenticLevelFilter ?? ''}
+            onChange={(e) => setAgenticLevelFilter(e.target.value || null)}
+            className="h-7 rounded-md border border-border bg-surface-2 px-2 text-fg"
+          >
+            <option value="">All agentic levels</option>
+            {Object.entries(AGENTIC_LEVEL_CONFIG).map(([key, config]) => (
+              <option key={key} value={key} title={config.description}>{config.label}</option>
+            ))}
+          </select>
+          <Link
+            to="/free-tier"
+            className="ml-auto text-fg-subtle hover:text-primary transition-colors flex items-center gap-1"
+          >
+            <Zap className="size-3" />
+            Free-tier page
+          </Link>
         </div>
 
         {models.isLoading ? (
@@ -286,6 +413,7 @@ export function ModelsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border">
             {paged.map((m) => {
               const hasKey = providerKeyStatus.get(m.provider_id) !== false;
+              const pricingTier = pricingTierOf(m);
               return (
                 <button
                   key={m.id}
@@ -318,14 +446,11 @@ export function ModelsPage() {
                       }
                       return null;
                     })()}
-                    {(() => {
-                      const tier = (m as any).pricing_tier;
-                      if (tier && tier !== 'unknown') {
-                        const config = PRICING_TIER_CONFIG[tier] ?? PRICING_TIER_CONFIG.unknown;
-                        return <Badge tone={config.tone} size="sm">{config.label}</Badge>;
-                      }
-                      return null;
-                    })()}
+                    {pricingTier !== 'unknown' && (
+                      <Badge tone={PRICING_TIER_CONFIG[pricingTier]?.tone ?? 'muted'} size="sm">
+                        {PRICING_TIER_CONFIG[pricingTier]?.label ?? pricingTier}
+                      </Badge>
+                    )}
                   </div>
                 <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
                   <div>
@@ -367,7 +492,11 @@ export function ModelsPage() {
         ) : (
           <EmptyState
             title="No models"
-            description="Connect a provider to populate the model registry."
+            description={
+              showFreeToo !== 'true' && freeHiddenCount > 0 && (models.data ?? []).length === freeHiddenCount
+                ? `All ${freeHiddenCount} models here are free-tier — click "Show free too" or visit the Free Tier page.`
+                : 'Connect a provider to populate the model registry.'
+            }
           />
         )}
 
@@ -390,13 +519,13 @@ export function ModelsPage() {
         onOpenChange={(open) => {
           if (!open) setSelectedModel(null);
         }}
-        onChanged={() => void models.refetch()}
+        onChanged={invalidateModels}
       />
 
       <CreateModelDialog
         open={createModelOpen}
         onOpenChange={setCreateModelOpen}
-        onCreated={() => void models.refetch()}
+        onCreated={invalidateModels}
       />
     </PageContainer>
   );

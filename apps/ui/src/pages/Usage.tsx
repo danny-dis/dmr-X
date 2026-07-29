@@ -42,7 +42,7 @@ export function UsagePage() {
   const [selectedInvoice, setSelectedInvoice] = React.useState<NonNullable<ApiBillingSummary['invoices']>[number] | null>(null);
 
   const series = (usage.data?.points ?? []).map((p) => ({
-    t: p.t,
+    t: p.t ?? 0,
     cost: p.cost ?? 0,
     tokens: (p.tokens ?? 0) / 1000,
   }));

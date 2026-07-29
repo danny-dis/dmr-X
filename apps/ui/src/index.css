@@ -111,9 +111,13 @@
 @layer base {
   *, *::before, *::after {
     border-color: var(--border);
-    /* Smoothly interpolate theme tokens when the user toggles light/dark
-       from the Topbar. Keep the duration short — long transitions make
-       the rest of the app feel sluggish while the page repaints. */
+  }
+  /* Smoothly interpolate theme tokens when the user toggles light/dark from
+     the Topbar. Scoped to interactive elements only — applying this to every
+     node in the tree is a real paint cost on long lists (tables, request
+     logs, model grids) where most elements never change color at all. */
+  a, button, input, select, textarea, [role="button"], [role="link"],
+  [role="tab"], [role="menuitem"], [role="checkbox"], [role="switch"] {
     transition: background-color 200ms var(--ease), border-color 200ms var(--ease), color 200ms var(--ease);
   }
   html, body, #root { height: 100%; }
@@ -158,102 +162,6 @@
     background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 50%, transparent 100%);
     background-size: 200% 100%;
     animation: shimmer 1.6s linear infinite;
-  }
-}
-
-@layer components {
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 font-medium rounded-[10px] transition-all duration-200 select-none;
-    font-family: 'Inter', sans-serif;
-  }
-  .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .btn-primary {
-    background: linear-gradient(135deg, #7C5CFF 0%, #5B3FE8 100%);
-    color: white;
-    box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 6px 20px -6px var(--primary-glow);
-  }
-  .btn-primary:hover:not(:disabled) {
-    box-shadow: 0 1px 0 rgba(255,255,255,0.16) inset, 0 10px 28px -6px var(--primary-glow);
-    transform: translateY(-1px);
-  }
-  .btn-primary:active:not(:disabled) { transform: translateY(0); }
-
-  .btn-secondary {
-    background: var(--surface-2);
-    color: var(--text);
-    border: 1px solid var(--border-2);
-  }
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--surface-3);
-    border-color: var(--border-3);
-  }
-
-  .btn-ghost {
-    background: transparent;
-    color: var(--text-muted);
-  }
-  .btn-ghost:hover:not(:disabled) {
-    background: var(--surface-2);
-    color: var(--text);
-  }
-
-  .btn-danger {
-    background: var(--danger-soft);
-    color: var(--danger);
-    border: 1px solid rgba(248,113,113,0.2);
-  }
-  .btn-danger:hover:not(:disabled) {
-    background: rgba(248,113,113,0.18);
-  }
-
-  .input {
-    @apply w-full rounded-[10px] px-3 py-2 text-sm transition-all duration-200 outline-none;
-    background: var(--surface-2);
-    border: 1px solid var(--border-2);
-    color: var(--text);
-    font-family: 'Inter', sans-serif;
-  }
-  .input::placeholder { color: var(--text-dim); }
-  .input:focus {
-    border-color: var(--primary);
-    background: var(--surface);
-    box-shadow: 0 0 0 3px var(--primary-soft);
-  }
-  .input:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .card {
-    @apply rounded-[14px];
-    background: var(--surface);
-    border: 1px solid var(--border);
-  }
-  .card-hover {
-    transition: border-color 200ms var(--ease), transform 200ms var(--ease), box-shadow 200ms var(--ease);
-  }
-  .card-hover:hover {
-    border-color: var(--border-3);
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
-  }
-
-  .chip {
-    @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium;
-    font-family: 'Inter', sans-serif;
-  }
-  .chip-primary { background: var(--primary-soft); color: var(--primary); }
-  .chip-accent { background: var(--accent-soft); color: var(--accent); }
-  .chip-success { background: var(--success-soft); color: var(--success); }
-  .chip-warning { background: var(--warning-soft); color: var(--warning); }
-  .chip-danger { background: var(--danger-soft); color: var(--danger); }
-  .chip-info { background: var(--info-soft); color: var(--info); }
-  .chip-pink { background: var(--pink-soft); color: var(--pink); }
-  .chip-lime { background: var(--lime-soft); color: var(--lime); }
-  .chip-muted { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
-
-  .divider {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--border-2), transparent);
   }
 }
 

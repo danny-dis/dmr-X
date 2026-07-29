@@ -53,6 +53,14 @@ export function FusionPanelPage() {
     totalDurationMs: number;
     synthesis?: string;
   } | null>(null);
+  // GodmodeSettings reports partial patches (e.g. `{ tier: value }`), not a
+  // full replacement config. Passing `setGodmodeConfig` directly would drop
+  // every field not present in the patch on the very next change.
+  const handleGodmodeConfigChange = React.useCallback(
+    (patch: Partial<GodmodeConfig>) =>
+      setGodmodeConfig((prev) => ({ ...prev, ...patch })),
+    [],
+  );
   const [consortiumResults, setConsortiumResults] = React.useState<ConsortiumResult | null>(null);
   const [isRunningGodmode, setIsRunningGodmode] = React.useState(false);
   const [godmodePrompt, setGodmodePrompt] = React.useState('');
@@ -532,7 +540,7 @@ export function FusionPanelPage() {
                 </h3>
                 <GodmodeSettings
                   config={godmodeConfig}
-                  onChange={setGodmodeConfig}
+                  onChange={handleGodmodeConfigChange}
                   disabled={isRunningGodmode}
                 />
               </Card>
@@ -694,7 +702,7 @@ export function FusionPanelPage() {
                 <li>• Useful for A/B testing, redundancy, or ensuring model diversity</li>
                 <li>• Combine with routing profiles for different fusion configurations</li>
                 {fusionMode !== 'parallel' && (
-                  <li>• <strong>G0DM0D3 mode:</strong> {fusionMode === 'ultaplinian' ? 'Multi-model racing with rankings' : 'Hive-mind synthesis with consensus'}</li>
+                  <li>• <strong>G0DM0D3 mode:</strong> {fusionMode === 'ultraplinian' ? 'Multi-model racing with rankings' : 'Hive-mind synthesis with consensus'}</li>
                 )}
               </ul>
             </Card>

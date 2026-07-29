@@ -35,85 +35,70 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitive
 
 // Lazy-load Observability tab content
 const ObservabilityTab = React.lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
-import { useApiData } from '@/hooks/useApiData';
-import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
-import { Admin } from '@/lib/admin';
+import { chartColor, categoricalColor, type ChartTone } from '@/lib/chartPalette';
+import { useAlerts } from '@/lib/queries/observability';
+import { useModels } from '@/lib/queries/models';
+import { useProviders } from '@/lib/queries/providers';
 import {
   formatNumber,
   formatDuration,
   formatCompactCurrency,
   timeAgo,
 } from '@/lib/formatters';
-import type {
-  ApiDashboardStats,
-  ApiRouteDecision,
-  ApiUsagePoint,
-  ApiProvider,
-  ApiAlert,
-  ApiModel,
-} from '@/types/api';
+import { useLiveStore } from '@/store/useLiveStore';
+import { useDashboardStats, useRouteDecisions, useUsageHistory } from '@/lib/queries/dashboard';
+import type { ApiDashboardStats } from '@/types/api';
 
-const TONE_COLORS = {
-  primary: '#7C5CFF',
-  accent: '#22D3EE',
-  success: '#34D399',
-  warning: '#FBBF24',
-  danger: '#F87171',
-  pink: '#F472B6',
-  lime: '#A3E635',
+/** Known modality -> chart tone. Anything not listed falls back to the
+ * categorical rotation so a new modality never renders unstyled. */
+const MODALITY_TONE: Record<string, ChartTone> = {
+  llm: 'primary',
+  diffusion: 'pink',
+  embedding: 'accent',
+  audio_tts: 'warning',
+  audio_stt: 'success',
+  video: 'lime',
+  music: 'danger',
+  reranking: 'info',
+  moderation: 'danger',
+  code_completion: 'accent',
 };
 
 export function DashboardPage() {
-  const stats = useApiData<ApiDashboardStats>(() => Admin.dashboard(), [], { refetchInterval: 30000 });
-  const decisions = useApiData<ApiRouteDecision[]>(
-    () => Admin.listRouteDecisions({ limit: 8 }),
-    [],
-    { refetchInterval: 30000 }
-  );
-  const usage = useApiData<{ points: ApiUsagePoint[]; total: number }>(
-    () => Admin.getUsage('hour'),
-    [],
-    { refetchInterval: 30000 }
-  );
-  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
-  const alerts = useApiData<ApiAlert[]>(() => Admin.listAlerts(), [], { refetchInterval: 30000 });
-  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: 'true' }), [], { refetchInterval: 30000 });
+  // Slow-poll fallback — paints real numbers before the SSE stream connects
+  // and keeps the page correct if it drops. The live stream (mounted once in
+  // Shell via useLiveStream) is the primary path, read from the store below.
+  const statsQuery = useDashboardStats();
+  const liveStats = useLiveStore((s) => s.stats);
+  const connection = useLiveStore((s) => s.connection);
 
-  // SSE stream for live dashboard stats — auto-reconnect on disconnect
-  // with exponential backoff (1s → 2s → 4s → … → max 30s).
-  React.useEffect(() => {
-    const ctrl = new AbortController();
-    let reconnectTimer: ReturnType<typeof setTimeout>;
-    let delay = 1000;
-    const MAX_DELAY = 30_000;
+  const decisions = useRouteDecisions(8);
+  const usage = useUsageHistory('hour');
+  const providers = useProviders();
+  const alerts = useAlerts();
+  const models = useModels({ available_only: 'true' });
 
-    async function connect(): Promise<void> {
-      try {
-        await Admin.streamDashboardStats(ctrl.signal, (incoming) => {
-          // Reset backoff on successful data receipt
-          delay = 1000;
-          stats.setData((prev) => {
-            if (!prev) return incoming as ApiDashboardStats;
-            return { ...prev, ...incoming } as ApiDashboardStats;
-          });
-        });
-      } catch (err) {
-        if ((err as Error)?.name === 'AbortError') return;
-      }
-      // Stream ended or error — schedule reconnect if not aborted
-      if (!ctrl.signal.aborted) {
-        reconnectTimer = setTimeout(connect, delay);
-        delay = Math.min(delay * 2, MAX_DELAY);
-      }
-    }
-
-    connect();
-
-    return () => {
-      ctrl.abort();
-      clearTimeout(reconnectTimer);
+  // The live SSE frame is snake_case and doesn't carry every field the poll
+  // response does (no `latencyDelta`, for instance) — merge rather than
+  // replace so a connected stream doesn't blank out fields it never sends.
+  const stats: ApiDashboardStats | null = React.useMemo(() => {
+    if (!liveStats) return statsQuery.data ?? null;
+    return {
+      ...statsQuery.data,
+      requests24h: liveStats.total_requests,
+      cost24h: liveStats.daily_spend,
+      avgLatencyMs: liveStats.avg_latency,
+      totalTokens24h: liveStats.token_usage,
+      totalCost24h: liveStats.daily_spend,
+      successRate: liveStats.success_rate,
+      fallbackRate: liveStats.fallback_rate,
+      activeModels: liveStats.active_models,
+      providerHealth: liveStats.provider_health,
+      quotaRemaining: liveStats.quota_remaining,
+      systemStatus: liveStats.system_status,
     };
-  }, []);
+  }, [liveStats, statsQuery.data]);
+  const statsLoading = statsQuery.isLoading && !liveStats;
 
   // Compute provider key status stats
   const providerStats = React.useMemo(() => {
@@ -173,10 +158,10 @@ export function DashboardPage() {
     return acc;
   }, {});
 
-  const modalityPie = Object.entries(modalityData).map(([k, v]) => ({
+  const modalityPie = Object.entries(modalityData).map(([k, v], i) => ({
     label: k,
     value: v,
-    color: MODALITY_COLOR[k] ?? TONE_COLORS.primary,
+    color: MODALITY_TONE[k] ? chartColor(MODALITY_TONE[k]) : categoricalColor(i),
   }));
 
   // Onboarding: show getting-started banner when no providers are configured
@@ -202,6 +187,9 @@ export function DashboardPage() {
           <div className="flex items-center gap-2">
             <Badge tone={systemStatus.tone} size="md" icon={systemStatus.icon}>
               {systemStatus.label}
+            </Badge>
+            <Badge tone={connection === 'open' ? 'success' : 'muted'} size="md" icon={<Activity className="size-3" />}>
+              {connection === 'open' ? 'Live' : connection === 'connecting' ? 'Connecting…' : 'Polling'}
             </Badge>
             <Button variant="secondary" size="sm" asChild>
               <Link to="/routing">
@@ -292,29 +280,29 @@ export function DashboardPage() {
       <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatTile
           label="Requests (24h)"
-          value={stats.data ? formatNumber(stats.data.requests24h ?? 0) : '—'}
+          value={stats ? formatNumber(stats.requests24h ?? 0) : '—'}
           icon={<Zap className="size-3.5" />}
           sparkline={usageSeries.map((p) => p.requests)}
-          loading={stats.isLoading}
+          loading={statsLoading}
         />
         <StatTile
           label="Cost (24h)"
-          value={stats.data ? formatCompactCurrency(stats.data.cost24h ?? 0) : '—'}
+          value={stats ? formatCompactCurrency(stats.cost24h ?? 0) : '—'}
           icon={<DollarSign className="size-3.5" />}
           tone="warning"
           sparkline={usageSeries.map((p) => p.cost)}
-          loading={stats.isLoading}
+          loading={statsLoading}
         />
         <StatTile
           label="Avg latency"
-          value={stats.data ? formatDuration(stats.data.avgLatencyMs ?? 0) : '—'}
+          value={stats ? formatDuration(stats.avgLatencyMs ?? 0) : '—'}
           icon={<Clock className="size-3.5" />}
           tone="primary"
-          delta={stats.data?.latencyDelta ?? 0}
+          delta={stats?.latencyDelta ?? 0}
           deltaLabel="vs yesterday"
           deltaTrend="down-good"
           sparkline={latencyData.map((p) => p.p95)}
-          loading={stats.isLoading}
+          loading={statsLoading}
         />
         <StatTile
           label="Providers"
@@ -385,8 +373,8 @@ export function DashboardPage() {
                 xKey="t"
                 height={220}
                 series={[
-                  { key: 'requests', name: 'Requests', color: TONE_COLORS.primary },
-                  { key: 'tokens', name: 'Tokens (k)', color: TONE_COLORS.accent },
+                  { key: 'requests', name: 'Requests', color: chartColor('primary') },
+                  { key: 'tokens', name: 'Tokens (k)', color: chartColor('accent') },
                 ]}
                 xFormatter={(v) =>
                   new Date(v as number).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
@@ -506,8 +494,8 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <Card padding="md" className="lg:col-span-2">
+      <div className="mt-3">
+        <Card padding="md">
           <CardHeader className="px-0 pt-0">
             <CardTitle>Latency p50 / p95 / p99</CardTitle>
             <p className="text-[10px] text-fg-muted mt-0.5">End-to-end request latency</p>
@@ -524,24 +512,6 @@ export function DashboardPage() {
             )}
           </CardContent>
         </Card>
-
-        <Card padding="md">
-          <CardHeader className="px-0 pt-0">
-            <CardTitle>Intelligence layers</CardTitle>
-            <p className="text-[10px] text-fg-muted mt-0.5">Distribution of recent traffic</p>
-          </CardHeader>
-          <CardContent className="px-0 pb-0">
-            <div className="grid grid-cols-5 gap-1.5">
-              {(['brain', 'thinker', 'executor', 'worker', 'temp_worker'] as const).map((l) => (
-                <IntelligenceBadge key={l} layer={l} size={20} showLabel />
-              ))}
-            </div>
-            <p className="text-[10px] text-fg-subtle mt-3">
-              Each layer represents a different request complexity. The router picks a layer based on the
-              request and routes to the optimal provider.
-            </p>
-          </CardContent>
-        </Card>
       </div>
 
           </TabsContent>
@@ -556,16 +526,3 @@ export function DashboardPage() {
     </PageContainer>
   );
 }
-
-const MODALITY_COLOR: Record<string, string> = {
-  llm: TONE_COLORS.primary,
-  diffusion: TONE_COLORS.pink,
-  embedding: TONE_COLORS.accent,
-  audio_tts: TONE_COLORS.warning,
-  audio_stt: TONE_COLORS.success,
-  video: TONE_COLORS.lime,
-  music: TONE_COLORS.danger,
-  reranking: '#A78BFA',
-  moderation: '#FB7185',
-  code_completion: TONE_COLORS.accent,
-};

@@ -20,7 +20,31 @@ export type PlaygroundMode =
   | 'moderate'
   | 'agentic'
   | 'tool-loop'
-  | 'godmode';
+  | 'godmode'
+  | 'agent';
+
+/**
+ * Every valid `PlaygroundMode` value, in one place — used by the URL sync
+ * (`/playground/:mode`) to validate the route param before trusting it, and
+ * to fall back to `chat` for anything else (an old bookmark, a typo, a
+ * conversation whose mode was removed).
+ */
+export const PLAYGROUND_MODE_VALUES: readonly PlaygroundMode[] = [
+  'chat',
+  'image',
+  'embed',
+  'tts',
+  'rerank',
+  'moderate',
+  'agentic',
+  'tool-loop',
+  'godmode',
+  'agent',
+];
+
+export function isPlaygroundMode(value: string | undefined | null): value is PlaygroundMode {
+  return !!value && (PLAYGROUND_MODE_VALUES as readonly string[]).includes(value);
+}
 
 /**
  * Modes that behave like a chat transcript (turn-based, streamed into the
@@ -33,6 +57,7 @@ export const CHAT_FAMILY_MODES: ReadonlySet<PlaygroundMode> = new Set<Playground
   'agentic',
   'tool-loop',
   'godmode',
+  'agent',
 ]);
 
 export interface StreamingEvent {
@@ -55,6 +80,10 @@ export interface PlaygroundConfig {
   frequencyPenalty?: number;
   stop?: string[];
   responseFormat?: { type: 'text' | 'json_object' } | null;
+  // Agent mode (`/v1/agents/:instanceId/chat`) — bounds enforced server-side
+  // by AgentChatRequestSchema (maxSteps 1-50, max_cost_budget > 0).
+  maxSteps?: number;
+  maxCostBudget?: number;
   godmode?: {
     autotune: boolean;
     parseltongue: boolean;
@@ -120,6 +149,7 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         showSidebar: state.showSidebar,
         activeTab: state.activeTab,
         systemPrompt: state.systemPrompt,
+        agentInstanceId: state.agentInstanceId,
       }),
     }
   )

@@ -19,7 +19,7 @@ import { Input } from '@/components/primitives/Input';
 import { Progress } from '@/components/primitives/Progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Skeleton } from '@/components/primitives/Skeleton';
-import { StatusPill } from '@/components/primitives/StatusPill';
+import { StatusPill, type StatusKind } from '@/components/primitives/StatusPill';
 import { Badge } from '@/components/primitives/Badge';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
@@ -72,16 +72,16 @@ export function WorkersPage() {
     }
   };
 
-  const getJobStatusColor = (status: string) => {
+  const getJobStatusColor = (status: string): StatusKind => {
     switch (status) {
       case 'running':
-        return 'primary';
+        return 'active';
       case 'completed':
-        return 'success';
+        return 'healthy';
       case 'failed':
-        return 'error';
+        return 'offline';
       default:
-        return 'default';
+        return 'pending';
     }
   };
 
