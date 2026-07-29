@@ -205,6 +205,12 @@ function isOurCompanion(cmd: string | undefined): boolean {
   if (!cmd) return false; // unidentifiable — leave it alone
   const root = repoRootFromHere().toLowerCase();
   const lower = cmd.toLowerCase();
+  // The packaged binary is installed OUTSIDE the checkout (~/.dmr-x/bin/dmrx.exe),
+  // so the repo-root gate below can never match it. It is still unmistakably our
+  // own gateway, and while a previous generation of it holds the port a
+  // supervised boot cannot bind — which is precisely the restart loop this
+  // reaper exists to break.
+  if (lower.includes('.dmr-x\\bin\\dmrx') || lower.includes('.dmr-x/bin/dmrx')) return true;
   if (!lower.includes(root)) return false;
   return (
     lower.includes('mcp-server') ||

@@ -1,15 +1,30 @@
 /**
- * PM2 supervisor for DMR-X.
+ * PM2 — the single supervisor for DMR-X.
  *
- * ONE app on purpose. The gateway owns its companions: `startCompanionServices()`
- * spawns the MCP + A2A sidecar (:3100) and G0DM0D3 (:7860) as child processes,
- * and both spawn paths health-check their port first and adopt an existing
- * server instead of starting a second one. Declaring separate PM2 apps for them
- * would race that adoption logic and produce exactly the duplicate processes
- * this config exists to prevent.
+ * Nothing else may supervise these processes. scripts/dmrx-alwayson.ps1 used to
+ * run the packaged binary on the same port from a Task Scheduler job; running
+ * both meant two gateways racing for :47113, one crash-looping forever while
+ * duplicate companions piled up behind it. That script is retained only for
+ * manual, PM2-less operation — never register it as a scheduled task.
  *
- *   pm2 start ecosystem.config.cjs     # start (idempotent — restarts if running)
- *   pm2 stop dmrx-gateway              # graceful stop, tears down both children
+ * TWO apps, and the split is deliberate:
+ *
+ *   dmrx-gateway       the gateway, which owns its own companions.
+ *                      `startCompanionServices()` spawns the MCP + A2A sidecar
+ *                      (:3100) and G0DM0D3 (:7860); both spawn paths health-check
+ *                      their port first and ADOPT a healthy server rather than
+ *                      start a second one, and `reapStaleCompanions()` kills any
+ *                      previous generation before binding. Declaring PM2 apps for
+ *                      them would race that adoption logic and manufacture the
+ *                      duplicates it exists to prevent.
+ *
+ *   dmrx-needle-router the Needle pre-router (:8011). A separate app because it
+ *                      is a Python process with no such adoption logic, and the
+ *                      gateway calls it over HTTP (see needlePreFilter.ts) rather
+ *                      than spawning it.
+ *
+ *   pm2 start ecosystem.config.cjs     # start both (idempotent)
+ *   pm2 stop all                       # graceful stop, tears down children too
  *   pm2 logs dmrx-gateway              # follow
  *   pm2 save                           # persist for `pm2 resurrect` at logon
  */
@@ -101,6 +116,46 @@ module.exports = {
 
       out_file: path.join(root, '.dmrx-data', 'logs', 'gateway-out.log'),
       error_file: path.join(root, '.dmrx-data', 'logs', 'gateway-err.log'),
+      merge_logs: true,
+      time: true,
+    },
+
+    {
+      name: 'dmrx-needle-router',
+      // run_clean.py, not server.py: it strips the Hermes venv out of sys.path
+      // before importing anything. Without it `import needle` resolves into the
+      // wrong environment and the service starts but never binds :8011.
+      script: 'run_clean.py',
+      cwd: path.join(root, 'services', 'needle-router'),
+      interpreter: path.join(root, 'services', 'needle-router', '.venv', 'Scripts', 'python.exe'),
+
+      exec_mode: 'fork',
+      instances: 1,
+
+      autorestart: true,
+      watch: false,
+
+      min_uptime: '30s',
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+
+      // uvicorn spawns workers; treekill stops them dying orphaned and holding
+      // :8011 against the next start.
+      kill_timeout: 10000,
+      treekill: true,
+
+      env: {
+        // Belt and braces with run_clean.py. Hermes exports these globally, and
+        // an inherited PYTHONPATH/PYTHONHOME re-contaminates the interpreter
+        // before run_clean.py gets a chance to run — this is what
+        // start-clean.bat was working around.
+        PYTHONPATH: '',
+        PYTHONHOME: '',
+        PYTHONUNBUFFERED: '1',
+      },
+
+      out_file: path.join(root, '.dmrx-data', 'logs', 'needle-out.log'),
+      error_file: path.join(root, '.dmrx-data', 'logs', 'needle-err.log'),
       merge_logs: true,
       time: true,
     },
