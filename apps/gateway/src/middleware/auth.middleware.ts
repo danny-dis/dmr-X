@@ -223,12 +223,12 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // This supports both legacy unsalted hashes and new salted hashes
     // Also check expires_at to reject expired keys
     const activeKeys = db.prepare(
-      `SELECT ak.id, ak.key_hash, ak.tenant_id, t.name as tenant_name
+      `SELECT ak.id, ak.key_hash, ak.tenant_id, ak.role, t.name as tenant_name
        FROM api_keys ak
        JOIN tenants t ON t.id = ak.tenant_id
        WHERE ak.is_active = 1
          AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
-    ).all() as Array<{ id: string; key_hash: string; tenant_id: string; tenant_name: string }>;
+    ).all() as Array<{ id: string; key_hash: string; tenant_id: string; role: string | null; tenant_name: string }>;
 
     // Find matching key using constant-time comparison
     let matchedKey: typeof activeKeys[0] | undefined;
@@ -252,10 +252,18 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // Per-key rate limit check
     checkPerKeyRateLimit(matchedKey.id);
 
-    // Attach tenant info to request
+    // Attach tenant info to request.
+    //
+    // `role` drives agent RBAC (agent-rbac.middleware.ts reads `tenant.role`
+    // and falls back to 'viewer'). Before api_keys.role existed this field was
+    // simply absent, so every authenticated tenant was treated as a viewer and
+    // the entire agent write surface 403'd outside LOCAL_MODE. Rows created
+    // before migration 063 get the column default ('developer'); the `??` guard
+    // covers a NULL written by any path that bypassed the default.
     (request as any).tenant = {
       id: matchedKey.tenant_id,
       name: matchedKey.tenant_name,
+      role: matchedKey.role ?? 'developer',
       apiKeyId: matchedKey.id,
     };
 

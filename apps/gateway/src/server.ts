@@ -32,6 +32,8 @@ import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { registerSiemForwarding } from './middleware/siem-forward.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
 import { adminRoutes, loadActiveProviderCredential, loadAllActiveProviderKeys } from './routes/admin.routes.js';
+import { mcpAdminRoutes, connectPersistedMcpServers } from './routes/mcp-admin.routes.js';
+import { a2aProxyRoutes } from './routes/a2a-proxy.routes.js';
 import { agenticRoutes } from './routes/agentic.routes.js';
 import { anthropicRoutes } from './routes/anthropic.routes.js';
 import { audioSeparationRoutes } from './routes/audio-separation.routes.js';
@@ -42,6 +44,7 @@ import { imagesRoutes } from './routes/images.routes.js';
 import { modelsRoutes } from './routes/models.routes.js';
 import { ocrRoutes } from './routes/ocr.routes.js';
 import { rerankRoutes } from './routes/rerank.routes.js';
+import { moderationRoutes } from './routes/moderation.routes.js';
 import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers, sweepStaleSandboxes } from './routes/tools.routes.js';
 import { videoRoutes } from './routes/video.routes.js';
 import { geminiRoutes, geminiNativeRoutes } from './routes/gemini.routes.js';
@@ -461,7 +464,21 @@ void (async () => {
   await server.register(cors, {
     origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-free-tier-strategy', 'anthropic-version', 'anthropic-beta'],
+    // x-quality-target / x-cost-filter / x-compression are read by route
+    // handlers but were missing here, so a UI served from a different origin
+    // than the gateway (the Vite dev server on :4200) had them stripped by the
+    // browser and silently lost its routing hints.
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-api-key',
+      'x-free-tier-strategy',
+      'x-quality-target',
+      'x-cost-filter',
+      'x-compression',
+      'anthropic-version',
+      'anthropic-beta',
+    ],
   });
 
   // Rate limiting. Uses tenant ID as key when available (authenticated requests),
@@ -569,12 +586,19 @@ void (async () => {
    await server.register(imagesRoutes, { prefix: '/v1' });
    await server.register(embeddingsRoutes, { prefix: '/v1' });
    await server.register(rerankRoutes, { prefix: '/v1' });
+   // Was written but never mounted, so POST /v1/moderations 404d despite the
+   // playground offering a Moderate mode that calls it.
+   await server.register(moderationRoutes, { prefix: '/v1' });
    await server.register(audioRoutes, { prefix: '/v1' });
    await server.register(audioSeparationRoutes, { prefix: '/v1' });
    await server.register(ocrRoutes, { prefix: '/v1' });
    await server.register(videoRoutes, { prefix: '/v1' });
    await server.register(threeDRoutes, { prefix: '/v1' });
    await server.register(adminRoutes, { prefix: '/v1' });
+   // Registered after adminRoutes so the real /admin/mcp/servers surface sits
+   // alongside the legacy /admin/mcp/aggregation/* file-only endpoints.
+   await server.register(mcpAdminRoutes, { prefix: '/v1' });
+   await server.register(a2aProxyRoutes, { prefix: '/v1' });
    await server.register(toolsRoutes, { prefix: '/v1' });
    registerBuiltinToolHandlers();
    registerCodingToolHandlers();

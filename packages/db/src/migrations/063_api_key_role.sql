@@ -1,0 +1,21 @@
+-- Per-API-key RBAC role.
+--
+-- The agent platform is gated by `requireAgentPermission` (see
+-- apps/gateway/src/middleware/agent-rbac.middleware.ts), which reads
+-- `tenant.role`. The auth middleware never attached one, so every
+-- authenticated tenant fell through to the 'viewer' default and was
+-- refused agent:create / :update / :deploy — the whole agent API was
+-- unreachable outside LOCAL_MODE.
+--
+-- Roles are defined in services/agent-registry/src/agent-permissions.ts:
+--   admin | developer | user | viewer
+--
+-- 'developer' is the default because it is the role that matches what a
+-- tenant API key could already do everywhere else in the gateway (create
+-- and run its own resources within its own tenant). Defaulting to 'viewer'
+-- would keep the API broken; defaulting to 'admin' would grant cross-tenant
+-- reads (agent-permissions.ts checks `tenantRole === 'admin'` for that), so
+-- admin must be assigned deliberately.
+--
+-- Idempotent: the migration runner skips "duplicate column name".
+ALTER TABLE api_keys ADD COLUMN role TEXT NOT NULL DEFAULT 'developer';

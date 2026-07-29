@@ -56,7 +56,8 @@ describe('sqlite-client', () => {
       // Bump this number when adding migrations — it verifies the full
       // migration set is applied, not just the schema seed.
       // 062 adds model_profiles.operator_disabled.
-      expect(row.v).toBe(62);
+      // 063 adds api_keys.role (agent RBAC — see agent-rbac.middleware.ts).
+      expect(row.v).toBe(63);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

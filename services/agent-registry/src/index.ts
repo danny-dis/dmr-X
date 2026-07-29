@@ -3,6 +3,7 @@ export {
   agentRegistryService,
   type AgentDefinition,
   type AgentInstance,
+  type AgentInstanceDetail,
   type AgentExecution,
   type AgentListing,
   type AgentInstall,

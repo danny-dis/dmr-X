@@ -73,6 +73,29 @@ export async function handleA2ARoutes(
   if (path === '/a2a/tasks/cancel' && req.method === 'POST') {
     return legacyShim(req, res, 'tasks/cancel', (b) => ({ id: b.id }));
   }
+  // --- Operator listing (not part of the A2A spec) ---
+  //
+  // A2A peers only ever address a task they already hold an id for, so the
+  // JSON-RPC surface has no list method. The gateway's admin UI needs one to
+  // show what this agent is currently working on, and proxies to it.
+  if (path === '/a2a/tasks' && req.method === 'GET') {
+    const state = url.searchParams.get('state') ?? undefined;
+    const contextId = url.searchParams.get('contextId') ?? undefined;
+    const limitParam = url.searchParams.get('limit');
+    const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+
+    const manager = getTaskManager();
+    const tasks = manager.listTasks({
+      state: state as never,
+      contextId,
+      limit: Number.isFinite(limit) ? limit : undefined,
+      includeHistory: url.searchParams.get('includeHistory') === 'true',
+    });
+
+    sendJson(res, 200, { tasks, total: tasks.length, retained: manager.taskCount() });
+    return true;
+  }
+
   const taskIdMatch = path.match(/^\/a2a\/tasks\/([^/]+)$/);
   if (taskIdMatch && req.method === 'GET') {
     const task = getTaskManager().getTask(taskIdMatch[1]);

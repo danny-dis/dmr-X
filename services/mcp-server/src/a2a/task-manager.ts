@@ -223,6 +223,38 @@ export class A2ATaskManager {
     return { ...task, history: task.history.slice(-Math.max(0, historyLength)) };
   }
 
+  /**
+   * All tasks, newest first, for operator-facing listing.
+   *
+   * The spec has no `tasks/list` method — a peer agent only ever addresses a
+   * task it already holds an id for. But an operator watching this agent needs
+   * to see what it is working on, so this backs the admin-only
+   * `GET /a2a/tasks` route rather than the JSON-RPC surface.
+   *
+   * `history` is dropped by default: a listing renders status and timing, and
+   * full transcripts for every retained task would dominate the payload.
+   */
+  listTasks(opts: { state?: TaskState; contextId?: string; limit?: number; includeHistory?: boolean } = {}): Task[] {
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
+
+    let tasks = Array.from(this.tasks.values());
+    if (opts.state) tasks = tasks.filter((t) => t.status.state === opts.state);
+    if (opts.contextId) tasks = tasks.filter((t) => t.contextId === opts.contextId);
+
+    // Insertion order is chronological (Map preserves it, and ids are only
+    // ever added), so reversing gives newest-first without needing a timestamp
+    // that Task does not carry.
+    tasks = tasks.reverse().slice(0, limit);
+
+    if (opts.includeHistory) return tasks;
+    return tasks.map((t) => ({ ...t, history: [] }));
+  }
+
+  /** Number of retained tasks, before any filtering. */
+  taskCount(): number {
+    return this.tasks.size;
+  }
+
   /** All tasks sharing a contextId, oldest first (used to rebuild multi-turn context). */
   getContextTasks(contextId: string): Task[] {
     const ids = this.contexts.get(contextId);

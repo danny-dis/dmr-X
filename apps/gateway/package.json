@@ -27,6 +27,7 @@
     "@dmr-x/db": "*",
     "@dmr-x/federation": "*",
     "@dmr-x/godmode": "*",
+    "@dmr-x/mcp-client": "*",
     "@dmr-x/memory": "*",
     "@dmr-x/oauth": "*",
     "@dmr-x/policy": "*",
