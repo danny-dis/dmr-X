@@ -562,7 +562,7 @@ function setGodmodeInstance(v: GodmodeService | null): void {
   gGod.__dmrxGodmode = v;
 }
 
-let instance: GodmodeService | null = null;
+const instance: GodmodeService | null = null;
 
 export function getGodmodeService(): GodmodeService {
   let inst = getGodmodeInstance();
@@ -590,7 +590,7 @@ export function createGodmodeService(config: GodmodeConfig): GodmodeService {
  * getGodmodeService() returns a service pointed at the new URL.
  */
 export function setGodmodeConfig(config: Partial<GodmodeConfig>): GodmodeService {
-  let inst = getGodmodeInstance();
+  const inst = getGodmodeInstance();
   if (!inst) {
     return createGodmodeService({
       baseUrl: config.baseUrl ?? process.env.GODMODE_API_URL ?? 'http://localhost:7860',

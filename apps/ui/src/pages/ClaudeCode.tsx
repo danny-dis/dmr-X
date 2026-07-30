@@ -4,7 +4,7 @@ import {
   RotateCcw,
   Plus,
   Trash2,
-  AlertTriangle,
+  Info,
   ChevronDown,
   X,
   Search,
@@ -19,6 +19,8 @@ import { createPortal } from 'react-dom';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Code } from '@/components/primitives/Code';
+import { DataState } from '@/components/primitives/DataState';
 import {
   Dialog,
   DialogContent,
@@ -29,10 +31,13 @@ import {
   DialogFooter,
   DialogClose,
 } from '@/components/primitives/Dialog';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
 import { PageHeader, PageContainer } from '@/components/layout';
+import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { formatDuration } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiModel, ApiProvider } from '@/types/api';
 
@@ -57,6 +62,13 @@ interface TestResult {
   success: boolean;
   latencyMs: number;
   error?: string;
+}
+
+type AgentIntegrationConfig = Awaited<ReturnType<typeof Admin.getAgentIntegrationConfig>>;
+
+interface LoadedData {
+  providers: ApiProvider[];
+  config: AgentIntegrationConfig;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -163,17 +175,23 @@ function RoleModelPicker({
         >
           <div className="border-b border-border px-3 py-2">
             <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-fg-subtle" />
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-fg-subtle" aria-hidden />
               <input
                 ref={searchRef}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search models..."
+                aria-label="Search models"
                 className="w-full pl-7 pr-7 py-1.5 text-xs bg-transparent outline-none"
               />
               {search && (
-                <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2">
-                  <X className="size-3.5 text-fg-subtle" />
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2"
+                >
+                  <X className="size-3.5 text-fg-subtle" aria-hidden />
                 </button>
               )}
             </div>
@@ -209,7 +227,7 @@ function RoleModelPicker({
                             {item.model.modelId ?? item.model.id}
                           </div>
                         </div>
-                        {isSelected && <Check className="size-3.5 text-primary shrink-0" />}
+                        {isSelected && <Check className="size-3.5 text-primary shrink-0" aria-hidden />}
                       </div>
                     );
                   })}
@@ -258,7 +276,7 @@ function RoleModelPicker({
         ) : (
           <span className="text-xs text-fg-muted flex-1">{role.description}</span>
         )}
-        <ChevronDown className="size-3.5 text-fg-subtle shrink-0" />
+        <ChevronDown className="size-3.5 text-fg-subtle shrink-0" aria-hidden />
       </button>
       {dropdown}
     </>
@@ -309,25 +327,27 @@ function EnvVarsDialog({
                 value={v.key}
                 onChange={(e) => updateVar(i, 'key', e.target.value)}
                 placeholder="KEY"
+                aria-label={`Variable ${i + 1} name`}
                 className="flex-1 font-mono text-xs"
               />
               <Input
                 value={v.value}
                 onChange={(e) => updateVar(i, 'value', e.target.value)}
                 placeholder="value"
+                aria-label={`Variable ${i + 1} value`}
                 className="flex-1 font-mono text-xs"
               />
               <Button
                 size="icon-sm"
                 variant="ghost"
                 onClick={() => removeVar(i)}
-                aria-label="Remove"
+                aria-label="Remove variable"
               >
-                <Trash2 className="size-3.5" />
+                <Trash2 className="size-3.5" aria-hidden />
               </Button>
             </div>
           ))}
-          <Button variant="secondary" size="sm" onClick={addVar} leftIcon={<Plus className="size-3" />}>
+          <Button variant="secondary" size="sm" onClick={addVar} leftIcon={<Plus className="size-3" aria-hidden />}>
             Add variable
           </Button>
         </DialogBody>
@@ -355,11 +375,26 @@ function EnvVarsDialog({
 /* -------------------------------------------------------------------------- */
 
 export function ClaudeCodePage() {
-  const [providers, setProviders] = React.useState<ApiProvider[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const load = useApiData<LoadedData>(
+    async () => {
+      const [providerList, config] = await Promise.all([
+        Admin.listProviders(),
+        Admin.getAgentIntegrationConfig(),
+      ]);
+      return { providers: providerList, config };
+    },
+    [],
+  );
+  const providers = load.data?.providers ?? [];
+
   const [saving, setSaving] = React.useState(false);
-  const [testing, setTesting] = React.useState(false);
+
+  // Connection-check state, kept separate from the initial config load: it
+  // is a one-off, user-triggered action rather than a query, so it starts
+  // idle and only renders once the user asks for it.
+  const [testStatus, setTestStatus] = React.useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [testResult, setTestResult] = React.useState<TestResult | null>(null);
+  const [testError, setTestError] = React.useState<unknown>(null);
 
   const [roles, setRoles] = React.useState<ClaudeCodeModelRole[]>([
     { key: 'big', label: 'Large Model', description: 'Select Big Model (Opus)', modelId: null, providerId: null },
@@ -370,31 +405,21 @@ export function ClaudeCodePage() {
   const [envVars, setEnvVars] = React.useState<EnvVar[]>([]);
   const [envDialogOpen, setEnvDialogOpen] = React.useState(false);
 
-  // Load saved config from backend
+  // Sync local form state once the saved config has loaded.
   React.useEffect(() => {
-    Promise.all([
-      Admin.listProviders(),
-      Admin.getAgentIntegrationConfig(),
-    ])
-      .then(([providerList, config]) => {
-        setProviders(providerList);
-        if (config.claudeCode) {
-          const cc = config.claudeCode;
-          setRoles((prev) =>
-            prev.map((r) => ({
-              ...r,
-              modelId: (cc[`${r.key}ModelId`] as string | null) ?? null,
-              providerId: (cc[`${r.key}ProviderId`] as string | null) ?? null,
-            })),
-          );
-          if (cc.customEnvVars && Array.isArray(cc.customEnvVars)) {
-            setEnvVars(cc.customEnvVars as EnvVar[]);
-          }
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    const cc = load.data?.config.claudeCode;
+    if (!cc) return;
+    setRoles((prev) =>
+      prev.map((r) => ({
+        ...r,
+        modelId: (cc[`${r.key}ModelId`] as string | null) ?? null,
+        providerId: (cc[`${r.key}ProviderId`] as string | null) ?? null,
+      })),
+    );
+    if (cc.customEnvVars && Array.isArray(cc.customEnvVars)) {
+      setEnvVars(cc.customEnvVars as EnvVar[]);
+    }
+  }, [load.data]);
 
   const updateRole = (key: 'big' | 'medium' | 'small', providerId: string, modelId: string) => {
     setRoles((prev) =>
@@ -424,9 +449,8 @@ export function ClaudeCodePage() {
         description: 'Your Claude Code integration settings have been saved.',
       });
     } catch (err) {
-      toast.error('Failed to save', {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
     } finally {
       setSaving(false);
     }
@@ -434,27 +458,27 @@ export function ClaudeCodePage() {
 
   // Test connection
   const handleTestConnection = async () => {
-    setTesting(true);
+    setTestStatus('loading');
     setTestResult(null);
+    setTestError(null);
     try {
       const result = await Admin.testIntegration('claude-code');
       setTestResult(result);
+      setTestStatus('success');
       if (result.success) {
         toast.success('Connection successful', {
-          description: `Gateway responded in ${result.latencyMs}ms`,
+          description: `Gateway responded in ${formatDuration(result.latencyMs)}`,
         });
       } else {
         toast.error('Connection failed', {
-          description: result.error ?? 'Unknown error',
+          description: result.error ?? 'The gateway rejected the test request. Check the model roles below and try again.',
         });
       }
     } catch (err) {
-      setTestResult({ success: false, latencyMs: 0, error: err instanceof Error ? err.message : String(err) });
-      toast.error('Test failed', {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setTesting(false);
+      setTestStatus('error');
+      setTestError(err);
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
     }
   };
 
@@ -536,26 +560,11 @@ export function ClaudeCodePage() {
   const handleReset = () => {
     setRoles((prev) => prev.map((r) => ({ ...r, modelId: null, providerId: null })));
     setEnvVars([]);
+    setTestStatus('idle');
     setTestResult(null);
+    setTestError(null);
     toast.show('Reset to defaults', { description: 'Click Save to apply.' });
   };
-
-  if (loading) {
-    return (
-      <PageContainer>
-        <PageHeader
-          title="Claude Code Integration"
-          description="Configure model roles for Claude Code"
-          icon={<Terminal className="size-5" />}
-        />
-        <div className="mt-5 space-y-4">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-24 rounded-lg bg-surface-2 animate-pulse" />
-          ))}
-        </div>
-      </PageContainer>
-    );
-  }
 
   return (
     <PageContainer>
@@ -566,166 +575,200 @@ export function ClaudeCodePage() {
         actions={
           <>
             <Button variant="ghost" size="sm" onClick={handleReset}>
-              <RotateCcw className="size-3" />
+              <RotateCcw className="size-3" aria-hidden />
               Reset
             </Button>
             <Button
               variant="secondary"
               size="sm"
-              onClick={handleTestConnection}
-              loading={testing}
-              leftIcon={testResult?.success ? <Wifi className="size-3" /> : testResult ? <WifiOff className="size-3" /> : undefined}
+              onClick={() => void handleTestConnection()}
+              loading={testStatus === 'loading'}
+              leftIcon={
+                testResult?.success ? (
+                  <Wifi className="size-3" aria-hidden />
+                ) : testStatus === 'error' || testResult ? (
+                  <WifiOff className="size-3" aria-hidden />
+                ) : undefined
+              }
             >
               Test Connection
             </Button>
-            <Button size="sm" onClick={handleSaveAndEnable} loading={saving}>
-              <Save className="size-3" />
+            <Button size="sm" onClick={() => void handleSaveAndEnable()} loading={saving}>
+              <Save className="size-3" aria-hidden />
               Save
             </Button>
           </>
         }
       />
 
-      <div className="mt-5 space-y-4">
-        {roles.map((role) => (
-          <Card key={role.key} padding="md">
-            <CardHeader className="px-0 pt-0">
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'text-[10px] px-2 py-0.5 rounded-full font-bold',
-                    role.key === 'big' && 'bg-danger/10 text-danger',
-                    role.key === 'medium' && 'bg-warning/10 text-warning',
-                    role.key === 'small' && 'bg-success/10 text-success',
-                  )}
+      <div className="mt-5">
+        <DataState
+          data={load.data}
+          isLoading={load.isLoading}
+          error={load.error}
+          onRetry={load.refetch}
+          loading={
+            <div className="space-y-4">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-24 rounded-lg bg-surface-2 animate-pulse" />
+              ))}
+            </div>
+          }
+        >
+          {() => (
+            <div className="space-y-4">
+              {roles.map((role) => (
+                <Card key={role.key} padding="md">
+                  <CardHeader className="px-0 pt-0">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn(
+                          'text-[10px] px-2 py-0.5 rounded-full font-bold',
+                          role.key === 'big' && 'bg-danger/10 text-danger',
+                          role.key === 'medium' && 'bg-warning/10 text-warning',
+                          role.key === 'small' && 'bg-success/10 text-success',
+                        )}
+                      >
+                        {role.key === 'big' ? 'BIG' : role.key === 'medium' ? 'MED' : 'SML'}
+                      </span>
+                      <CardTitle>{role.label}</CardTitle>
+                      <Badge tone="muted" size="sm">
+                        {role.description.split('(')[1]?.replace(')', '') ?? role.key}
+                      </Badge>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="px-0">
+                    <RoleModelPicker
+                      role={role}
+                      providers={providers}
+                      onSelect={(providerId, modelId) => updateRole(role.key, providerId, modelId)}
+                    />
+                  </CardContent>
+                </Card>
+              ))}
+
+              <Card padding="md">
+                <CardHeader className="px-0 pt-0">
+                  <CardTitle>Environment Variables</CardTitle>
+                  <p className="text-[10px] text-fg-muted mt-0.5">
+                    Custom env vars passed to Claude Code on launch
+                  </p>
+                </CardHeader>
+                <CardContent className="px-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap gap-1.5">
+                      {envVars.length === 0 ? (
+                        <span className="text-xs text-fg-subtle">No custom variables</span>
+                      ) : (
+                        envVars.map((v, i) => (
+                          <Badge key={i} tone="muted" size="sm" className="font-mono">
+                            {v.key}=***
+                          </Badge>
+                        ))
+                      )}
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setEnvDialogOpen(true)}
+                      leftIcon={<Plus className="size-3" aria-hidden />}
+                    >
+                      Edit
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Connection check result */}
+              {testStatus !== 'idle' && (
+                <DataState
+                  data={testResult}
+                  isLoading={testStatus === 'loading'}
+                  error={testError}
+                  onRetry={handleTestConnection}
+                  skeletonRows={1}
                 >
-                  {role.key === 'big' ? 'BIG' : role.key === 'medium' ? 'MED' : 'SML'}
-                </span>
-                <CardTitle>{role.label}</CardTitle>
-                <Badge tone="muted" size="sm">
-                  {role.description.split('(')[1]?.replace(')', '') ?? role.key}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="px-0">
-              <RoleModelPicker
-                role={role}
-                providers={providers}
-                onSelect={(providerId, modelId) => updateRole(role.key, providerId, modelId)}
-              />
-            </CardContent>
-          </Card>
-        ))}
-
-        <Card padding="md">
-          <CardHeader className="px-0 pt-0">
-            <CardTitle>Environment Variables</CardTitle>
-            <p className="text-[10px] text-fg-muted mt-0.5">
-              Custom env vars passed to Claude Code on launch
-            </p>
-          </CardHeader>
-          <CardContent className="px-0">
-            <div className="flex items-center justify-between">
-              <div className="flex flex-wrap gap-1.5">
-                {envVars.length === 0 ? (
-                  <span className="text-xs text-fg-subtle">No custom variables</span>
-                ) : (
-                  envVars.map((v, i) => (
-                    <Badge key={i} tone="muted" size="sm" className="font-mono">
-                      {v.key}=***
-                    </Badge>
-                  ))
-                )}
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setEnvDialogOpen(true)}
-                leftIcon={<Plus className="size-3" />}
-              >
-                Edit
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Test Result */}
-        {testResult && (
-          <div
-            className={cn(
-              'rounded-lg border px-4 py-3',
-              testResult.success
-                ? 'border-success/30 bg-success/5'
-                : 'border-danger/30 bg-danger/5',
-            )}
-          >
-            <div className="flex items-start gap-2">
-              {testResult.success ? (
-                <Wifi className="size-4 text-success shrink-0 mt-0.5" />
-              ) : (
-                <WifiOff className="size-4 text-danger shrink-0 mt-0.5" />
+                  {(result) => (
+                    <div
+                      className={cn(
+                        'rounded-lg border px-4 py-3',
+                        result.success
+                          ? 'border-success/30 bg-success/5'
+                          : 'border-danger/30 bg-danger/5',
+                      )}
+                    >
+                      <div className="flex items-start gap-2">
+                        {result.success ? (
+                          <Wifi className="size-4 text-success shrink-0 mt-0.5" aria-hidden />
+                        ) : (
+                          <WifiOff className="size-4 text-danger shrink-0 mt-0.5" aria-hidden />
+                        )}
+                        <div className="text-xs text-fg leading-relaxed">
+                          <p className="font-medium">
+                            {result.success ? 'Connection successful' : 'Connection failed'}
+                          </p>
+                          <p className="text-fg-muted">
+                            {result.success
+                              ? `Gateway responded in ${formatDuration(result.latencyMs)}`
+                              : result.error}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </DataState>
               )}
-              <div className="text-xs text-fg leading-relaxed">
-                <p className="font-medium">
-                  {testResult.success ? 'Connection successful' : 'Connection failed'}
-                </p>
-                <p className="text-fg-muted">
-                  {testResult.success
-                    ? `Gateway responded in ${testResult.latencyMs}ms`
-                    : testResult.error}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
 
-        {/* Quick Setup */}
-        <Card padding="md">
-          <CardHeader className="px-0 pt-0">
-            <CardTitle>Quick Setup</CardTitle>
-          </CardHeader>
-          <CardContent className="px-0 space-y-3">
-            <div className="text-xs text-fg-muted">
-              <p className="mb-2 font-medium text-fg">Option 1: Download wrapper script</p>
-              <p className="mb-2">
-                Download a shell script that configures all environment variables and launches Claude Code.
-              </p>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleDownloadScript}
-                leftIcon={<Download className="size-3" />}
-              >
-                Download Script
-              </Button>
-            </div>
-            <div className="text-xs text-fg-muted">
-              <p className="mb-2 font-medium text-fg">Option 2: Set environment variables manually</p>
-              <pre className="px-3 py-2 bg-surface-2 rounded-lg border border-border font-mono text-[11px] whitespace-pre-wrap">{`export ANTHROPIC_BASE_URL="${window.location.origin}/v1"
+              {/* Quick Setup */}
+              <Card padding="md">
+                <CardHeader className="px-0 pt-0">
+                  <CardTitle>Quick Setup</CardTitle>
+                </CardHeader>
+                <CardContent className="px-0 space-y-3">
+                  <div className="text-xs text-fg-muted">
+                    <p className="mb-2 font-medium text-fg">Option 1: Download wrapper script</p>
+                    <p className="mb-2">
+                      Download a shell script that configures all environment variables and launches Claude Code.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleDownloadScript}
+                      leftIcon={<Download className="size-3" aria-hidden />}
+                    >
+                      Download Script
+                    </Button>
+                  </div>
+                  <div className="text-xs text-fg-muted">
+                    <p className="mb-2 font-medium text-fg">Option 2: Set environment variables manually</p>
+                    <Code inline={false} copyable language="bash">{`export ANTHROPIC_BASE_URL="${window.location.origin}/v1"
 export ANTHROPIC_API_KEY="dmr-sk-your-key-here"
 export CLAUDE_CODE_BIG_MODEL="claude-opus-4-20250514"
 export CLAUDE_CODE_MEDIUM_MODEL="claude-sonnet-4-20250514"
 export CLAUDE_CODE_SMALL_MODEL="claude-haiku-3-20250307"
 
-claude "your prompt here"`}</pre>
-            </div>
-          </CardContent>
-        </Card>
+claude "your prompt here"`}</Code>
+                  </div>
+                </CardContent>
+              </Card>
 
-        <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="size-4 text-primary shrink-0 mt-0.5" />
-            <div className="text-xs text-fg leading-relaxed">
-              <p className="font-medium mb-1">How it works</p>
-              <p className="text-fg-muted">
-                DMR-X acts as an Anthropic-compatible proxy for Claude Code. Set{' '}
-                <code className="font-mono bg-surface-2 px-1 rounded">ANTHROPIC_BASE_URL</code> to
-                your gateway URL, and Claude Code will route requests through your configured
-                providers with automatic fallback, rate limiting, and cost tracking.
-              </p>
+              <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+                <div className="flex items-start gap-2">
+                  <Info className="size-4 text-primary shrink-0 mt-0.5" aria-hidden />
+                  <div className="text-xs text-fg leading-relaxed">
+                    <p className="font-medium mb-1">How it works</p>
+                    <p className="text-fg-muted">
+                      DMR-X acts as an Anthropic-compatible proxy for Claude Code. Set{' '}
+                      <Code>ANTHROPIC_BASE_URL</Code> to this gateway&apos;s URL. Claude Code then
+                      routes requests through the providers configured above, with fallback, rate
+                      limiting, and cost tracking applied by the gateway.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+        </DataState>
       </div>
 
       <EnvVarsDialog

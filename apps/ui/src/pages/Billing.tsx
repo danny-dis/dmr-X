@@ -3,6 +3,7 @@ import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
 import { BackLink } from '@/components/primitives/BackLink';
+import { LazyTab } from '@/components/primitives/LazyTab';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 
 // Lazy-load tab content for code splitting
@@ -11,16 +12,6 @@ const CreditsTab = React.lazy(() => import('@/pages/Credits').then(m => ({ defau
 const QuotaTab = React.lazy(() => import('@/pages/Quota').then(m => ({ default: m.QuotaPage })));
 const BenchmarksTab = React.lazy(() => import('@/pages/Benchmarks').then(m => ({ default: m.BenchmarksPage })));
 const MemoryTab = React.lazy(() => import('@/pages/Memory').then(m => ({ default: m.MemoryPage })));
-
-import { Skeleton } from '@/components/primitives/Skeleton';
-
-function TabLoader() {
-  return (
-    <div className="flex items-center justify-center h-[40vh]">
-      <Skeleton className="h-8 w-48" />
-    </div>
-  );
-}
 
 export function BillingPage() {
   return (
@@ -42,31 +33,31 @@ export function BillingPage() {
           </TabsList>
 
           <TabsContent value="overview">
-            <React.Suspense fallback={<TabLoader />}>
+            <LazyTab>
               <UsageTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
 
           <TabsContent value="credits">
-            <React.Suspense fallback={<TabLoader />}>
+            <LazyTab>
               <CreditsTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
 
           <TabsContent value="quota">
-            <React.Suspense fallback={<TabLoader />}>
+            <LazyTab>
               <QuotaTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
 
           <TabsContent value="history">
             <div className="space-y-6">
-              <React.Suspense fallback={<TabLoader />}>
+              <LazyTab>
                 <BenchmarksTab />
-              </React.Suspense>
-              <React.Suspense fallback={<TabLoader />}>
+              </LazyTab>
+              <LazyTab>
                 <MemoryTab />
-              </React.Suspense>
+              </LazyTab>
             </div>
           </TabsContent>
         </Tabs>

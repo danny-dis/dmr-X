@@ -1,8 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { CheckCircle2, Loader2, Search, XCircle } from 'lucide-react';
+import { CheckCircle2, Loader2, Search } from 'lucide-react';
 import * as React from 'react';
 
-import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import {
   Dialog,
@@ -13,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/primitives/Dialog';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Field, FieldDescription, FieldLabel } from '@/components/primitives/Field';
 import { Input } from '@/components/primitives/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
@@ -20,6 +20,7 @@ import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
 import { useDiscoverProviderModels } from '@/lib/queries/usage';
 import { keys } from '@/lib/queryClient';
+import type { ApiCatalogEntry } from '@/types/api';
 
 type Step = 'enter' | 'discovering' | 'done';
 
@@ -44,7 +45,6 @@ export function DiscoverKeyDialog({
   const [templateId, setTemplateId] = React.useState('');
   const [apiKey, setApiKey] = React.useState('');
   const [step, setStep] = React.useState<Step>('enter');
-  const [error, setError] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<{
     provider: string;
     discovered: number;
@@ -66,13 +66,11 @@ export function DiscoverKeyDialog({
     setTemplateId('');
     setApiKey('');
     setStep('enter');
-    setError(null);
     setResult(null);
   };
 
   const handleSubmit = async () => {
     if (!templateId || !apiKey.trim()) return;
-    setError(null);
     setStep('discovering');
 
     try {
@@ -85,7 +83,7 @@ export function DiscoverKeyDialog({
         key_label: 'free-tier',
       });
 
-      const providerId = (activated.provider as any)?.id;
+      const providerId = activated.provider?.id;
       if (!providerId) throw new Error('Provider was created but returned no id');
 
       // 2. Discover + verify. Verification can fail on provider rate limits
@@ -100,9 +98,14 @@ export function DiscoverKeyDialog({
         verifyError,
       });
       setStep('done');
-      toast.success(`${discovered.provider}: ${discovered.discovered} models discovered`);
+      toast.success('Free-tier key added', {
+        description: `${discovered.provider}: ${discovered.discovered} models discovered.`,
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // Dialog stays open on failure — templateId and apiKey are left as the
+      // user entered them so the retry doesn't start from scratch.
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
       setStep('enter');
     }
   };
@@ -128,7 +131,7 @@ export function DiscoverKeyDialog({
           {step === 'done' && result ? (
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-sm text-success">
-                <CheckCircle2 className="size-4" />
+                <CheckCircle2 className="size-4" aria-hidden />
                 Connected to {result.provider}
               </div>
               <div className="grid grid-cols-3 gap-3 rounded-lg border border-border bg-surface-2 p-3">
@@ -159,9 +162,9 @@ export function DiscoverKeyDialog({
                     <SelectValue placeholder={catalog.isLoading ? 'Loading…' : 'Choose a provider'} />
                   </SelectTrigger>
                   <SelectContent>
-                    {(catalog.data?.entries ?? []).map((entry: any) => (
-                      <SelectItem key={entry.id ?? entry.template_id} value={entry.id ?? entry.template_id}>
-                        {entry.name ?? entry.id}
+                    {(catalog.data?.entries ?? []).map((entry: ApiCatalogEntry) => (
+                      <SelectItem key={entry.id} value={entry.id}>
+                        {entry.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -185,17 +188,13 @@ export function DiscoverKeyDialog({
               </Field>
 
               {step === 'discovering' && (
-                <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 p-3 text-sm text-fg-muted">
-                  <Loader2 className="size-4 animate-spin" />
+                <div
+                  className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 p-3 text-sm text-fg-muted"
+                  aria-live="polite"
+                >
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
                   Discovering models and verifying which are free. This can take a minute for
                   providers with large catalogues.
-                </div>
-              )}
-
-              {error && (
-                <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
-                  <XCircle className="mt-0.5 size-4 shrink-0" />
-                  <span>{error}</span>
                 </div>
               )}
             </>

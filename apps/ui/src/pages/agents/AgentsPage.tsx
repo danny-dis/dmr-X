@@ -1,17 +1,30 @@
-import { Bot, MessageSquare, Pause, Play, Plus, Rocket, Trash2 } from 'lucide-react';
+import { Bot, MessageSquare, Pause, Play, Plus, Rocket, Trash2, Loader2 } from 'lucide-react';
 import * as React from 'react';
 import { Link, useNavigate } from 'react-router';
 
 import { PageContainer, PageHeader } from '@/components/layout';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/primitives/AlertDialog';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
-import { EmptyState } from '@/components/primitives/EmptyState';
+import { DataState } from '@/components/primitives/DataState';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatusPill } from '@/components/primitives/StatusPill';
 import { toast } from '@/components/primitives/Toast';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/primitives/Tooltip';
 import { useUrlState } from '@/hooks/useUrlState';
+import { formatCurrency, formatDate, formatNumber } from '@/lib/formatters';
 import {
   useAgentInstances,
   useAgents,
@@ -21,8 +34,6 @@ import {
   type AgentDefinition,
   type AgentInstanceDetail,
 } from '@/lib/queries/agents';
-
-const usd = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 
 /**
  * Agent definitions and their deployed instances.
@@ -46,8 +57,6 @@ export function AgentsPage() {
     return map;
   }, [instances.data]);
 
-  const items = agents.data?.items ?? [];
-
   return (
     <PageContainer size="wide">
       <PageHeader
@@ -65,45 +74,45 @@ export function AgentsPage() {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Search agents…"
+        aria-label="Search agents"
         className="mb-4 w-72"
       />
 
-      {agents.isLoading ? (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-40 w-full" />
-          ))}
-        </div>
-      ) : agents.isError ? (
-        <EmptyState
-          icon={<Bot className="size-6" />}
-          title="Could not load agents"
-          description={(agents.error as Error)?.message}
-        />
-      ) : items.length === 0 ? (
-        <EmptyState
-          icon={<Bot className="size-6" />}
-          title={search ? `No agent matches “${search}”` : 'No agents yet'}
-          description="An agent is a system prompt, a model tier and a set of tools it may call."
-          action={
-            !search && (
-              <Button asChild>
-                <Link to="/agents/new">Create your first agent</Link>
-              </Button>
-            )
-          }
-        />
-      ) : (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {items.map((agent) => (
-            <AgentCard
-              key={agent.id}
-              agent={agent}
-              instances={instancesByDefinition.get(agent.id) ?? []}
-            />
-          ))}
-        </div>
-      )}
+      <DataState
+        data={agents.data?.items}
+        isLoading={agents.isLoading}
+        error={agents.error}
+        onRetry={() => agents.refetch()}
+        loading={
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-40 w-full" />
+            ))}
+          </div>
+        }
+        empty={{
+          icon: <Bot className="size-8" />,
+          title: search ? `No agent matches “${search}”` : 'No agents yet',
+          description: 'An agent is a system prompt, a model tier and a set of tools it may call.',
+          action: !search ? (
+            <Button asChild>
+              <Link to="/agents/new">Create your first agent</Link>
+            </Button>
+          ) : undefined,
+        }}
+      >
+        {(items) => (
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {items.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                instances={instancesByDefinition.get(agent.id) ?? []}
+              />
+            ))}
+          </div>
+        )}
+      </DataState>
     </PageContainer>
   );
 }
@@ -113,9 +122,11 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
   const deploy = useDeployAgent();
   const remove = useDeleteAgent();
   const setRunning = useSetInstanceRunning();
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
 
   const active = instances.filter((i) => i.status === 'active');
   const cost24h = instances.reduce((sum, i) => sum + i.costCents24h, 0) / 100;
+  const totalRuns = instances.reduce((s, i) => s + i.executionCount, 0);
   const lastRun = instances
     .map((i) => i.lastExecutionAt)
     .filter(Boolean)
@@ -126,19 +137,31 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
   // action is ambiguous and belongs on the detail page's instance list.
   const soleInstance = instances.length === 1 ? instances[0] : null;
 
+  const agentLabel = agent.humanName || agent.name;
+
+  const handleDelete = () => {
+    remove.mutate(agent.id, {
+      onSuccess: () => {
+        toast.success(`${agentLabel} deleted`, { description: 'Its instances and run history were removed too.' });
+      },
+      onError: (e) => {
+        const info = interpretError(e);
+        toast.error(info.title, { description: info.description });
+      },
+    });
+  };
+
   return (
     <Card className="flex flex-col p-4 transition-colors hover:border-border-2">
       <Link to={`/agents/${agent.id}`} className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="truncate font-medium text-fg">{agent.humanName || agent.name}</span>
+          <span className="truncate font-medium text-fg">{agentLabel}</span>
           {instances.length === 0 ? (
-            <Badge tone="muted" variant="soft" size="sm">Not deployed</Badge>
+            <StatusPill status="unknown" label="Not deployed" size="sm" pulse={false} />
           ) : active.length > 0 ? (
-            <Badge tone="success" variant="soft" size="sm">
-              {active.length} running
-            </Badge>
+            <StatusPill status="active" label={`${active.length} running`} size="sm" />
           ) : (
-            <Badge tone="warning" variant="soft" size="sm">Paused</Badge>
+            <StatusPill status="warning" label="Paused" size="sm" pulse={false} />
           )}
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-fg-muted">
@@ -159,9 +182,9 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
       </div>
 
       <div className="mt-3 flex items-center gap-3 text-2xs text-fg-subtle">
-        <span>{instances.reduce((s, i) => s + i.executionCount, 0)} runs</span>
-        <span>{usd.format(cost24h)} / 24h</span>
-        {lastRun && <span>last {new Date(lastRun).toLocaleDateString()}</span>}
+        <span>{formatNumber(totalRuns)} runs</span>
+        <span>{formatCurrency(cost24h)} / 24h</span>
+        {lastRun && <span>last {formatDate(lastRun)}</span>}
       </div>
 
       <div className="mt-auto flex items-center gap-1 pt-3">
@@ -172,8 +195,12 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
             loading={deploy.isPending}
             onClick={() =>
               deploy.mutate(agent.id, {
-                onSuccess: () => toast.success(`${agent.name} deployed`),
-                onError: (e) => toast.error((e as Error).message),
+                onSuccess: () =>
+                  toast.success(`${agentLabel} deployed`, { description: 'An instance is now live and ready to chat with.' }),
+                onError: (e) => {
+                  const info = interpretError(e);
+                  toast.error(info.title, { description: info.description });
+                },
               })
             }
           >
@@ -196,12 +223,17 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
               <Button
                 size="icon-sm"
                 variant="ghost"
-                aria-label={soleInstance.status === 'active' ? 'Pause' : 'Resume'}
+                aria-label={soleInstance.status === 'active' ? 'Pause agent' : 'Resume agent'}
                 loading={setRunning.isPending}
                 onClick={() =>
                   setRunning.mutate(
                     { instanceId: soleInstance.id, running: soleInstance.status !== 'active' },
-                    { onError: (e) => toast.error((e as Error).message) },
+                    {
+                      onError: (e) => {
+                        const info = interpretError(e);
+                        toast.error(info.title, { description: info.description });
+                      },
+                    },
                   )
                 }
               >
@@ -225,18 +257,29 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
           variant="ghost"
           className="ml-auto"
           aria-label="Delete agent"
-          loading={remove.isPending}
-          onClick={() => {
-            if (!confirm(`Delete "${agent.name}"? Its instances and run history go too.`)) return;
-            remove.mutate(agent.id, {
-              onSuccess: () => toast.success(`${agent.name} deleted`),
-              onError: (e) => toast.error((e as Error).message),
-            });
-          }}
+          onClick={() => setConfirmDelete(true)}
         >
           <Trash2 className="size-3.5" />
         </Button>
       </div>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{agentLabel}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Its instances and run history are deleted too. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} disabled={remove.isPending}>
+              {remove.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

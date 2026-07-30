@@ -37,7 +37,7 @@ import { persistentContextStore, initDb, getDb } from '@dmr-x/db';
 // (The entry point also calls initDb, but under bun the entry and this module
 // can resolve @dmr-x/db to separate instances, so we initialize defensively.)
 void initDb().catch((err) => {
-  // eslint-disable-next-line no-console
+   
   console.error('[mcp-server] DB init (deferred) failed:', err);
 });
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';

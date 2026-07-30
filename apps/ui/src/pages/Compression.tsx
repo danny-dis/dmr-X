@@ -5,8 +5,8 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
 import { Input } from '@/components/primitives/Input';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
@@ -141,12 +141,12 @@ export function CompressionPage() {
                 Unsaved
               </Badge>
             )}
-            <Button variant="ghost" size="sm" onClick={onReset} disabled={saving}>
-              <RotateCcw className="size-3" />
+            <Button variant="ghost" size="sm" onClick={onReset} disabled={saving} aria-label="Reset to defaults">
+              <RotateCcw className="size-3" aria-hidden />
               Reset
             </Button>
-            <Button size="sm" onClick={onSave} loading={saving} disabled={!dirty}>
-              <Save className="size-3" />
+            <Button size="sm" onClick={onSave} loading={saving} disabled={!dirty} aria-label="Save compression settings">
+              <Save className="size-3" aria-hidden />
               Save
             </Button>
           </>
@@ -154,151 +154,164 @@ export function CompressionPage() {
       />
 
       <div className="mt-5">
-        {config.isLoading ? (
-          <Skeleton className="h-96 w-full" />
-        ) : (
-          <Tabs defaultValue="settings" orientation="vertical">
-            <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-3">
-              <TabsList variant="pills" className="flex-col items-stretch h-fit">
-                <TabsTrigger value="settings" variant="pills" className="justify-start">
-                  <Minimize2 className="size-3" /> Settings
-                </TabsTrigger>
-                <TabsTrigger value="stats" variant="pills" className="justify-start">
-                  <BarChart3 className="size-3" /> Statistics
-                </TabsTrigger>
-              </TabsList>
+        <DataState
+          data={config.data}
+          isLoading={config.isLoading}
+          error={config.error}
+          onRetry={config.refetch}
+          skeletonRows={6}
+        >
+          {() => (
+            <Tabs defaultValue="settings" orientation="vertical">
+              <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-3">
+                <TabsList variant="pills" className="flex-col items-stretch h-fit">
+                  <TabsTrigger value="settings" variant="pills" className="justify-start">
+                    <Minimize2 className="size-3" aria-hidden /> Settings
+                  </TabsTrigger>
+                  <TabsTrigger value="stats" variant="pills" className="justify-start">
+                    <BarChart3 className="size-3" aria-hidden /> Statistics
+                  </TabsTrigger>
+                </TabsList>
 
-              <div>
-                {/* ==================== SETTINGS ==================== */}
-                <TabsContent value="settings">
-                  <Card padding="md">
-                    <CardHeader className="px-0 pt-0">
-                      <CardTitle>Compression Configuration</CardTitle>
-                      <p className="text-[10px] text-fg-muted mt-0.5">
-                        Headroom compresses prompts before they reach LLM providers, reducing token costs and latency
-                      </p>
-                    </CardHeader>
-                    <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow
-                        label="Enable compression"
-                        description="Compress prompts before sending to providers"
-                      >
-                        <Switch
-                          checked={form.enabled}
-                          onCheckedChange={(v) => update('enabled', v)}
-                        />
-                      </SettingRow>
+                <div>
+                  {/* ==================== SETTINGS ==================== */}
+                  <TabsContent value="settings">
+                    <Card padding="md">
+                      <CardHeader className="px-0 pt-0">
+                        <CardTitle>Compression Configuration</CardTitle>
+                        <p className="text-[10px] text-fg-muted mt-0.5">
+                          Headroom compresses prompts before they reach LLM providers, reducing token costs and latency
+                        </p>
+                      </CardHeader>
+                      <CardContent className="px-0 flex flex-col gap-4">
+                        <SettingRow
+                          label="Enable compression"
+                          description="Compress prompts before sending to providers"
+                        >
+                          <Switch
+                            checked={form.enabled}
+                            onCheckedChange={(v) => update('enabled', v)}
+                          />
+                        </SettingRow>
 
-                      <SettingRow
-                        label="Proxy URL"
-                        description="Headroom proxy server URL"
-                      >
-                        <Input
-                          value={form.proxyUrl}
-                          onChange={(e) => update('proxyUrl', e.target.value)}
-                          placeholder="http://localhost:8787"
-                          className="w-64"
-                          disabled={!form.enabled}
-                        />
-                      </SettingRow>
-
-                      <SettingRow
-                        label="API Key"
-                        description="Optional API key for proxy authentication"
-                      >
-                        <Input
-                          value={form.apiKey || ''}
-                          onChange={(e) => update('apiKey', e.target.value || undefined)}
-                          placeholder="Optional"
-                          type="password"
-                          className="w-64"
-                          disabled={!form.enabled}
-                        />
-                      </SettingRow>
-
-                      <SettingRow
-                        label="Reversible (CCR)"
-                        description="Store originals for retrieval on demand"
-                      >
-                        <Switch
-                          checked={form.reversible}
-                          onCheckedChange={(v) => update('reversible', v)}
-                          disabled={!form.enabled}
-                        />
-                      </SettingRow>
-
-                      <SettingRow
-                        label="Minimum tokens to compress"
-                        description="Skip compression for small prompts"
-                      >
-                        <div className="w-48 space-y-2">
-                          <Slider
-                            value={[form.minTokensToCompress]}
-                            min={0}
-                            max={1000}
-                            step={10}
-                            onValueChange={(v) => update('minTokensToCompress', v[0] ?? DEFAULT_CONFIG.minTokensToCompress)}
+                        <SettingRow
+                          label="Proxy URL"
+                          description="Headroom proxy server URL"
+                        >
+                          <Input
+                            value={form.proxyUrl}
+                            onChange={(e) => update('proxyUrl', e.target.value)}
+                            placeholder="http://localhost:8787"
+                            className="w-64"
                             disabled={!form.enabled}
                           />
-                          <p className="text-[10px] text-fg-muted text-right">
-                            {form.minTokensToCompress} tokens
-                          </p>
-                        </div>
-                      </SettingRow>
-                    </CardContent>
-                  </Card>
-                </TabsContent>
+                        </SettingRow>
 
-                {/* ==================== STATISTICS ==================== */}
-                <TabsContent value="stats">
-                  <Card padding="md">
-                    <CardHeader className="px-0 pt-0">
-                      <CardTitle>Compression Statistics</CardTitle>
-                      <p className="text-[10px] text-fg-muted mt-0.5">
-                        Track token savings and compression performance
-                      </p>
-                    </CardHeader>
-                    <CardContent className="px-0">
-                      {stats.isLoading ? (
-                        <Skeleton className="h-32 w-full" />
-                      ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                          <StatCard
-                            title="Total Requests"
-                            value={formatNumber(stats.data?.totalRequests ?? 0)}
-                            description="Requests with compression"
-                          />
-                          <StatCard
-                            title="Tokens Saved"
-                            value={formatNumber(stats.data?.totalTokensSaved ?? 0)}
-                            description="Total tokens reduced"
-                          />
-                          <StatCard
-                            title="Avg Compression"
-                            value={formatPercent(stats.data?.avgCompressionRatio ?? 0)}
-                            description="Average reduction ratio"
-                          />
-                        </div>
-                      )}
-
-                      <div className="mt-6 flex justify-end">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={onCleanup}
-                          loading={cleaning}
+                        <SettingRow
+                          label="API Key"
+                          description="Optional API key for proxy authentication"
                         >
-                          <RefreshCw className="size-3" />
-                          Cleanup Expired Cache
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </TabsContent>
+                          <Input
+                            value={form.apiKey || ''}
+                            onChange={(e) => update('apiKey', e.target.value || undefined)}
+                            placeholder="Optional"
+                            type="password"
+                            className="w-64"
+                            disabled={!form.enabled}
+                          />
+                        </SettingRow>
+
+                        <SettingRow
+                          label="Reversible (CCR)"
+                          description="Store originals for retrieval on demand"
+                        >
+                          <Switch
+                            checked={form.reversible}
+                            onCheckedChange={(v) => update('reversible', v)}
+                            disabled={!form.enabled}
+                          />
+                        </SettingRow>
+
+                        <SettingRow
+                          label="Minimum tokens to compress"
+                          description="Skip compression for small prompts"
+                        >
+                          <div className="w-48 space-y-2">
+                            <Slider
+                              value={[form.minTokensToCompress]}
+                              min={0}
+                              max={1000}
+                              step={10}
+                              onValueChange={(v) => update('minTokensToCompress', v[0] ?? DEFAULT_CONFIG.minTokensToCompress)}
+                              disabled={!form.enabled}
+                            />
+                            <p className="text-[10px] text-fg-muted text-right">
+                              {form.minTokensToCompress} tokens
+                            </p>
+                          </div>
+                        </SettingRow>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  {/* ==================== STATISTICS ==================== */}
+                  <TabsContent value="stats">
+                    <Card padding="md">
+                      <CardHeader className="px-0 pt-0">
+                        <CardTitle>Compression Statistics</CardTitle>
+                        <p className="text-[10px] text-fg-muted mt-0.5">
+                          Track token savings and compression performance
+                        </p>
+                      </CardHeader>
+                      <CardContent className="px-0">
+                        <DataState
+                          data={stats.data}
+                          isLoading={stats.isLoading}
+                          error={stats.error}
+                          onRetry={stats.refetch}
+                          skeletonRows={3}
+                        >
+                          {(data) => (
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              <StatCard
+                                title="Total Requests"
+                                value={formatNumber(data.totalRequests ?? 0)}
+                                description="Requests with compression"
+                              />
+                              <StatCard
+                                title="Tokens Saved"
+                                value={formatNumber(data.totalTokensSaved ?? 0)}
+                                description="Total tokens reduced"
+                              />
+                              <StatCard
+                                title="Avg Compression"
+                                value={formatPercent(data.avgCompressionRatio ?? 0)}
+                                description="Average reduction ratio"
+                              />
+                            </div>
+                          )}
+                        </DataState>
+
+                        <div className="mt-6 flex justify-end">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={onCleanup}
+                            loading={cleaning}
+                            aria-label="Cleanup expired cache"
+                          >
+                            <RefreshCw className="size-3" aria-hidden />
+                            Cleanup Expired Cache
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+                </div>
               </div>
-            </div>
-          </Tabs>
-        )}
+            </Tabs>
+          )}
+        </DataState>
       </div>
     </PageContainer>
   );

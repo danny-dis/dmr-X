@@ -5,9 +5,19 @@ import {
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+} from '@/components/primitives/AlertDialog';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
 import {
   Dialog,
   DialogContent,
@@ -16,11 +26,10 @@ import {
   DialogDescription,
   DialogBody,
   DialogFooter,
-  DialogClose,
 } from '@/components/primitives/Dialog';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
@@ -240,7 +249,8 @@ export function SettingsPage() {
       toast.success('Settings saved', { description: 'Configuration persisted to the gateway.' });
       await settings.refetch();
     } catch (e) {
-      toast.error('Save failed', { description: (e as Error).message });
+      const interpreted = interpretError(e);
+      toast.error(interpreted.title, { description: interpreted.description });
     } finally {
       setSaving(false);
     }
@@ -268,7 +278,8 @@ export function SettingsPage() {
       setNewKeyDialogOpen(true);
       setCopied(false);
     } catch (e) {
-      toast.error('Rotation failed', { description: (e as Error).message });
+      const interpreted = interpretError(e);
+      toast.error(interpreted.title, { description: interpreted.description });
     } finally {
       setRotating(false);
     }
@@ -320,12 +331,12 @@ export function SettingsPage() {
                 Unsaved
               </Badge>
             )}
-            <Button variant="ghost" size="sm" onClick={onReset} disabled={saving}>
-              <RotateCcw className="size-3" />
+            <Button variant="ghost" size="sm" onClick={onReset} disabled={saving} aria-label="Reset to defaults">
+              <RotateCcw className="size-3" aria-hidden />
               Reset
             </Button>
-            <Button size="sm" onClick={onSave} loading={saving} disabled={!dirty}>
-              <Save className="size-3" />
+            <Button size="sm" onClick={onSave} loading={saving} disabled={!dirty} aria-label="Save settings">
+              <Save className="size-3" aria-hidden />
               Save
             </Button>
           </>
@@ -333,36 +344,41 @@ export function SettingsPage() {
       />
 
       <div className="mt-5">
-        {settings.isLoading ? (
-          <Skeleton className="h-96 w-full" />
-        ) : (
+        <DataState
+          data={settings.data}
+          isLoading={settings.isLoading}
+          error={settings.error}
+          onRetry={settings.refetch}
+          skeletonRows={6}
+        >
+          {() => (
           <Tabs defaultValue="routing" orientation="vertical">
             <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-3">
               {/* Mobile: horizontal scrollable tabs. Desktop: vertical pills */}
               <TabsList variant="pills" className="flex-col items-stretch h-fit lg:flex-col overflow-x-auto flex-row flex-nowrap lg:overflow-x-visible">
-                <TabsTrigger value="routing" variant="pills" className="justify-start whitespace-nowrap">
-                  <Brain className="size-3" /> <span className="hidden sm:inline">Routing</span>
+                <TabsTrigger value="routing" variant="pills" className="justify-start whitespace-nowrap" aria-label="Routing">
+                  <Brain className="size-3" aria-hidden /> <span className="hidden sm:inline">Routing</span>
                 </TabsTrigger>
-                <TabsTrigger value="defaults" variant="pills" className="justify-start whitespace-nowrap">
-                  <Cpu className="size-3" /> <span className="hidden sm:inline">Defaults</span>
+                <TabsTrigger value="defaults" variant="pills" className="justify-start whitespace-nowrap" aria-label="Defaults">
+                  <Cpu className="size-3" aria-hidden /> <span className="hidden sm:inline">Defaults</span>
                 </TabsTrigger>
-                <TabsTrigger value="security" variant="pills" className="justify-start whitespace-nowrap">
-                  <Shield className="size-3" /> <span className="hidden sm:inline">Security</span>
+                <TabsTrigger value="security" variant="pills" className="justify-start whitespace-nowrap" aria-label="Security">
+                  <Shield className="size-3" aria-hidden /> <span className="hidden sm:inline">Security</span>
                 </TabsTrigger>
-                <TabsTrigger value="performance" variant="pills" className="justify-start whitespace-nowrap">
-                  <Server className="size-3" /> <span className="hidden sm:inline">Performance</span>
+                <TabsTrigger value="performance" variant="pills" className="justify-start whitespace-nowrap" aria-label="Performance">
+                  <Server className="size-3" aria-hidden /> <span className="hidden sm:inline">Performance</span>
                 </TabsTrigger>
-                <TabsTrigger value="alerts" variant="pills" className="justify-start whitespace-nowrap">
-                  <Bell className="size-3" /> <span className="hidden sm:inline">Alerts</span>
+                <TabsTrigger value="alerts" variant="pills" className="justify-start whitespace-nowrap" aria-label="Alerts">
+                  <Bell className="size-3" aria-hidden /> <span className="hidden sm:inline">Alerts</span>
                 </TabsTrigger>
-                <TabsTrigger value="webhooks" variant="pills" className="justify-start whitespace-nowrap">
-                  <Webhook className="size-3" /> <span className="hidden sm:inline">Webhooks</span>
+                <TabsTrigger value="webhooks" variant="pills" className="justify-start whitespace-nowrap" aria-label="Webhooks">
+                  <Webhook className="size-3" aria-hidden /> <span className="hidden sm:inline">Webhooks</span>
                 </TabsTrigger>
-                <TabsTrigger value="benchmarks" variant="pills" className="justify-start whitespace-nowrap">
-                  <Trophy className="size-3" /> <span className="hidden sm:inline">Benchmarks</span>
+                <TabsTrigger value="benchmarks" variant="pills" className="justify-start whitespace-nowrap" aria-label="Benchmarks">
+                  <Trophy className="size-3" aria-hidden /> <span className="hidden sm:inline">Benchmarks</span>
                 </TabsTrigger>
-                <TabsTrigger value="retention" variant="pills" className="justify-start whitespace-nowrap">
-                  <Clock className="size-3" /> <span className="hidden sm:inline">Data Retention</span>
+                <TabsTrigger value="retention" variant="pills" className="justify-start whitespace-nowrap" aria-label="Data Retention">
+                  <Clock className="size-3" aria-hidden /> <span className="hidden sm:inline">Data Retention</span>
                 </TabsTrigger>
               </TabsList>
 
@@ -375,12 +391,12 @@ export function SettingsPage() {
                       <p className="text-[10px] text-fg-muted mt-0.5">How requests are assigned to providers</p>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Default strategy" description="Fallback when no policy applies">
+                      <SettingRow id="routing-strategy" label="Default strategy" description="Fallback when no policy applies">
                         <Select
                           value={form.routingStrategy}
                           onValueChange={(v) => update('routingStrategy', v as SettingsForm['routingStrategy'])}
                         >
-                          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                          <SelectTrigger id="routing-strategy" aria-describedby="routing-strategy-description" className="w-48"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="auto">Auto (intelligence-aware)</SelectItem>
                             <SelectItem value="cost">Lowest cost</SelectItem>
@@ -390,15 +406,20 @@ export function SettingsPage() {
                           </SelectContent>
                         </Select>
                       </SettingRow>
-                      <SettingRow label="Cost optimization" description="Prefer cheaper models when possible">
+                      <SettingRow id="cost-optimization" label="Cost optimization" description="Prefer cheaper models when possible">
                         <Switch
+                          id="cost-optimization"
+                          aria-describedby="cost-optimization-description"
                           checked={form.costOptimization}
                           onCheckedChange={(v) => update('costOptimization', v)}
                         />
                       </SettingRow>
-                      <SettingRow label="Latency budget" description="Max acceptable p95 latency (ms)">
+                      <SettingRow id="latency-budget" label="Latency budget" description="Max acceptable p95 latency (ms)">
                         <div className="w-48 space-y-2">
                           <Slider
+                            id="latency-budget"
+                            aria-label="Latency budget"
+                            aria-describedby="latency-budget-description"
                             value={[form.latencyBudgetMs]}
                             min={100}
                             max={10000}
@@ -408,23 +429,30 @@ export function SettingsPage() {
                           <p className="text-[10px] text-fg-muted text-right">{form.latencyBudgetMs}ms</p>
                         </div>
                       </SettingRow>
-                      <SettingRow label="Auto-fallback" description="Retry on alternate provider if first fails">
+                      <SettingRow id="auto-fallback" label="Auto-fallback" description="Retry on alternate provider if first fails">
                         <Switch
+                          id="auto-fallback"
+                          aria-describedby="auto-fallback-description"
                           checked={form.fallbackEnabled}
                           onCheckedChange={(v) => update('fallbackEnabled', v)}
                         />
                       </SettingRow>
-                      <SettingRow label="Routing timeout" description="Max time to wait for router decision (ms)">
+                      <SettingRow id="routing-timeout" label="Routing timeout" description="Max time to wait for router decision (ms)">
                         <Input
+                          id="routing-timeout"
+                          aria-describedby="routing-timeout-description"
                           type="number"
                           value={form.routingTimeout}
                           onChange={(e) => update('routingTimeout', Number(e.target.value) || DEFAULTS.routingTimeout)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Quality weight" description="Weight for quality in routing score (0–1)">
+                      <SettingRow id="quality-weight" label="Quality weight" description="Weight for quality in routing score (0–1)">
                         <div className="w-48 space-y-2">
                           <Slider
+                            id="quality-weight"
+                            aria-label="Quality weight"
+                            aria-describedby="quality-weight-description"
                             value={[form.qualityWeight]}
                             min={0}
                             max={1}
@@ -434,9 +462,12 @@ export function SettingsPage() {
                           <p className="text-[10px] text-fg-muted text-right">{form.qualityWeight.toFixed(2)}</p>
                         </div>
                       </SettingRow>
-                      <SettingRow label="Cost weight" description="Weight for cost in routing score (0–1)">
+                      <SettingRow id="cost-weight" label="Cost weight" description="Weight for cost in routing score (0–1)">
                         <div className="w-48 space-y-2">
                           <Slider
+                            id="cost-weight"
+                            aria-label="Cost weight"
+                            aria-describedby="cost-weight-description"
                             value={[form.costWeight]}
                             min={0}
                             max={1}
@@ -446,9 +477,12 @@ export function SettingsPage() {
                           <p className="text-[10px] text-fg-muted text-right">{form.costWeight.toFixed(2)}</p>
                         </div>
                       </SettingRow>
-                      <SettingRow label="Latency weight" description="Weight for latency in routing score (0–1)">
+                      <SettingRow id="latency-weight" label="Latency weight" description="Weight for latency in routing score (0–1)">
                         <div className="w-48 space-y-2">
                           <Slider
+                            id="latency-weight"
+                            aria-label="Latency weight"
+                            aria-describedby="latency-weight-description"
                             value={[form.latencyWeight]}
                             min={0}
                             max={1}
@@ -469,23 +503,27 @@ export function SettingsPage() {
                       <CardTitle>Model defaults</CardTitle>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Default model">
+                      <SettingRow id="default-model" label="Default model">
                         <Input
+                          id="default-model"
                           value={form.defaultModel}
                           onChange={(e) => update('defaultModel', e.target.value)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Max context window" description="Tokens">
+                      <SettingRow id="max-context-window" label="Max context window" description="Tokens">
                         <Input
+                          id="max-context-window"
+                          aria-describedby="max-context-window-description"
                           type="number"
                           value={form.maxContextWindow}
                           onChange={(e) => update('maxContextWindow', Number(e.target.value) || DEFAULTS.maxContextWindow)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Default temperature">
+                      <SettingRow id="default-temperature" label="Default temperature">
                         <Input
+                          id="default-temperature"
                           type="number"
                           step="0.1"
                           value={form.defaultTemperature}
@@ -493,16 +531,18 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Platform name" description="Display name shown in the UI">
+                      <SettingRow id="platform-name" label="Platform name" description="Display name shown in the UI">
                         <Input
+                          id="platform-name"
+                          aria-describedby="platform-name-description"
                           value={form.platformName}
                           onChange={(e) => update('platformName', e.target.value)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Timezone" description="System timezone for timestamps">
+                      <SettingRow id="timezone" label="Timezone" description="System timezone for timestamps">
                         <Select value={form.timezone} onValueChange={(v) => update('timezone', v)}>
-                          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                          <SelectTrigger id="timezone" aria-describedby="timezone-description" className="w-48"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="UTC">UTC</SelectItem>
                             <SelectItem value="America/New_York">America/New_York</SelectItem>
@@ -529,35 +569,43 @@ export function SettingsPage() {
                       <CardTitle>Security</CardTitle>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Require auth" description="Reject unauthenticated requests">
+                      <SettingRow id="require-auth" label="Require auth" description="Reject unauthenticated requests">
                         <Switch
+                          id="require-auth"
+                          aria-describedby="require-auth-description"
                           checked={form.requireApiKeyAuth}
                           onCheckedChange={(v) => update('requireApiKeyAuth', v)}
                         />
                       </SettingRow>
-                      <SettingRow label="CORS allowed origins">
+                      <SettingRow id="allowed-origins" label="CORS allowed origins">
                         <Input
+                          id="allowed-origins"
                           value={form.allowedOrigins}
                           onChange={(e) => update('allowedOrigins', e.target.value)}
                           className="w-72"
                         />
                       </SettingRow>
-                      <SettingRow label="Rate limit (req/min)">
+                      <SettingRow id="rate-limit-rpm" label="Rate limit (req/min)">
                         <Input
+                          id="rate-limit-rpm"
                           type="number"
                           value={form.rateLimitRpm}
                           onChange={(e) => update('rateLimitRpm', Number(e.target.value) || DEFAULTS.rateLimitRpm)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Auto key rotation" description="Automatically rotate API keys on schedule">
+                      <SettingRow id="auto-key-rotation" label="Auto key rotation" description="Automatically rotate API keys on schedule">
                         <Switch
+                          id="auto-key-rotation"
+                          aria-describedby="auto-key-rotation-description"
                           checked={form.autoKeyRotation}
                           onCheckedChange={(v) => update('autoKeyRotation', v)}
                         />
                       </SettingRow>
-                      <SettingRow label="Max request size (MB)" description="Maximum allowed request body size">
+                      <SettingRow id="max-request-size" label="Max request size (MB)" description="Maximum allowed request body size">
                         <Input
+                          id="max-request-size"
+                          aria-describedby="max-request-size-description"
                           type="number"
                           value={form.maxRequestSizeMb}
                           onChange={(e) => update('maxRequestSizeMb', Number(e.target.value) || DEFAULTS.maxRequestSizeMb)}
@@ -580,7 +628,7 @@ export function SettingsPage() {
                         className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-warning"
                         role="alert"
                       >
-                        <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                        <AlertTriangle className="size-4 mt-0.5 shrink-0" aria-hidden />
                         <div className="text-xs leading-relaxed">
                           Rotating the admin key invalidates the current session.
                           Save the new key — it will not be shown again.
@@ -600,7 +648,7 @@ export function SettingsPage() {
                           loading={rotating}
                           disabled={rotating}
                         >
-                          <KeyRound className="size-3" />
+                          <KeyRound className="size-3" aria-hidden />
                           Rotate admin key
                         </Button>
                       </div>
@@ -609,30 +657,26 @@ export function SettingsPage() {
                 </TabsContent>
 
                 {/* ==================== CONFIRM ROTATION DIALOG ==================== */}
-                <Dialog open={rotateConfirmOpen} onOpenChange={setRotateConfirmOpen}>
-                  <DialogContent size="md">
-                    <DialogHeader>
-                      <DialogTitle>Rotate admin API key?</DialogTitle>
-                      <DialogDescription>
+                <AlertDialog open={rotateConfirmOpen} onOpenChange={setRotateConfirmOpen}>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Rotate admin API key?</AlertDialogTitle>
+                      <AlertDialogDescription>
                         You&apos;ll be logged out and need to use the new key.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <DialogBody>
-                      <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-warning">
-                        <AlertTriangle className="size-4 mt-0.5 shrink-0" />
-                        <div className="text-xs leading-relaxed">
-                          The current admin key will stop working immediately after rotation.
-                          Make sure you can save the new key — you will not be shown it again
-                          after this dialog closes.
-                        </div>
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-warning">
+                      <AlertTriangle className="size-4 mt-0.5 shrink-0" aria-hidden />
+                      <div className="text-xs leading-relaxed">
+                        The current admin key will stop working immediately after rotation.
+                        Make sure you can save the new key — you will not be shown it again
+                        after this dialog closes.
                       </div>
-                    </DialogBody>
-                    <DialogFooter>
-                      <DialogClose asChild>
-                        <Button variant="ghost" size="sm" disabled={rotating}>
-                          Cancel
-                        </Button>
-                      </DialogClose>
+                    </div>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={rotating}>
+                        Cancel
+                      </AlertDialogCancel>
                       <Button
                         variant="primary"
                         size="sm"
@@ -640,12 +684,12 @@ export function SettingsPage() {
                         loading={rotating}
                         disabled={rotating}
                       >
-                        <KeyRound className="size-3" />
+                        <KeyRound className="size-3" aria-hidden />
                         Yes, rotate
                       </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
 
                 {/* ==================== NEW KEY DISPLAY DIALOG ==================== */}
                 <Dialog open={newKeyDialogOpen} onOpenChange={(open) => {
@@ -665,7 +709,7 @@ export function SettingsPage() {
                     <DialogBody>
                       <div className="flex flex-col gap-3">
                         <div className="flex items-start gap-3 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-danger">
-                          <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+                          <AlertTriangle className="size-4 mt-0.5 shrink-0" aria-hidden />
                           <div className="text-xs leading-relaxed">
                             This is the only time the new key will be displayed.
                             Store it in a secure location (password manager, secrets vault, etc.)
@@ -688,12 +732,12 @@ export function SettingsPage() {
                             >
                               {copied ? (
                                 <>
-                                  <Check className="size-3" />
+                                  <Check className="size-3" aria-hidden />
                                   Copied
                                 </>
                               ) : (
                                 <>
-                                  <Copy className="size-3" />
+                                  <Copy className="size-3" aria-hidden />
                                   Copy
                                 </>
                               )}
@@ -728,32 +772,39 @@ export function SettingsPage() {
                       <CardTitle>Performance</CardTitle>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Cache TTL (seconds)">
+                      <SettingRow id="cache-ttl" label="Cache TTL (seconds)">
                         <Input
+                          id="cache-ttl"
                           type="number"
                           value={form.cacheTtlSec}
                           onChange={(e) => update('cacheTtlSec', Number(e.target.value) || DEFAULTS.cacheTtlSec)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Streaming chunk size" description="Tokens per streaming chunk">
+                      <SettingRow id="streaming-chunk-size" label="Streaming chunk size" description="Tokens per streaming chunk">
                         <Input
+                          id="streaming-chunk-size"
+                          aria-describedby="streaming-chunk-size-description"
                           type="number"
                           value={form.streamingChunkSize}
                           onChange={(e) => update('streamingChunkSize', Number(e.target.value) || DEFAULTS.streamingChunkSize)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Worker concurrency" description="Max parallel worker threads">
+                      <SettingRow id="worker-concurrency" label="Worker concurrency" description="Max parallel worker threads">
                         <Input
+                          id="worker-concurrency"
+                          aria-describedby="worker-concurrency-description"
                           type="number"
                           value={form.workerConcurrency}
                           onChange={(e) => update('workerConcurrency', Number(e.target.value) || DEFAULTS.workerConcurrency)}
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Request timeout (ms)" description="Per-request timeout to providers">
+                      <SettingRow id="request-timeout" label="Request timeout (ms)" description="Per-request timeout to providers">
                         <Input
+                          id="request-timeout"
+                          aria-describedby="request-timeout-description"
                           type="number"
                           value={form.requestTimeout}
                           onChange={(e) => update('requestTimeout', Number(e.target.value) || DEFAULTS.requestTimeout)}
@@ -772,25 +823,32 @@ export function SettingsPage() {
                       <p className="text-[10px] text-fg-muted mt-0.5">Configure alert thresholds and notification channels</p>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Slack webhook URL" description="Post alerts to a Slack channel">
+                      <SettingRow id="slack-webhook-url" label="Slack webhook URL" description="Post alerts to a Slack channel">
                         <Input
+                          id="slack-webhook-url"
+                          aria-describedby="slack-webhook-url-description"
                           value={form.slackWebhookUrl}
                           onChange={(e) => update('slackWebhookUrl', e.target.value)}
                           placeholder="https://hooks.slack.com/services/..."
                           className="w-72"
                         />
                       </SettingRow>
-                      <SettingRow label="Email recipients" description="Comma-separated email addresses">
+                      <SettingRow id="email-recipients" label="Email recipients" description="Comma-separated email addresses">
                         <Input
+                          id="email-recipients"
+                          aria-describedby="email-recipients-description"
                           value={form.emailRecipients}
                           onChange={(e) => update('emailRecipients', e.target.value)}
                           placeholder="ops@example.com, team@example.com"
                           className="w-72"
                         />
                       </SettingRow>
-                      <SettingRow label="Latency alert threshold (ms)" description="Alert when avg latency exceeds this">
+                      <SettingRow id="latency-alert-threshold" label="Latency alert threshold (ms)" description="Alert when avg latency exceeds this">
                         <div className="w-48 space-y-2">
                           <Slider
+                            id="latency-alert-threshold"
+                            aria-label="Latency alert threshold"
+                            aria-describedby="latency-alert-threshold-description"
                             value={[form.latencyAlertThreshold]}
                             min={500}
                             max={30000}
@@ -800,9 +858,12 @@ export function SettingsPage() {
                           <p className="text-[10px] text-fg-muted text-right">{form.latencyAlertThreshold}ms</p>
                         </div>
                       </SettingRow>
-                      <SettingRow label="Quota alert threshold (%)" description="Alert when tenant usage exceeds this percentage">
+                      <SettingRow id="quota-alert-threshold" label="Quota alert threshold (%)" description="Alert when tenant usage exceeds this percentage">
                         <div className="w-48 space-y-2">
                           <Slider
+                            id="quota-alert-threshold"
+                            aria-label="Quota alert threshold"
+                            aria-describedby="quota-alert-threshold-description"
                             value={[form.quotaAlertThreshold]}
                             min={50}
                             max={100}
@@ -812,8 +873,10 @@ export function SettingsPage() {
                           <p className="text-[10px] text-fg-muted text-right">{form.quotaAlertThreshold}%</p>
                         </div>
                       </SettingRow>
-                      <SettingRow label="Alert webhook URL" description="Send alerts to a generic webhook endpoint">
+                      <SettingRow id="alerts-alert-webhook-url" label="Alert webhook URL" description="Send alerts to a generic webhook endpoint">
                         <Input
+                          id="alerts-alert-webhook-url"
+                          aria-describedby="alerts-alert-webhook-url-description"
                           value={form.alertWebhook}
                           onChange={(e) => update('alertWebhook', e.target.value)}
                           placeholder="https://example.com/webhooks/alerts"
@@ -832,24 +895,30 @@ export function SettingsPage() {
                       <p className="text-[10px] text-fg-muted mt-0.5">Configure webhook endpoints and retry behavior</p>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Route decision webhook" description="POST routing decisions to this URL">
+                      <SettingRow id="route-decision-webhook" label="Route decision webhook" description="POST routing decisions to this URL">
                         <Input
+                          id="route-decision-webhook"
+                          aria-describedby="route-decision-webhook-description"
                           value={form.routeDecisionWebhook}
                           onChange={(e) => update('routeDecisionWebhook', e.target.value)}
                           placeholder="https://example.com/webhooks/routing"
                           className="w-72"
                         />
                       </SettingRow>
-                      <SettingRow label="Alert webhook URL" description="POST alerts to this URL">
+                      <SettingRow id="webhooks-alert-webhook-url" label="Alert webhook URL" description="POST alerts to this URL">
                         <Input
+                          id="webhooks-alert-webhook-url"
+                          aria-describedby="webhooks-alert-webhook-url-description"
                           value={form.alertWebhook}
                           onChange={(e) => update('alertWebhook', e.target.value)}
                           placeholder="https://example.com/webhooks/alerts"
                           className="w-72"
                         />
                       </SettingRow>
-                      <SettingRow label="Max retries" description="Maximum webhook delivery retry attempts">
+                      <SettingRow id="webhook-max-retries" label="Max retries" description="Maximum webhook delivery retry attempts">
                         <Input
+                          id="webhook-max-retries"
+                          aria-describedby="webhook-max-retries-description"
                           type="number"
                           min={0}
                           max={10}
@@ -858,8 +927,10 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Retry backoff (ms)" description="Exponential backoff between retries">
+                      <SettingRow id="webhook-retry-backoff" label="Retry backoff (ms)" description="Exponential backoff between retries">
                         <Input
+                          id="webhook-retry-backoff"
+                          aria-describedby="webhook-retry-backoff-description"
                           type="number"
                           min={100}
                           value={form.webhookRetryBackoff}
@@ -879,15 +950,17 @@ export function SettingsPage() {
                       <p className="text-[10px] text-fg-muted mt-0.5">Automated model performance comparisons</p>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Auto-run benchmarks" description="Schedule periodic benchmark runs">
+                      <SettingRow id="auto-benchmark-runs" label="Auto-run benchmarks" description="Schedule periodic benchmark runs">
                         <Switch
+                          id="auto-benchmark-runs"
+                          aria-describedby="auto-benchmark-runs-description"
                           checked={form.autoBenchmarkRuns}
                           onCheckedChange={(v) => update('autoBenchmarkRuns', v)}
                         />
                       </SettingRow>
-                      <SettingRow label="Benchmark frequency" description="How often to run benchmarks">
+                      <SettingRow id="benchmark-frequency" label="Benchmark frequency" description="How often to run benchmarks">
                         <Select value={form.benchmarkFrequency} onValueChange={(v) => update('benchmarkFrequency', v)}>
-                          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                          <SelectTrigger id="benchmark-frequency" aria-describedby="benchmark-frequency-description" className="w-48"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="hourly">Hourly</SelectItem>
                             <SelectItem value="daily">Daily</SelectItem>
@@ -896,9 +969,12 @@ export function SettingsPage() {
                           </SelectContent>
                         </Select>
                       </SettingRow>
-                      <SettingRow label="Regression threshold (%)" description="Alert when score drops more than this">
+                      <SettingRow id="regression-threshold" label="Regression threshold (%)" description="Alert when score drops more than this">
                         <div className="w-48 space-y-2">
                           <Slider
+                            id="regression-threshold"
+                            aria-label="Regression threshold"
+                            aria-describedby="regression-threshold-description"
                             value={[form.regressionThreshold]}
                             min={1}
                             max={50}
@@ -920,8 +996,10 @@ export function SettingsPage() {
                       <p className="text-[10px] text-fg-muted mt-0.5">How long to keep historical data before automatic cleanup</p>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow label="Request log retention (days)" description="Keep request logs for this many days">
+                      <SettingRow id="request-log-retention" label="Request log retention (days)" description="Keep request logs for this many days">
                         <Input
+                          id="request-log-retention"
+                          aria-describedby="request-log-retention-description"
                           type="number"
                           min={1}
                           value={form.requestLogRetentionDays}
@@ -929,8 +1007,10 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Memory retention (days)" description="Keep memory items for this many days">
+                      <SettingRow id="memory-retention" label="Memory retention (days)" description="Keep memory items for this many days">
                         <Input
+                          id="memory-retention"
+                          aria-describedby="memory-retention-description"
                           type="number"
                           min={1}
                           value={form.memoryRetentionDays}
@@ -938,8 +1018,10 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="Benchmark history (days)" description="Keep benchmark results for this many days">
+                      <SettingRow id="benchmark-history-retention" label="Benchmark history (days)" description="Keep benchmark results for this many days">
                         <Input
+                          id="benchmark-history-retention"
+                          aria-describedby="benchmark-history-retention-description"
                           type="number"
                           min={1}
                           value={form.benchmarkHistoryDays}
@@ -947,8 +1029,10 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
-                      <SettingRow label="General log retention (days)" description="Keep general logs for this many days">
+                      <SettingRow id="general-log-retention" label="General log retention (days)" description="Keep general logs for this many days">
                         <Input
+                          id="general-log-retention"
+                          aria-describedby="general-log-retention-description"
                           type="number"
                           min={1}
                           value={form.logRetention}
@@ -962,7 +1046,8 @@ export function SettingsPage() {
               </div>
             </div>
           </Tabs>
-        )}
+          )}
+        </DataState>
       </div>
     </PageContainer>
   );
@@ -973,10 +1058,13 @@ export function SettingsPage() {
 /* -------------------------------------------------------------------------- */
 
 function SettingRow({
+  id,
   label,
   description,
   children,
 }: {
+  /** Id of the control rendered in `children` — associates the label via `htmlFor`. */
+  id: string;
   label: string;
   description?: string;
   children: React.ReactNode;
@@ -984,8 +1072,8 @@ function SettingRow({
   return (
     <div className="flex items-center justify-between gap-4 py-2 border-b border-border last:border-0">
       <div>
-        <p className="text-sm font-medium text-fg">{label}</p>
-        {description && <p className="text-[11px] text-fg-muted mt-0.5">{description}</p>}
+        <label htmlFor={id} className="text-sm font-medium text-fg">{label}</label>
+        {description && <p id={`${id}-description`} className="text-[11px] text-fg-muted mt-0.5">{description}</p>}
       </div>
       {children}
     </div>

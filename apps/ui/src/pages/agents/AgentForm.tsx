@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AlertCircle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 
@@ -128,7 +128,8 @@ export function AgentForm({
 
           <Field>
             <FieldLabel htmlFor="humanName">Display name</FieldLabel>
-            <Input id="humanName" {...register('humanName')} placeholder="Research Assistant" />
+            <Input id="humanName" {...register('humanName')} invalid={!!errors.humanName} placeholder="Research Assistant" />
+            {errors.humanName && <FieldError>{errors.humanName.message}</FieldError>}
           </Field>
 
           <Field>
@@ -184,7 +185,29 @@ export function AgentForm({
         <CardContent className="space-y-4">
           <Field>
             <FieldLabel htmlFor="systemPrompt">System prompt</FieldLabel>
-            <Textarea id="systemPrompt" rows={6} {...register('systemPrompt')} className="font-mono text-xs" />
+            <Textarea
+              id="systemPrompt"
+              rows={6}
+              {...register('systemPrompt')}
+              invalid={!!errors.systemPrompt}
+              className="font-mono text-xs"
+            />
+            {errors.systemPrompt && <FieldError>{errors.systemPrompt.message}</FieldError>}
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="personality">Personality</FieldLabel>
+            <Textarea
+              id="personality"
+              rows={3}
+              {...register('personality')}
+              invalid={!!errors.personality}
+              placeholder="Optional tone and style guidance layered on top of the system prompt."
+            />
+            <FieldDescription>
+              Shapes tone and style without duplicating what the system prompt already instructs.
+            </FieldDescription>
+            {errors.personality && <FieldError>{errors.personality.message}</FieldError>}
           </Field>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -263,9 +286,12 @@ export function AgentForm({
       </Card>
 
       {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
-          <AlertCircle className="mt-0.5 size-4 shrink-0" />
-          <span>{error}</span>
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-lg border border-danger/25 bg-danger-soft px-3 py-2.5"
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" />
+          <p className="text-sm text-fg">{error}</p>
         </div>
       )}
 
@@ -298,11 +324,11 @@ function ToggleRow({
       name={name}
       render={({ field }) => (
         <div className="flex items-start justify-between gap-4">
-          <div>
+          <label htmlFor={name} className="cursor-pointer">
             <div className="text-sm text-fg">{label}</div>
             <p className="mt-0.5 text-2xs text-fg-muted">{hint}</p>
-          </div>
-          <Switch checked={field.value} onCheckedChange={field.onChange} />
+          </label>
+          <Switch id={name} checked={field.value} onCheckedChange={field.onChange} />
         </div>
       )}
     />

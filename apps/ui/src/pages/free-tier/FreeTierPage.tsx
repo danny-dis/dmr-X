@@ -10,15 +10,13 @@ import { PageContainer, PageHeader } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { EmptyState } from '@/components/primitives/EmptyState';
+import { DataState } from '@/components/primitives/DataState';
 import { Progress } from '@/components/primitives/Progress';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useUrlState } from '@/hooks/useUrlState';
-import { useFreeTierSummary, useSavings, type UsageWindow } from '@/lib/queries/usage';
 import { chartColor } from '@/lib/chartPalette';
-
-const usd = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
-const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+import { formatCurrency, formatNumber } from '@/lib/formatters';
+import { useFreeTierSummary, useSavings, type UsageWindow, type Savings, type FreeTierSummary } from '@/lib/queries/usage';
 
 /**
  * Free Tier.
@@ -34,9 +32,6 @@ export function FreeTierPage() {
 
   const summary = useFreeTierSummary();
   const savings = useSavings(Number(days) || 30);
-
-  const providers = summary.data?.providers ?? [];
-  const totals = summary.data?.summary;
 
   return (
     <PageContainer size="wide">
@@ -57,21 +52,37 @@ export function FreeTierPage() {
         <Card className="p-5">
           <div className="flex items-center justify-between">
             <div className="text-sm font-medium">Free capacity</div>
-            {summary.isFetching && <RefreshCw className="size-3.5 animate-spin text-fg-subtle" />}
+            {summary.isFetching && (
+              <RefreshCw className="size-3.5 animate-spin text-fg-subtle" aria-hidden />
+            )}
           </div>
-          {summary.isLoading ? (
-            <Skeleton className="mt-4 h-20 w-full" />
-          ) : (
-            <div className="mt-4 grid grid-cols-3 gap-4">
-              <Metric label="Free models" value={String(totals?.total_free_models ?? 0)} />
-              <Metric label="Healthy providers" value={String(totals?.healthy_free_providers ?? 0)} />
-              <Metric
-                label="Monthly budget"
-                value={compact.format(totals?.total_monthly_budget ?? 0)}
-                suffix="tokens"
-              />
-            </div>
-          )}
+          <div className="mt-4">
+            <DataState
+              data={summary.data?.summary}
+              isLoading={summary.isLoading}
+              error={summary.error}
+              onRetry={summary.refetch}
+              loading={
+                <div className="grid grid-cols-3 gap-4">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-10 w-full" />
+                  ))}
+                </div>
+              }
+            >
+              {(totals) => (
+                <div className="grid grid-cols-3 gap-4">
+                  <Metric label="Free models" value={formatNumber(totals.total_free_models ?? 0)} />
+                  <Metric label="Healthy providers" value={formatNumber(totals.healthy_free_providers ?? 0)} />
+                  <Metric
+                    label="Monthly budget"
+                    value={formatNumber(totals.total_monthly_budget ?? 0, true)}
+                    suffix="tokens"
+                  />
+                </div>
+              )}
+            </DataState>
+          </div>
         </Card>
       </div>
 
@@ -82,7 +93,7 @@ export function FreeTierPage() {
             <CardTitle>Estimated savings</CardTitle>
             {savings.data?.basis.warning ? (
               <p className="mt-1 flex items-center gap-1.5 text-xs text-warning">
-                <AlertTriangle className="size-3.5" />
+                <AlertTriangle className="size-3.5" aria-hidden />
                 {savings.data.basis.warning}
               </p>
             ) : (
@@ -103,25 +114,31 @@ export function FreeTierPage() {
           </div>
         </CardHeader>
         <CardContent>
-          {savings.isLoading ? (
-            <Skeleton className="h-56 w-full" />
-          ) : (savings.data?.daily.length ?? 0) === 0 ? (
-            <EmptyState
-              icon={<Sparkles className="size-6" />}
-              title="No free-tier traffic yet"
-              description="Once requests route to a free model, savings appear here."
-            />
-          ) : (
-            <TimeSeriesChart
-              data={savings.data!.daily}
-              xKey="date"
-              height={220}
-              series={[
-                { key: 'costAvoidedUsd', name: 'Cost avoided (USD)', color: chartColor('success'), fillOpacity: 0.15 },
-              ]}
-              yFormatter={(v) => usd.format(Number(v))}
-            />
-          )}
+          <DataState
+            data={savings.data}
+            isLoading={savings.isLoading}
+            error={savings.error}
+            onRetry={savings.refetch}
+            isEmpty={(d: Savings) => d.daily.length === 0}
+            loading={<Skeleton className="h-56 w-full" />}
+            empty={{
+              icon: <Sparkles className="size-6" />,
+              title: 'No free-tier traffic yet',
+              description: 'Once requests route to a free model, savings appear here.',
+            }}
+          >
+            {(data) => (
+              <TimeSeriesChart
+                data={data.daily}
+                xKey="date"
+                height={220}
+                series={[
+                  { key: 'costAvoidedUsd', name: 'Cost avoided (USD)', color: chartColor('success'), fillOpacity: 0.15 },
+                ]}
+                yFormatter={(v) => formatCurrency(Number(v))}
+              />
+            )}
+          </DataState>
         </CardContent>
       </Card>
 
@@ -132,27 +149,36 @@ export function FreeTierPage() {
             <CardTitle>Savings by provider</CardTitle>
           </CardHeader>
           <CardContent>
-            {savings.isLoading ? (
-              <Skeleton className="h-40 w-full" />
-            ) : (savings.data?.byProvider.length ?? 0) === 0 ? (
-              <p className="py-6 text-center text-sm text-fg-muted">No free usage recorded.</p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {savings.data!.byProvider.map((p) => (
-                  <li key={p.providerId} className="flex items-center justify-between py-2.5">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm text-fg">{p.providerName ?? p.providerId}</div>
-                      <div className="text-2xs text-fg-subtle">
-                        {compact.format(p.totalTokens)} tokens · {p.requests} requests
+            <DataState
+              data={savings.data}
+              isLoading={savings.isLoading}
+              error={savings.error}
+              onRetry={savings.refetch}
+              isEmpty={(d: Savings) => d.byProvider.length === 0}
+              loading={<Skeleton className="h-40 w-full" />}
+              empty={{
+                title: 'No free usage recorded',
+                description: 'Provider savings appear once a request routes to a free model.',
+              }}
+            >
+              {(data) => (
+                <ul className="divide-y divide-border">
+                  {data.byProvider.map((p) => (
+                    <li key={p.providerId} className="flex items-center justify-between py-2.5">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm text-fg">{p.providerName ?? p.providerId}</div>
+                        <div className="text-2xs text-fg-subtle">
+                          {formatNumber(p.totalTokens, true)} tokens · {p.requests} requests
+                        </div>
                       </div>
-                    </div>
-                    <span className="shrink-0 text-sm font-medium tabular-nums text-success">
-                      {usd.format(p.costAvoidedUsd)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
+                      <span className="shrink-0 text-sm font-medium tabular-nums text-success">
+                        {formatCurrency(p.costAvoidedUsd)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </DataState>
           </CardContent>
         </Card>
 
@@ -165,59 +191,64 @@ export function FreeTierPage() {
           <CardTitle>Free providers &amp; limits</CardTitle>
         </CardHeader>
         <CardContent>
-          {summary.isLoading ? (
-            <Skeleton className="h-40 w-full" />
-          ) : providers.length === 0 ? (
-            <EmptyState
-              icon={<KeyRound className="size-6" />}
-              title="No free providers connected"
-              description="Add a free API key and DMR-X will discover which of its models are actually free."
-              action={<Button onClick={() => setDiscoverOpen(true)}>Add free key</Button>}
-            />
-          ) : (
-            <div className="space-y-5">
-              {providers.map((p) => (
-                <div key={p.provider_name}>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-fg">{p.provider_name}</span>
-                    <Badge tone={p.is_healthy ? 'success' : 'danger'} variant="soft" size="sm">
-                      {p.is_healthy ? 'Healthy' : 'Unhealthy'}
-                    </Badge>
-                    <span className="ml-auto text-2xs text-fg-subtle">
-                      {compact.format(p.total_monthly_budget)} tokens/mo
-                    </span>
+          <DataState
+            data={summary.data?.providers}
+            isLoading={summary.isLoading}
+            error={summary.error}
+            onRetry={summary.refetch}
+            loading={<Skeleton className="h-40 w-full" />}
+            empty={{
+              icon: <KeyRound className="size-6" />,
+              title: 'No free providers connected',
+              description: 'Add a free API key and DMR-X will discover which of its models are actually free.',
+              action: <Button onClick={() => setDiscoverOpen(true)}>Add free key</Button>,
+            }}
+          >
+            {(providers: FreeTierSummary['providers']) => (
+              <div className="space-y-5">
+                {providers.map((p) => (
+                  <div key={p.provider_name}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-fg">{p.provider_name}</span>
+                      <Badge tone={p.is_healthy ? 'success' : 'danger'} variant="soft" size="sm">
+                        {p.is_healthy ? 'Healthy' : 'Unhealthy'}
+                      </Badge>
+                      <span className="ml-auto text-2xs text-fg-subtle">
+                        {formatNumber(p.total_monthly_budget, true)} tokens/mo
+                      </span>
+                    </div>
+                    <ul className="mt-2 space-y-1.5">
+                      {p.models.slice(0, 6).map((m) => (
+                        <li key={m.model_id} className="flex items-center gap-3 text-xs">
+                          <span className="w-56 shrink-0 truncate font-mono text-2xs text-fg-muted">
+                            {m.model_id}
+                          </span>
+                          <div className="flex-1">
+                            <Progress
+                              value={
+                                p.total_monthly_budget > 0
+                                  ? (m.monthly_token_budget / p.total_monthly_budget) * 100
+                                  : 0
+                              }
+                            />
+                          </div>
+                          <span className="w-32 shrink-0 text-right text-2xs text-fg-subtle">
+                            {m.rate_limits.rpm ? `${m.rate_limits.rpm} rpm` : '—'}
+                            {m.rate_limits.rpd ? ` · ${formatNumber(m.rate_limits.rpd, true)} rpd` : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    {p.models.length > 6 && (
+                      <p className="mt-1.5 text-2xs text-fg-subtle">
+                        +{p.models.length - 6} more models
+                      </p>
+                    )}
                   </div>
-                  <ul className="mt-2 space-y-1.5">
-                    {p.models.slice(0, 6).map((m) => (
-                      <li key={m.model_id} className="flex items-center gap-3 text-xs">
-                        <span className="w-56 shrink-0 truncate font-mono text-2xs text-fg-muted">
-                          {m.model_id}
-                        </span>
-                        <div className="flex-1">
-                          <Progress
-                            value={
-                              p.total_monthly_budget > 0
-                                ? (m.monthly_token_budget / p.total_monthly_budget) * 100
-                                : 0
-                            }
-                          />
-                        </div>
-                        <span className="w-32 shrink-0 text-right text-2xs text-fg-subtle">
-                          {m.rate_limits.rpm ? `${m.rate_limits.rpm} rpm` : '—'}
-                          {m.rate_limits.rpd ? ` · ${compact.format(m.rate_limits.rpd)} rpd` : ''}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  {p.models.length > 6 && (
-                    <p className="mt-1.5 text-2xs text-fg-subtle">
-                      +{p.models.length - 6} more models
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </DataState>
         </CardContent>
       </Card>
 

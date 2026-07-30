@@ -418,7 +418,7 @@ class ServerManagerService {
   ): void {
     const dir = g0dm0d3Dir();
     // Build (idempotent) then run detached.
-    let build = spawnSync('docker', ['build', '-t', IMAGE_TAG, dir], { stdio: 'inherit' });
+    const build = spawnSync('docker', ['build', '-t', IMAGE_TAG, dir], { stdio: 'inherit' });
     if (build.status !== 0) {
       throw new Error(`docker build failed (exit ${build.status})`);
     }

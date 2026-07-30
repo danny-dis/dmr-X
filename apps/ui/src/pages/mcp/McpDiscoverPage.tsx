@@ -32,6 +32,8 @@ import { PageContainer, PageHeader } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
+import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useMcpCatalog, useMcpServers, type McpCatalogEntry } from '@/lib/queries/mcp';
@@ -126,77 +128,96 @@ export function McpDiscoverPage() {
         </div>
       </div>
 
-      {catalog.isLoading ? (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {[0, 1, 2, 3, 4, 5].map((i) => (
-            <Skeleton key={i} className="h-36 w-full" />
-          ))}
-        </div>
-      ) : filtered.length === 0 ? (
-        <p className="py-12 text-center text-sm text-fg-muted">
-          No catalog entry matches “{search}”. You can still add it manually from the Servers tab.
-        </p>
-      ) : (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {filtered.map((entry) => {
-            const isInstalled = installedIds.has(entry.id);
-            return (
-              <Card
-                key={entry.id}
-                className={cn('flex flex-col p-4', !isInstalled && 'transition-colors hover:border-border-2')}
-              >
-                <div className="flex items-start gap-3">
-                  <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-surface-2 text-fg-muted">
-                    <CatalogIcon name={entry.icon} className="size-4.5" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate text-sm font-medium text-fg">{entry.name}</span>
-                      {entry.official && (
-                        <Badge tone="info" variant="soft" size="sm">
-                          Official
-                        </Badge>
+      <DataState
+        data={catalog.data}
+        isLoading={catalog.isLoading}
+        error={catalog.error}
+        onRetry={catalog.refetch}
+        loading={
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <Skeleton key={i} className="h-36 w-full" />
+            ))}
+          </div>
+        }
+        isEmpty={(d) => d.entries.length === 0}
+        empty={{
+          icon: <Search className="size-8" />,
+          title: 'No catalog entries',
+          description: 'The bundled catalog is empty in this build. Add a server manually from the Servers tab.',
+        }}
+      >
+        {() =>
+          filtered.length === 0 ? (
+            <EmptyState
+              size="sm"
+              icon={<Search className="size-6" />}
+              title="No matching servers"
+              description={`No catalog entry matches "${search}". Add it manually from the Servers tab instead.`}
+            />
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {filtered.map((entry) => {
+                const isInstalled = installedIds.has(entry.id);
+                return (
+                  <Card
+                    key={entry.id}
+                    className={cn('flex flex-col p-4', !isInstalled && 'transition-colors hover:border-border-2')}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-surface-2 text-fg-muted">
+                        <CatalogIcon name={entry.icon} className="size-4.5" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-sm font-medium text-fg">{entry.name}</span>
+                          {entry.official && (
+                            <Badge tone="info" variant="soft" size="sm">
+                              Official
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-fg-muted">
+                          {entry.description}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-auto flex items-center gap-2 pt-3">
+                      {isInstalled ? (
+                        <Button size="sm" variant="ghost" disabled leftIcon={<Check className="size-3.5" />}>
+                          Installed
+                        </Button>
+                      ) : (
+                        <Button size="sm" onClick={() => setSelected(entry)}>
+                          Install
+                        </Button>
+                      )}
+                      {entry.requiredEnv.length > 0 && !isInstalled && (
+                        <span className="text-2xs text-fg-subtle">
+                          needs {entry.requiredEnv.filter((v) => !v.optional).length} value
+                          {entry.requiredEnv.filter((v) => !v.optional).length === 1 ? '' : 's'}
+                        </span>
+                      )}
+                      {entry.docsUrl && (
+                        <a
+                          href={entry.docsUrl}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="ml-auto text-fg-subtle transition-colors hover:text-fg"
+                          aria-label={`${entry.name} documentation`}
+                        >
+                          <ExternalLink className="size-3.5" />
+                        </a>
                       )}
                     </div>
-                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-fg-muted">
-                      {entry.description}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-auto flex items-center gap-2 pt-3">
-                  {isInstalled ? (
-                    <Button size="sm" variant="ghost" disabled leftIcon={<Check className="size-3.5" />}>
-                      Installed
-                    </Button>
-                  ) : (
-                    <Button size="sm" onClick={() => setSelected(entry)}>
-                      Install
-                    </Button>
-                  )}
-                  {entry.requiredEnv.length > 0 && !isInstalled && (
-                    <span className="text-2xs text-fg-subtle">
-                      needs {entry.requiredEnv.filter((v) => !v.optional).length} value
-                      {entry.requiredEnv.filter((v) => !v.optional).length === 1 ? '' : 's'}
-                    </span>
-                  )}
-                  {entry.docsUrl && (
-                    <a
-                      href={entry.docsUrl}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="ml-auto text-fg-subtle transition-colors hover:text-fg"
-                      aria-label={`${entry.name} documentation`}
-                    >
-                      <ExternalLink className="size-3.5" />
-                    </a>
-                  )}
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      )}
+                  </Card>
+                );
+              })}
+            </div>
+          )
+        }
+      </DataState>
 
       <InstallDialog entry={selected} onClose={() => setSelected(null)} />
     </PageContainer>

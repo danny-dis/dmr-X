@@ -8,7 +8,8 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
-import { EmptyState } from '@/components/primitives/EmptyState';
+import { DataState } from '@/components/primitives/DataState';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
@@ -46,17 +47,22 @@ export function ObservabilityPage() {
     return Array.from(new Map(merged.map((e) => [e.id, e])).values());
   }, [liveEvents, telemetryQuery.data]);
 
+  // Still loading the very first snapshot: no live events pushed yet and the
+  // fallback poll hasn't settled. Once either has data, or the poll settles
+  // with nothing, this stops being "loading" and becomes real content or an
+  // empty state — never a permanent skeleton.
+  const telemetryLoading = telemetryQuery.isLoading && telemetryEvents.length === 0;
+  const telemetryData = telemetryLoading ? null : telemetryEvents;
+  // A failed background poll shouldn't blank out telemetry we already have
+  // from the live stream — only surface it as an error when there's nothing
+  // else to show.
+  const telemetryError = telemetryEvents.length === 0 ? telemetryQuery.error : null;
+
   const activeData = tab === 'alerts' ? alerts.data : tab === 'audit' ? audit.data : telemetryEvents;
-  const activeIsLoading =
-    tab === 'alerts'
-      ? alerts.isLoading
-      : tab === 'audit'
-        ? audit.isLoading
-        : telemetryQuery.isLoading && telemetryEvents.length === 0;
 
   const handleExport = React.useCallback(() => {
     if (!activeData || activeData.length === 0) {
-      toast.warning('Nothing to export', { description: `No ${tab} data available` });
+      toast.warning('Nothing to export', { description: `No ${tab} data available.` });
       return;
     }
     setExporting(true);
@@ -78,11 +84,10 @@ export function ObservabilityPage() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast.success('Export ready', { description: `${activeData.length} ${tab} → JSON` });
+      toast.success('Export ready', { description: `${activeData.length} ${tab} exported to JSON.` });
     } catch (err) {
-      toast.error('Export failed', {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
     } finally {
       setExporting(false);
     }
@@ -106,9 +111,9 @@ export function ObservabilityPage() {
             size="sm"
             onClick={handleExport}
             loading={exporting}
-            disabled={activeIsLoading || !activeData || activeData.length === 0}
+            disabled={!activeData || activeData.length === 0}
+            leftIcon={<Download className="size-3" aria-hidden />}
           >
-            <Download className="size-3" />
             Export {tab}
           </Button>
         }
@@ -118,90 +123,100 @@ export function ObservabilityPage() {
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="alerts">
-              <AlertCircle className="size-3" />
+              <AlertCircle className="size-3" aria-hidden />
               Alerts
               <Badge tone="muted" size="sm">{alerts.data?.length ?? 0}</Badge>
             </TabsTrigger>
             <TabsTrigger value="audit">
-              <FileText className="size-3" />
+              <FileText className="size-3" aria-hidden />
               Audit
               <Badge tone="muted" size="sm">{audit.data?.length ?? 0}</Badge>
             </TabsTrigger>
             <TabsTrigger value="telemetry">
-              <Activity className="size-3" />
+              <Activity className="size-3" aria-hidden />
               Telemetry
               <Badge tone={liveBadge.tone} size="sm">{liveBadge.label}</Badge>
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="alerts">
-            {alerts.isLoading ? (
-              <div className="flex flex-col gap-2">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <Skeleton key={i} className="h-16 w-full" />
-                ))}
-              </div>
-            ) : alerts.data && alerts.data.length > 0 ? (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-                {alerts.data.map((a) => (
-                  <AlertCard
-                    key={a.id}
-                    alert={a}
-                    onAcknowledge={() => {
-                      ackMutation.mutate(a.id, {
-                        onSuccess: () =>
-                          toast.info('Acknowledged', {
-                            description: 'Action is in-memory only and will not persist across refreshes.',
-                          }),
-                        onError: (err) =>
-                          toast.error('Failed to acknowledge', {
-                            description: err instanceof Error ? err.message : String(err),
-                          }),
-                      });
-                    }}
-                    onResolve={() => {
-                      resolveMutation.mutate(a.id, {
-                        onSuccess: () =>
-                          toast.info('Resolved', {
-                            description: 'Action is in-memory only and will not persist across refreshes.',
-                          }),
-                        onError: (err) =>
-                          toast.error('Failed to resolve', {
-                            description: err instanceof Error ? err.message : String(err),
-                          }),
-                      });
-                    }}
-                  />
-                ))}
-              </div>
-            ) : (
-              <Card padding="none" className="border-dashed">
-                <EmptyState
-                  icon={<CheckCircle2 className="size-5 text-success" />}
-                  title="No alerts"
-                  description="All systems are operating within normal parameters."
-                />
-              </Card>
-            )}
+            <DataState
+              data={alerts.data}
+              isLoading={alerts.isLoading}
+              error={alerts.error}
+              onRetry={alerts.refetch}
+              skeletonRows={3}
+              empty={{
+                icon: <CheckCircle2 className="size-5 text-success" aria-hidden />,
+                title: 'No alerts',
+                description: 'All systems are operating within normal parameters.',
+              }}
+            >
+              {(list) => (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                  {list.map((a) => (
+                    <AlertCard
+                      key={a.id}
+                      alert={a}
+                      onAcknowledge={() => {
+                        ackMutation.mutate(a.id, {
+                          onSuccess: () =>
+                            toast.info('Acknowledged', {
+                              description: 'Action is in-memory only and will not persist across refreshes.',
+                            }),
+                          onError: (err) => {
+                            const e = interpretError(err);
+                            toast.error(e.title, { description: e.description });
+                          },
+                        });
+                      }}
+                      onResolve={() => {
+                        resolveMutation.mutate(a.id, {
+                          onSuccess: () =>
+                            toast.info('Resolved', {
+                              description: 'Action is in-memory only and will not persist across refreshes.',
+                            }),
+                          onError: (err) => {
+                            const e = interpretError(err);
+                            toast.error(e.title, { description: e.description });
+                          },
+                        });
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </DataState>
           </TabsContent>
 
           <TabsContent value="audit">
             <Card padding="none">
-              {audit.isLoading ? (
-                <div className="p-3 flex flex-col gap-1.5">
-                  {Array.from({ length: 8 }).map((_, i) => (
-                    <Skeleton key={i} className="h-10 w-full" />
-                  ))}
-                </div>
-              ) : audit.data && audit.data.length > 0 ? (
-                <div className="p-1 max-h-[700px] overflow-y-auto">
-                  {audit.data.map((e) => (
-                    <AuditEventRow key={e.id} event={e} />
-                  ))}
-                </div>
-              ) : (
-                <EmptyState title="No audit events" description="System activity will appear here." />
-              )}
+              <DataState
+                data={audit.data}
+                isLoading={audit.isLoading}
+                error={audit.error}
+                onRetry={audit.refetch}
+                loading={
+                  <div className="p-3 flex flex-col gap-1.5">
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <Skeleton key={i} className="h-10 w-full" />
+                    ))}
+                  </div>
+                }
+                empty={{
+                  icon: <FileText className="size-8" aria-hidden />,
+                  title: 'No audit events',
+                  description: 'System activity will appear here as it happens.',
+                }}
+              >
+                {(list) => (
+                  <div className="p-1 max-h-[700px] overflow-y-auto">
+                    {list.map((e) => (
+                      <AuditEventRow key={e.id} event={e} />
+                    ))}
+                  </div>
+                )}
+              </DataState>
             </Card>
           </TabsContent>
 
@@ -212,27 +227,49 @@ export function ObservabilityPage() {
                   ? 'Live tail paused — the stream keeps running elsewhere in the app, but this list stops updating.'
                   : 'Streaming live from the gateway.'}
               </p>
-              <Button variant="outline" size="sm" onClick={() => setPaused(!paused)}>
-                {paused ? <Play className="size-3" /> : <Pause className="size-3" />}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPaused(!paused)}
+                leftIcon={paused ? <Play className="size-3" aria-hidden /> : <Pause className="size-3" aria-hidden />}
+              >
                 {paused ? 'Resume' : 'Pause'}
               </Button>
             </div>
             <Card padding="none">
-              {activeIsLoading ? (
-                <div className="p-3 flex flex-col gap-1.5">
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <Skeleton key={i} className="h-4 w-full" />
-                  ))}
-                </div>
-              ) : telemetryEvents.length > 0 ? (
-                <div className="p-1 max-h-[700px] overflow-y-auto font-mono">
-                  {telemetryEvents.map((e) => (
-                    <TelemetryEventRow key={e.id} event={e} />
-                  ))}
-                </div>
-              ) : (
-                <EmptyState title="No telemetry" description="Send a request to see live events." />
-              )}
+              <div aria-live="polite" aria-label="Live telemetry events">
+                <DataState
+                  data={telemetryData}
+                  isLoading={telemetryLoading}
+                  error={telemetryError}
+                  onRetry={telemetryQuery.refetch}
+                  loading={
+                    <div className="p-3 flex flex-col gap-1.5">
+                      {Array.from({ length: 10 }).map((_, i) => (
+                        <Skeleton key={i} className="h-4 w-full" />
+                      ))}
+                    </div>
+                  }
+                  empty={{
+                    icon: <Activity className="size-8" aria-hidden />,
+                    title: connection === 'open' ? 'Connected, no events yet' : 'No telemetry',
+                    description:
+                      connection === 'open'
+                        ? 'Send a request through the gateway to see live events appear here.'
+                        : paused
+                          ? 'The live tail is paused. Resume it to see new events as they arrive.'
+                          : 'Waiting to connect to the gateway stream.',
+                  }}
+                >
+                  {(list) => (
+                    <div className="p-1 max-h-[700px] overflow-y-auto font-mono">
+                      {list.map((e) => (
+                        <TelemetryEventRow key={e.id} event={e} />
+                      ))}
+                    </div>
+                  )}
+                </DataState>
+              </div>
             </Card>
           </TabsContent>
         </Tabs>

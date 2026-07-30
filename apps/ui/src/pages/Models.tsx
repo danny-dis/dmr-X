@@ -10,7 +10,7 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
-import { EmptyState } from '@/components/primitives/EmptyState';
+import { DataState } from '@/components/primitives/DataState';
 import { Input } from '@/components/primitives/Input';
 import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
@@ -78,6 +78,41 @@ const AGENTIC_LEVEL_CONFIG: Record<string, { label: string; description: string 
 };
 
 const FREE_TIERS = new Set<PricingTier>(['free', 'free_with_limits']);
+
+const MODEL_TABLE_HEAD = (
+  <tr className="border-b border-border">
+    <th scope="col" className="text-left py-2 px-3 text-[11px] font-medium text-fg-muted">Model</th>
+    <th scope="col" className="text-left py-2 px-3 text-[11px] font-medium text-fg-muted">Provider</th>
+    <th scope="col" className="text-left py-2 px-3 text-[11px] font-medium text-fg-muted">Tags</th>
+    <th scope="col" className="text-right py-2 px-3 text-[11px] font-medium text-fg-muted">Context</th>
+    <th scope="col" className="text-right py-2 px-3 text-[11px] font-medium text-fg-muted">Input / Output ($/1k)</th>
+    <th scope="col" className="text-left py-2 px-3 text-[11px] font-medium text-fg-muted">Deploy</th>
+    <th scope="col" className="w-8 py-2 px-3"><span className="sr-only">Details</span></th>
+  </tr>
+);
+
+/** Matches the loaded table's column shape so the list never reflows when
+ * the fetch resolves — a row of skeleton cells, not unrelated stacked bars. */
+const MODELS_TABLE_SKELETON = (
+  <div className="overflow-x-auto">
+    <table className="w-full text-sm">
+      <thead>{MODEL_TABLE_HEAD}</thead>
+      <tbody>
+        {Array.from({ length: 6 }).map((_, i) => (
+          <tr key={i} className="border-b border-border last:border-0">
+            <td className="py-2.5 px-3"><Skeleton className="h-3 w-32" /></td>
+            <td className="py-2.5 px-3"><Skeleton className="h-3 w-16" /></td>
+            <td className="py-2.5 px-3"><Skeleton className="h-3 w-24" /></td>
+            <td className="py-2.5 px-3"><Skeleton className="h-3 w-12 ml-auto" /></td>
+            <td className="py-2.5 px-3"><Skeleton className="h-3 w-20 ml-auto" /></td>
+            <td className="py-2.5 px-3"><Skeleton className="h-3 w-16" /></td>
+            <td className="py-2.5 px-3" />
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
 
 export function ModelsPage() {
   const qc = useQueryClient();
@@ -399,106 +434,117 @@ export function ModelsPage() {
           </Link>
         </div>
 
-        {models.isLoading ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-0 divide-y sm:divide-y-0 sm:divide-x divide-border">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="p-4">
-                <Skeleton className="h-3 w-3/4 mb-2" />
-                <Skeleton className="h-2 w-1/2 mb-2" />
-                <Skeleton className="h-8 w-full" />
-              </div>
-            ))}
-          </div>
-        ) : paged.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border">
-            {paged.map((m) => {
-              const hasKey = providerKeyStatus.get(m.provider_id) !== false;
-              const pricingTier = pricingTierOf(m);
-              return (
-                <button
-                  key={m.id}
-                  onClick={() => setSelectedModel(m)}
-                  className={`group flex flex-col gap-2 p-4 text-left hover:bg-surface-2 transition-colors ${
-                    !hasKey ? 'opacity-60' : ''
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <h4 className="text-sm font-semibold text-fg font-mono truncate">{m.name}</h4>
-                    <div className="flex items-center gap-1">
-                      {hasKey ? (
-                        <KeyRound className="size-3 text-success" />
-                      ) : (
-                        <Key className="size-3 text-fg-subtle" />
-                      )}
-                      <ChevronRight className="size-3.5 text-fg-subtle opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[10px]">
-                    <Badge tone={hasKey ? 'success' : 'muted'} size="sm">
-                      {m.provider ?? 'unknown'}
-                    </Badge>
-                    {m.modality && <ModalityBadge modality={m.modality} size={14} />}
-                    {(() => {
-                      const tier = m.capability_tier;
-                      if (tier && CAPABILITY_TIER_CONFIG[tier]) {
-                        const config = CAPABILITY_TIER_CONFIG[tier];
-                        return <Badge tone={config.tone} size="sm">{config.label}</Badge>;
-                      }
-                      return null;
-                    })()}
-                    {pricingTier !== 'unknown' && (
-                      <Badge tone={PRICING_TIER_CONFIG[pricingTier]?.tone ?? 'muted'} size="sm">
-                        {PRICING_TIER_CONFIG[pricingTier]?.label ?? pricingTier}
-                      </Badge>
-                    )}
-                  </div>
-                <div className="grid grid-cols-3 gap-2 text-[10px] text-fg-muted">
-                  <div>
-                    <div className="text-fg-subtle">Context</div>
-                    <div className="text-fg tabular-nums">{formatNumber(m.context_window ?? 0, true)}</div>
-                  </div>
-                  <div>
-                    <div className="text-fg-subtle">In/Out</div>
-                    <div className="text-fg tabular-nums">
-                      ${m.input_cost_per_1k?.toFixed(3) ?? '—'} / ${m.output_cost_per_1k?.toFixed(3) ?? '—'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-fg-subtle">Deploy</div>
-                    <div className="text-fg">{m.deployment ?? 'cloud'}</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 text-[9px] text-fg-subtle mt-1">
-                  {m.reasoning_mode && m.reasoning_mode !== 'fixed' && (
-                    <span className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide" title={REASONING_MODE_CONFIG[m.reasoning_mode]?.description}>
-                      {REASONING_MODE_CONFIG[m.reasoning_mode]?.label ?? m.reasoning_mode}
-                    </span>
-                  )}
-                  {m.agentic_level && m.agentic_level !== 'chat' && (
-                    <span className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide" title={AGENTIC_LEVEL_CONFIG[m.agentic_level]?.description}>
-                      {AGENTIC_LEVEL_CONFIG[m.agentic_level]?.label ?? m.agentic_level}
-                    </span>
-                  )}
-                  {m.safety_tier && m.safety_tier !== 'standard' && (
-                    <span className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide" title={SAFETY_TIER_CONFIG[m.safety_tier]?.description}>
-                      {SAFETY_TIER_CONFIG[m.safety_tier]?.label ?? m.safety_tier}
-                    </span>
-                  )}
-                </div>
-              </button>
-            );
-            })}
-          </div>
-        ) : (
-          <EmptyState
-            title="No models"
-            description={
+        <DataState
+          data={models.data}
+          isLoading={models.isLoading}
+          error={models.error}
+          onRetry={() => void models.refetch()}
+          isEmpty={() => filtered.length === 0}
+          loading={MODELS_TABLE_SKELETON}
+          empty={{
+            title: 'No models',
+            description:
               showFreeToo !== 'true' && freeHiddenCount > 0 && (models.data ?? []).length === freeHiddenCount
                 ? `All ${freeHiddenCount} models here are free-tier — click "Show free too" or visit the Free Tier page.`
-                : 'Connect a provider to populate the model registry.'
-            }
-          />
-        )}
+                : 'Connect a provider to populate the model registry.',
+          }}
+        >
+          {() => (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>{MODEL_TABLE_HEAD}</thead>
+                <tbody>
+                  {paged.map((m) => {
+                    const hasKey = providerKeyStatus.get(m.provider_id) !== false;
+                    const pricingTier = pricingTierOf(m);
+                    const capTier = m.capability_tier ? CAPABILITY_TIER_CONFIG[m.capability_tier] : undefined;
+                    return (
+                      <tr
+                        key={m.id}
+                        onClick={() => setSelectedModel(m)}
+                        className={`group border-b border-border last:border-0 cursor-pointer hover:bg-surface-2 transition-colors ${
+                          !hasKey ? 'opacity-60' : ''
+                        }`}
+                      >
+                        <td className="py-2.5 px-3">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedModel(m);
+                            }}
+                            aria-label={`View details for ${m.name}`}
+                            className="flex items-center gap-1.5 min-w-0 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                          >
+                            {hasKey ? (
+                              <KeyRound className="size-3 text-success shrink-0" aria-hidden />
+                            ) : (
+                              <Key className="size-3 text-fg-subtle shrink-0" aria-hidden />
+                            )}
+                            <span className="font-mono text-xs font-semibold text-fg truncate">{m.name}</span>
+                          </button>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <Badge tone={hasKey ? 'success' : 'muted'} size="sm">
+                            {m.provider ?? 'unknown'}
+                          </Badge>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {m.modality && <ModalityBadge modality={m.modality} size={14} />}
+                            {capTier && <Badge tone={capTier.tone} size="sm">{capTier.label}</Badge>}
+                            {pricingTier !== 'unknown' && (
+                              <Badge tone={PRICING_TIER_CONFIG[pricingTier]?.tone ?? 'muted'} size="sm">
+                                {PRICING_TIER_CONFIG[pricingTier]?.label ?? pricingTier}
+                              </Badge>
+                            )}
+                            {m.reasoning_mode && m.reasoning_mode !== 'fixed' && (
+                              <span
+                                className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide text-[9px]"
+                                title={REASONING_MODE_CONFIG[m.reasoning_mode]?.description}
+                              >
+                                {REASONING_MODE_CONFIG[m.reasoning_mode]?.label ?? m.reasoning_mode}
+                              </span>
+                            )}
+                            {m.agentic_level && m.agentic_level !== 'chat' && (
+                              <span
+                                className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide text-[9px]"
+                                title={AGENTIC_LEVEL_CONFIG[m.agentic_level]?.description}
+                              >
+                                {AGENTIC_LEVEL_CONFIG[m.agentic_level]?.label ?? m.agentic_level}
+                              </span>
+                            )}
+                            {m.safety_tier && m.safety_tier !== 'standard' && (
+                              <span
+                                className="px-1 py-0.5 rounded bg-surface-2 text-fg-muted uppercase tracking-wide text-[9px]"
+                                title={SAFETY_TIER_CONFIG[m.safety_tier]?.description}
+                              >
+                                {SAFETY_TIER_CONFIG[m.safety_tier]?.label ?? m.safety_tier}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono tabular-nums text-fg">
+                          {formatNumber(m.context_window ?? 0, true)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono tabular-nums text-fg">
+                          ${m.input_cost_per_1k?.toFixed(3) ?? '—'} / ${m.output_cost_per_1k?.toFixed(3) ?? '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-fg-muted">{m.deployment ?? 'cloud'}</td>
+                        <td className="py-2.5 px-3">
+                          <ChevronRight
+                            aria-hidden
+                            className="size-3.5 text-fg-subtle opacity-0 group-hover:opacity-100 transition-opacity"
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </DataState>
 
         {filtered.length > pageSize && (
           <div className="border-t border-border px-3 py-2.5">

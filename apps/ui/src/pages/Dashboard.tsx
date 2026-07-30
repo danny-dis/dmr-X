@@ -29,8 +29,10 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
+import { LazyTab } from '@/components/primitives/LazyTab';
 import { Skeleton } from '@/components/primitives/Skeleton';
-import { StatTile } from '@/components/primitives/StatTile';
+import { StatTile, type StatTileProps } from '@/components/primitives/StatTile';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 
 // Lazy-load Observability tab content
@@ -63,6 +65,21 @@ const MODALITY_TONE: Record<string, ChartTone> = {
   moderation: 'danger',
   code_completion: 'accent',
 };
+
+/** Placeholder tile rendered in a `DataState`'s `loading` slot — same box,
+ * same label/icon, so a stat-tile row never reflows between loading and
+ * loaded (StatTile's own `loading` flag swaps the value for a pulse bar). */
+function StatTileSkeleton({
+  label,
+  icon,
+  tone,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  tone?: StatTileProps['tone'];
+}) {
+  return <StatTile label={label} icon={icon} tone={tone} value="" loading />;
+}
 
 export function DashboardPage() {
   // Slow-poll fallback — paints real numbers before the SSE stream connects
@@ -116,8 +133,6 @@ export function DashboardPage() {
     };
   }, [providers.data]);
 
-  const availableModelCount = (models.data ?? []).length;
-
   // Derive the top-of-page system status from real alert severities so the
   // badge reflects what's actually broken, not a hardcoded "all good" line.
   // Loading state intentionally renders a muted "Checking…" badge so we don't
@@ -130,12 +145,12 @@ export function DashboardPage() {
     label: string;
     icon: React.ReactNode;
   } = alerts.data === undefined
-    ? { tone: 'muted', label: 'Checking…', icon: <Loader2 className="size-3 animate-spin" /> }
+    ? { tone: 'muted', label: 'Checking…', icon: <Loader2 className="size-3 animate-spin" aria-hidden /> }
     : hasErrorAlert
-      ? { tone: 'danger', label: 'Issues detected', icon: <AlertCircle className="size-3" /> }
+      ? { tone: 'danger', label: 'Issues detected', icon: <AlertCircle className="size-3" aria-hidden /> }
       : hasWarningAlert
-        ? { tone: 'warning', label: 'Warnings', icon: <AlertTriangle className="size-3" /> }
-        : { tone: 'success', label: 'All systems operational', icon: <CheckCircle2 className="size-3" /> };
+        ? { tone: 'warning', label: 'Warnings', icon: <AlertTriangle className="size-3" aria-hidden /> }
+        : { tone: 'success', label: 'All systems operational', icon: <CheckCircle2 className="size-3" aria-hidden /> };
 
   const usageSeries = (usage.data?.points ?? []).slice(-24).map((p) => ({
     t: p.t ?? p.time ?? 0,
@@ -164,6 +179,15 @@ export function DashboardPage() {
     color: MODALITY_TONE[k] ? chartColor(MODALITY_TONE[k]) : categoricalColor(i),
   }));
 
+  // These three are derived from queries that can legitimately resolve to an
+  // empty array (`?? []`), which is never `null`/`undefined` — so gate them
+  // on the source query's `isLoading` before handing them to `DataState`,
+  // otherwise an empty-but-still-loading array would render the empty state
+  // a beat before the real one ever gets a chance to load.
+  const usageSeriesData = usage.isLoading ? undefined : usageSeries;
+  const latencyChartData = usage.isLoading ? undefined : latencyData;
+  const modalityPieData = providers.isLoading ? undefined : modalityPie;
+
   // Onboarding: show getting-started banner when no providers are configured
   const DISMISS_KEY = 'dmrx-onboarding-dismissed';
   const [onboardingDismissed, setOnboardingDismissed] = React.useState(() => {
@@ -188,13 +212,13 @@ export function DashboardPage() {
             <Badge tone={systemStatus.tone} size="md" icon={systemStatus.icon}>
               {systemStatus.label}
             </Badge>
-            <Badge tone={connection === 'open' ? 'success' : 'muted'} size="md" icon={<Activity className="size-3" />}>
+            <Badge tone={connection === 'open' ? 'success' : 'muted'} size="md" icon={<Activity className="size-3" aria-hidden />}>
               {connection === 'open' ? 'Live' : connection === 'connecting' ? 'Connecting…' : 'Polling'}
             </Badge>
             <Button variant="secondary" size="sm" asChild>
               <Link to="/routing">
                 View routing
-                <ArrowRight className="size-3" />
+                <ArrowRight className="size-3" aria-hidden />
               </Link>
             </Button>
           </div>
@@ -206,7 +230,7 @@ export function DashboardPage() {
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="observability">
-              <Bell className="size-3" />
+              <Bell className="size-3" aria-hidden />
               Observability
             </TabsTrigger>
           </TabsList>
@@ -228,7 +252,7 @@ export function DashboardPage() {
               className="text-fg-subtle hover:text-fg-muted transition-colors shrink-0"
               aria-label="Dismiss"
             >
-              <X className="size-4" />
+              <X className="size-4" aria-hidden />
             </button>
           </div>
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -261,7 +285,7 @@ export function DashboardPage() {
                 className="group flex items-start gap-3 rounded-lg border border-border bg-surface-1 p-3 hover:border-primary/30 hover:bg-primary/5 transition-colors"
               >
                 <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <item.icon className="size-4" />
+                  <item.icon className="size-4" aria-hidden />
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -270,7 +294,7 @@ export function DashboardPage() {
                   </div>
                   <p className="text-[11px] text-fg-muted mt-0.5 leading-relaxed">{item.description}</p>
                 </div>
-                <ChevronRight className="size-3.5 text-fg-subtle group-hover:text-primary transition-colors shrink-0 mt-1" />
+                <ChevronRight className="size-3.5 text-fg-subtle group-hover:text-primary transition-colors shrink-0 mt-1" aria-hidden />
               </Link>
             ))}
           </div>
@@ -278,75 +302,123 @@ export function DashboardPage() {
       )}
 
       <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatTile
-          label="Requests (24h)"
-          value={stats ? formatNumber(stats.requests24h ?? 0) : '—'}
-          icon={<Zap className="size-3.5" />}
-          sparkline={usageSeries.map((p) => p.requests)}
-          loading={statsLoading}
-        />
-        <StatTile
-          label="Cost (24h)"
-          value={stats ? formatCompactCurrency(stats.cost24h ?? 0) : '—'}
-          icon={<DollarSign className="size-3.5" />}
-          tone="warning"
-          sparkline={usageSeries.map((p) => p.cost)}
-          loading={statsLoading}
-        />
-        <StatTile
-          label="Avg latency"
-          value={stats ? formatDuration(stats.avgLatencyMs ?? 0) : '—'}
-          icon={<Clock className="size-3.5" />}
-          tone="primary"
-          delta={stats?.latencyDelta ?? 0}
-          deltaLabel="vs yesterday"
-          deltaTrend="down-good"
-          sparkline={latencyData.map((p) => p.p95)}
-          loading={statsLoading}
-        />
-        <StatTile
-          label="Providers"
-          value={`${providerStats.withKeys}/${providerStats.total}`}
-          icon={<Globe className="size-3.5" />}
-          tone="accent"
-          hint={providerStats.free > 0 ? `${providerStats.free} free, ${providerStats.paid} paid` : '—'}
-          loading={providers.isLoading}
-        />
+        <DataState
+          data={stats}
+          isLoading={statsLoading}
+          error={statsQuery.error}
+          onRetry={() => void statsQuery.refetch()}
+          loading={
+            <>
+              <StatTileSkeleton label="Requests (24h)" icon={<Zap className="size-3.5" />} />
+              <StatTileSkeleton label="Cost (24h)" icon={<DollarSign className="size-3.5" />} tone="warning" />
+              <StatTileSkeleton label="Avg latency" icon={<Clock className="size-3.5" />} tone="primary" />
+            </>
+          }
+        >
+          {(s) => (
+            <>
+              <StatTile
+                label="Requests (24h)"
+                value={formatNumber(s.requests24h ?? 0)}
+                icon={<Zap className="size-3.5" />}
+                sparkline={usageSeries.map((p) => p.requests)}
+              />
+              <StatTile
+                label="Cost (24h)"
+                value={formatCompactCurrency(s.cost24h ?? 0)}
+                icon={<DollarSign className="size-3.5" />}
+                tone="warning"
+                sparkline={usageSeries.map((p) => p.cost)}
+              />
+              <StatTile
+                label="Avg latency"
+                value={formatDuration(s.avgLatencyMs ?? 0)}
+                icon={<Clock className="size-3.5" />}
+                tone="primary"
+                delta={s.latencyDelta ?? 0}
+                deltaLabel="vs yesterday"
+                deltaTrend="down-good"
+                sparkline={latencyData.map((p) => p.p95)}
+              />
+            </>
+          )}
+        </DataState>
+        <DataState
+          data={providers.data}
+          isLoading={providers.isLoading}
+          error={providers.error}
+          onRetry={() => void providers.refetch()}
+          loading={<StatTileSkeleton label="Providers" icon={<Globe className="size-3.5" />} tone="accent" />}
+        >
+          {() => (
+            <StatTile
+              label="Providers"
+              value={`${providerStats.withKeys}/${providerStats.total}`}
+              icon={<Globe className="size-3.5" />}
+              tone="accent"
+              hint={providerStats.free > 0 ? `${providerStats.free} free, ${providerStats.paid} paid` : '—'}
+            />
+          )}
+        </DataState>
       </div>
 
       <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatTile
-          label="Available Models"
-          value={availableModelCount}
-          icon={<Server className="size-3.5" />}
-          tone="success"
-          hint="from providers with active keys"
-          loading={models.isLoading}
-        />
-        <StatTile
-          label="Free Providers"
-          value={providerStats.free}
-          icon={<KeyRound className="size-3.5" />}
-          tone="success"
-          hint="zero-cost routing available"
-          loading={providers.isLoading}
-        />
-        <StatTile
-          label="Paid Providers"
-          value={providerStats.paid}
-          icon={<DollarSign className="size-3.5" />}
-          tone="warning"
-          hint="usage-based billing"
-          loading={providers.isLoading}
-        />
-        <StatTile
-          label="Mixed Providers"
-          value={providerStats.mixed}
-          icon={<Activity className="size-3.5" />}
-          tone="primary"
-          hint="free + paid keys"
-          loading={providers.isLoading}
-        />
+        <DataState
+          data={models.data}
+          isLoading={models.isLoading}
+          error={models.error}
+          onRetry={() => void models.refetch()}
+          loading={<StatTileSkeleton label="Available Models" icon={<Server className="size-3.5" />} tone="success" />}
+        >
+          {(list) => (
+            <StatTile
+              label="Available Models"
+              value={list.length}
+              icon={<Server className="size-3.5" />}
+              tone="success"
+              hint="from providers with active keys"
+            />
+          )}
+        </DataState>
+        <DataState
+          data={providers.data}
+          isLoading={providers.isLoading}
+          error={providers.error}
+          onRetry={() => void providers.refetch()}
+          loading={
+            <>
+              <StatTileSkeleton label="Free Providers" icon={<KeyRound className="size-3.5" />} tone="success" />
+              <StatTileSkeleton label="Paid Providers" icon={<DollarSign className="size-3.5" />} tone="warning" />
+              <StatTileSkeleton label="Mixed Providers" icon={<Activity className="size-3.5" />} tone="primary" />
+            </>
+          }
+        >
+          {() => (
+            <>
+              <StatTile
+                label="Free Providers"
+                value={providerStats.free}
+                icon={<KeyRound className="size-3.5" />}
+                tone="success"
+                hint="zero-cost routing available"
+              />
+              <StatTile
+                label="Paid Providers"
+                value={providerStats.paid}
+                icon={<DollarSign className="size-3.5" />}
+                tone="warning"
+                hint="usage-based billing"
+              />
+              <StatTile
+                label="Mixed Providers"
+                value={providerStats.mixed}
+                icon={<Activity className="size-3.5" />}
+                tone="primary"
+                hint="free + paid keys"
+              />
+            </>
+          )}
+        </DataState>
       </div>
 
       <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -356,35 +428,41 @@ export function DashboardPage() {
               <CardTitle>Request volume</CardTitle>
               <div className="flex items-center gap-2 text-[10px] text-fg-muted">
                 <span className="flex items-center gap-1">
-                  <span className="size-1.5 rounded-full bg-primary" /> Requests
+                  <span className="size-1.5 rounded-full bg-primary" aria-hidden /> Requests
                 </span>
                 <span className="flex items-center gap-1">
-                  <span className="size-1.5 rounded-full bg-accent" /> Tokens (k)
+                  <span className="size-1.5 rounded-full bg-accent" aria-hidden /> Tokens (k)
                 </span>
               </div>
             </div>
           </CardHeader>
           <CardContent className="px-0">
-            {usage.isLoading ? (
-              <Skeleton className="h-[220px] w-full" />
-            ) : usageSeries.length > 0 ? (
-              <TimeSeriesChart
-                data={usageSeries}
-                xKey="t"
-                height={220}
-                series={[
-                  { key: 'requests', name: 'Requests', color: chartColor('primary') },
-                  { key: 'tokens', name: 'Tokens (k)', color: chartColor('accent') },
-                ]}
-                xFormatter={(v) =>
-                  new Date(v as number).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-                }
-              />
-            ) : (
-              <div className="h-[220px] flex items-center justify-center text-fg-subtle text-xs">
-                No request data yet. Send a request to see volume trends.
-              </div>
-            )}
+            <DataState
+              data={usageSeriesData}
+              isLoading={usage.isLoading}
+              error={usage.error}
+              onRetry={() => void usage.refetch()}
+              loading={<Skeleton className="h-[220px] w-full" />}
+              empty={{
+                title: 'No request volume yet',
+                description: 'Send a request through the gateway to see volume trends.',
+              }}
+            >
+              {(series) => (
+                <TimeSeriesChart
+                  data={series}
+                  xKey="t"
+                  height={220}
+                  series={[
+                    { key: 'requests', name: 'Requests', color: chartColor('primary') },
+                    { key: 'tokens', name: 'Tokens (k)', color: chartColor('accent') },
+                  ]}
+                  xFormatter={(v) =>
+                    new Date(v as number).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+                  }
+                />
+              )}
+            </DataState>
           </CardContent>
         </Card>
 
@@ -394,23 +472,31 @@ export function DashboardPage() {
             <p className="text-[10px] text-fg-muted">By provider capability</p>
           </CardHeader>
           <CardContent className="px-0 pb-0">
-            {!providers.isLoading && modalityPie.length > 0 ? (
-              <DonutChart
-                data={modalityPie}
-                size={140}
-                thickness={16}
-                showLegend
-                showLabels
-              />
-            ) : providers.isLoading ? (
-              <div className="h-[140px] flex items-center justify-center text-fg-subtle text-xs">
-                <Skeleton className="size-32 rounded-full" />
-              </div>
-            ) : (
-              <div className="h-[140px] flex items-center justify-center text-fg-subtle text-xs">
-                No provider capabilities detected.
-              </div>
-            )}
+            <DataState
+              data={modalityPieData}
+              isLoading={providers.isLoading}
+              error={providers.error}
+              onRetry={() => void providers.refetch()}
+              loading={
+                <div className="h-[140px] flex items-center justify-center">
+                  <Skeleton className="size-32 rounded-full" />
+                </div>
+              }
+              empty={{
+                title: 'No capabilities detected',
+                description: 'Connect a provider to see its capability breakdown.',
+              }}
+            >
+              {(pie) => (
+                <DonutChart
+                  data={pie}
+                  size={140}
+                  thickness={16}
+                  showLegend
+                  showLabels
+                />
+              )}
+            </DataState>
           </CardContent>
         </Card>
       </div>
@@ -425,28 +511,31 @@ export function DashboardPage() {
             <Button variant="ghost" size="sm" asChild>
               <Link to="/routing">
                 All decisions
-                <ChevronRight className="size-3" />
+                <ChevronRight className="size-3" aria-hidden />
               </Link>
             </Button>
           </CardHeader>
           <CardContent className="px-0 pb-0">
-            {decisions.isLoading ? (
-              <div className="flex flex-col gap-2">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-10 w-full" />
-                ))}
-              </div>
-            ) : decisions.data && decisions.data.length > 0 ? (
-              <div className="flex flex-col gap-0.5">
-                {decisions.data.slice(0, 6).map((d) => (
-                  <RouteDecisionRow key={d.id} decision={d} />
-                ))}
-              </div>
-            ) : (
-              <div className="py-12 text-center text-fg-subtle text-xs">
-                No decisions yet. Send a request to see live routing.
-              </div>
-            )}
+            <DataState
+              data={decisions.data}
+              isLoading={decisions.isLoading}
+              error={decisions.error}
+              onRetry={() => void decisions.refetch()}
+              skeletonRows={5}
+              empty={{
+                icon: <Activity className="size-8" />,
+                title: 'No routing decisions yet',
+                description: 'Send a request to see live routing decisions.',
+              }}
+            >
+              {(list) => (
+                <div className="flex flex-col gap-0.5">
+                  {list.slice(0, 6).map((d) => (
+                    <RouteDecisionRow key={d.id} decision={d} />
+                  ))}
+                </div>
+              )}
+            </DataState>
           </CardContent>
         </Card>
 
@@ -456,40 +545,49 @@ export function DashboardPage() {
             <Button variant="ghost" size="sm" asChild>
               <Link to="/observability">
                 All
-                <ChevronRight className="size-3" />
+                <ChevronRight className="size-3" aria-hidden />
               </Link>
             </Button>
           </CardHeader>
           <CardContent className="px-0 pb-0 flex flex-col gap-2">
-            {alerts.isLoading ? (
-              <Skeleton className="h-16 w-full" />
-            ) : alerts.data && alerts.data.length > 0 ? (
-              alerts.data.slice(0, 4).map((a) => (
-                <div
-                  key={a.id}
-                  className="flex items-start gap-2 rounded-lg border border-border bg-surface-2 p-2.5"
-                >
-                  <AlertCircle
-                    className={
-                      a.severity === 'error'
-                        ? 'size-3.5 text-danger shrink-0 mt-0.5'
-                        : a.severity === 'warning'
-                          ? 'size-3.5 text-warning shrink-0 mt-0.5'
-                          : 'size-3.5 text-info shrink-0 mt-0.5'
-                    }
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs text-fg truncate">{a.title}</p>
-                    <p className="text-[10px] text-fg-subtle">{a.at ? timeAgo(a.at) : ''}</p>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="py-8 text-center text-fg-subtle text-xs">
-                <CheckCircle2 className="size-5 text-success mx-auto mb-1" />
-                No active alerts
-              </div>
-            )}
+            <DataState
+              data={alerts.data}
+              isLoading={alerts.isLoading}
+              error={alerts.error}
+              onRetry={() => void alerts.refetch()}
+              skeletonRows={3}
+              empty={{
+                icon: <CheckCircle2 className="size-8 text-success" />,
+                title: 'No active alerts',
+                description: 'Everything is operating normally.',
+              }}
+            >
+              {(list) => (
+                <>
+                  {list.slice(0, 4).map((a) => (
+                    <div
+                      key={a.id}
+                      className="flex items-start gap-2 rounded-lg border border-border bg-surface-2 p-2.5"
+                    >
+                      <AlertCircle
+                        aria-hidden
+                        className={
+                          a.severity === 'error'
+                            ? 'size-3.5 text-danger shrink-0 mt-0.5'
+                            : a.severity === 'warning'
+                              ? 'size-3.5 text-warning shrink-0 mt-0.5'
+                              : 'size-3.5 text-info shrink-0 mt-0.5'
+                        }
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-fg truncate">{a.title}</p>
+                        <p className="text-[10px] text-fg-subtle">{a.at ? timeAgo(a.at) : ''}</p>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </DataState>
           </CardContent>
         </Card>
       </div>
@@ -501,15 +599,19 @@ export function DashboardPage() {
             <p className="text-[10px] text-fg-muted mt-0.5">End-to-end request latency</p>
           </CardHeader>
           <CardContent className="px-0 pb-0">
-            {!usage.isLoading && latencyData.length > 0 ? (
-              <LatencyChart data={latencyData} height={200} />
-            ) : usage.isLoading ? (
-              <Skeleton className="h-[200px] w-full" />
-            ) : (
-              <div className="h-[200px] flex items-center justify-center text-fg-subtle text-xs">
-                No latency data yet. Send a request to see metrics.
-              </div>
-            )}
+            <DataState
+              data={latencyChartData}
+              isLoading={usage.isLoading}
+              error={usage.error}
+              onRetry={() => void usage.refetch()}
+              loading={<Skeleton className="h-[200px] w-full" />}
+              empty={{
+                title: 'No latency data yet',
+                description: 'Send a request to see end-to-end latency metrics.',
+              }}
+            >
+              {(series) => <LatencyChart data={series} height={200} />}
+            </DataState>
           </CardContent>
         </Card>
       </div>
@@ -517,9 +619,9 @@ export function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="observability">
-            <React.Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
+            <LazyTab>
               <ObservabilityTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
         </Tabs>
       </div>

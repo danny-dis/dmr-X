@@ -5,16 +5,19 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { Switch } from '@/components/primitives/Switch';
 import { StatTile } from '@/components/primitives/StatTile';
+import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin, FusionPanel as FusionPanelApi } from '@/lib/admin';
 import { fetchAuthenticated } from '@/lib/api';
 import type { ApiFusionPanel } from '@/lib/admin';
+import { formatNumber } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiProvider, ApiCatalogEntry } from '@/types/api';
 
@@ -26,12 +29,18 @@ import { GodmodeSettings, type GodmodeConfig } from '@/components/fusion/Godmode
 import { GodmodeClassicPanel, LearningStats } from '@/components/fusion';
 
 export function FusionPanelPage() {
-  const [panels, setPanels] = React.useState<ApiFusionPanel[]>([]);
   const [activePanelId, setActivePanelId] = React.useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = React.useState<string>('');
   const [selectedModel, setSelectedModel] = React.useState<string>('');
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [isSaving, setIsSaving] = React.useState(false);
+
+  // Per-action busy flags — each drives a Button's `loading` prop instead of
+  // swapping its label, and each slot-row action shares one id since a human
+  // only triggers one action per row at a time.
+  const [creatingPanel, setCreatingPanel] = React.useState(false);
+  const [deletingPanel, setDeletingPanel] = React.useState(false);
+  const [togglingPanel, setTogglingPanel] = React.useState(false);
+  const [addingSlot, setAddingSlot] = React.useState(false);
+  const [busySlotId, setBusySlotId] = React.useState<string | null>(null);
 
   // G0DM0D3 state
   const [fusionMode, setFusionMode] = React.useState<FusionMode>('parallel');
@@ -73,6 +82,13 @@ export function FusionPanelPage() {
     { refetchInterval: 60000 }
   );
 
+  const panelsQuery = useApiData<ApiFusionPanel[]>(
+    () => FusionPanelApi.list(),
+    [],
+    { refetchInterval: 30000 }
+  );
+  const panels = panelsQuery.data ?? [];
+
   const catalogEntries = catalog.data?.entries ?? [];
   const enabledProviders = (providers.data ?? []).filter(p => p.enabled);
 
@@ -83,64 +99,61 @@ export function FusionPanelPage() {
     return provider.models ?? [];
   }, [selectedProvider, enabledProviders]);
 
-  // Load panels on mount
-  const loadPanels = React.useCallback(async () => {
-    try {
-      setIsLoading(true);
-      const data = await FusionPanelApi.list();
-      setPanels(data);
-      // Auto-select first panel if none selected
-      if (!activePanelId && data.length > 0) {
-        setActivePanelId(data[0]!.id);
-      }
-    } catch (_err) {
-      toast.error('Failed to load fusion panels');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [activePanelId]);
-
+  // Auto-select the first panel once the list loads, if nothing is active yet.
   React.useEffect(() => {
-    loadPanels();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!activePanelId && panelsQuery.data && panelsQuery.data.length > 0) {
+      setActivePanelId(panelsQuery.data[0]!.id);
+    }
+  }, [panelsQuery.data, activePanelId]);
 
   const activePanel = panels.find(p => p.id === activePanelId) ?? null;
   const slots = activePanel?.slots ?? [];
 
   const createPanel = async () => {
     const name = `Fusion Panel ${panels.length + 1}`;
+    setCreatingPanel(true);
     try {
       const newPanel = await FusionPanelApi.create({ name });
-      setPanels(prev => [newPanel, ...prev]);
       setActivePanelId(newPanel.id);
       toast.success(`Created "${name}"`);
-    } catch (_err) {
-      toast.error('Failed to create panel');
+      void panelsQuery.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setCreatingPanel(false);
     }
   };
 
   const deletePanel = async (id: string) => {
+    setDeletingPanel(true);
     try {
       await FusionPanelApi.delete(id);
-      setPanels(prev => prev.filter(p => p.id !== id));
       if (activePanelId === id) {
         setActivePanelId(panels.find(p => p.id !== id)?.id ?? null);
       }
       toast.success('Panel deleted');
-    } catch (_err) {
-      toast.error('Failed to delete panel');
+      void panelsQuery.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setDeletingPanel(false);
     }
   };
 
   const addSlot = async () => {
     if (!activePanelId || !selectedProvider || !selectedModel) {
-      toast.error('Select a provider and model');
+      toast.error('Select a provider and model', {
+        description: 'Choose both a provider and a model before adding a slot.',
+      });
       return;
     }
     const provider = enabledProviders.find(p => p.id === selectedProvider);
     const model = provider?.models?.find(m => m.id === selectedModel);
     if (!provider || !model) return;
 
+    setAddingSlot(true);
     try {
       const newSlot = await FusionPanelApi.addSlot(activePanelId, {
         provider_id: provider.name,
@@ -148,30 +161,30 @@ export function FusionPanelPage() {
         display_name: `${provider.name} / ${model.id}`,
       });
 
-      setPanels(prev => prev.map(p => {
-        if (p.id !== activePanelId) return p;
-        return { ...p, slots: [...p.slots, newSlot] };
-      }));
-
       setSelectedProvider('');
       setSelectedModel('');
       toast.success(`Added ${newSlot.display_name}`);
-    } catch (_err) {
-      toast.error('Failed to add slot');
+      void panelsQuery.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setAddingSlot(false);
     }
   };
 
   const removeSlot = async (slotId: string) => {
     if (!activePanelId) return;
+    setBusySlotId(slotId);
     try {
       await FusionPanelApi.removeSlot(activePanelId, slotId);
-      setPanels(prev => prev.map(p => {
-        if (p.id !== activePanelId) return p;
-        return { ...p, slots: p.slots.filter(s => s.id !== slotId) };
-      }));
       toast.success('Slot removed');
-    } catch (_err) {
-      toast.error('Failed to remove slot');
+      void panelsQuery.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setBusySlotId(null);
     }
   };
 
@@ -186,14 +199,16 @@ export function FusionPanelPage() {
     // Swap
     [currentSlots[idx], currentSlots[newIdx]] = [currentSlots[newIdx]!, currentSlots[idx]!];
 
+    setBusySlotId(slotId);
     try {
       await FusionPanelApi.reorderSlots(activePanelId, currentSlots.map(s => s.id));
-      setPanels(prev => prev.map(p => {
-        if (p.id !== activePanelId) return p;
-        return { ...p, slots: currentSlots };
-      }));
-    } catch (_err) {
-      toast.error('Failed to reorder slots');
+      toast.success('Slot order updated');
+      void panelsQuery.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setBusySlotId(null);
     }
   };
 
@@ -201,29 +216,36 @@ export function FusionPanelPage() {
     if (!activePanelId) return;
     const slot = slots.find(s => s.id === slotId);
     if (!slot) return;
+    setBusySlotId(slotId);
     try {
       // Use update to toggle is_enabled
       const updatedSlots = slots.map(s =>
         s.id === slotId ? { ...s, is_enabled: s.is_enabled ? 0 : 1 } : s
       );
       await FusionPanelApi.update(activePanelId, { slots: updatedSlots });
-      setPanels(prev => prev.map(p => {
-        if (p.id !== activePanelId) return p;
-        return { ...p, slots: updatedSlots };
-      }));
-    } catch (_err) {
-      toast.error('Failed to toggle slot');
+      toast.success(slot.is_enabled ? 'Slot disabled' : 'Slot enabled');
+      void panelsQuery.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setBusySlotId(null);
     }
   };
 
   const togglePanel = async (panelId: string) => {
     const panel = panels.find(p => p.id === panelId);
     if (!panel) return;
+    setTogglingPanel(true);
     try {
-      const updated = await FusionPanelApi.update(panelId, { is_active: panel.is_active ? 0 : 1 });
-      setPanels(prev => prev.map(p => p.id === panelId ? updated : p));
-    } catch (_err) {
-      toast.error('Failed to toggle panel');
+      await FusionPanelApi.update(panelId, { is_active: panel.is_active ? 0 : 1 });
+      toast.success(panel.is_active ? 'Panel deactivated' : 'Panel activated');
+      void panelsQuery.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setTogglingPanel(false);
     }
   };
 
@@ -384,8 +406,9 @@ export function FusionPanelPage() {
         }
       }
       toast.success(`${fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} completed`);
-    } catch (_err) {
-      toast.error(`Failed to run ${fusionMode}`);
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
     } finally {
       setIsRunningGodmode(false);
     }
@@ -399,364 +422,392 @@ export function FusionPanelPage() {
         icon={<Layers className="size-5" />}
         actions={
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={loadPanels} disabled={isLoading}>
-              <RefreshCw className={cn("size-3", isLoading && "animate-spin")} />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void panelsQuery.refetch()}
+              loading={panelsQuery.isLoading}
+              aria-label="Refresh panels"
+            >
+              <RefreshCw className="size-3" aria-hidden />
             </Button>
-            <Button size="sm" onClick={createPanel}>
-              <Plus className="size-3" />
+            <Button size="sm" onClick={createPanel} loading={creatingPanel} leftIcon={<Plus className="size-3" aria-hidden />}>
               New Panel
             </Button>
           </div>
         }
       />
 
-      {/* Panel selector */}
-      {panels.length > 0 && (
-        <div className="mt-4 flex items-center gap-3">
-          <Select value={activePanelId ?? ''} onValueChange={setActivePanelId}>
-            <SelectTrigger className="w-64 h-9">
-              <SelectValue placeholder="Select panel…" />
-            </SelectTrigger>
-            <SelectContent>
-              {panels.map(p => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name} {!p.is_active && '(inactive)'}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {activePanel && (
-            <Button
-              size="sm"
-              variant={activePanel.is_active ? "danger" : "primary"}
-              onClick={() => togglePanel(activePanel.id)}
-            >
-              {activePanel.is_active ? 'Deactivate' : 'Activate'}
-            </Button>
-          )}
-          {activePanel && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => deletePanel(activePanel.id)}
-              className="text-danger"
-            >
-              <Trash2 className="size-3" />
-            </Button>
-          )}
-        </div>
-      )}
-
-      {isLoading ? (
-        <div className="mt-4 space-y-4">
-          <Skeleton className="h-24" />
-          <Skeleton className="h-48" />
-        </div>
-      ) : panels.length === 0 ? (
-        <div className="mt-8">
-          <EmptyState
-            title="No fusion panels"
-            description="Create a panel to configure multi-model parallel execution."
-            action={
-              <Button onClick={createPanel}>
-                <Plus className="size-3" />
-                Create Panel
+      <div className="mt-4">
+        <DataState
+          data={panelsQuery.data}
+          isLoading={panelsQuery.isLoading}
+          error={panelsQuery.error}
+          onRetry={panelsQuery.refetch}
+          skeletonRows={4}
+          empty={{
+            icon: <Layers className="size-8" />,
+            title: 'No fusion panels',
+            description: 'Create a panel to configure multi-model parallel execution.',
+            action: (
+              <Button size="sm" onClick={createPanel} loading={creatingPanel} leftIcon={<Plus className="size-3" aria-hidden />}>
+                Create panel
               </Button>
-            }
-          />
-        </div>
-      ) : (
-        <>
-          <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <StatTile
-              label="Slots"
-              value={slots.length}
-              icon={<Layers className="size-3.5" />}
-              hint="models in fusion panel"
-            />
-            <StatTile
-              label="Providers"
-              value={new Set(slots.map(s => s.provider_id)).size}
-              icon={<Server className="size-3.5" />}
-              tone="success"
-              hint="unique providers"
-            />
-            <StatTile
-              label="Available"
-              value={enabledProviders.length}
-              icon={<Zap className="size-3.5" />}
-              tone="primary"
-              hint="enabled providers"
-            />
-            <StatTile
-              label="Mode"
-              value={fusionMode === 'parallel' ? 'Parallel' : fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : fusionMode === 'consortium' ? 'CONSORTIUM' : 'CLASSIC'}
-              icon={<ArrowUpDown className="size-3.5" />}
-              tone="accent"
-              hint="execution strategy"
-            />
-          </div>
-
-          {/* G0DM0D3 Tier Info (when not parallel / classic) */}
-          {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
-            <div className="mt-4">
-              <Card padding="md">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-semibold text-fg">G0DM0D3 Tier</h3>
-                    <p className="text-xs text-fg-muted mt-1">
-                      {fusionMode === 'ultraplinian'
-                        ? 'Multi-model racing — models compete, best response wins'
-                        : 'Hive-mind synthesis — all models contribute, consensus reached'}
-                    </p>
-                  </div>
-                  <Badge tone="primary" size="sm">
-                    {fusionMode === 'ultraplinian' ? 'Racing' : 'Synthesis'}
-                  </Badge>
-                </div>
-              </Card>
-            </div>
-          )}
-
-          {/* G0DM0D3 Mode Selector */}
-          <div className="mt-4">
-            <Card padding="md">
-              <h3 className="text-sm font-semibold text-fg mb-3">Execution Mode</h3>
-              <FusionModeSelector
-                value={fusionMode}
-                onChange={setFusionMode}
-                disabled={isRunningGodmode}
-              />
-            </Card>
-          </div>
-
-          {/* G0DM0D3 Settings (visible when not parallel / classic) */}
-          {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
-            <div className="mt-4">
-              <Card padding="md">
-                <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
-                  <Settings className="size-4" />
-                  Godmode Settings
-                </h3>
-                <GodmodeSettings
-                  config={godmodeConfig}
-                  onChange={handleGodmodeConfigChange}
-                  disabled={isRunningGodmode}
-                />
-              </Card>
-            </div>
-          )}
-
-          {/* ULTRAPLINIAN Results */}
-          {ultraplinianResults && fusionMode === 'ultraplinian' && (
-            <div className="mt-4">
-              <RaceResults
-                rankings={ultraplinianResults.rankings}
-                winner={ultraplinianResults.winner}
-                tier={ultraplinianResults.tier}
-                modelsQueried={ultraplinianResults.modelsQueried}
-                modelsSucceeded={ultraplinianResults.modelsSucceeded}
-                totalDurationMs={ultraplinianResults.totalDurationMs}
-              />
-            </div>
-          )}
-
-          {/* CONSORTIUM Results */}
-          {consortiumResults && fusionMode === 'consortium' && (
-            <div className="mt-4">
-              <SynthesisPanel
-                synthesis={consortiumResults.synthesis}
-                orchestrator={consortiumResults.orchestrator}
-                collection={consortiumResults.collection}
-              />
-            </div>
-          )}
-
-          {/* GODMODE CLASSIC (L1B3RT4S) */}
-          {fusionMode === 'classic' && (
-            <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_320px]">
-              <GodmodeClassicPanel />
-              <LearningStats />
-            </div>
-          )}
-
-          {/* Add Model Slot */}
-          {activePanel && (
-            <div className="mt-4">
-              <Card padding="md">
-                <h3 className="text-sm font-semibold text-fg mb-3">Add Model Slot</h3>
-                <div className="flex items-center gap-3">
-                  <Select value={selectedProvider} onValueChange={(v) => { setSelectedProvider(v); setSelectedModel(''); }}>
-                    <SelectTrigger className="w-48 h-9">
-                      <SelectValue placeholder="Select provider…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {enabledProviders.map(p => (
-                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={selectedModel} onValueChange={setSelectedModel} disabled={!selectedProvider}>
-                    <SelectTrigger className="w-60 h-9" disabled={!selectedProvider}>
-                      <SelectValue placeholder="Select model…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableModels.map(m => (
-                        <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button size="sm" onClick={addSlot} disabled={!selectedProvider || !selectedModel}>
-                    <Plus className="size-3" />
-                    Add Slot
-                  </Button>
-                </div>
-              </Card>
-            </div>
-          )}
-
-          {/* Configured Slots */}
-          {activePanel && (
-            <div className="mt-4">
-              <Card padding="md">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-fg">Configured Slots</h3>
-                  <Badge tone="muted" size="sm">{slots.length} slots</Badge>
-                </div>
-                {slots.length === 0 ? (
-                  <EmptyState
-                    title="No slots configured"
-                    description="Add models above to create a fusion panel for diverse parallel execution."
-                  />
-                ) : (
-                  <div className="space-y-2">
-                    {slots.map((slot, idx) => (
-                      <div
-                        key={slot.id}
-                        className={cn(
-                          "flex items-center gap-3 p-3 rounded-lg border bg-surface-2/50",
-                          slot.is_enabled ? "border-border" : "border-border opacity-50"
-                        )}
-                      >
-                        <GripVertical className="size-4 text-fg-subtle cursor-move" />
-                        <div className="flex size-7 shrink-0 items-center justify-center rounded bg-primary/10 text-primary font-mono text-[10px] font-bold">
-                          {idx + 1}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-fg truncate">{slot.display_name}</p>
-                          <p className="text-[10px] text-fg-muted">{slot.provider_id} · {slot.model_id}</p>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            onClick={() => toggleSlot(slot.id)}
-                            title={slot.is_enabled ? 'Disable slot' : 'Enable slot'}
-                          >
-                            {slot.is_enabled ? (
-                              <span className="size-2 rounded-full bg-success" aria-label="Enabled" />
-                            ) : (
-                              <span className="size-2 rounded-full border border-fg-subtle" aria-label="Disabled" />
-                            )}
-                          </Button>
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            onClick={() => moveSlot(slot.id, 'up')}
-                            disabled={idx === 0}
-                          >
-                            ↑
-                          </Button>
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            onClick={() => moveSlot(slot.id, 'down')}
-                            disabled={idx === slots.length - 1}
-                          >
-                            ↓
-                          </Button>
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            onClick={() => removeSlot(slot.id)}
-                          >
-                            <Trash2 className="size-3 text-danger" />
-                          </Button>
-                        </div>
-                      </div>
+            ),
+          }}
+        >
+          {() => (
+            <>
+              {/* Panel selector */}
+              <div className="flex items-center gap-3">
+                <Select value={activePanelId ?? ''} onValueChange={setActivePanelId}>
+                  <SelectTrigger className="w-64 h-9" aria-label="Active fusion panel">
+                    <SelectValue placeholder="Select panel…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {panels.map(p => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name} {!p.is_active && '(inactive)'}
+                      </SelectItem>
                     ))}
-                  </div>
+                  </SelectContent>
+                </Select>
+                {activePanel && (
+                  <Button
+                    size="sm"
+                    variant={activePanel.is_active ? "danger" : "primary"}
+                    onClick={() => togglePanel(activePanel.id)}
+                    loading={togglingPanel}
+                  >
+                    {activePanel.is_active ? 'Deactivate' : 'Activate'}
+                  </Button>
                 )}
-              </Card>
-            </div>
-          )}
-
-          {/* How It Works */}
-          <div className="mt-4">
-            <Card padding="md">
-              <h3 className="text-sm font-semibold text-fg mb-2">How Fusion Panel Works</h3>
-              <ul className="text-xs text-fg-muted space-y-1.5">
-                <li>• Each slot is hard-pinned to one model — no silent substitution</li>
-                <li>• Requests are distributed across slots for diversity</li>
-                <li>• If a slot's model is rate-limited, it's skipped (not collapsed onto another)</li>
-                <li>• Useful for A/B testing, redundancy, or ensuring model diversity</li>
-                <li>• Combine with routing profiles for different fusion configurations</li>
-                {fusionMode !== 'parallel' && (
-                  <li>• <strong>G0DM0D3 mode:</strong> {fusionMode === 'ultraplinian' ? 'Multi-model racing with rankings' : 'Hive-mind synthesis with consensus'}</li>
+                {activePanel && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => deletePanel(activePanel.id)}
+                    loading={deletingPanel}
+                    aria-label={`Delete ${activePanel.name}`}
+                    className="text-danger"
+                  >
+                    <Trash2 className="size-3" aria-hidden />
+                  </Button>
                 )}
-              </ul>
-            </Card>
-          </div>
+              </div>
 
-          {/* Godmode Prompt Input (for non-parallel, non-classic modes) */}
-          {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
-            <div className="mt-4">
-              <Card padding="md">
-                <h3 className="text-sm font-semibold text-fg mb-3">
-                  {fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} Prompt
-                </h3>
-                <div className="flex gap-3">
-                  <textarea
-                    value={godmodePrompt}
-                    onChange={(e) => setGodmodePrompt(e.target.value)}
-                    placeholder={`Enter prompt for ${fusionMode === 'ultraplinian' ? 'multi-model racing' : 'hive-mind synthesis'}...`}
-                    className="flex-1 min-h-[80px] p-3 rounded-lg border border-border bg-surface-2 text-sm text-fg resize-none focus:border-primary/40 focus:ring-2 focus:ring-primary/20"
+              <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <StatTile
+                  label="Slots"
+                  value={formatNumber(slots.length)}
+                  icon={<Layers className="size-3.5" />}
+                  hint="models in fusion panel"
+                />
+                <StatTile
+                  label="Providers"
+                  value={formatNumber(new Set(slots.map(s => s.provider_id)).size)}
+                  icon={<Server className="size-3.5" />}
+                  tone="success"
+                  hint="unique providers"
+                />
+                <StatTile
+                  label="Available"
+                  value={formatNumber(enabledProviders.length)}
+                  icon={<Zap className="size-3.5" />}
+                  tone="primary"
+                  hint="enabled providers"
+                />
+                <StatTile
+                  label="Mode"
+                  value={fusionMode === 'parallel' ? 'Parallel' : fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : fusionMode === 'consortium' ? 'CONSORTIUM' : 'CLASSIC'}
+                  icon={<ArrowUpDown className="size-3.5" />}
+                  tone="accent"
+                  hint="execution strategy"
+                />
+              </div>
+
+              {/* G0DM0D3 Tier Info (when not parallel / classic) */}
+              {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
+                <div className="mt-4">
+                  <Card padding="md">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-fg">G0DM0D3 Tier</h3>
+                        <p className="text-xs text-fg-muted mt-1">
+                          {fusionMode === 'ultraplinian'
+                            ? 'Multi-model racing — models compete, best response wins'
+                            : 'Hive-mind synthesis — all models contribute, consensus reached'}
+                        </p>
+                      </div>
+                      <Badge tone="primary" size="sm">
+                        {fusionMode === 'ultraplinian' ? 'Racing' : 'Synthesis'}
+                      </Badge>
+                    </div>
+                  </Card>
+                </div>
+              )}
+
+              {/* G0DM0D3 Mode Selector */}
+              <div className="mt-4">
+                <Card padding="md">
+                  <h3 className="text-sm font-semibold text-fg mb-3">Execution Mode</h3>
+                  <FusionModeSelector
+                    value={fusionMode}
+                    onChange={setFusionMode}
                     disabled={isRunningGodmode}
                   />
-                  <div className="flex flex-col items-stretch gap-2 self-end">
-                    <div className="flex items-center gap-2 px-1">
-                      <Switch
-                        checked={streamLiquid}
-                        onCheckedChange={setStreamLiquid}
-                        disabled={isRunningGodmode}
-                      />
-                      <span className="text-xs text-fg-muted whitespace-nowrap">
-                        Stream (Liquid Response)
-                      </span>
-                    </div>
-                    <Button
-                      onClick={runGodmode}
-                      disabled={!godmodePrompt.trim() || isRunningGodmode}
-                    >
-                      {isRunningGodmode ? 'Running...' : (streamLiquid ? 'Stream' : 'Run')}
-                    </Button>
-                  </div>
-                </div>
+                </Card>
+              </div>
 
-                {/* Live streaming text */}
-                {liveText && (
-                  <div className="mt-3 rounded-lg border border-border bg-surface-2/50 p-3">
-                    <div className="mb-1 text-xs font-medium text-fg-muted">
-                      Live response
+              {/* G0DM0D3 Settings (visible when not parallel / classic) */}
+              {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
+                <div className="mt-4">
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
+                      <Settings className="size-4" aria-hidden />
+                      Godmode Settings
+                    </h3>
+                    <GodmodeSettings
+                      config={godmodeConfig}
+                      onChange={handleGodmodeConfigChange}
+                      disabled={isRunningGodmode}
+                    />
+                  </Card>
+                </div>
+              )}
+
+              {/* ULTRAPLINIAN Results */}
+              {ultraplinianResults && fusionMode === 'ultraplinian' && (
+                <div className="mt-4">
+                  <RaceResults
+                    rankings={ultraplinianResults.rankings}
+                    winner={ultraplinianResults.winner}
+                    tier={ultraplinianResults.tier}
+                    modelsQueried={ultraplinianResults.modelsQueried}
+                    modelsSucceeded={ultraplinianResults.modelsSucceeded}
+                    totalDurationMs={ultraplinianResults.totalDurationMs}
+                  />
+                </div>
+              )}
+
+              {/* CONSORTIUM Results */}
+              {consortiumResults && fusionMode === 'consortium' && (
+                <div className="mt-4">
+                  <SynthesisPanel
+                    synthesis={consortiumResults.synthesis}
+                    orchestrator={consortiumResults.orchestrator}
+                    collection={consortiumResults.collection}
+                  />
+                </div>
+              )}
+
+              {/* GODMODE CLASSIC (L1B3RT4S) */}
+              {fusionMode === 'classic' && (
+                <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_320px]">
+                  <GodmodeClassicPanel />
+                  <LearningStats />
+                </div>
+              )}
+
+              {/* Add Model Slot */}
+              {activePanel && (
+                <div className="mt-4">
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-fg mb-3">Add Model Slot</h3>
+                    <div className="flex items-center gap-3">
+                      <Select value={selectedProvider} onValueChange={(v) => { setSelectedProvider(v); setSelectedModel(''); }}>
+                        <SelectTrigger className="w-48 h-9" aria-label="Provider">
+                          <SelectValue placeholder="Select provider…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {enabledProviders.map(p => (
+                            <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={selectedModel} onValueChange={setSelectedModel} disabled={!selectedProvider}>
+                        <SelectTrigger className="w-60 h-9" disabled={!selectedProvider} aria-label="Model">
+                          <SelectValue placeholder="Select model…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableModels.map(m => (
+                            <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        size="sm"
+                        onClick={addSlot}
+                        disabled={!selectedProvider || !selectedModel}
+                        loading={addingSlot}
+                        leftIcon={<Plus className="size-3" aria-hidden />}
+                      >
+                        Add Slot
+                      </Button>
                     </div>
-                    <div className="whitespace-pre-wrap text-sm text-fg">{liveText}</div>
-                  </div>
-                )}
-              </Card>
-            </div>
+                  </Card>
+                </div>
+              )}
+
+              {/* Configured Slots */}
+              {activePanel && (
+                <div className="mt-4">
+                  <Card padding="md">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-fg">Configured Slots</h3>
+                      <Badge tone="muted" size="sm">{formatNumber(slots.length)} slots</Badge>
+                    </div>
+                    {slots.length === 0 ? (
+                      <EmptyState
+                        title="No slots configured"
+                        description="Add models above to create a fusion panel for diverse parallel execution."
+                      />
+                    ) : (
+                      <div className="space-y-2">
+                        {slots.map((slot, idx) => (
+                          <div
+                            key={slot.id}
+                            className={cn(
+                              "flex items-center gap-3 p-3 rounded-lg border bg-surface-2/50",
+                              slot.is_enabled ? "border-border" : "border-border opacity-50"
+                            )}
+                          >
+                            <GripVertical className="size-4 text-fg-subtle cursor-move" aria-hidden />
+                            <div className="flex size-7 shrink-0 items-center justify-center rounded bg-primary/10 text-primary font-mono text-[10px] font-bold">
+                              {idx + 1}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-fg truncate">{slot.display_name}</p>
+                              <p className="text-[10px] text-fg-muted">{slot.provider_id} · {slot.model_id}</p>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => toggleSlot(slot.id)}
+                                loading={busySlotId === slot.id}
+                                aria-label={slot.is_enabled ? `Disable ${slot.display_name}` : `Enable ${slot.display_name}`}
+                              >
+                                {slot.is_enabled ? (
+                                  <span className="size-2 rounded-full bg-success" aria-hidden />
+                                ) : (
+                                  <span className="size-2 rounded-full border border-fg-subtle" aria-hidden />
+                                )}
+                              </Button>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => moveSlot(slot.id, 'up')}
+                                disabled={idx === 0}
+                                loading={busySlotId === slot.id}
+                                aria-label={`Move ${slot.display_name} up`}
+                              >
+                                ↑
+                              </Button>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => moveSlot(slot.id, 'down')}
+                                disabled={idx === slots.length - 1}
+                                loading={busySlotId === slot.id}
+                                aria-label={`Move ${slot.display_name} down`}
+                              >
+                                ↓
+                              </Button>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                onClick={() => removeSlot(slot.id)}
+                                loading={busySlotId === slot.id}
+                                aria-label={`Remove ${slot.display_name}`}
+                              >
+                                <Trash2 className="size-3 text-danger" aria-hidden />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </div>
+              )}
+
+              {/* How It Works */}
+              <div className="mt-4">
+                <Card padding="md">
+                  <h3 className="text-sm font-semibold text-fg mb-2">How Fusion Panel Works</h3>
+                  <ul className="text-xs text-fg-muted space-y-1.5">
+                    <li>• Each slot is hard-pinned to one model — no silent substitution</li>
+                    <li>• Requests are distributed across slots for diversity</li>
+                    <li>• If a slot's model is rate-limited, it's skipped (not collapsed onto another)</li>
+                    <li>• Useful for A/B testing, redundancy, or ensuring model diversity</li>
+                    <li>• Combine with routing profiles for different fusion configurations</li>
+                    {fusionMode !== 'parallel' && (
+                      <li>• <strong>G0DM0D3 mode:</strong> {fusionMode === 'ultraplinian' ? 'Multi-model racing with rankings' : 'Hive-mind synthesis with consensus'}</li>
+                    )}
+                  </ul>
+                </Card>
+              </div>
+
+              {/* Godmode Prompt Input (for non-parallel, non-classic modes) */}
+              {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
+                <div className="mt-4">
+                  <Card padding="md">
+                    <h3 className="text-sm font-semibold text-fg mb-3">
+                      {fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} Prompt
+                    </h3>
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <label htmlFor="godmode-prompt" className="sr-only">
+                          {fusionMode === 'ultraplinian' ? 'ULTRAPLINIAN' : 'CONSORTIUM'} prompt
+                        </label>
+                        <Textarea
+                          id="godmode-prompt"
+                          value={godmodePrompt}
+                          onChange={(e) => setGodmodePrompt(e.target.value)}
+                          placeholder={`Enter prompt for ${fusionMode === 'ultraplinian' ? 'multi-model racing' : 'hive-mind synthesis'}...`}
+                          className="min-h-[80px] resize-none"
+                          disabled={isRunningGodmode}
+                        />
+                      </div>
+                      <div className="flex flex-col items-stretch gap-2 self-end">
+                        <div className="flex items-center gap-2 px-1">
+                          <Switch
+                            id="godmode-stream"
+                            checked={streamLiquid}
+                            onCheckedChange={setStreamLiquid}
+                            disabled={isRunningGodmode}
+                          />
+                          <label htmlFor="godmode-stream" className="text-xs text-fg-muted whitespace-nowrap">
+                            Stream (Liquid Response)
+                          </label>
+                        </div>
+                        <Button
+                          onClick={runGodmode}
+                          disabled={!godmodePrompt.trim()}
+                          loading={isRunningGodmode}
+                        >
+                          {streamLiquid ? 'Stream' : 'Run'}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Live streaming text */}
+                    {liveText && (
+                      <div className="mt-3 rounded-lg border border-border bg-surface-2/50 p-3" aria-live="polite">
+                        <div className="mb-1 text-xs font-medium text-fg-muted">
+                          Live response
+                        </div>
+                        <div className="whitespace-pre-wrap text-sm text-fg">{liveText}</div>
+                      </div>
+                    )}
+                  </Card>
+                </div>
+              )}
+            </>
           )}
-        </>
-      )}
+        </DataState>
+      </div>
     </PageContainer>
   );
 }

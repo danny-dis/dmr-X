@@ -5,10 +5,10 @@ import { TelemetryEventRow } from '@/components/domain/TelemetryEventRow';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
-import { EmptyState } from '@/components/primitives/EmptyState';
+import { DataState } from '@/components/primitives/DataState';
 import { Input } from '@/components/primitives/Input';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Pagination } from '@/components/primitives/Pagination';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { toast } from '@/components/primitives/Toast';
 import { Toggle } from '@/components/primitives/Toggle';
 import { useDebounce } from '@/hooks';
@@ -63,9 +63,10 @@ export function RequestsPage() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      toast.success('Telemetry exported', { description: 'File downloaded successfully' });
     } catch (err) {
-      console.error('Failed to export telemetry', err);
-      toast.error('Failed to export telemetry');
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
     }
   };
 
@@ -139,25 +140,31 @@ export function RequestsPage() {
         </div>
 
         <div className="p-2 min-h-[400px]">
-          {events.isLoading ? (
-            <div className="flex flex-col gap-1.5 p-2">
-              {Array.from({ length: 12 }).map((_, i) => (
-                <Skeleton key={i} className="h-5 w-full" />
-              ))}
-            </div>
-          ) : paged.length > 0 ? (
-            <div className="flex flex-col">
-              {paged.map((e) => (
-                <TelemetryEventRow key={e.id} event={e} />
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              title="No requests yet"
-              description="Send a request through the gateway to see live events here."
-              size="md"
-            />
-          )}
+          <DataState
+            data={paged}
+            isLoading={events.isLoading}
+            error={events.error}
+            onRetry={events.refetch}
+            loading={
+              <div className="flex flex-col gap-1.5 p-2">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <div key={i} className="h-5 bg-surface-2 rounded animate-pulse" />
+                ))}
+              </div>
+            }
+            empty={{
+              title: 'No requests yet',
+              description: 'Send a request through the gateway to see live events here.',
+            }}
+          >
+            {(items) => (
+              <div className="flex flex-col">
+                {items.map((e) => (
+                  <TelemetryEventRow key={e.id} event={e} />
+                ))}
+              </div>
+            )}
+          </DataState>
         </div>
 
         {filtered.length > pageSize && (

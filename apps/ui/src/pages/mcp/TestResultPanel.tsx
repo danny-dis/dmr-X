@@ -13,8 +13,12 @@ import type { McpTestResult } from '@/lib/queries/mcp';
 export function TestResultPanel({ result }: { result: McpTestResult }) {
   if (!result.ok) {
     return (
-      <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-3">
-        <XCircle className="mt-0.5 size-4 shrink-0 text-danger" />
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-3"
+      >
+        <XCircle className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden />
         <div className="min-w-0">
           <div className="text-sm font-medium text-danger">Could not connect</div>
           <p className="mt-0.5 break-words font-mono text-2xs text-fg-muted">{result.errorMessage}</p>
@@ -25,9 +29,9 @@ export function TestResultPanel({ result }: { result: McpTestResult }) {
   }
 
   return (
-    <div className="rounded-lg border border-success/30 bg-success/5 p-3">
+    <div role="status" aria-live="polite" className="rounded-lg border border-success/30 bg-success/5 p-3">
       <div className="flex items-center gap-2">
-        <CheckCircle2 className="size-4 text-success" />
+        <CheckCircle2 className="size-4 text-success" aria-hidden />
         <span className="text-sm font-medium text-success">
           Connected — {result.toolCount} tool{result.toolCount === 1 ? '' : 's'}
         </span>

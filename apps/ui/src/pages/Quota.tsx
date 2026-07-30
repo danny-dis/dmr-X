@@ -4,9 +4,9 @@ import * as React from 'react';
 import { QuotaGauge, QuotaProgressBar } from '@/components/domain/QuotaGauge';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
 import { Progress } from '@/components/primitives/Progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
@@ -108,13 +108,20 @@ export function QuotaPage() {
             <p className="text-[10px] text-fg-muted mt-0.5">Live consumption tracking</p>
           </CardHeader>
           <CardContent className="px-0">
-            {quota.isLoading ? (
-              <div className="flex justify-center">
-                <Skeleton className="size-32 rounded-full" />
-              </div>
-            ) : quota.data?.[0] ? (
-              <QuotaGauge quota={quota.data[0]} />
-            ) : null}
+            <DataState
+              data={quota.data?.[0]}
+              isLoading={quota.isLoading}
+              error={quota.error}
+              onRetry={quota.refetch}
+              skeletonRows={1}
+              loading={<div className="flex justify-center"><div className="size-32 rounded-full bg-surface-2 animate-pulse" /></div>}
+              empty={{
+                title: 'No quota data',
+                description: 'Quota information will appear once requests are processed.',
+              }}
+            >
+              {(data) => <QuotaGauge quota={data} />}
+            </DataState>
           </CardContent>
         </Card>
 
@@ -124,31 +131,41 @@ export function QuotaPage() {
             <p className="text-[10px] text-fg-muted mt-0.5">Token consumption by model</p>
           </CardHeader>
           <CardContent className="px-0">
-            {quota.data?.[0]?.by_model ? (
-              <div className="flex flex-col gap-3">
-                {Object.entries(quota.data[0].by_model).map(([model, used]) => {
-                  const limit = quota.data?.[0]?.per_model_limit?.[model] ?? (quota.data?.[0]?.tokens_limit ?? 0) / 5;
-                  const pct = (used / limit) * 100;
-                  return (
-                    <div key={model} className="flex flex-col gap-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-mono text-fg truncate">{model}</span>
-                        <span className="text-fg-muted tabular-nums">
-                          {formatTokens(used)} / {formatTokens(limit, true)}
-                        </span>
+            <DataState
+              data={quota.data?.[0]?.by_model ? Object.keys(quota.data[0].by_model) : null}
+              isLoading={quota.isLoading}
+              error={quota.error}
+              onRetry={quota.refetch}
+              skeletonRows={3}
+              empty={{
+                title: 'No model breakdown',
+                description: 'Model-level quota information will appear once models process requests.',
+              }}
+            >
+              {() => (
+                <div className="flex flex-col gap-3">
+                  {quota.data?.[0]?.by_model && Object.entries(quota.data[0].by_model).map(([model, used]) => {
+                    const limit = quota.data?.[0]?.per_model_limit?.[model] ?? (quota.data?.[0]?.tokens_limit ?? 0) / 5;
+                    const pct = (used / limit) * 100;
+                    return (
+                      <div key={model} className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-mono text-fg truncate">{model}</span>
+                          <span className="text-fg-muted tabular-nums">
+                            {formatTokens(used)} / {formatTokens(limit, true)}
+                          </span>
+                        </div>
+                        <Progress
+                          value={Math.min(100, pct)}
+                          tone={pct > 90 ? 'danger' : pct > 75 ? 'warning' : 'primary'}
+                          size="sm"
+                        />
                       </div>
-                      <Progress
-                        value={Math.min(100, pct)}
-                        tone={pct > 90 ? 'danger' : pct > 75 ? 'warning' : 'primary'}
-                        size="sm"
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="py-8 text-center text-fg-subtle text-xs">No model breakdown available</div>
-            )}
+                    );
+                  })}
+                </div>
+              )}
+            </DataState>
           </CardContent>
         </Card>
       </div>
@@ -159,33 +176,37 @@ export function QuotaPage() {
             <CardTitle>All tenants quota</CardTitle>
           </CardHeader>
           <CardContent className="px-0">
-            {tenants.isLoading ? (
-              <div className="flex flex-col gap-2">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-12 w-full" />
-                ))}
-              </div>
-            ) : tenants.data && tenants.data.length > 0 ? (
-              <div className="flex flex-col gap-1.5">
-                {tenants.data.map((t) => (
-                  <div
-                    key={t.id}
-                    className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-surface-2"
-                  >
-                    <div className="flex size-8 items-center justify-center rounded-lg bg-surface-2 text-fg-muted text-xs font-semibold uppercase">
-                      {t.name.slice(0, 2)}
+            <DataState
+              data={tenants.data}
+              isLoading={tenants.isLoading}
+              error={tenants.error}
+              onRetry={tenants.refetch}
+              skeletonRows={4}
+              empty={{
+                title: 'No tenants',
+                description: 'Tenant quota information will appear once tenants are created.',
+              }}
+            >
+              {(items) => (
+                <div className="flex flex-col gap-1.5">
+                  {items.map((t) => (
+                    <div
+                      key={t.id}
+                      className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-surface-2"
+                    >
+                      <div className="flex size-8 items-center justify-center rounded-lg bg-surface-2 text-fg-muted text-xs font-semibold uppercase">
+                        {t.name.slice(0, 2)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-fg truncate">{t.name}</p>
+                        <p className="text-[10px] text-fg-muted">{t.tier ?? 'free'} tier</p>
+                      </div>
+                      <QuotaProgressBar quota={{ tokens_used: t.tokens_used, tokens_limit: t.tokens_limit } as ApiQuotaState} />
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-fg truncate">{t.name}</p>
-                      <p className="text-[10px] text-fg-muted">{t.tier ?? 'free'} tier</p>
-                    </div>
-                    <QuotaProgressBar quota={{ tokens_used: t.tokens_used, tokens_limit: t.tokens_limit } as ApiQuotaState} />
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-8 text-center text-fg-subtle text-xs">No tenants</div>
-            )}
+                  ))}
+                </div>
+              )}
+            </DataState>
           </CardContent>
         </Card>
       </div>

@@ -3,22 +3,14 @@ import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
 import { BackLink } from '@/components/primitives/BackLink';
+import { LazyTab } from '@/components/primitives/LazyTab';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
-import { Skeleton } from '@/components/primitives/Skeleton';
 
 // Lazy-load tab content for code splitting
 const ToolsTab = React.lazy(() => import('@/pages/Tools').then(m => ({ default: m.ToolsPage })));
 const WorkersTab = React.lazy(() => import('@/pages/Workers').then(m => ({ default: m.WorkersPage })));
 const FederationTab = React.lazy(() => import('@/pages/Federation').then(m => ({ default: m.FederationPage })));
 const SandboxTab = React.lazy(() => import('@/pages/Sandbox').then(m => ({ default: m.SandboxPage })));
-
-function TabLoader() {
-  return (
-    <div className="flex items-center justify-center h-[40vh]">
-      <Skeleton className="h-8 w-48" />
-    </div>
-  );
-}
 
 export function InfrastructurePage() {
   return (
@@ -40,27 +32,27 @@ export function InfrastructurePage() {
           </TabsList>
 
           <TabsContent value="tools">
-            <React.Suspense fallback={<TabLoader />}>
+            <LazyTab>
               <ToolsTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
 
           <TabsContent value="workers">
-            <React.Suspense fallback={<TabLoader />}>
+            <LazyTab>
               <WorkersTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
 
           <TabsContent value="federation">
-            <React.Suspense fallback={<TabLoader />}>
+            <LazyTab>
               <FederationTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
 
           <TabsContent value="sandbox">
-            <React.Suspense fallback={<TabLoader />}>
+            <LazyTab>
               <SandboxTab />
-            </React.Suspense>
+            </LazyTab>
           </TabsContent>
         </Tabs>
       </div>

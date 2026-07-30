@@ -13,9 +13,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/primitives/Dialog';
-import { Field, FieldDescription, FieldLabel } from '@/components/primitives/Field';
+import { interpretError } from '@/components/primitives/ErrorState';
+import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/primitives/Field';
 import { Input } from '@/components/primitives/Input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
 import { useAddMcpServer, useTestMcpServer, type McpServerInput, type McpTestResult } from '@/lib/queries/mcp';
@@ -42,6 +42,7 @@ export function AddServerDialog({
   const [url, setUrl] = React.useState('');
   const [apiKey, setApiKey] = React.useState('');
   const [test, setTest] = React.useState<McpTestResult | null>(null);
+  const [touched, setTouched] = React.useState<Record<string, boolean>>({});
 
   const testMutation = useTestMcpServer();
   const addMutation = useAddMcpServer();
@@ -54,7 +55,15 @@ export function AddServerDialog({
     setUrl('');
     setApiKey('');
     setTest(null);
+    setTouched({});
   };
+
+  const markTouched = (field: string) => setTouched((t) => ({ ...t, [field]: true }));
+
+  const nameError = touched.name && !name.trim() ? 'Name is required.' : null;
+  const commandError =
+    touched.command && transport === 'stdio' && !command.trim() ? 'Command is required.' : null;
+  const urlError = touched.url && transport === 'sse' && !url.trim() ? 'URL is required.' : null;
 
   const build = (): McpServerInput => ({
     name: name.trim(),
@@ -76,18 +85,26 @@ export function AddServerDialog({
     setTest(null);
     testMutation.mutate(build(), {
       onSuccess: setTest,
-      onError: (e) => toast.error(`Test failed: ${(e as Error).message}`),
+      onError: (e) => {
+        const interpreted = interpretError(e);
+        toast.error(`Could not test "${name.trim()}"`, { description: interpreted.description });
+      },
     });
   };
 
   const handleSave = () => {
     addMutation.mutate(build(), {
       onSuccess: (server) => {
-        toast.success(`${server.name} connected with ${server.toolCount} tools`);
+        toast.success(`${server.name} connected`, {
+          description: `${server.toolCount} tool${server.toolCount === 1 ? '' : 's'} available.`,
+        });
         reset();
         onOpenChange(false);
       },
-      onError: (e) => toast.error((e as Error).message),
+      onError: (e) => {
+        const interpreted = interpretError(e);
+        toast.error(`Could not add "${name.trim()}"`, { description: interpreted.description });
+      },
     });
   };
 
@@ -122,8 +139,11 @@ export function AddServerDialog({
               id="mcp-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              onBlur={() => markTouched('name')}
+              invalid={!!nameError}
               placeholder="My filesystem server"
             />
+            {nameError && <FieldError>{nameError}</FieldError>}
           </Field>
 
           {transport === 'stdio' ? (
@@ -134,8 +154,11 @@ export function AddServerDialog({
                   id="mcp-command"
                   value={command}
                   onChange={(e) => { setCommand(e.target.value); setTest(null); }}
+                  onBlur={() => markTouched('command')}
+                  invalid={!!commandError}
                   placeholder="npx"
                 />
+                {commandError && <FieldError>{commandError}</FieldError>}
               </Field>
               <Field>
                 <FieldLabel htmlFor="mcp-args">Arguments</FieldLabel>
@@ -158,8 +181,11 @@ export function AddServerDialog({
                   id="mcp-url"
                   value={url}
                   onChange={(e) => { setUrl(e.target.value); setTest(null); }}
+                  onBlur={() => markTouched('url')}
+                  invalid={!!urlError}
                   placeholder="https://example.com/sse"
                 />
+                {urlError && <FieldError>{urlError}</FieldError>}
               </Field>
               <Field>
                 <FieldLabel htmlFor="mcp-key">API key</FieldLabel>

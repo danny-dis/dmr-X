@@ -6,7 +6,9 @@ import { McpNav } from './McpNav';
 import { PageContainer, PageHeader } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { Code } from '@/components/primitives/Code';
+import { DataState } from '@/components/primitives/DataState';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatusPill } from '@/components/primitives/StatusPill';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { useUrlState } from '@/hooks/useUrlState';
 import { useMcpStatus } from '@/lib/queries/mcp';
@@ -61,19 +63,42 @@ export function McpSettingsPage() {
 
       <Card className="mb-4">
         <CardHeader>
-          <CardTitle>Server</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Server</CardTitle>
+            {status.data && (
+              <StatusPill
+                status={status.data.available ? 'online' : status.data.available === false ? 'offline' : 'unknown'}
+                label={
+                  status.data.available ? 'Available' : status.data.available === false ? 'Unavailable' : 'Unknown'
+                }
+                size="sm"
+              />
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          {status.isLoading ? (
-            <Skeleton className="h-16 w-full" />
-          ) : (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <Detail label="Transport" value={status.data?.transport ?? '—'} />
-              <Detail label="Host" value={status.data?.host ?? '—'} />
-              <Detail label="Port" value={String(status.data?.port ?? '—')} />
-              <Detail label="Tools" value={String(status.data?.tools?.length ?? 0)} />
-            </div>
-          )}
+          <DataState
+            data={status.data}
+            isLoading={status.isLoading}
+            error={status.error}
+            onRetry={status.refetch}
+            loading={
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                {[0, 1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-10 w-full" />
+                ))}
+              </div>
+            }
+          >
+            {(data) => (
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <Detail label="Transport" value={data.transport ?? '—'} />
+                <Detail label="Host" value={data.host ?? '—'} />
+                <Detail label="Port" value={String(data.port ?? '—')} />
+                <Detail label="Tools" value={String(data.tools?.length ?? 0)} />
+              </div>
+            )}
+          </DataState>
         </CardContent>
       </Card>
 

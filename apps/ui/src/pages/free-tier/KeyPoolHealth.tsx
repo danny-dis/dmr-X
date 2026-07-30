@@ -1,11 +1,11 @@
-import { AlertTriangle, KeySquare } from 'lucide-react';
+import { KeySquare } from 'lucide-react';
 
-import { Badge } from '@/components/primitives/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
 import { Progress } from '@/components/primitives/Progress';
-import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatusPill, type StatusKind } from '@/components/primitives/StatusPill';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/primitives/Tooltip';
-import { useKeyRotation } from '@/lib/queries/usage';
+import { useKeyRotation, type KeyRotationPool } from '@/lib/queries/usage';
 
 /**
  * Key pool balance.
@@ -18,8 +18,7 @@ import { useKeyRotation } from '@/lib/queries/usage';
  * this view.
  */
 export function KeyPoolHealth() {
-  const { data, isLoading } = useKeyRotation();
-  const pools = data?.pools ?? [];
+  const { data, isLoading, error, refetch } = useKeyRotation();
 
   return (
     <Card>
@@ -27,60 +26,86 @@ export function KeyPoolHealth() {
         <CardTitle>Key pool balance</CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading ? (
-          <Skeleton className="h-40 w-full" />
-        ) : pools.length === 0 ? (
-          <p className="py-6 text-center text-sm text-fg-muted">
-            No provider has more than one key configured.
-          </p>
-        ) : (
-          <ul className="space-y-4">
-            {pools.map((pool) => {
-              const idleKeys = pool.keys.filter((k) => k.selections === 0);
-              // balance is min/max selections: 1.0 even, near 0 = one hot key.
-              const uneven = pool.totalSelections > 0 && pool.balance < 0.5;
-
-              return (
-                <li key={pool.providerId}>
-                  <div className="flex items-center gap-2">
-                    <KeySquare className="size-3.5 text-fg-subtle" />
-                    <span className="text-sm text-fg">{pool.providerName}</span>
-                    <span className="text-2xs text-fg-subtle">
-                      {pool.keysUsed}/{pool.keys.length} keys used
-                    </span>
-                    {(uneven || idleKeys.length > 0) && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="ml-auto">
-                            <Badge tone="warning" variant="soft" size="sm" icon={<AlertTriangle className="size-3" />}>
-                              {idleKeys.length > 0 ? `${idleKeys.length} idle` : 'Uneven'}
-                            </Badge>
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-64">
-                          {idleKeys.length > 0
-                            ? 'These keys are stored but have never been selected. They are not adding capacity.'
-                            : 'Traffic is concentrated on one key, so the pool is not spreading rate limits.'}
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
-                  </div>
-
-                  <div className="mt-2 flex items-center gap-2">
-                    <Progress
-                      value={pool.balance * 100}
-                      className="flex-1"
-                    />
-                    <span className="w-10 shrink-0 text-right text-2xs tabular-nums text-fg-subtle">
-                      {(pool.balance * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+        <DataState
+          data={data?.pools}
+          isLoading={isLoading}
+          error={error}
+          onRetry={refetch}
+          skeletonRows={3}
+          empty={{
+            icon: <KeySquare className="size-8" />,
+            title: 'No key pools configured',
+            description: 'Add a second key to any provider to enable rotation and see pool balance here.',
+          }}
+        >
+          {(pools) => (
+            <ul className="space-y-4">
+              {pools.map((pool) => (
+                <PoolRow key={pool.providerId} pool={pool} />
+              ))}
+            </ul>
+          )}
+        </DataState>
       </CardContent>
     </Card>
+  );
+}
+
+function PoolRow({ pool }: { pool: KeyRotationPool }) {
+  const idleKeys = pool.keys.filter((k) => k.selections === 0);
+  const allIdle = pool.keys.length > 0 && idleKeys.length === pool.keys.length;
+  // balance is min/max selections: 1.0 even, near 0 = one hot key.
+  const uneven = pool.totalSelections > 0 && pool.balance < 0.5;
+
+  let status: StatusKind;
+  let label: string;
+  let tooltip: string;
+  if (allIdle) {
+    status = 'offline';
+    label = 'Unused';
+    tooltip = 'None of these keys have ever been selected. The pool is configured but carrying no traffic.';
+  } else if (idleKeys.length > 0) {
+    status = 'warning';
+    label = `${idleKeys.length} idle`;
+    tooltip = 'These keys are stored but have never been selected. They are not adding capacity.';
+  } else if (uneven) {
+    status = 'warning';
+    label = 'Uneven';
+    tooltip = 'Traffic is concentrated on one key, so the pool is not spreading rate limits.';
+  } else {
+    status = 'healthy';
+    label = 'Balanced';
+    tooltip = 'Traffic is spread evenly across all keys in this pool.';
+  }
+
+  return (
+    <li>
+      <div className="flex items-center gap-2">
+        <KeySquare className="size-3.5 text-fg-subtle" aria-hidden />
+        <span className="text-sm text-fg">{pool.providerName}</span>
+        <span className="text-2xs text-fg-subtle">
+          {pool.keysUsed}/{pool.keys.length} keys used
+        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="ml-auto">
+              <StatusPill status={status} label={label} size="sm" pulse={false} />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-64">{tooltip}</TooltipContent>
+        </Tooltip>
+      </div>
+
+      <div className="mt-2 flex items-center gap-2">
+        <Progress
+          value={pool.balance * 100}
+          tone={status === 'offline' ? 'danger' : status === 'warning' ? 'warning' : 'success'}
+          className="flex-1"
+        />
+        <span className="w-10 shrink-0 text-right text-2xs tabular-nums text-fg-subtle">
+          {(pool.balance * 100).toFixed(0)}%
+        </span>
+      </div>
+    </li>
   );
 }

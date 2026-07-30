@@ -6,6 +6,7 @@ import { AgentForm, type AgentFormValues } from './AgentForm';
 
 import { PageContainer, PageHeader } from '@/components/layout';
 import { BackLink } from '@/components/primitives/BackLink';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { toast } from '@/components/primitives/Toast';
 import { useCreateAgent } from '@/lib/queries/agents';
 
@@ -18,10 +19,14 @@ export function AgentCreatePage() {
     setError(null);
     create.mutate(values, {
       onSuccess: (agent) => {
-        toast.success(`${agent.name} created`);
+        toast.success(`${agent.name} created`, { description: 'Deploy it to get an instance you can chat with.' });
         navigate(`/agents/${agent.id}`);
       },
-      onError: (e) => setError((e as Error).message),
+      onError: (e) => {
+        const info = interpretError(e);
+        setError(info.description);
+        toast.error(info.title, { description: info.description });
+      },
     });
   };
 

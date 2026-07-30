@@ -13,7 +13,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/primitives/Dialog';
-import { Field, FieldDescription, FieldLabel } from '@/components/primitives/Field';
+import { interpretError } from '@/components/primitives/ErrorState';
+import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/primitives/Field';
 import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
 import {
@@ -40,6 +41,7 @@ export function InstallDialog({
 }) {
   const [values, setValues] = React.useState<Record<string, string>>({});
   const [test, setTest] = React.useState<McpTestResult | null>(null);
+  const [touched, setTouched] = React.useState<Record<string, boolean>>({});
 
   const testMutation = useTestMcpServer();
   const installMutation = useInstallMcpServer();
@@ -48,6 +50,7 @@ export function InstallDialog({
   React.useEffect(() => {
     setValues({});
     setTest(null);
+    setTouched({});
   }, [entry?.id]);
 
   if (!entry) return null;
@@ -94,26 +97,33 @@ export function InstallDialog({
               This server needs no configuration. Test it to confirm it starts, then install.
             </p>
           ) : (
-            entry.requiredEnv.map((v) => (
-              <Field key={v.key}>
-                <FieldLabel htmlFor={`env-${v.key}`}>
-                  {v.label}
-                  {v.optional && <span className="ml-1.5 text-2xs text-fg-subtle">optional</span>}
-                </FieldLabel>
-                <Input
-                  id={`env-${v.key}`}
-                  type={v.secret ? 'password' : 'text'}
-                  autoComplete="off"
-                  placeholder={v.placeholder}
-                  value={values[v.key] ?? ''}
-                  onChange={(e) => {
-                    setValues((prev) => ({ ...prev, [v.key]: e.target.value }));
-                    setTest(null);
-                  }}
-                />
-                {v.help && <FieldDescription>{v.help}</FieldDescription>}
-              </Field>
-            ))
+            entry.requiredEnv.map((v) => {
+              const fieldError =
+                touched[v.key] && !v.optional && !values[v.key]?.trim() ? `${v.label} is required.` : null;
+              return (
+                <Field key={v.key}>
+                  <FieldLabel htmlFor={`env-${v.key}`}>
+                    {v.label}
+                    {v.optional && <span className="ml-1.5 text-2xs text-fg-subtle">optional</span>}
+                  </FieldLabel>
+                  <Input
+                    id={`env-${v.key}`}
+                    type={v.secret ? 'password' : 'text'}
+                    autoComplete="off"
+                    placeholder={v.placeholder}
+                    value={values[v.key] ?? ''}
+                    invalid={!!fieldError}
+                    onChange={(e) => {
+                      setValues((prev) => ({ ...prev, [v.key]: e.target.value }));
+                      setTest(null);
+                    }}
+                    onBlur={() => setTouched((t) => ({ ...t, [v.key]: true }))}
+                  />
+                  {fieldError && <FieldError>{fieldError}</FieldError>}
+                  {v.help && <FieldDescription>{v.help}</FieldDescription>}
+                </Field>
+              );
+            })
           )}
 
           <div className="rounded-lg border border-border bg-surface-2 p-2.5">
@@ -150,7 +160,10 @@ export function InstallDialog({
             onClick={() =>
               testMutation.mutate(buildPreview() as never, {
                 onSuccess: setTest,
-                onError: (e) => toast.error(`Test failed: ${(e as Error).message}`),
+                onError: (e) => {
+                  const interpreted = interpretError(e);
+                  toast.error(`Could not test ${entry.name}`, { description: interpreted.description });
+                },
               })
             }
           >
@@ -164,10 +177,15 @@ export function InstallDialog({
                 { catalogId: entry.id, values },
                 {
                   onSuccess: (server) => {
-                    toast.success(`${entry.name} installed — ${server.toolCount} tools available`);
+                    toast.success(`${entry.name} installed`, {
+                      description: `${server.toolCount} tool${server.toolCount === 1 ? '' : 's'} available.`,
+                    });
                     onClose();
                   },
-                  onError: (e) => toast.error((e as Error).message),
+                  onError: (e) => {
+                    const interpreted = interpretError(e);
+                    toast.error(`Could not install ${entry.name}`, { description: interpreted.description });
+                  },
                 },
               )
             }
