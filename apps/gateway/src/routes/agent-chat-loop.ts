@@ -455,7 +455,16 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     messages.push(assistantMessage);
 
     const executionPromises = allowedCalls.map((tc: ToolCall) =>
-      executeToolCall(tc, { requestId, tenant, agentDefinition, router, loadedSkills: loadedSkillIds }),
+      executeToolCall(tc, {
+        requestId,
+        tenant,
+        agentDefinition,
+        router,
+        loadedSkills: loadedSkillIds,
+        // Key the coding sandbox on the conversation, not the request, so
+        // every turn of this (possibly resumed) session shares one workspace.
+        conversationId: resolvedConversationId,
+      }),
     );
 
     const settled = await Promise.allSettled(executionPromises);

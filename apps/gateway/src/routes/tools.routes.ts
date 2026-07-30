@@ -26,7 +26,18 @@ import { parseQualityTarget } from '../utils/quality-target.js';
 
 export type ToolHandler = (
   args: Record<string, unknown>,
-  context: { requestId: string; tenant?: { id: string; name: string } },
+  context: {
+    requestId: string;
+    tenant?: { id: string; name: string };
+    /**
+     * Conversation/session id. When present, the coding-tool sandbox is keyed
+     * on this instead of `requestId` so every turn of a (possibly resumed)
+     * conversation shares one workspace. Absent for one-off tool calls that
+     * have no conversation (e.g. direct /tools/execute), which fall back to
+     * `requestId`.
+     */
+    conversationId?: string;
+  },
 ) => Promise<unknown> | unknown;
 
 const toolHandlers = new Map<string, ToolHandler>();
@@ -136,6 +147,7 @@ async function executeToolCall(
     agentDefinition?: { id: string; name: string; tenantId: string; allowedTools: string[] };
     router?: any;
     loadedSkills?: string[];
+    conversationId?: string;
   },
 ): Promise<{ tool_call_id: string; tool_name: string; result: unknown; error?: { message: string } }> {
   const tools = getRegisteredSDKToolsCached();
@@ -218,11 +230,17 @@ export function registerBuiltinToolHandlers(): void {
     }
 
     try {
+      // Run in the SAME per-conversation workspace the file tools use, so code
+      // executed here can see files read_file/write_file just operated on
+      // (and vice versa), and so it cannot reach the source tree or gateway
+      // secrets by inheriting the gateway process's own cwd.
+      const workspaceDir = resolveSandboxDir(context.tenant?.id, workspaceKeyFor(context));
       const job = await sandboxService.submit({
         language: language || 'python',
         code,
         timeoutMs,
         tenantId: context.tenant?.id,
+        workspaceDir,
       });
 
       // If the job completed synchronously (e.g. resource check failed), return immediately
@@ -417,12 +435,20 @@ const skillSvc = skillService as unknown as SkillServiceContract;
 /**
  * Register the `delegate` tool (subagent isolation boundary).
  *
- * Borrowed from Vercel EVE's declared-subagent model. When the model
- * calls `delegate`, the named subagent runs in a FRESH, ISOLATED
- * session: its own conversation (parent history NOT visible), its own
- * narrowed tool surface (`allowedTools`), and its own system prompt.
- * Result is returned to the parent; the parent never sees the child's
- * intermediate steps. Enforces a hard isolation boundary.
+ * Borrowed from Vercel EVE's declared-subagent model, but currently a
+ * SINGLE-SHOT, TOOLLESS hand-off rather than the full model: when the model
+ * calls `delegate`, the named subagent runs in a FRESH, ISOLATED session
+ * (its own conversation — parent history NOT visible — and its own system
+ * prompt), makes exactly ONE completion call, and returns that text as its
+ * answer. Result is returned to the parent; the parent never sees the
+ * child's intermediate steps (there are none — there is no ReAct loop here).
+ *
+ * IMPORTANT: the child is NOT given any tools, so `subagent.allowedTools` is
+ * not consulted by this path today — it is not narrowed, it is simply unused.
+ * Only delegate self-contained, tool-free reasoning/drafting tasks to a
+ * subagent; anything requiring file/shell/code access must be done by the
+ * parent directly. See `services/agent-runtime/src/agent-delegate.ts` for the
+ * full rationale and what a real bounded tool-calling loop would require.
  *
  * Requires the running agent's definition + the router in the tool context
  * (`context.agentDefinition`, `context.router`); an agentic loop that
@@ -454,11 +480,6 @@ export function registerDelegateToolHandler(): void {
         return { error: `No subagent found matching "${agent}"` };
       }
 
-      // Hard isolation: child runs with its OWN tool surface, never the parent's.
-      if ((subagent.allowedTools ?? []).length === 0) {
-        // A subagent with no declared tools still runs, but cannot call tools.
-      }
-
       try {
         const result = await runSubagent({
           parent: parent as any,
@@ -483,7 +504,7 @@ export function registerDelegateToolHandler(): void {
     },
     {
       description:
-        'Delegate a self-contained task to a named subagent. The subagent runs in an isolated session with its own tools and system prompt; it cannot see this conversation. Returns the subagent\'s final answer. Use for independent, parallelizable specialist work.',
+        'Delegate a self-contained, TOOL-FREE task to a named subagent. The subagent runs in an isolated session with its own system prompt; it cannot see this conversation and CANNOT call any tools (single-shot text answer only). Returns the subagent\'s final answer. Use for independent reasoning/drafting/analysis work, not for anything requiring file, shell, or code access.',
       parameters: {
         type: 'object',
         properties: {
@@ -778,29 +799,41 @@ export function isDangerousBashCommand(command: string): string | null {
 }
 
 /**
- * Resolve (and create) the per-(tenant, request) isolated sandbox directory.
- * Each concurrent agent request gets its own workspace so file operations
- * cannot collide across parallel subagent executions.
+ * Resolve (and create) the per-(tenant, workspaceKey) isolated sandbox
+ * directory. `workspaceKey` is the conversation id for agent chat turns (so
+ * every turn of a conversation — including across /resume calls — shares one
+ * workspace) or the request id for one-off tool calls that have no
+ * conversation. Different conversations (and different one-off requests)
+ * still get their own directory, so parallel subagent runs cannot collide.
  */
-function resolveSandboxDir(tenantId?: string, requestId?: string): string {
+function resolveSandboxDir(tenantId?: string, workspaceKey?: string): string {
   const tenant = tenantId || 'anonymous';
-  const req = requestId || 'default';
-  const dir = path.join(CODING_SANDBOX_ROOT, tenant, req);
+  const key = workspaceKey || 'default';
+  const dir = path.join(CODING_SANDBOX_ROOT, tenant, key);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * Pick the sandbox workspace key from a tool-handler context: prefer the
+ * conversation id (shared across all turns/resumes of a session) and fall
+ * back to the request id for one-off tool calls with no conversation.
+ */
+function workspaceKeyFor(context?: { requestId?: string; conversationId?: string }): string | undefined {
+  return context?.conversationId || context?.requestId;
 }
 
 /**
  * Remove a resolved sandbox directory, if it exists.
  * No-throw: errors (e.g. ENOENT when the dir was never created) are ignored.
  */
-export function cleanupSandboxDir(tenantId?: string, requestId?: string): void {
+export function cleanupSandboxDir(tenantId?: string, workspaceKey?: string): void {
   try {
-    const dir = resolveSandboxDir(tenantId, requestId);
+    const dir = resolveSandboxDir(tenantId, workspaceKey);
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-      logger.debug({ err, tenantId, requestId }, 'cleanupSandboxDir failed (ignored)');
+      logger.debug({ err, tenantId, workspaceKey }, 'cleanupSandboxDir failed (ignored)');
     }
   }
 }
@@ -840,39 +873,24 @@ export function sweepStaleSandboxes(maxAgeMs = 60 * 60 * 1000): void {
 }
 
 /**
- * Wrap a coding-tool handler so the sandbox dir is removed (deferred) after
- * the handler settles. This keeps writes/reads working during execution but
- * prevents per-request temp dirs from leaking disk space over time.
- */
-function cleanupAfter(handler: ToolHandler): ToolHandler {
-  return async (args, context) => {
-    try {
-      return await handler(args, context);
-    } finally {
-      const tenantId = context?.tenant?.id;
-      const requestId = context?.requestId;
-      if (requestId) {
-        setTimeout(() => cleanupSandboxDir(tenantId, requestId), 0);
-      }
-    }
-  };
-}
-
-/**
  * Validate and resolve a file path, ensuring it stays within the workspace.
  * Uses fs.realpathSync() to resolve symlinks before validation,
  * preventing symlink-based path traversal attacks.
  *
+ * `workspaceKey` should be the conversation id when the call is part of an
+ * agent conversation (see `workspaceKeyFor`), falling back to the request id
+ * for one-off tool calls.
+ *
  * @throws Error if path is outside workspace or contains null bytes
  */
-export function safePath(filePath: string, tenantId?: string, requestId?: string): string {
+export function safePath(filePath: string, tenantId?: string, workspaceKey?: string): string {
   // Block null bytes (can bypass path checks on some systems)
   if (filePath.includes('\0')) {
     throw new Error('Path contains invalid characters');
   }
 
-  // Root every path inside the per-(tenant, request) isolated sandbox dir.
-  const workspace = resolveSandboxDir(tenantId, requestId);
+  // Root every path inside the per-(tenant, workspaceKey) isolated sandbox dir.
+  const workspace = resolveSandboxDir(tenantId, workspaceKey);
   const resolved = path.resolve(workspace, filePath);
 
   // Try to resolve symlinks if the path exists
@@ -905,7 +923,7 @@ export function safePath(filePath: string, tenantId?: string, requestId?: string
 
 export function registerCodingToolHandlers(): void {
   // ---- read_file -----------------------------------------------------------
-  registerToolHandler('read_file', cleanupAfter(async (args, context) => {
+  registerToolHandler('read_file', async (args, context) => {
     const { path: filePath, offset, limit } = args as {
       path: string;
       offset?: number;
@@ -917,7 +935,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(filePath, context?.tenant?.id, context?.requestId);
+      const fullPath = safePath(filePath, context?.tenant?.id, workspaceKeyFor(context));
       const stat = fs.statSync(fullPath);
       if (stat.size > MAX_FILE_SIZE) {
         return { error: `File too large (${stat.size} bytes, max ${MAX_FILE_SIZE})` };
@@ -941,10 +959,10 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  }));
+  });
 
   // ---- write_file ----------------------------------------------------------
-  registerToolHandler('write_file', cleanupAfter(async (args, context) => {
+  registerToolHandler('write_file', async (args, context) => {
     const { path: filePath, content } = args as {
       path: string;
       content: string;
@@ -958,7 +976,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(filePath, context?.tenant?.id, context?.requestId);
+      const fullPath = safePath(filePath, context?.tenant?.id, workspaceKeyFor(context));
       if (Buffer.byteLength(content, 'utf-8') > MAX_FILE_SIZE) {
         return { error: `File too large (${Buffer.byteLength(content, 'utf-8')} bytes, max ${MAX_FILE_SIZE})` };
       }
@@ -970,10 +988,10 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  }));
+  });
 
   // ---- edit_file -----------------------------------------------------------
-  registerToolHandler('edit_file', cleanupAfter(async (args, context) => {
+  registerToolHandler('edit_file', async (args, context) => {
     const { path: filePath, oldString, newString } = args as {
       path: string;
       oldString: string;
@@ -991,7 +1009,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(filePath, context?.tenant?.id, context?.requestId);
+      const fullPath = safePath(filePath, context?.tenant?.id, workspaceKeyFor(context));
       let content = fs.readFileSync(fullPath, 'utf-8');
 
       const count = content.split(oldString).length - 1;
@@ -1009,10 +1027,10 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  }));
+  });
 
   // ---- list_files ----------------------------------------------------------
-  registerToolHandler('list_files', cleanupAfter(async (args, context) => {
+  registerToolHandler('list_files', async (args, context) => {
     const { path: dirPath, pattern, recursive } = args as {
       path?: string;
       pattern?: string;
@@ -1020,7 +1038,7 @@ export function registerCodingToolHandlers(): void {
     };
 
     try {
-      const fullPath = safePath(dirPath || '.', context?.tenant?.id, context?.requestId);
+      const fullPath = safePath(dirPath || '.', context?.tenant?.id, workspaceKeyFor(context));
       const results: string[] = [];
 
       function walk(dir: string, prefix: string) {
@@ -1044,14 +1062,14 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  }));
+  });
 
   // ---- bash ----------------------------------------------------------------
   // Allowlist + validation live at module scope (ALLOWED_BASH_COMMANDS and
   // isBashCommandAllowed) so they can be unit-tested. Delegating here keeps
   // the handler body unchanged.
 
-  registerToolHandler('bash', cleanupAfter(async (args, context) => {
+  registerToolHandler('bash', async (args, context) => {
     const { command, timeoutMs, cwd } = args as {
       command: string;
       timeoutMs?: number;
@@ -1075,7 +1093,8 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const workDir = cwd ? safePath(cwd, context?.tenant?.id, context?.requestId) : resolveSandboxDir(context?.tenant?.id, context?.requestId);
+      const workspaceKey = workspaceKeyFor(context);
+      const workDir = cwd ? safePath(cwd, context?.tenant?.id, workspaceKey) : resolveSandboxDir(context?.tenant?.id, workspaceKey);
       const timeout = timeoutMs ?? SHELL_TIMEOUT_MS;
 
       const { stdout, stderr } = await execAsync(command, {
@@ -1100,10 +1119,10 @@ export function registerCodingToolHandlers(): void {
         error: err.message,
       };
     }
-  }));
+  });
 
   // ---- search_files --------------------------------------------------------
-  registerToolHandler('search_files', cleanupAfter(async (args, context) => {
+  registerToolHandler('search_files', async (args, context) => {
     const { pattern: searchPattern, path: dirPath, include } = args as {
       pattern: string;
       path?: string;
@@ -1115,7 +1134,7 @@ export function registerCodingToolHandlers(): void {
     }
 
     try {
-      const fullPath = safePath(dirPath || '.', context?.tenant?.id, context?.requestId);
+      const fullPath = safePath(dirPath || '.', context?.tenant?.id, workspaceKeyFor(context));
       const results: Array<{ file: string; line: number; text: string }> = [];
 
       function walk(dir: string) {
@@ -1149,7 +1168,7 @@ export function registerCodingToolHandlers(): void {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
-  }));
+  });
 
   registerToolDefinition('read_file', {
     description: 'Read a text file from the agent sandbox, optionally a slice of lines. Returns content with line offsets.',

@@ -3,16 +3,18 @@ import { useQuery } from '@tanstack/react-query';
 import { Admin } from '../admin';
 import { keys } from '../queryClient';
 
+import type { PollOptions } from './types';
 import type { ApiModel } from '@/types/api';
 
 // ---------------------------------------------------------------------------
 // Models & classifications
 // ---------------------------------------------------------------------------
 
-export function useModels(query?: { available_only?: string }) {
+export function useModels(query?: { available_only?: string }, options?: PollOptions) {
   return useQuery({
     queryKey: [...keys.models.list(), query ?? {}],
     queryFn: () => Admin.listModels(query),
+    ...options,
   });
 }
 

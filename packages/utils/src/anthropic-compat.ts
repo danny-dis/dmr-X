@@ -8,7 +8,7 @@
  * Ported from OpenRouter SDK's anthropic-compat.ts with adaptations for DMR-X.
  */
 
-import { convertToClaudeMessage } from './stream-transformers.js';
+import { convertToClaudeMessage, type ClaudeThinkingBlock } from './stream-transformers.js';
 
 // ---------------------------------------------------------------------------
 // Anthropic SDK types (locally defined to avoid @anthropic-ai/sdk dependency)
@@ -43,6 +43,37 @@ export interface ClaudeToolUseBlockParam {
   name: string;
   /** Tool input as a JSON-serializable object. */
   input: Record<string, unknown>;
+  /** Optional cache control directive. */
+  cache_control?: { type: string } | null;
+}
+
+/**
+ * A redacted_thinking block: an encrypted extended-thinking block Anthropic
+ * flags as unsafe to show the user. Clients must replay it back verbatim on
+ * the next turn (alongside any `thinking` blocks) or the API rejects the
+ * request -- see anthropic.routes.ts AnthropicContentBlockSchema.
+ */
+export interface ClaudeRedactedThinkingBlockParam {
+  type: 'redacted_thinking';
+  data: string;
+}
+
+/**
+ * A native document (PDF) content block.
+ *
+ * NOTE: forwarding the document bytes/URL through to the upstream provider
+ * is not implemented -- see fromClaudeMessages, which folds this into a
+ * placeholder text note so requests containing it don't fail. Full plumbing
+ * (a `document` ContentPart on the internal Message type, adapter support)
+ * is tracked as follow-up work.
+ */
+export interface ClaudeDocumentBlockParam {
+  type: 'document';
+  source:
+    | { type: 'url'; url: string }
+    | { type: 'base64'; media_type: string; data: string };
+  /** Optional cache control directive. */
+  cache_control?: { type: string } | null;
 }
 
 /** A tool_result content block supplied by the user to report tool output. */
@@ -68,7 +99,10 @@ type ClaudeContentBlockParam =
   | ClaudeTextBlockParam
   | ClaudeImageBlockParam
   | ClaudeToolUseBlockParam
-  | ClaudeToolResultBlockParam;
+  | ClaudeToolResultBlockParam
+  | ClaudeThinkingBlock
+  | ClaudeRedactedThinkingBlockParam
+  | ClaudeDocumentBlockParam;
 
 /**
  * An Anthropic-style message parameter.
@@ -284,6 +318,7 @@ export function fromClaudeMessages(messages: ClaudeMessageParam[]): InputsUnion 
     const imageBlocks: ClaudeImageBlockParam[] = [];
     const toolUseBlocks: ClaudeToolUseBlockParam[] = [];
     const toolResultBlocks: ClaudeToolResultBlockParam[] = [];
+    const documentBlocks: ClaudeDocumentBlockParam[] = [];
 
     for (const block of content) {
       switch (block.type) {
@@ -299,6 +334,17 @@ export function fromClaudeMessages(messages: ClaudeMessageParam[]): InputsUnion 
         case 'tool_result':
           toolResultBlocks.push(block);
           break;
+        case 'document':
+          documentBlocks.push(block);
+          break;
+        case 'thinking':
+        case 'redacted_thinking':
+          // Extended-thinking blocks replayed from a prior assistant turn.
+          // There's no `thinking` ContentPart on the internal Message model
+          // and most non-Anthropic providers reject them as input anyway,
+          // so they're dropped here rather than crashing the request. The
+          // surrounding text/tool_use blocks in the same message are kept.
+          break;
         default: {
           // Exhaustiveness check -- TypeScript errors if a block type is unhandled
           const exhaustiveCheck: never = block;
@@ -307,6 +353,14 @@ export function fromClaudeMessages(messages: ClaudeMessageParam[]): InputsUnion 
           );
         }
       }
+    }
+
+    // Document blocks have no internal representation yet (see
+    // ClaudeDocumentBlockParam) -- fold them into a placeholder text note so
+    // the request succeeds instead of silently losing the block or crashing.
+    for (const doc of documentBlocks) {
+      const mediaType = doc.source.type === 'base64' ? doc.source.media_type : doc.source.url;
+      textBlocks.push({ type: 'text', text: `[document: ${mediaType}]` });
     }
 
     // Process tool_result blocks (user-supplied tool outputs)

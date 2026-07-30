@@ -18,6 +18,7 @@ import {
   FlaskConical,
   Bell,
 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import * as React from 'react';
 import { Link } from 'react-router';
 
@@ -38,6 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitive
 // Lazy-load Observability tab content
 const ObservabilityTab = React.lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
 import { chartColor, categoricalColor, type ChartTone } from '@/lib/chartPalette';
+import { Admin } from '@/lib/admin';
 import { useAlerts } from '@/lib/queries/observability';
 import { useModels } from '@/lib/queries/models';
 import { useProviders } from '@/lib/queries/providers';
@@ -47,6 +49,8 @@ import {
   formatCompactCurrency,
   timeAgo,
 } from '@/lib/formatters';
+import { keys } from '@/lib/queryClient';
+import { cn } from '@/lib/utils';
 import { useLiveStore } from '@/store/useLiveStore';
 import { useDashboardStats, useRouteDecisions, useUsageHistory } from '@/lib/queries/dashboard';
 import type { ApiDashboardStats } from '@/types/api';
@@ -94,6 +98,13 @@ export function DashboardPage() {
   const providers = useProviders();
   const alerts = useAlerts();
   const models = useModels({ available_only: 'true' });
+  // No dedicated query hook exists for API keys yet (only `Admin.listApiKeys`
+  // in lib/admin.ts) — queried inline here rather than adding a new hook file
+  // while another migration touches lib/queries/tenants.ts concurrently.
+  const apiKeysQuery = useQuery({
+    queryKey: keys.apiKeys.list(),
+    queryFn: () => Admin.listApiKeys(),
+  });
 
   // The live SSE frame is snake_case and doesn't carry every field the poll
   // response does (no `latencyDelta`, for instance) — merge rather than
@@ -188,18 +199,78 @@ export function DashboardPage() {
   const latencyChartData = usage.isLoading ? undefined : latencyData;
   const modalityPieData = providers.isLoading ? undefined : modalityPie;
 
-  // Onboarding: show getting-started banner when no providers are configured
-  const DISMISS_KEY = 'dmrx-onboarding-dismissed';
-  const [onboardingDismissed, setOnboardingDismissed] = React.useState(() => {
-    try { return localStorage.getItem(DISMISS_KEY) === 'true'; } catch { return false; }
-  });
+  // Onboarding: a state-aware getting-started checklist, not a one-shot
+  // dismissible banner. Three signals, each cheaply available from data the
+  // Dashboard already fetches (or one extra lightweight query above):
+  //   1. hasProviders  — providers.data non-empty (existing signal)
+  //   2. hasApiKey     — apiKeysQuery.data non-empty (Admin.listApiKeys)
+  //   3. hasSentRequest — requests24h > 0 from the dashboard stats/live stream
+  // (3) is a 24h-window proxy, not a lifetime "ever sent a request" count —
+  // no lifetime total-requests field is wired into any query the Dashboard
+  // holds today, so this is the cheapest available stand-in. A user whose
+  // most recent request was >24h ago would see step 3 re-open.
   const hasProviders = (providers.data ?? []).length > 0;
-  const showOnboarding = !onboardingDismissed && !hasProviders && !providers.isLoading;
+  const hasApiKey = (apiKeysQuery.data ?? []).length > 0;
+  const hasSentRequest = (stats?.requests24h ?? 0) > 0;
+  const onboardingSignalsLoading = providers.isLoading || apiKeysQuery.isLoading || statsLoading;
+  const completedStepCount = [hasProviders, hasApiKey, hasSentRequest].filter(Boolean).length;
+  const setupComplete = completedStepCount === 3;
 
-  const dismissOnboarding = () => {
-    setOnboardingDismissed(true);
-    try { localStorage.setItem(DISMISS_KEY, 'true'); } catch { /* private browsing — ignore */ }
+  // Collapsing keeps the checklist reachable as a compact chip instead of
+  // permanently discarding it — it only ever disappears once setup is
+  // actually complete, regardless of collapse state.
+  const COLLAPSE_KEY = 'dmrx-onboarding-collapsed';
+  const [onboardingCollapsed, setOnboardingCollapsed] = React.useState(() => {
+    try { return localStorage.getItem(COLLAPSE_KEY) === 'true'; } catch { return false; }
+  });
+  const showOnboardingSection = !setupComplete && !onboardingSignalsLoading;
+
+  const collapseOnboarding = () => {
+    setOnboardingCollapsed(true);
+    try { localStorage.setItem(COLLAPSE_KEY, 'true'); } catch { /* private browsing — ignore */ }
   };
+  const expandOnboarding = () => {
+    setOnboardingCollapsed(false);
+    try { localStorage.setItem(COLLAPSE_KEY, 'false'); } catch { /* private browsing — ignore */ }
+  };
+
+  const onboardingSteps = [
+    {
+      step: 1,
+      icon: Boxes,
+      title: 'Add a provider',
+      done: hasProviders,
+      description: hasProviders
+        ? 'A provider is connected.'
+        : 'Start free with no key required, or connect your own OpenAI, Anthropic, Ollama, etc.',
+      links: hasProviders
+        ? [{ label: 'Manage providers', href: '/providers' }]
+        : [
+            { label: 'Start free — no key required', href: '/free-tier' },
+            { label: 'Add your own provider', href: '/providers' },
+          ],
+    },
+    {
+      step: 2,
+      icon: Key,
+      title: 'Create an API key',
+      done: hasApiKey,
+      description: hasApiKey
+        ? 'An API key has been created.'
+        : 'Set up a tenant and generate a key to authenticate requests.',
+      links: [{ label: hasApiKey ? 'Manage keys' : 'Create a key', href: '/tenants' }],
+    },
+    {
+      step: 3,
+      icon: FlaskConical,
+      title: 'Test in Playground',
+      done: hasSentRequest,
+      description: hasSentRequest
+        ? 'A request has been routed in the last 24h.'
+        : 'Send a message through the gateway and see routing in action.',
+      links: [{ label: hasSentRequest ? 'Open Playground' : 'Test in Playground', href: '/playground' }],
+    },
+  ];
 
   return (
     <PageContainer size="wide">
@@ -237,68 +308,89 @@ export function DashboardPage() {
 
           <TabsContent value="overview">
 
-      {/* Getting Started onboarding banner */}
-      {showOnboarding && (
-        <div className="mt-5 rounded-xl border border-primary/20 bg-primary/5 p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-semibold text-fg">Get started with DMR-X</h3>
-              <p className="text-xs text-fg-muted mt-1">
-                Connect a provider, generate an API key, and send your first request.
-              </p>
-            </div>
-            <button
-              onClick={dismissOnboarding}
-              className="text-fg-subtle hover:text-fg-muted transition-colors shrink-0"
-              aria-label="Dismiss"
-            >
-              <X className="size-4" aria-hidden />
-            </button>
-          </div>
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {[
-              {
-                step: 1,
-                icon: Boxes,
-                title: 'Add a provider',
-                description: 'Connect OpenAI, Anthropic, Ollama, or any compatible provider.',
-                href: '/providers',
-              },
-              {
-                step: 2,
-                icon: Key,
-                title: 'Create an API key',
-                description: 'Set up a tenant and generate a key to authenticate requests.',
-                href: '/tenants',
-              },
-              {
-                step: 3,
-                icon: FlaskConical,
-                title: 'Test in Playground',
-                description: 'Send a message through the gateway and see routing in action.',
-                href: '/playground',
-              },
-            ].map((item) => (
-              <Link
-                key={item.step}
-                to={item.href}
-                className="group flex items-start gap-3 rounded-lg border border-border bg-surface-1 p-3 hover:border-primary/30 hover:bg-primary/5 transition-colors"
+      {/* Getting Started onboarding — collapses to a compact progress chip
+          instead of being permanently dismissible, and hides itself only
+          once every step is genuinely complete. */}
+      {showOnboardingSection && (
+        onboardingCollapsed ? (
+          <button
+            type="button"
+            onClick={expandOnboarding}
+            className="mt-5 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs font-medium text-fg hover:border-primary/30 hover:bg-primary/10 transition-colors"
+            aria-label={`Setup ${completedStepCount} of 3 steps complete — expand checklist`}
+          >
+            <Boxes className="size-3.5 text-primary" aria-hidden />
+            Setup {completedStepCount}/3
+            <ChevronRight className="size-3 text-fg-subtle" aria-hidden />
+          </button>
+        ) : (
+          <div className="mt-5 rounded-xl border border-primary/20 bg-primary/5 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-fg">Get started with DMR-X</h3>
+                <p className="text-xs text-fg-muted mt-1">
+                  Connect a provider, generate an API key, and send your first request.
+                </p>
+              </div>
+              <button
+                onClick={collapseOnboarding}
+                className="text-fg-subtle hover:text-fg-muted transition-colors shrink-0"
+                aria-label="Collapse setup checklist"
               >
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <item.icon className="size-4" aria-hidden />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-primary">STEP {item.step}</span>
-                    <h4 className="text-xs font-semibold text-fg">{item.title}</h4>
+                <X className="size-4" aria-hidden />
+              </button>
+            </div>
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {onboardingSteps.map((item) => (
+                <div
+                  key={item.step}
+                  className={cn(
+                    'flex flex-col gap-2 rounded-lg border p-3 transition-colors',
+                    item.done ? 'border-success/20 bg-success/5' : 'border-border bg-surface-1'
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={cn(
+                        'flex size-8 shrink-0 items-center justify-center rounded-lg',
+                        item.done ? 'bg-success/10 text-success' : 'bg-primary/10 text-primary'
+                      )}
+                    >
+                      {item.done ? (
+                        <CheckCircle2 className="size-4" aria-hidden />
+                      ) : (
+                        <item.icon className="size-4" aria-hidden />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={cn('text-[10px] font-bold', item.done ? 'text-success' : 'text-primary')}>
+                          {item.done ? 'DONE' : `STEP ${item.step}`}
+                        </span>
+                        <h4 className="text-xs font-semibold text-fg">{item.title}</h4>
+                      </div>
+                      <p className="text-[11px] text-fg-muted mt-0.5 leading-relaxed">{item.description}</p>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-fg-muted mt-0.5 leading-relaxed">{item.description}</p>
+                  {!item.done && (
+                    <div className="flex flex-col items-start gap-1 pl-11">
+                      {item.links.map((l) => (
+                        <Link
+                          key={l.href}
+                          to={l.href}
+                          className="group inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                        >
+                          {l.label}
+                          <ChevronRight className="size-3 group-hover:translate-x-0.5 transition-transform" aria-hidden />
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <ChevronRight className="size-3.5 text-fg-subtle group-hover:text-primary transition-colors shrink-0 mt-1" aria-hidden />
-              </Link>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        )
       )}
 
       <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">

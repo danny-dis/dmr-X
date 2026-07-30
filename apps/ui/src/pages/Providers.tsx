@@ -15,8 +15,9 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
 import { Pagination } from '@/components/primitives/Pagination';
-import { useApiData, useUrlState } from '@/hooks';
+import { useUrlState } from '@/hooks';
 import { Admin } from '@/lib/admin';
+import { useCatalog, useProviders } from '@/lib/queries/providers';
 import { formatNumber } from '@/lib/formatters';
 import { useUIStore } from '@/store/useUIStore';
 import type { ApiCatalogEntry, ApiProvider } from '@/types/api';
@@ -35,12 +36,8 @@ export function ProvidersPage() {
   const debounced = React.useDeferredValue(query);
   const PAGE_SIZE = 20;
 
-  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
-  const catalog = useApiData<{ entries: ApiCatalogEntry[] }>(
-    () => Admin.getCatalog(),
-    [],
-    { refetchInterval: 60000 }
-  );
+  const providers = useProviders({ refetchInterval: 30_000 });
+  const catalog = useCatalog({ refetchInterval: 60_000 });
   const favorites = useUIStore((s) => s.favoriteProviders);
   const toggleFav = useUIStore((s) => s.toggleFavoriteProvider);
 

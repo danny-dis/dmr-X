@@ -25,7 +25,11 @@
 - **Handover summarization** — ✅ **Shipped** (`services/router/src/handover/handover-summarizer.ts`).
 - **STAY vs SWITCH planner** — ✅ **Shipped** (`services/router/src/planner/ev-planner.ts` +
   `sticky-session-handler.ts`, wired into `router.service`).
-- **Cluster scorer / multi-binding catalog / training pipeline** — 🔲 Planned (not confirmed in current tree).
+- **Cluster scorer / multi-binding catalog / training pipeline** — ⚠️ **Scaffolded but
+  disconnected**. `services/router/src/cluster/cluster-scorer.ts` exists and is
+  initialized at router boot, but `getClusterScorer()` has no callers and
+  `pipeline.ts` has no `cluster` strategy branch — so `DMRX_CLUSTER_ROUTING_ENABLED`
+  changes no routing behaviour, it only loads an ONNX session at startup.
 - **Versioned A/B routing** — ✅ **Shipped** (router has versioned A/B strategies: least-busy, usage-based, latency-based, tag-based).
 
 ## MCP server (`services/mcp-server`)
@@ -36,7 +40,11 @@
 - **RBAC engine** — ✅ **Shipped** (`DMRX_RBAC_ENABLED`).
 - **Guardrails (PII redaction, content filtering)** — ✅ **Shipped** (`DMRX_GUARDRAILS_*`).
 - **Audit logging** — ✅ **Shipped** (`DMRX_AUDIT_*`).
-- **Federation** — ✅ **Shipped** (`DMRX_FEDERATION_*`).
+- **Federation** — ⚠️ **Partial** (`DMRX_FEDERATION_*`). Peer registration, health
+  probing and benchmark sync are live. Cross-instance *request routing* is not:
+  `services/federation/src/routing.ts` (`FederationRouter.routeRequest`) is exported
+  but has no callers, so peers can be registered and shown healthy while no traffic
+  can ever be routed to them.
 - **Hybrid tool search (BM25 + semantic, RRF)** — ✅ **Shipped** (`services/tool-search`, `DMRX_TOOL_SEARCH_*`).
 
 ## Kubernetes / Operator (formerly "PHASE3-FEATURES")
@@ -60,4 +68,6 @@ and all agent/MCP/federation routes are **registered** in `server.ts`.
 
 - Provider adapter count is **57+** (not 18). See `docs/AI_PROVIDER_REFERENCE.md`.
 - Provider catalogs are *research snapshots* (mid-2026) — verify against upstream provider docs before use.
-- Migration count: **45 SQL migrations**. Test count: **54 unit test files** (50+ suites).
+- Migration count: **63 SQL migrations**. Test count: **73 unit test files**, plus 4 E2E
+  files that are skipped unless `DMRX_RUN_E2E=true` (CI never sets it). `apps/ui` has
+  **no tests at all**.

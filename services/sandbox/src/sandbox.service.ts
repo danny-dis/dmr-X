@@ -48,6 +48,15 @@ export interface SubmitJobInput {
   code: string;
   timeoutMs?: number;
   maxRetries?: number;
+  /**
+   * Working directory the code should run in — normally the caller's
+   * per-conversation coding-tool workspace, so `execute_code` sees the same
+   * files read_file/write_file already wrote. Not persisted to the
+   * `sandbox_jobs` table (kept in-memory only, like `Executor`'s own
+   * per-job state); a job re-picked up after a process restart loses it and
+   * falls back to no explicit cwd.
+   */
+  workspaceDir?: string;
 }
 
 export class SandboxService extends EventEmitter {
@@ -56,6 +65,8 @@ export class SandboxService extends EventEmitter {
   private maxConcurrent = 5;
   private runningCount = 0;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  /** jobId -> workspaceDir, for jobs submitted with one. See SubmitJobInput. */
+  private workspaceDirs = new Map<string, string>();
 
   constructor() {
     super();
@@ -97,6 +108,10 @@ export class SandboxService extends EventEmitter {
     const job = this.getById(id);
     if (!job) {
       throw new Error('Failed to create sandbox job');
+    }
+
+    if (input.workspaceDir) {
+      this.workspaceDirs.set(id, input.workspaceDir);
     }
 
     if (this.runningCount < this.maxConcurrent) {
@@ -167,6 +182,7 @@ export class SandboxService extends EventEmitter {
         language: job.language,
         code: job.code,
         timeoutMs: job.timeoutMs,
+        workspaceDir: this.workspaceDirs.get(id),
       });
 
       if (result.cancelled) {
@@ -205,6 +221,12 @@ export class SandboxService extends EventEmitter {
       const finalJob = this.getById(id);
       if (finalJob) {
         this.emit('jobComplete', { id, status: finalJob.status });
+        // Only forget the workspace once the job reaches a terminal state —
+        // a job re-enqueued as 'queued' for retry will be picked up again by
+        // processNextQueuedJob() -> runJob(id) and still needs it.
+        if (finalJob.status !== 'queued') {
+          this.workspaceDirs.delete(id);
+        }
       }
       this.processNextQueuedJob();
     }

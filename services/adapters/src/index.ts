@@ -7,7 +7,7 @@ export type {
 } from './adapter.interface.js';
 export { BaseAdapter } from './base.adapter.js';
 export { AdapterRegistry } from './adapter-registry.js';
-export { createOpenAISSEIterator, createSSESerializer, formatSSEChunk } from './stream-normalizer.js';
+export { createOpenAISSEIterator, createAnthropicSSEIterator, createSSESerializer, formatSSEChunk } from './stream-normalizer.js';
 
 // LLM Adapters
 export { OpenAIAdapter } from './openai/openai.adapter.js';

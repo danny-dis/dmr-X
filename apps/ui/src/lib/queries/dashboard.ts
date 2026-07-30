@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Admin } from '../admin';
 import { keys } from '../queryClient';
 
+import type { PollOptions } from './types';
+
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
@@ -21,18 +23,22 @@ export function useDashboardStats() {
   });
 }
 
-export function useRouteDecisions(limit = 8) {
+export function useRouteDecisions(limit = 8, options?: PollOptions) {
   return useQuery({
     queryKey: [...keys.dashboard.all, 'decisions', limit] as const,
     queryFn: () => Admin.listRouteDecisions({ limit }),
     refetchInterval: 30_000,
+    ...options,
   });
 }
 
-export function useUsageHistory(granularity: string = 'hour') {
+/** Time-bucketed usage history — shared by Dashboard, Routing (traffic
+ * composition) and Usage (cost-over-time), each polling at its own cadence. */
+export function useUsageHistory(granularity: string = 'hour', options?: PollOptions) {
   return useQuery({
     queryKey: keys.usage.history(granularity),
     queryFn: () => Admin.getUsage(granularity),
     refetchInterval: 30_000,
+    ...options,
   });
 }

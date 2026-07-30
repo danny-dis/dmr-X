@@ -13,6 +13,9 @@ import {
   type ClaudeImageBlockParam,
   type ClaudeToolUseBlockParam,
   type ClaudeToolResultBlockParam,
+  type ClaudeThinkingBlock,
+  type ClaudeRedactedThinkingBlockParam,
+  type ClaudeDocumentBlockParam,
   type InputsUnion,
   type EasyInputMessage,
   type InputMessageItem,
@@ -43,10 +46,32 @@ export interface AnthropicMessage {
 }
 
 export type AnthropicContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content?: string | AnthropicContentBlock[] };
+  | { type: 'text'; text: string; cache_control?: { type: string; ttl?: string } | null }
+  | {
+      type: 'image';
+      source: { type: 'base64'; media_type: string; data: string };
+      cache_control?: { type: string; ttl?: string } | null;
+    }
+  | {
+      type: 'tool_use';
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      cache_control?: { type: string; ttl?: string } | null;
+    }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content?: string | AnthropicContentBlock[];
+      cache_control?: { type: string; ttl?: string } | null;
+    }
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string }
+  | {
+      type: 'document';
+      source: { type: 'base64'; media_type: string; data: string } | { type: 'url'; url: string };
+      cache_control?: { type: string; ttl?: string } | null;
+    };
 
 export interface AnthropicTool {
   name: string;
@@ -185,7 +210,14 @@ export function convertAnthropicRequestToUnified(
   // Use fromClaudeMessages to parse Anthropic message content blocks
   // into the OpenResponses InputsUnion format.
   // AnthropicContentBlock is a subset of ClaudeContentBlockParam, so the cast is safe.
-  type ClaudeContentBlockUnion = ClaudeTextBlockParam | ClaudeImageBlockParam | ClaudeToolUseBlockParam | ClaudeToolResultBlockParam;
+  type ClaudeContentBlockUnion =
+    | ClaudeTextBlockParam
+    | ClaudeImageBlockParam
+    | ClaudeToolUseBlockParam
+    | ClaudeToolResultBlockParam
+    | ClaudeThinkingBlock
+    | ClaudeRedactedThinkingBlockParam
+    | ClaudeDocumentBlockParam;
   const claudeMessages: ClaudeMessageParam[] = body.messages.map(msg => ({
     role: msg.role,
     content: msg.content as string | ClaudeContentBlockUnion[],

@@ -3,20 +3,9 @@ import type {
   UnifiedRequest,
   UnifiedResponse,
   StreamChunk,
-  ContentPart,
 } from '@dmr-x/core';
 import { ProviderError } from '@dmr-x/core';
-import {
-  createHttpError,
-  logger,
-  EventStream,
-  type HttpMeta,
-  type ClaudeMessageParam,
-  type ClaudeTextBlockParam,
-  type ClaudeImageBlockParam,
-  type ClaudeToolUseBlockParam,
-  type ClaudeToolResultBlockParam,
-} from '@dmr-x/utils';
+import { createHttpError, logger, type HttpMeta } from '@dmr-x/utils';
 
 import type {
   ProviderConfig,
@@ -24,6 +13,14 @@ import type {
   ExecuteOptions,
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
+import { convertMessagesToAnthropic } from '../anthropic-messages.js';
+import {
+  toAnthropicTools,
+  toAnthropicToolChoice,
+  parseAnthropicContentBlocks,
+  mapAnthropicStopReason,
+} from '../anthropic-tools.js';
+import { createAnthropicSSEIterator } from '../stream-normalizer.js';
 
 export class AnthropicAdapter extends BaseAdapter {
   readonly providerId = 'anthropic';
@@ -86,7 +83,7 @@ export class AnthropicAdapter extends BaseAdapter {
     const start = Date.now();
 
     // Convert internal messages to Anthropic ClaudeMessageParam format
-    const { system, messages } = this.convertMessages(request.messages || []);
+    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
 
     try {
       const response = await this.fetchWithTimeout(`${baseUrl}/v1/messages`, {
@@ -101,8 +98,11 @@ export class AnthropicAdapter extends BaseAdapter {
           max_tokens: request.max_tokens || 4096,
           system,
           messages,
+          tools: toAnthropicTools(request.tools),
+          tool_choice: toAnthropicToolChoice(request.tool_choice),
           temperature: request.temperature,
           top_p: request.top_p,
+          stop_sequences: request.stop,
           stream: false,
         }),
         timeoutMs: options?.timeoutMs ?? 60000,
@@ -118,6 +118,10 @@ export class AnthropicAdapter extends BaseAdapter {
       const data = await response.json() as Record<string, unknown>;
       const latencyMs = Date.now() - start;
 
+      // Parse the FULL content array -- not just content[0] -- so tool_use
+      // blocks survive alongside (or instead of) text.
+      const parsedContent = parseAnthropicContentBlocks(data.content);
+
       return {
         modality: 'llm',
         requestId: data.id as string,
@@ -125,14 +129,15 @@ export class AnthropicAdapter extends BaseAdapter {
         modelId: data.model as string,
         message: {
           role: 'assistant',
-          content: (data.content as any[])?.[0]?.text || '',
+          content: parsedContent.text,
+          ...(parsedContent.toolCalls ? { tool_calls: parsedContent.toolCalls } : {}),
         },
         usage: {
           prompt_tokens: (data.usage as Record<string, number>)?.input_tokens || 0,
           completion_tokens: (data.usage as Record<string, number>)?.output_tokens || 0,
           total_tokens: ((data.usage as Record<string, number>)?.input_tokens || 0) + ((data.usage as Record<string, number>)?.output_tokens || 0),
         },
-        finishReason: (data.stop_reason === 'end_turn' ? 'stop' : data.stop_reason) as 'stop' | 'length' | 'tool_calls' | 'content_filter' | null | undefined,
+        finishReason: mapAnthropicStopReason(data.stop_reason as string | null | undefined),
         latencyMs,
       };
     } catch (err) {
@@ -144,7 +149,7 @@ export class AnthropicAdapter extends BaseAdapter {
     this.assertInitialized();
 
     const baseUrl = this.getBaseUrl();
-    const { system, messages } = this.convertMessages(request.messages || []);
+    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
 
     let response: Response;
     try {
@@ -160,7 +165,11 @@ export class AnthropicAdapter extends BaseAdapter {
           max_tokens: request.max_tokens || 4096,
           system,
           messages,
+          tools: toAnthropicTools(request.tools),
+          tool_choice: toAnthropicToolChoice(request.tool_choice),
           temperature: request.temperature,
+          top_p: request.top_p,
+          stop_sequences: request.stop,
           stream: true,
         }),
         // Forward the caller's AbortSignal so a client disconnect
@@ -179,58 +188,11 @@ export class AnthropicAdapter extends BaseAdapter {
       throw new ProviderError(`Anthropic stream: ${httpError.message}`, this.providerId, response.status);
     }
 
-    if (!response.body) throw new Error('Response body is null');
-
-    // Use EventStream for robust SSE parsing (handles multiple boundary formats)
-    const eventStream = new EventStream<Record<string, unknown>>(
-      response.body,
-      (msg) => {
-        if (!msg.data) return { done: true, value: undefined };
-        try {
-          const parsed = JSON.parse(msg.data) as Record<string, unknown>;
-          return { done: false, value: parsed };
-        } catch (parseError) {
-          // Skip malformed JSON -- return a sentinel that we filter below
-          logger.debug({ err: parseError }, 'Anthropic SSE: skipped malformed JSON chunk');
-          return { done: false, value: { _malformed: true } as Record<string, unknown> };
-        }
-      },
-      { dataRequired: true },
-    );
-
-    // Wire external abort signal → cancel the upstream body read. Without
-    // this, a client-disconnect AbortController would let the Anthropic
-    // response keep draining after the consumer has gone.
-    if (options?.signal) {
-      const signal = options.signal;
-      if (signal.aborted) {
-        void eventStream.cancel(signal.reason);
-      } else {
-        const onAbort = () => { void eventStream.cancel(signal.reason); };
-        signal.addEventListener('abort', onAbort, { once: true });
-      }
-    }
-
-    let index = 0;
-
-    for await (const parsed of eventStream) {
-      // Skip malformed entries
-      if (!parsed || (parsed as any)._malformed) continue;
-
-      if (parsed.type === 'content_block_delta') {
-        yield {
-          type: 'token',
-          data: { content: (parsed.delta as Record<string, string>)?.text || '' },
-          index: index++,
-        };
-      } else if (parsed.type === 'message_stop') {
-        yield {
-          type: 'done',
-          data: {},
-          index: index++,
-        };
-      }
-    }
+    // Anthropic's SSE protocol is event-typed (message_start /
+    // content_block_start / content_block_delta / message_delta /
+    // message_stop / ...), not choice/delta-shaped like OpenAI's, and needs
+    // its own parser to surface text AND tool_use streaming correctly.
+    yield* createAnthropicSSEIterator(response, { signal: options?.signal });
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -242,127 +204,4 @@ export class AnthropicAdapter extends BaseAdapter {
     ];
   }
 
-  /**
-   * Convert internal Message[] to Anthropic ClaudeMessageParam[] format.
-   *
-   * This is the reverse of fromClaudeMessages() -- it takes the gateway's
-   * internal message representation and produces Anthropic wire-format messages
-   * suitable for sending to the Anthropic Messages API.
-   */
-  private convertMessages(messages: NonNullable<UnifiedRequest['messages']>): {
-    system?: string;
-    messages: ClaudeMessageParam[];
-  } {
-    let system: string | undefined;
-    const converted: ClaudeMessageParam[] = [];
-
-    for (const msg of messages) {
-      if (msg.role === 'system') {
-        system = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        continue;
-      }
-
-      if (msg.role === 'tool') {
-        // Tool results become tool_result content blocks on a user message
-        const toolResult: ClaudeToolResultBlockParam = {
-          type: 'tool_result',
-          tool_use_id: msg.tool_call_id || '',
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-        };
-        // Append to last user message or create a new one
-        const lastMsg = converted[converted.length - 1];
-        if (lastMsg?.role === 'user' && Array.isArray(lastMsg.content)) {
-          lastMsg.content.push(toolResult);
-        } else {
-          converted.push({
-            role: 'user',
-            content: [toolResult],
-          });
-        }
-        continue;
-      }
-
-      if (msg.role === 'assistant' && msg.tool_calls?.length) {
-        // Assistant message with tool calls
-        const contentBlocks: (ClaudeTextBlockParam | ClaudeToolUseBlockParam)[] = [];
-
-        // Add text content if present
-        const textContent = typeof msg.content === 'string'
-          ? msg.content
-          : this.extractTextFromContentParts(msg.content);
-        if (textContent) {
-          contentBlocks.push({ type: 'text', text: textContent });
-        }
-
-        // Add tool_use blocks
-        for (const tc of msg.tool_calls) {
-          contentBlocks.push({
-            type: 'tool_use',
-            id: tc.id,
-            name: tc.function.name,
-            input: this.safeParseJson(tc.function.arguments),
-          });
-        }
-
-        converted.push({ role: 'assistant', content: contentBlocks });
-        continue;
-      }
-
-      // Regular user/assistant messages
-      if (typeof msg.content === 'string') {
-        converted.push({ role: msg.role as 'user' | 'assistant', content: msg.content });
-      } else {
-        // Convert ContentPart[] to Claude content blocks
-        const contentBlocks: (ClaudeTextBlockParam | ClaudeImageBlockParam)[] =
-          msg.content.map((part: ContentPart) => this.contentPartToClaudeBlock(part));
-        converted.push({ role: msg.role as 'user' | 'assistant', content: contentBlocks });
-      }
-    }
-
-    return { system, messages: converted };
-  }
-
-  /**
-   * Convert an internal ContentPart to a Claude content block.
-   */
-  private contentPartToClaudeBlock(
-    part: ContentPart,
-  ): ClaudeTextBlockParam | ClaudeImageBlockParam {
-    switch (part.type) {
-      case 'text':
-        return { type: 'text', text: part.text };
-      case 'image_url':
-        return {
-          type: 'image',
-          source: { type: 'url', url: part.image_url.url },
-        };
-      case 'input_audio':
-        // Anthropic doesn't support audio content blocks natively;
-        // fall back to a text description
-        return { type: 'text', text: `[audio: ${part.input_audio.format}]` };
-      default:
-        return { type: 'text', text: '[unsupported content part]' };
-    }
-  }
-
-  /**
-   * Extract concatenated text from ContentPart[].
-   */
-  private extractTextFromContentParts(parts: ContentPart[]): string {
-    return parts
-      .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-      .map(p => p.text)
-      .join('');
-  }
-
-  /**
-   * Safely parse a JSON string, returning the raw string on failure.
-   */
-  private safeParseJson(str: string): Record<string, unknown> {
-    try {
-      return JSON.parse(str);
-    } catch {
-      return { _raw: str };
-    }
-  }
 }

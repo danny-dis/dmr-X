@@ -115,4 +115,83 @@ export const keys = {
     audit: () => [...keys.observability.all, 'audit'] as const,
     routing: () => [...keys.observability.all, 'routing'] as const,
   },
+
+  tenants: {
+    all: ['tenants'] as const,
+    list: () => [...keys.tenants.all, 'list'] as const,
+  },
+
+  apiKeys: {
+    all: ['api-keys'] as const,
+    list: () => [...keys.apiKeys.all, 'list'] as const,
+  },
+
+  quota: {
+    all: ['quota'] as const,
+    byTenant: (tenantId: string) => [...keys.quota.all, tenantId] as const,
+  },
+
+  billing: {
+    all: ['billing'] as const,
+    summary: (period?: string) => [...keys.billing.all, 'summary', period ?? ''] as const,
+  },
+
+  policies: {
+    all: ['policies'] as const,
+    list: () => [...keys.policies.all, 'list'] as const,
+  },
+
+  fusionPanels: {
+    all: ['fusion-panels'] as const,
+    list: () => [...keys.fusionPanels.all, 'list'] as const,
+  },
+
+  benchmarks: {
+    all: ['benchmarks'] as const,
+    leaderboard: () => [...keys.benchmarks.all, 'leaderboard'] as const,
+    battles: () => [...keys.benchmarks.all, 'battles'] as const,
+    history: () => [...keys.benchmarks.all, 'history'] as const,
+    models: () => [...keys.benchmarks.all, 'models'] as const,
+    validations: () => [...keys.benchmarks.all, 'validations'] as const,
+    modelStats: (modelId: string) => [...keys.benchmarks.all, 'model-stats', modelId] as const,
+    modelHistory: (modelId: string) => [...keys.benchmarks.all, 'model-history', modelId] as const,
+  },
+
+  sandbox: {
+    all: ['sandbox'] as const,
+    jobs: () => [...keys.sandbox.all, 'jobs'] as const,
+  },
+
+  workers: {
+    all: ['workers'] as const,
+    list: () => [...keys.workers.all, 'list'] as const,
+    jobs: (id?: string) => [...keys.workers.all, 'jobs', id ?? 'all'] as const,
+  },
+
+  settings: {
+    all: ['settings'] as const,
+  },
+
+  federation: {
+    all: ['federation'] as const,
+    list: () => [...keys.federation.all, 'list'] as const,
+  },
+
+  credits: {
+    all: ['credits'] as const,
+    balance: () => [...keys.credits.all, 'balance'] as const,
+    transactions: (opts?: Record<string, unknown>) => [...keys.credits.all, 'transactions', opts ?? {}] as const,
+  },
+
+  memory: {
+    all: ['memory'] as const,
+    list: () => [...keys.memory.all, 'list'] as const,
+    stats: () => [...keys.memory.all, 'stats'] as const,
+  },
+
+  compression: {
+    all: ['compression'] as const,
+    config: () => [...keys.compression.all, 'config'] as const,
+    stats: () => [...keys.compression.all, 'stats'] as const,
+  },
 } as const;
