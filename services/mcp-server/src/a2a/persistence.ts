@@ -147,7 +147,10 @@ export async function firePushNotification(task: Task): Promise<void> {
 }
 
 export function closePersistence(): void {
-  try { db?.close(); } catch {}
+  try { db?.close(); } catch {
+    // Best-effort only: this runs during shutdown, so a failure to close
+    // the handle (e.g. already closed) must not block process teardown.
+  }
   db = null;
 }
 
