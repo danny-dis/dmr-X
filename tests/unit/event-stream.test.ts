@@ -288,13 +288,20 @@ describe('event-stream', () => {
         expect(s.scanStart).toBeLessThanOrEqual(s.bufferLength);
       }
 
-      // (3) Performance: 1 MB of input should parse in well under the
-      // O(n^2) version's runtime. The O(n^2) version takes many seconds
-      // (5+ on the same input); the O(n) version finishes in low
-      // hundreds of ms on typical CI hardware. We use a 500 ms ceiling
-      // which gives ~10x headroom against the O(n^2) regression while
-      // allowing for slower Windows/Node runners.
-      expect(elapsed).toBeLessThan(500);
+      // (3) Performance: a coarse backstop, NOT a benchmark. Assertion (2)
+      // above is the authoritative O(n) guard — it measures the algorithmic
+      // work directly and cannot be perturbed by machine load. This check
+      // only exists to catch a regression that keeps scan counts low but
+      // adds per-chunk overhead (sync I/O, quadratic string concat outside
+      // findBoundary).
+      //
+      // The ceiling is therefore derived from the known-bad case, not the
+      // good one: the O(n^2) version takes 5+ seconds on this input, so
+      // anything under ~2.5 s still catches it with 2x margin. A tighter
+      // bound measures the runner's spare CPU rather than the parser --
+      // at 500 ms this failed intermittently in full-suite runs, and
+      // reproducibly (821 ms) with the CPU merely oversubscribed 2x.
+      expect(elapsed).toBeLessThan(2_500);
     });
   });
 
