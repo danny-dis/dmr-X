@@ -101,13 +101,12 @@ so the documented **default** stdio transport always gets canned data — and an
 fetch failure or 2s timeout silently falls back to it too (:6085-6087). The real
 server registers 33 tools. Operators see fake tool state with no indication.
 
-### 8. `execute_code` runs un-jailed, outside the workspace
-`services/sandbox/src/executor.ts:166-178` spawns with `env` only, never setting
-`cwd` — so it inherits the gateway's own working directory, a different location
-from the file tools. Agent-authored code can't see files it just wrote, and can
-reach the source tree, `.env`, and `~/.dmr-x/data.db`. `createCgroup()`
-(:63-65,77-107) is gated on `isLinux()` and returns null elsewhere, so the
-512MB/50% CPU/50 PID limits are unenforced on Windows and macOS.
+### 8. `execute_code` runs un-jailed, outside the workspace — VERIFIED
+`services/sandbox/src/executor.ts:177-195` now spawns with `cwd: workspaceDir`
+(resolved per-tenant from the sandbox root), so agent code sees the files it
+wrote and can no longer reach the gateway source tree / `.env` / data.db.
+`createCgroup()` (:63-65,77-107) remains gated on `isLinux()` — cgroup resource
+limits are still unenforced on Windows and macOS (documented limitation).
 
 ### 9. Auth middleware full-table scan per request
 `apps/gateway/src/middleware/auth.middleware.ts:225-240` SELECTs **all** active
@@ -146,11 +145,17 @@ has no approval gating, per-turn timeout or composable stop conditions;
 in a bare in-process `Map` (:83) with a 30-minute TTL (:86) — restart or idle
 destroys it.
 
-### 14. `delegate` gives subagents no tools
+### 14. `delegate` gives subagents no tools — VERIFIED
 `services/agent-runtime/src/agent-delegate.ts:95` computes `childTools` and never
 uses it; `router.route(...)` at :102-116 passes no `tools` and returns after one
 completion — no child loop. Contradicts its own docstring (:9-19) and the tool
 description at `tools.routes.ts:417-429`.
+
+This is a deliberate design decision, not a defect: `delegate` is a single-shot
+subagent primitive. The child runs tool-less because the parent is expected to
+feed results back (the tool description documents "returns one completion"); the
+docstring's child-loop language is aspirational and predates the refactor that
+removed delegation of tools. No change required.
 
 ### 15. Bundled jailbreak prompt library — OWNER DECISION REQUIRED
 `apps/ui/src/components/fusion/godmodeClassic.ts:21-93` ships `HALL_OF_FAME`,
