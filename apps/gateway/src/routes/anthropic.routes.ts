@@ -9,6 +9,10 @@ import {
   convertUnifiedResponseToAnthropic,
 } from '../converters/anthropic-converter.js';
 import { createAnthropicSSEStream } from '../converters/anthropic-stream-serializer.js';
+import {
+  anthropicWireError,
+  shouldExposeInternalError,
+} from '../lib/wire-errors.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
 
@@ -105,6 +109,21 @@ export const AnthropicMessagesRequestSchema = z.object({
 });
 
 export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
+  // Encapsulated error handler: this plugin only registers `/messages`, so
+  // non-streaming failures are serialized in the Anthropic wire format the
+  // official SDKs parse (`{ type: 'error', error: { type, message } }`)
+  // instead of the gateway-wide `{ error: { message, type, code } }` shape.
+  // Streaming errors stay inline as event-typed SSE (see the route below).
+  server.setErrorHandler((error, request, reply) => {
+    const err = error as { statusCode?: number; message?: string } & Error;
+    logger.error({ err, req: request, requestId: request.id }, `Anthropic API error: ${err.message}`);
+    const { statusCode, body } = anthropicWireError(err, {
+      exposeMessage: shouldExposeInternalError(),
+      requestId: request.id,
+    });
+    return reply.status(statusCode).send(body);
+  });
+
   server.post('/messages', async (request, reply) => {
     const parsed = AnthropicMessagesRequestSchema.safeParse(request.body);
     if (!parsed.success) {

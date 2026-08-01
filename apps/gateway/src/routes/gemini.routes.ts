@@ -9,6 +9,10 @@ import {
   convertUnifiedResponseToGemini,
 } from '../converters/gemini-converter.js';
 import { createGeminiSSEStream } from '../converters/gemini-stream-serializer.js';
+import {
+  geminiWireError,
+  shouldExposeInternalError,
+} from '../lib/wire-errors.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
 
@@ -218,6 +222,20 @@ async function handleGenerateContent(
 }
 
 export async function geminiRoutes(server: FastifyInstance): Promise<void> {
+  // Encapsulated error handler: non-streaming failures on the DMR-X
+  // `/gemini/generateContent` path are serialized in the Gemini wire format
+  // (`{ error: { code, message, status } }`) that the official SDKs parse.
+  // Streaming errors stay inline as `data:` SSE (see handleGenerateContent).
+  server.setErrorHandler((error, request, reply) => {
+    const err = error as { statusCode?: number; message?: string } & Error;
+    logger.error({ err, req: request, requestId: request.id }, `Gemini API error: ${err.message}`);
+    const { statusCode, body } = geminiWireError(err, {
+      exposeMessage: shouldExposeInternalError(),
+      requestId: request.id,
+    });
+    return reply.status(statusCode).send(body);
+  });
+
   // DMR-X's own path. Kept verbatim — existing clients depend on it, and it
   // has no model in the URL, so the router chooses as it always has.
   server.post('/gemini/generateContent', async (request, reply) =>
@@ -245,6 +263,18 @@ export async function geminiRoutes(server: FastifyInstance): Promise<void> {
  * themselves contain colons (e.g. `tencent/hy3:free`).
  */
 export async function geminiNativeRoutes(server: FastifyInstance): Promise<void> {
+  // Encapsulated error handler for the Google-native surface, same rationale
+  // as geminiRoutes: real Gemini SDKs read `error.code`/`error.status`.
+  server.setErrorHandler((error, request, reply) => {
+    const err = error as { statusCode?: number; message?: string } & Error;
+    logger.error({ err, req: request, requestId: request.id }, `Gemini native API error: ${err.message}`);
+    const { statusCode, body } = geminiWireError(err, {
+      exposeMessage: shouldExposeInternalError(),
+      requestId: request.id,
+    });
+    return reply.status(statusCode).send(body);
+  });
+
   const handler = async (request: any, reply: any) => {
     const segment = String((request.params as { modelAction: string }).modelAction ?? '');
     const sep = segment.lastIndexOf(':');
@@ -257,12 +287,14 @@ export async function geminiNativeRoutes(server: FastifyInstance): Promise<void>
     const action = segment.slice(sep + 1);
 
     if (action !== 'generateContent' && action !== 'streamGenerateContent') {
+      // Gemini wire shape (`{ error: { code, message, status } }`), not the
+      // gateway-wide shape — real SDKs read error.code / error.status.
       reply.status(404);
       return {
         error: {
+          code: 404,
           message: `Unsupported Gemini action "${action}". Supported: generateContent, streamGenerateContent.`,
-          type: 'not_found',
-          code: 'unsupported_gemini_action',
+          status: 'NOT_FOUND',
         },
       };
     }
