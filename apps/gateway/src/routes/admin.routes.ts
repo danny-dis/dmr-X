@@ -1110,15 +1110,16 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Tenant not found');
     }
 
-    const { generateApiKey, hashApiKeyWithSalt } = await import('@dmr-x/utils');
+    const { generateApiKey, hashApiKeyWithSalt, hashApiKey } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
     const keyHash = hashApiKeyWithSalt(apiKey);
+    const keyLookupHash = hashApiKey(apiKey);
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO api_keys (id, tenant_id, key_hash, key_lookup_hash, name, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      id, tenantId, keyHash, name, expiresAt || null,
+      id, tenantId, keyHash, keyLookupHash, name, expiresAt || null,
       compression?.enabled !== undefined ? (compression.enabled ? 1 : 0) : null,
       compression?.algorithm || null,
       compression?.reversible !== undefined ? (compression.reversible ? 1 : 0) : null,
@@ -3214,19 +3215,20 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Tenant not found');
     }
 
-    const { generateApiKey, hashApiKeyWithSalt } = await import('@dmr-x/utils');
+    const { generateApiKey, hashApiKeyWithSalt, hashApiKey } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
     const keyHash = hashApiKeyWithSalt(apiKey);
+    const keyLookupHash = hashApiKey(apiKey);
 
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name, scopes, allowed_tools, role, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO api_keys (id, tenant_id, key_hash, key_lookup_hash, name, scopes, allowed_tools, role, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      id, tenant_id, keyHash, name,
+      id, tenant_id, keyHash, keyLookupHash, name,
       scopes ? JSON.stringify(scopes) : null,
       allowed_tools ? JSON.stringify(allowed_tools) : null,
-      // NOT NULL with a column default — pass the default explicitly rather
+      // NOT NULL with a column default �?" pass the default explicitly rather
       // than null, which would violate the constraint.
       role ?? 'developer',
       expires_at || null,

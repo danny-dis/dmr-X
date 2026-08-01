@@ -26,9 +26,6 @@ import type {
   TransformRequest,
   TransformResponse,
   GodmodeTierInfo,
-  GodmodeFeedbackRequest,
-  GodmodeFeedbackResponse,
-  GodmodeFeedbackStats,
 } from './types.js';
 
 export class GodmodeService {
@@ -344,53 +341,6 @@ export class GodmodeService {
     }
 
     return response.json() as Promise<GodmodeTierInfo>;
-  }
-
-  /**
-   * Submit feedback to the G0DM0D3 EMA learning loop.
-   */
-  async submitFeedback(request: GodmodeFeedbackRequest): Promise<GodmodeFeedbackResponse> {
-    this.assertInitialized();
-
-    const response = await this.fetchWithTimeout(
-      `${this.config.baseUrl}/v1/feedback`,
-      {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(request),
-        timeoutMs: 30000,
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`G0DM0D3 feedback submission failed: ${response.status} ${errorText}`);
-    }
-
-    return response.json() as Promise<GodmodeFeedbackResponse>;
-  }
-
-  /**
-   * Get learning statistics (EMA state) from the G0DM0D3 feedback endpoint.
-   */
-  async getFeedbackStats(): Promise<GodmodeFeedbackStats> {
-    this.assertInitialized();
-
-    const response = await this.fetchWithTimeout(
-      `${this.config.baseUrl}/v1/feedback/stats`,
-      {
-        method: 'GET',
-        headers: this.getHeaders(),
-        timeoutMs: 10000,
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`G0DM0D3 feedback stats failed: ${response.status} ${errorText}`);
-    }
-
-    return response.json() as Promise<GodmodeFeedbackStats>;
   }
 
   /**

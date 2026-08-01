@@ -10,8 +10,6 @@
  * - POST /v1/godmode/transform — Apply STM modules
  * - GET  /v1/godmode/tier — Get tier information
  * - GET  /v1/godmode/health — Health check
- * - POST /v1/godmode/feedback — Submit feedback to the EMA learning loop
- * - GET  /v1/godmode/feedback/stats — Get learning statistics (EMA state)
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -28,7 +26,6 @@ import type {
   ParseltongueEncodeRequest,
   TransformRequest,
   GodmodeConfig,
-  GodmodeFeedbackRequest,
 } from '@dmr-x/godmode';
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
@@ -95,16 +92,6 @@ const ParseltongueEncodeSchema = z.object({
 const TransformSchema = z.object({
   text: z.string().min(1),
   modules: z.array(z.enum(['hedge_reducer', 'direct_mode', 'curiosity_bias', 'casual_mode'])).optional(),
-});
-
-const FeedbackSchema = z.object({
-  message_id: z.string().min(1),
-  context_type: z.enum(['code', 'creative', 'analytical', 'conversational', 'chaotic']),
-  model: z.string().optional(),
-  persona: z.string().optional(),
-  rating: z.union([z.literal(1), z.literal(-1)]),
-  params: z.record(z.number()),
-  response_text: z.string().optional(),
 });
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
@@ -358,40 +345,5 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
 
     const body = parsed.data as TransformRequest;
     return service.transform(body);
-  });
-
-  // ─── Feedback / EMA learning loop ───────────────────────────────────────
-
-  // Submit feedback for the G0DM0D3 EMA learning loop.
-  server.post('/godmode/feedback', async (request, reply) => {
-    const parsed = FeedbackSchema.safeParse(request.body);
-    if (!parsed.success) {
-      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
-    }
-
-    const body = parsed.data as GodmodeFeedbackRequest;
-
-    // Explicit guard: rating must be 1 or -1 (already enforced by schema).
-    if (body.rating !== 1 && body.rating !== -1) {
-      reply.code(400);
-      return { error: 'Invalid request', message: 'rating must be 1 or -1' };
-    }
-
-    try {
-      return await service.submitFeedback(body);
-    } catch (err: any) {
-      logger.error({ err }, 'G0DM0D3 feedback submission failed');
-      return replyError(err);
-    }
-  });
-
-  // Get learning statistics (EMA state) for the feedback loop.
-  server.get('/godmode/feedback/stats', async () => {
-    try {
-      return await service.getFeedbackStats();
-    } catch (err: any) {
-      logger.error({ err }, 'G0DM0D3 feedback stats failed');
-      return replyError(err);
-    }
   });
 }

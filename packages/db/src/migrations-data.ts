@@ -2031,4 +2031,42 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_operator_disabled
 ALTER TABLE api_keys ADD COLUMN role TEXT NOT NULL DEFAULT 'developer';
 `,
   },
+  64: {
+    filename: '064_api_key_lookup_hash.sql',
+    sql: `-- Deterministic API-key lookup hash for O(1) auth, instead of scanning
+-- every active key and calling verifyApiKey() on each (the old hot path).
+--
+-- key_hash stores either a legacy unsalted SHA-256 ("<hex>") or the current
+-- salted format ("<salt>:<hash>"). Neither is directly queryable from the
+-- plaintext key. key_lookup_hash is a THIRD value: plain SHA-256 of the raw
+-- key, computed at creation time and indexed, so auth can do:
+--
+--   SELECT ... WHERE key_lookup_hash = ?  (indexed, single row)
+--
+-- and then constant-time verifyApiKey() against the stored salted key_hash
+-- to rule out collisions (SHA-256 preimage resistance makes them
+-- impossible in practice; the verify is kept for defense in depth).
+--
+-- Security note: key_lookup_hash is unsalted SHA-256 of a 64-hex-char
+-- random key (256 bits of entropy), so it is not brute-forceable even if
+-- the DB leaks. It is stored ONLY for indexing; verification always uses
+-- the salted key_hash.
+--
+-- Backfill: any existing row whose key_hash is the legacy unsalted format
+-- (no colon) has key_lookup_hash := key_hash, since both are SHA-256 of the
+-- same key. Salted rows cannot be backfilled without the plaintext key;
+-- they fall back to the legacy scan path (bounded to rows that still have
+-- key_lookup_hash IS NULL) until the key is rotated.
+ALTER TABLE api_keys ADD COLUMN key_lookup_hash TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_lookup_hash
+  ON api_keys(key_lookup_hash)
+  WHERE key_lookup_hash IS NOT NULL;
+
+UPDATE api_keys
+   SET key_lookup_hash = key_hash
+ WHERE key_lookup_hash IS NULL
+   AND instr(key_hash, ':') = 0;
+`,
+  },
 };

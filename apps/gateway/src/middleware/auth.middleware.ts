@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { AuthenticationError } from '@dmr-x/core';
 import { getDb, MemoryCache } from '@dmr-x/db';
-import { verifyApiKey, logger } from '@dmr-x/utils';
+import { verifyApiKey, hashApiKey, logger } from '@dmr-x/utils';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 // Per-key rate limiting with LRU eviction (100K entry limit)
@@ -219,23 +219,48 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // Single DB connection per request
     const db = getDb();
 
-    // Fetch all active API key hashes for verification
-    // This supports both legacy unsalted hashes and new salted hashes
-    // Also check expires_at to reject expired keys
-    const activeKeys = db.prepare(
-      `SELECT ak.id, ak.key_hash, ak.tenant_id, ak.role, t.name as tenant_name
-       FROM api_keys ak
-       JOIN tenants t ON t.id = ak.tenant_id
-       WHERE ak.is_active = 1
-         AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
-    ).all() as Array<{ id: string; key_hash: string; tenant_id: string; role: string | null; tenant_name: string }>;
+    // O(1) indexed lookup: key_lookup_hash is plain SHA-256 of the raw key,
+    // computed at creation time and unique-indexed (migration 064). This
+    // replaces the old hot path, which SELECTed every active api_key and
+    // looped verifyApiKey() over all of them on every authenticated request.
+    const keyLookupHash = hashApiKey(apiKey);
 
-    // Find matching key using constant-time comparison
-    let matchedKey: typeof activeKeys[0] | undefined;
-    for (const key of activeKeys) {
-      if (verifyApiKey(apiKey, key.key_hash)) {
-        matchedKey = key;
-        break;
+    let matchedKey: { id: string; key_hash: string; tenant_id: string; role: string | null; tenant_name: string } | undefined =
+      db.prepare(
+        `SELECT ak.id, ak.key_hash, ak.tenant_id, ak.role, t.name as tenant_name
+         FROM api_keys ak
+         JOIN tenants t ON t.id = ak.tenant_id
+         WHERE ak.key_lookup_hash = ?
+           AND ak.is_active = 1
+           AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
+      ).get(keyLookupHash) as any;
+
+    // Defense in depth: a key_lookup_hash hit implies the exact key (SHA-256
+    // preimage resistance), but we still constant-time verify against the
+    // salted key_hash so a lookup-hash collision can never authenticate.
+    if (matchedKey && !verifyApiKey(apiKey, matchedKey.key_hash)) {
+      matchedKey = undefined;
+    }
+
+    // Fallback: rows still missing key_lookup_hash are legacy salted keys
+    // created before migration 064 (cannot be backfilled without the
+    // plaintext key). Bounded to those rows only, and shrinks to zero as
+    // keys are rotated. Constant-time verification still applies.
+    if (!matchedKey) {
+      const legacyRows = db.prepare(
+        `SELECT ak.id, ak.key_hash, ak.tenant_id, ak.role, t.name as tenant_name
+         FROM api_keys ak
+         JOIN tenants t ON t.id = ak.tenant_id
+         WHERE ak.key_lookup_hash IS NULL
+           AND ak.is_active = 1
+           AND (ak.expires_at IS NULL OR ak.expires_at > datetime('now'))`
+      ).all() as Array<{ id: string; key_hash: string; tenant_id: string; role: string | null; tenant_name: string }>;
+
+      for (const key of legacyRows) {
+        if (verifyApiKey(apiKey, key.key_hash)) {
+          matchedKey = key;
+          break;
+        }
       }
     }
 

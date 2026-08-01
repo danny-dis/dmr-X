@@ -26,7 +26,6 @@ import { FusionModeSelector, type FusionMode } from '@/components/fusion/FusionM
 import { RaceResults, type RaceRanking } from '@/components/fusion/RaceResults';
 import { SynthesisPanel, type ConsortiumResult } from '@/components/fusion/SynthesisPanel';
 import { GodmodeSettings, type GodmodeConfig } from '@/components/fusion/GodmodeSettings';
-import { GodmodeClassicPanel, LearningStats } from '@/components/fusion';
 
 export function FusionPanelPage() {
   const [activePanelId, setActivePanelId] = React.useState<string | null>(null);
@@ -526,8 +525,8 @@ export function FusionPanelPage() {
                 />
               </div>
 
-              {/* G0DM0D3 Tier Info (when not parallel / classic) */}
-              {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
+              {/* G0DM0D3 Tier Info (when not parallel) */}
+              {fusionMode !== 'parallel' && (
                 <div className="mt-4">
                   <Card padding="md">
                     <div className="flex items-center justify-between">
@@ -559,8 +558,8 @@ export function FusionPanelPage() {
                 </Card>
               </div>
 
-              {/* G0DM0D3 Settings (visible when not parallel / classic) */}
-              {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
+              {/* G0DM0D3 Settings (visible when not parallel) */}
+              {fusionMode !== 'parallel' && (
                 <div className="mt-4">
                   <Card padding="md">
                     <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
@@ -598,14 +597,6 @@ export function FusionPanelPage() {
                     orchestrator={consortiumResults.orchestrator}
                     collection={consortiumResults.collection}
                   />
-                </div>
-              )}
-
-              {/* GODMODE CLASSIC (L1B3RT4S) */}
-              {fusionMode === 'classic' && (
-                <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_320px]">
-                  <GodmodeClassicPanel />
-                  <LearningStats />
                 </div>
               )}
 
@@ -749,8 +740,8 @@ export function FusionPanelPage() {
                 </Card>
               </div>
 
-              {/* Godmode Prompt Input (for non-parallel, non-classic modes) */}
-              {fusionMode !== 'parallel' && fusionMode !== 'classic' && (
+              {/* Godmode Prompt Input (for non-parallel modes) */}
+              {fusionMode !== 'parallel' && (
                 <div className="mt-4">
                   <Card padding="md">
                     <h3 className="text-sm font-semibold text-fg mb-3">
