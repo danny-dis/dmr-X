@@ -1,4 +1,5 @@
 import { ValidationError, type UnifiedRequest, type ToolCall } from '@dmr-x/core';
+import { agenticSessionStore } from '@dmr-x/agent-runtime';
 import type { Router } from '@dmr-x/router';
 import {
   generateRequestId,
@@ -76,30 +77,16 @@ const AgenticChatRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// In-memory conversation state store (for approval flow persistence)
-// Uses SDK ConversationState from @dmr-x/utils
+// Conversation state is persisted durably via AgenticSessionStore (SQLite) —
+// a gateway restart or idle period no longer destroys in-flight conversations.
+// The only in-process state left here is the per-conversation mutex and the
+// abort-controller map (cancel is inherently in-process), plus the pure
+// per-process needlePreFilter narrowing cache.
 // ---------------------------------------------------------------------------
 
-const conversations = new Map<string, ConversationState>();
 const conversationLocks = new Map<string, Promise<void>>();
 const conversationAbortControllers = new Map<string, AbortController>();
 const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
-const conversationTimestamps = new Map<string, number>();
-
-// Periodic cleanup of expired conversations
-const conversationCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [id, ts] of conversationTimestamps) {
-    // Don't clean up conversations that are currently locked (being processed)
-    if (conversationLocks.has(id)) continue;
-    if (now - ts > CONVERSATION_TTL_MS) {
-      conversations.delete(id);
-      conversationTimestamps.delete(id);
-      toolNarrowCache.delete(id);
-    }
-  }
-}, 60_000);
-if (conversationCleanupTimer.unref) conversationCleanupTimer.unref();
 
 // ---------------------------------------------------------------------------
 // Loop tuning (env-overridable)
@@ -114,9 +101,16 @@ const MAX_CONSECUTIVE_ERRORS = Number(process.env.DMRX_AGENTIC_MAX_CONSECUTIVE_E
 
 // Per-conversation narrowed tool set from needlePreFilter. The model's relevant
 // tools rarely change mid-conversation, so cache the first narrowing to avoid a
-// localhost:8011 round-trip every turn. Cleared on conversation eviction above.
+// localhost:8011 round-trip every turn. Stale entries expire via their own TTL
+// check below, and are dropped eagerly when a persisted conversation is evicted
+// (expired/corrupt) in the load path.
 const toolNarrowCache = new Map<string, { tools: any[]; ts: number }>();
 const TOOL_NARROW_TTL_MS = 10 * 60 * 1000;
+
+/** Rolling expiry for a persisted agentic conversation (30-minute TTL). */
+function defaultExpiresAt(): string {
+  return new Date(Date.now() + CONVERSATION_TTL_MS).toISOString();
+}
 
 /** Latest user message content — evolves as the conversation does, unlike the
  * first message the old code used. */
@@ -298,19 +292,27 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
     try {
 
-    // Load or create conversation state (uses SDK ConversationState)
+    // Load or create conversation state (uses SDK ConversationState). The
+    // SQLite row is the source of truth — a gateway restart loses the
+    // in-process maps, so a paused conversation is rehydrated from the store
+    // and its approval decisions resume against the exact persisted state
+    // (status 'awaiting_approval' + pendingToolCalls survive the round-trip).
     let conversation: ConversationState;
-    if (body.conversationId && conversations.has(body.conversationId)) {
-      conversation = conversations.get(body.conversationId)!;
-      conversation = updateState(conversation, {
-        messages: [...conversation.messages, ...body.messages],
-      });
-      conversationTimestamps.set(conversation.id, Date.now());
+    if (body.conversationId) {
+      const persisted = agenticSessionStore.get(tenant.id, body.conversationId);
+      if (persisted) {
+        conversation = updateState(persisted.state, {
+          messages: [...persisted.state.messages, ...body.messages],
+        });
+      } else {
+        // Expired or never persisted — start a fresh conversation.
+        toolNarrowCache.delete(body.conversationId);
+        conversation = createInitialState(body.conversationId);
+        conversation.messages = [...body.messages];
+      }
     } else {
-      conversation = createInitialState(body.conversationId ?? requestId);
+      conversation = createInitialState(requestId);
       conversation.messages = [...body.messages];
-      conversations.set(conversation.id, conversation);
-      conversationTimestamps.set(conversation.id, Date.now());
     }
 
     // Handle approval decisions for resuming a paused conversation
@@ -367,6 +369,16 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
       conversation = updateState(conversation, {
         pendingToolCalls: undefined,
         status: 'in_progress',
+      });
+
+      // Persist the resume so the cleared approval state survives a crash.
+      agenticSessionStore.upsert({
+        tenantId: tenant.id,
+        conversationId: conversation.id,
+        state: conversation,
+        status: 'in_progress',
+        metadata: { model: body.model, requestId },
+        expiresAt: defaultExpiresAt(),
       });
     }
 
@@ -446,6 +458,15 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           } catch (err) {
             consecutiveErrors++;
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              agenticSessionStore.upsert({
+                tenantId: tenant.id,
+                conversationId: conversation.id,
+                state: conversation,
+                status: 'error',
+                lastTurn: turn,
+                metadata: { model: body.model, requestId },
+                expiresAt: defaultExpiresAt(),
+              });
               writeSSE(reply, 'error', {
                 error: { message: 'Agentic loop aborted: too many consecutive failed turns' },
               });
@@ -508,6 +529,17 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
               status: 'completed',
             });
 
+            // Persist the completed turn so the final state survives a restart.
+            agenticSessionStore.upsert({
+              tenantId: tenant.id,
+              conversationId: conversation.id,
+              state: conversation,
+              status: 'completed',
+              lastTurn: turn,
+              metadata: { model: body.model, requestId },
+              expiresAt: defaultExpiresAt(),
+            });
+
             // Include budget info in done event if budgets were exceeded
             if (overTokenBudget || overCostBudget) {
               writeSSE(reply, 'budget_exceeded', {
@@ -536,6 +568,18 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             // Add assistant message to conversation
             if (response.message) messages.push(response.message);
             conversation = updateState(conversation, { messages });
+
+            // Persist the paused state (awaiting_approval + pendingToolCalls)
+            // so a restart can resume the approval flow exactly.
+            agenticSessionStore.upsert({
+              tenantId: tenant.id,
+              conversationId: conversation.id,
+              state: conversation,
+              status: 'awaiting_approval',
+              lastTurn: turn,
+              metadata: { model: body.model, requestId },
+              expiresAt: defaultExpiresAt(),
+            });
 
             // Stream approval required event
             writeSSE(reply, 'approval_required', {
@@ -593,6 +637,19 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
                 : JSON.stringify(tr.result),
             });
           }
+
+          // Persist the running transcript after each successful turn so an
+          // interruption or restart can resume from here.
+          conversation = updateState(conversation, { messages });
+          agenticSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId: conversation.id,
+            state: conversation,
+            status: conversation.status,
+            lastTurn: turn,
+            metadata: { model: body.model, requestId },
+            expiresAt: defaultExpiresAt(),
+          });
         }
       } catch (error) {
         logger.error({ err: error, requestId }, 'Agentic streaming error');
@@ -661,6 +718,15 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         } catch (err) {
           nonStreamingConsecutiveErrors++;
           if (nonStreamingConsecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            agenticSessionStore.upsert({
+              tenantId: tenant.id,
+              conversationId: conversation.id,
+              state: conversation,
+              status: 'error',
+              lastTurn: turn,
+              metadata: { model: body.model, requestId },
+              expiresAt: defaultExpiresAt(),
+            });
             return {
               id: requestId,
               object: 'chat.completion',
@@ -723,6 +789,16 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             status: 'completed',
           });
 
+          agenticSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId: conversation.id,
+            state: conversation,
+            status: 'completed',
+            lastTurn: turn,
+            metadata: { model: body.model, requestId },
+            expiresAt: defaultExpiresAt(),
+          });
+
           return {
             id: requestId,
             object: 'chat.completion',
@@ -763,6 +839,17 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
           if (response.message) messages.push(response.message);
           conversation = updateState(conversation, { messages });
+
+          // Persist the paused state so a restart can resume the approval flow.
+          agenticSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId: conversation.id,
+            state: conversation,
+            status: 'awaiting_approval',
+            lastTurn: turn,
+            metadata: { model: body.model, requestId },
+            expiresAt: defaultExpiresAt(),
+          });
 
           return {
             id: requestId,
@@ -814,10 +901,32 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
               : JSON.stringify(tr.result),
           });
         }
+
+        // Persist the running transcript after each successful turn.
+        conversation = updateState(conversation, { messages });
+        agenticSessionStore.upsert({
+          tenantId: tenant.id,
+          conversationId: conversation.id,
+          state: conversation,
+          status: conversation.status,
+          lastTurn: turn,
+          metadata: { model: body.model, requestId },
+          expiresAt: defaultExpiresAt(),
+        });
     }
 
       // Exhausted all steps
       conversation = updateState(conversation, { messages, status: 'completed' });
+
+      agenticSessionStore.upsert({
+        tenantId: tenant.id,
+        conversationId: conversation.id,
+        state: conversation,
+        status: 'completed',
+        lastTurn: maxSteps,
+        metadata: { model: body.model, requestId },
+        expiresAt: defaultExpiresAt(),
+      });
 
     return {
       id: requestId,
@@ -857,6 +966,24 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
     abortController.abort();
     conversationAbortControllers.delete(conversationId);
+
+    // Persist the cancellation: load the current state if available and mark
+    // it completed so the durable record matches the cancel contract.
+    const tenant = (request as any).tenant;
+    if (tenant?.id) {
+      const persisted = agenticSessionStore.get(tenant.id, conversationId);
+      if (persisted) {
+        agenticSessionStore.upsert({
+          tenantId: tenant.id,
+          conversationId,
+          state: updateState(persisted.state, { status: 'completed' }),
+          status: 'completed',
+          lastTurn: persisted.lastTurn,
+          metadata: persisted.metadata,
+          expiresAt: defaultExpiresAt(),
+        });
+      }
+    }
 
     return { status: 'cancelled', conversationId };
   });

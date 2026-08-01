@@ -2069,4 +2069,40 @@ UPDATE api_keys
    AND instr(key_hash, ':') = 0;
 `,
   },
+  65: {
+    filename: '065_agentic_sessions.sql',
+    sql: `-- Durable /agentic/chat conversations (remediation #13 second half).
+-- The /agentic/chat route used a bare in-process Map with a 30-minute TTL,
+-- so a gateway restart or idle period destroyed every conversation's state
+-- (approval gates, pending tool calls, message history). It cannot reuse
+-- agent_sessions because that table's agent_instance_id is a NOT NULL FK to
+-- agent_instances, while /agentic/chat is an instance-less generic endpoint.
+--
+-- This table persists the same ConversationState JSON, keyed by conversation
+-- id and scoped to a tenant, with a machine-readable status so an
+-- 'awaiting_approval' conversation can be resumed after a restart.
+
+CREATE TABLE IF NOT EXISTS agentic_sessions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  -- Full ConversationState serialized as JSON
+  state TEXT NOT NULL,
+  -- Arbitrary metadata (model, request id, token counts)
+  metadata TEXT,
+  -- Machine status: 'in_progress' | 'awaiting_approval' | 'interrupted' | 'completed' | 'error'
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  -- Free-text reason for an interrupted/awaiting state
+  status_reason TEXT,
+  -- Which agent turn was last executed
+  last_turn INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Optional hard expiry; NULL = live until completed/cancelled
+  expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agentic_sessions_tenant
+  ON agentic_sessions(tenant_id, id);
+`,
+  },
 };

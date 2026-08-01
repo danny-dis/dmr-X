@@ -58,7 +58,8 @@ describe('sqlite-client', () => {
       // 062 adds model_profiles.operator_disabled.
       // 063 adds api_keys.role (agent RBAC — see agent-rbac.middleware.ts).
       // 064 adds api_keys.key_lookup_hash (indexed O(1) auth lookup).
-      expect(row.v).toBe(64);
+      // 065 adds agentic_sessions (durable /agentic/chat conversations).
+      expect(row.v).toBe(65);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

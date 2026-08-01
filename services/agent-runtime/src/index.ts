@@ -18,6 +18,12 @@ export {
   type SessionStatus,
 } from './agent-session.store.js';
 
+export {
+  AgenticSessionStore,
+  agenticSessionStore,
+  type PersistedAgenticSession,
+} from './agentic-session.store.js';
+
 export { SkillLoader, skillLoader, type SkillAdvert } from './skill-loader.js';
 
 export {
