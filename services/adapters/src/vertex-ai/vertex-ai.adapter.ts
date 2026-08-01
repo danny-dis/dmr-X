@@ -97,16 +97,61 @@ export class VertexAIAdapter extends BaseAdapter {
     const nonSystemMessages = request.messages?.filter(m => m.role !== 'system') || [];
 
     const contents = nonSystemMessages.map(msg => {
-      const parts: Array<{ text: string }> = [];
+      const parts: Array<Record<string, unknown>> = [];
+      // Tool messages carry the tool RESULT in content — never a text part.
       if (typeof msg.content === 'string') {
-        parts.push({ text: msg.content });
+        if (msg.content && msg.role !== 'tool') parts.push({ text: msg.content });
       } else if (Array.isArray(msg.content)) {
         for (const part of msg.content) {
           if (part.type === 'text') {
-            parts.push({ text: part.text });
+            if (part.text) parts.push({ text: part.text });
+          } else if (part.type === 'image_url') {
+            const url = part.image_url.url;
+            // Gemini accepts base64 data URIs as inlineData and public URLs
+            // as fileData. Previously image parts were silently dropped.
+            if (url.startsWith('data:')) {
+              const match = /^data:([^;,]+);base64,(.+)$/.exec(url);
+              if (match) {
+                parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+              }
+            } else {
+              parts.push({ fileData: { fileUri: url } });
+            }
+          } else if (part.type === 'input_audio') {
+            // Gemini takes audio the same way as images: inlineData with an
+            // audio mime type.
+            const fmt = part.input_audio.format === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+            parts.push({ inlineData: { mimeType: fmt, data: part.input_audio.data } });
           }
         }
       }
+
+      // Assistant tool_calls -> functionCall parts (Gemini wire format).
+      if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(tc.function.arguments);
+          } catch {
+            args = {};
+          }
+          parts.push({ functionCall: { name: tc.function.name, args } });
+        }
+      }
+
+      // Tool results -> functionResponse parts. Gemini puts these in a
+      // user-role content block (the 'function' role is a Google SDK
+      // convenience, not a wire value).
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        let response: unknown;
+        try {
+          response = JSON.parse(String(msg.content));
+        } catch {
+          response = msg.content;
+        }
+        parts.push({ functionResponse: { name: msg.tool_call_id, response } });
+      }
+
       return {
         role: msg.role === 'assistant' ? 'model' : 'user',
         parts,
@@ -118,6 +163,16 @@ export class VertexAIAdapter extends BaseAdapter {
     if (request.max_tokens !== undefined) generationConfig.maxOutputTokens = request.max_tokens;
     if (request.top_p !== undefined) generationConfig.topP = request.top_p;
     if (request.stop) generationConfig.stopSequences = request.stop;
+
+    // Gemini-specific knobs threaded through metadata by the Gemini
+    // converter (apps/gateway/src/converters/gemini-converter.ts).
+    const meta = request.metadata ?? {};
+    if (meta.topK !== undefined) generationConfig.topK = meta.topK;
+    if (meta.candidateCount !== undefined) generationConfig.candidateCount = meta.candidateCount;
+    if (meta.thinkingConfig) generationConfig.thinkingConfig = meta.thinkingConfig;
+    if (request.response_format?.type === 'json_object') {
+      generationConfig.responseMimeType = 'application/json';
+    }
 
     const body: Record<string, unknown> = {
       contents,
@@ -139,6 +194,10 @@ export class VertexAIAdapter extends BaseAdapter {
           parameters: tool.function.parameters,
         })),
       }];
+    }
+
+    if (Array.isArray(meta.safetySettings) && meta.safetySettings.length > 0) {
+      body.safetySettings = meta.safetySettings;
     }
 
     return body;
@@ -182,8 +241,15 @@ export class VertexAIAdapter extends BaseAdapter {
     const latencyMs = Date.now() - start;
 
     const candidate = data.candidates?.[0];
-    const text = candidate?.content?.parts?.map((p: any) => p.text).join('') || '';
-    const functionCall = candidate?.content?.parts?.find((p: any) => p.functionCall);
+    // Join text parts but exclude thinking parts (thought: true) so extended
+    // thinking is not spliced into the user-visible answer.
+    const text = candidate?.content?.parts
+      ?.filter((p: any) => !p.thought && p.text)
+      .map((p: any) => p.text)
+      .join('') || '';
+    // Gemini can emit MULTIPLE parallel function calls in one candidate —
+    // previously .find() kept only the first and silently dropped the rest.
+    const functionCalls = candidate?.content?.parts?.filter((p: any) => p.functionCall) || [];
 
     return {
       modality: 'llm',
@@ -193,15 +259,15 @@ export class VertexAIAdapter extends BaseAdapter {
       message: {
         role: 'assistant',
         content: text,
-        ...(functionCall ? {
-          tool_calls: [{
-            id: `vertex_tc_${Date.now()}`,
-            type: 'function',
+        ...(functionCalls.length > 0 ? {
+          tool_calls: functionCalls.map((fc: any, i: number) => ({
+            id: `vertex_tc_${Date.now()}_${i}`,
+            type: 'function' as const,
             function: {
-              name: functionCall.functionCall.name,
-              arguments: JSON.stringify(functionCall.functionCall.args),
+              name: fc.functionCall.name,
+              arguments: JSON.stringify(fc.functionCall.args),
             },
-          }],
+          })),
         } : {}),
       },
       usage: {
