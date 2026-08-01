@@ -13,8 +13,9 @@ import type { FastifyInstance } from 'fastify';
 import crypto from 'crypto';
 
 import { writeSSE } from '../lib/sse.js';
-import { executeToolCall, getRegisteredToolDefinitions, cleanupSandboxDir } from './tools.routes.js';
+import { getRegisteredToolDefinitions, cleanupSandboxDir } from './tools.routes.js';
 import { runAgentChatLoop } from './agent-chat-loop.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +29,9 @@ interface AgentChatBody {
   maxSteps?: number;
   conversationId?: string;
   max_cost_budget?: number;
+  stopWhen?: Array<{ type: string; value: number | string }>;
+  approvalRequired?: boolean;
+  approvalDecisions?: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +164,25 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         loadedSkillIds,
         runtime: agentRuntimeService,
         conversationId: convId,
+        onCheckpoint: (turn, conversation) => {
+          agentSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId: convId,
+            instanceId,
+            agentDefinitionId: definition.id,
+            state: conversation,
+            status: 'in_progress',
+            lastTurn: turn,
+            metadata: {
+              loadedSkillIds: JSON.stringify(loadedSkillIds),
+              totalTokensUsed: 0,
+            },
+          });
+        },
+        stopWhen: body.stopWhen,
+        approvalRequired: body.approvalRequired,
+        approvalDecisions: body.approvalDecisions,
+        qualityTarget: parseQualityTarget(request.headers['x-quality-target'] as string),
       });
 
       agentSessionStore.upsert({
@@ -168,7 +191,11 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         instanceId,
         agentDefinitionId: definition.id,
         state: conversation,
-        status: result.budgetExceeded ? 'interrupted' : conversation.status,
+        status: result.awaitingApproval
+          ? 'awaiting_approval'
+          : result.budgetExceeded
+            ? 'interrupted'
+            : conversation.status,
         metadata: {
           lastResponseText: result.lastResponseText,
           totalTokensUsed: result.totalTokensUsed,
@@ -201,12 +228,15 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
       if (body.stream) {
         writeSSE(reply, 'done', {
-          status: 'completed',
+          status: result.awaitingApproval ? 'awaiting_approval' : 'completed',
           conversationId: conversation.id,
           durationMs: Date.now() - startTime,
           totalTokensUsed: result.totalTokensUsed,
           totalCost: result.totalCost,
           budget_exceeded: result.budgetExceeded,
+          ...(result.awaitingApproval
+            ? { pending_tool_calls: conversation.pendingToolCalls ?? [] }
+            : {}),
         });
         reply.raw.end();
         return reply;
@@ -223,6 +253,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         steps_completed: result.stepsCompleted,
         all_steps: result.allSteps,
         durationMs: Date.now() - startTime,
+        ...(result.awaitingApproval
+          ? { status: 'awaiting_approval', pending_tool_calls: conversation.pendingToolCalls ?? [] }
+          : {}),
         ...(result.budgetExceeded
           ? { budget_exceeded: true, max_cost_budget: body.max_cost_budget, totalCost: result.totalCost }
           : {}),
@@ -344,6 +377,25 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         loadedSkillIds,
         runtime: agentRuntimeService,
         conversationId,
+        onCheckpoint: (turn, conversation) => {
+          agentSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId,
+            instanceId,
+            agentDefinitionId: definition.id,
+            state: conversation,
+            status: 'in_progress',
+            lastTurn: turn,
+            metadata: {
+              loadedSkillIds: JSON.stringify(loadedSkillIds),
+              totalTokensUsed: 0,
+            },
+          });
+        },
+        stopWhen: body.stopWhen,
+        approvalRequired: body.approvalRequired,
+        approvalDecisions: body.approvalDecisions,
+        qualityTarget: parseQualityTarget(request.headers['x-quality-target'] as string),
       });
 
       agentSessionStore.upsert({
@@ -352,7 +404,11 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         instanceId,
         agentDefinitionId: definition.id,
         state: conversation,
-        status: result.budgetExceeded ? 'interrupted' : conversation.status,
+        status: result.awaitingApproval
+          ? 'awaiting_approval'
+          : result.budgetExceeded
+            ? 'interrupted'
+            : conversation.status,
         metadata: {
           lastResponseText: result.lastResponseText,
           totalTokensUsed: result.totalTokensUsed,
@@ -372,6 +428,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         durationMs: Date.now() - startTime,
         loadedSkills: loadedSkillIds,
         resumed: true,
+        ...(result.awaitingApproval
+          ? { status: 'awaiting_approval', pending_tool_calls: conversation.pendingToolCalls ?? [] }
+          : {}),
       });
     } finally {
       releaseLock();
@@ -461,5 +520,13 @@ function parsedResumeBody(body: unknown): AgentChatBody {
   return {
     messages: (b.messages as AgentChatBody['messages']) ?? [],
     maxSteps: (b.maxSteps as number) ?? undefined,
+    stopWhen: (b.stopWhen as AgentChatBody['stopWhen']) ?? undefined,
+    approvalRequired: (b.approvalRequired as boolean) ?? undefined,
+    approvalDecisions: (b.approvalDecisions as AgentChatBody['approvalDecisions']) ?? undefined,
+    max_cost_budget: (b.max_cost_budget as number) ?? undefined,
+    temperature: (b.temperature as number) ?? undefined,
+    maxTokens: (b.maxTokens as number) ?? undefined,
+    stream: (b.stream as boolean) ?? undefined,
+    conversationId: (b.conversationId as string) ?? undefined,
   } as AgentChatBody;
 }
