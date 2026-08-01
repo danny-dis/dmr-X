@@ -13,7 +13,14 @@ import type {
   ExecuteOptions,
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
-import { createOpenAISSEIterator } from '../stream-normalizer.js';
+import { convertMessagesToAnthropic } from '../anthropic-messages.js';
+import {
+  toAnthropicTools,
+  toAnthropicToolChoice,
+  parseAnthropicContentBlocks,
+  mapAnthropicStopReason,
+} from '../anthropic-tools.js';
+import { createAnthropicSSEIterator } from '../stream-normalizer.js';
 
 /**
  * Generic Anthropic-compatible adapter for third-party providers
@@ -142,25 +149,19 @@ export class GenericAnthropicAdapter extends BaseAdapter {
       headers['x-api-key'] = key;
     }
 
-    // Convert messages to Anthropic format
-    const systemMsg = request.messages?.find((m: any) => m.role === 'system');
-    const userMessages = (request.messages || [])
-      .filter((m: any) => m.role !== 'system')
-      .map((m: any) => ({
-        role: m.role,
-        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-      }));
+    // Convert messages to Anthropic format, preserving tool_use/tool_result
+    // history and image blocks instead of flattening them to text.
+    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
 
     const body: Record<string, any> = {
       model: request.model,
       max_tokens: request.max_tokens || 4096,
-      messages: userMessages,
+      messages,
+      tools: toAnthropicTools(request.tools),
+      tool_choice: toAnthropicToolChoice(request.tool_choice),
     };
 
-    if (systemMsg) {
-      body.system = typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content);
-    }
-
+    if (system) body.system = system;
     if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.top_p !== undefined) body.top_p = request.top_p;
     if (request.stop) body.stop_sequences = request.stop;
@@ -189,9 +190,13 @@ export class GenericAnthropicAdapter extends BaseAdapter {
       const data: any = await response.json();
       const latencyMs = Date.now() - start;
 
+      // Parse the FULL content array -- not just joined text -- so tool_use
+      // blocks survive alongside (or instead of) text.
+      const parsedContent = parseAnthropicContentBlocks(data.content);
+
       return {
         modality: 'llm',
-        requestId: `msg_${Date.now()}`,
+        requestId: data.id || `msg_${Date.now()}`,
         providerId: this.providerId,
         modelId: data.model || request.model,
         latencyMs,
@@ -202,9 +207,10 @@ export class GenericAnthropicAdapter extends BaseAdapter {
         },
         message: {
           role: 'assistant',
-          content: data.content?.map((c: any) => c.text).join('') || '',
+          content: parsedContent.text,
+          ...(parsedContent.toolCalls ? { tool_calls: parsedContent.toolCalls } : {}),
         },
-        finishReason: data.stop_reason || 'stop',
+        finishReason: mapAnthropicStopReason(data.stop_reason),
       };
     } catch (error) {
       throw this.handleAdapterError(error);
@@ -223,25 +229,18 @@ export class GenericAnthropicAdapter extends BaseAdapter {
       headers['x-api-key'] = key;
     }
 
-    const systemMsg = request.messages?.find((m: any) => m.role === 'system');
-    const userMessages = (request.messages || [])
-      .filter((m: any) => m.role !== 'system')
-      .map((m: any) => ({
-        role: m.role,
-        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-      }));
+    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
 
     const body: Record<string, any> = {
       model: request.model,
       max_tokens: request.max_tokens || 4096,
-      messages: userMessages,
+      messages,
+      tools: toAnthropicTools(request.tools),
+      tool_choice: toAnthropicToolChoice(request.tool_choice),
       stream: true,
     };
 
-    if (systemMsg) {
-      body.system = typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content);
-    }
-
+    if (system) body.system = system;
     if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.top_p !== undefined) body.top_p = request.top_p;
     if (request.stop) body.stop_sequences = request.stop;
@@ -259,7 +258,20 @@ export class GenericAnthropicAdapter extends BaseAdapter {
       throw this.handleAdapterError(error, 'stream');
     }
 
-    yield* createOpenAISSEIterator(response, { signal: options?.signal });
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new ProviderError(
+        `Anthropic API error: ${response.status} ${errorBody}`,
+        this.providerId,
+        response.status,
+      );
+    }
+
+    // Anthropic's SSE protocol is event-typed, not choice/delta-shaped like
+    // OpenAI's -- see createAnthropicSSEIterator's docstring. Using
+    // createOpenAISSEIterator here is what left every stream through an
+    // Anthropic-compatible custom provider silently empty.
+    yield* createAnthropicSSEIterator(response, { signal: options?.signal });
   }
 
   async listModels(): Promise<ModelInfo[]> {
