@@ -160,6 +160,59 @@ describe('OpenAIAdapter', () => {
     });
   });
 
+  describe('executeStream', () => {
+    beforeEach(async () => {
+      await adapter.initialize(mockConfig);
+    });
+
+    it('should forward the same sampling/formatting params as executeChat (minus n)', async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, body });
+      globalThis.fetch = fetchMock;
+
+      const request: UnifiedRequest = {
+        modality: 'llm',
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: 'Hello' }],
+        stream: true,
+        temperature: 0.5,
+        max_tokens: 100,
+        top_p: 0.9,
+        frequency_penalty: 0.1,
+        presence_penalty: 0.2,
+        stop: ['\n'],
+        response_format: { type: 'json_object' },
+        seed: 42,
+        n: 3,
+        metadata: {},
+      };
+
+      const iterator = adapter.executeStream(request)[Symbol.asyncIterator]();
+      await iterator.next();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [sentRequest] = fetchMock.mock.calls[0] as [Request];
+      const sentBody = JSON.parse(await sentRequest.clone().text());
+
+      expect(sentBody.top_p).toBe(0.9);
+      expect(sentBody.frequency_penalty).toBe(0.1);
+      expect(sentBody.presence_penalty).toBe(0.2);
+      expect(sentBody.stop).toEqual(['\n']);
+      expect(sentBody.response_format).toEqual({ type: 'json_object' });
+      expect(sentBody.seed).toBe(42);
+      expect(sentBody.stream).toBe(true);
+      // n is intentionally not forwarded for a single SSE stream
+      expect(sentBody.n).toBeUndefined();
+    });
+  });
+
   describe('healthCheck', () => {
     it('should return healthy status when API is accessible', async () => {
       await adapter.initialize(mockConfig);

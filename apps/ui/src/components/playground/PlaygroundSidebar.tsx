@@ -6,7 +6,9 @@ import { ConversationItem } from './ConversationItem';
 import { Button } from '@/components/primitives/Button';
 import { Input } from '@/components/primitives/Input';
 import { useApiData } from '@/hooks/useApiData';
+import { api } from '@/lib/api';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
+import type { Conversation } from '@/store/usePlaygroundStore';
 
 export function PlaygroundSidebar() {
   const showSidebar = usePlaygroundStore(s => s.showSidebar);
@@ -17,13 +19,12 @@ export function PlaygroundSidebar() {
   
   const [searchQuery, setSearchQuery] = React.useState('');
   
-  // Fetch conversations from API
+  // Fetch conversations from API. Previously a raw `fetch` with a
+  // hand-rolled Authorization header, bypassing the shared token
+  // resolution (tenant token → admin token fallback) and base-URL/error
+  // handling that `api()` provides everywhere else.
   const { data: conversationsData, isLoading } = useApiData(
-    () => fetch('/v1/conversations', {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-      },
-    }).then(r => r.json()),
+    () => api<{ conversations: Conversation[] }>('/v1/conversations'),
     [],
     { refetchInterval: 30000 } // Refresh every 30 seconds
   );

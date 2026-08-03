@@ -3,6 +3,7 @@ import type {
   PlaygroundState,
   StreamingEvent,
 } from './usePlaygroundStore';
+import { apiPost } from '@/lib/api';
 
 export interface StreamingSlice {
   isStreaming: boolean;
@@ -20,9 +21,18 @@ export const createStreamingSlice: StateCreator<PlaygroundState, [], [], Streami
   streamingEvents: [],
 
   cancelStreaming: () => {
-    const { abortController } = get();
+    const { abortController, mode, agentInstanceId, currentConversationId } = get();
     if (abortController) {
       abortController.abort();
+    }
+    // Agent mode runs a durable, server-side session
+    // (`/v1/agents/:instanceId/chat`) — aborting the client fetch only stops
+    // us reading the response. Tell the server to stop the run too, or it
+    // keeps executing (and racking up cost) after the user hit Stop.
+    // Best-effort: the UI has already stopped waiting on this stream either
+    // way, so a failed cancel call isn't surfaced to the user.
+    if (mode === 'agent' && agentInstanceId && currentConversationId) {
+      apiPost(`/v1/agents/${agentInstanceId}/chat/${currentConversationId}/cancel`, {}).catch(() => {});
     }
     set({ isStreaming: false, abortController: null });
   },

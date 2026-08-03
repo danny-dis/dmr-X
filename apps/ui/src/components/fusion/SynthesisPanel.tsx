@@ -46,7 +46,7 @@ interface SynthesisPanelProps {
     modelsSucceeded: number;
     collectionDurationMs: number;
     totalDurationMs: number;
-    responses: ConsortiumResponse[];
+    responses: ConsortiumModelResponse[];
   };
 }
 
@@ -82,7 +82,7 @@ export function SynthesisPanel({
               <Brain className="size-4 text-purple-500" />
               CONSORTIUM Synthesis
             </CardTitle>
-            <Badge tone="accent" size="sm">
+            <Badge tone="info" size="sm">
               <Brain className="size-3 mr-1" />
               Ground Truth
             </Badge>

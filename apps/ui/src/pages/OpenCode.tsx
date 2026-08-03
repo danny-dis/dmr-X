@@ -2,7 +2,6 @@ import {
   Terminal,
   Save,
   RotateCcw,
-  Copy,
   Check,
   AlertTriangle,
   ChevronDown,
@@ -15,9 +14,16 @@ import * as React from 'react';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { Code } from '@/components/primitives/Code';
+import { CopyButton } from '@/components/primitives/CopyButton';
+import { DataState } from '@/components/primitives/DataState';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
+import { Skeleton } from '@/components/primitives/Skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
 import { PageHeader, PageContainer } from '@/components/layout';
+import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { cn } from '@/lib/utils';
 import type { ApiModel, ApiProvider } from '@/types/api';
@@ -36,6 +42,25 @@ interface TestResult {
   success: boolean;
   latencyMs: number;
   error?: string;
+}
+
+type AgentIntegrationConfig = Awaited<ReturnType<typeof Admin.getAgentIntegrationConfig>>;
+
+interface OpenCodePageData {
+  providers: ApiProvider[];
+  config: AgentIntegrationConfig;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Data loading                                                              */
+/* -------------------------------------------------------------------------- */
+
+async function fetchOpenCodePageData(): Promise<OpenCodePageData> {
+  const [providers, config] = await Promise.all([
+    Admin.listProviders(),
+    Admin.getAgentIntegrationConfig(),
+  ]);
+  return { providers, config };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -106,6 +131,8 @@ function ModelPicker({
       <button
         ref={triggerRef}
         type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={() => setOpen(!open)}
         className={cn(
           'flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2',
@@ -125,11 +152,17 @@ function ModelPicker({
         ) : (
           <span className="text-xs text-fg-muted flex-1">Select model for OpenCode</span>
         )}
-        <ChevronDown className="size-3.5 text-fg-subtle shrink-0" />
+        <ChevronDown className="size-3.5 text-fg-subtle shrink-0" aria-hidden />
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-50" onClick={() => setOpen(false)}>
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setOpen(false);
+          }}
+        >
           <div
             className="fixed rounded-xl border border-border bg-surface-1 shadow-lg"
             style={{
@@ -149,29 +182,33 @@ function ModelPicker({
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search models..."
+                aria-label="Search models"
                 className="w-full text-xs"
               />
             </div>
-            <div className="max-h-64 overflow-y-auto">
+            <div className="max-h-64 overflow-y-auto" role="listbox" aria-label="Models">
               {Object.entries(grouped).map(([providerId, items]) => {
                 const provider = items[0]?.provider;
                 if (!provider) return null;
                 return (
-                  <div key={providerId}>
+                  <div key={providerId} role="group" aria-label={provider.name}>
                     <div className="px-3 py-1.5 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider bg-surface-2/50">
                       {provider.name}
                     </div>
                     {items.map((item) => {
                       const isSelected = item.model.id === selected?.modelId && item.provider.id === selected?.providerId;
                       return (
-                        <div
+                        <button
                           key={item.model.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
                           onClick={() => {
                             onSelect(item.provider.id, item.model.id);
                             setOpen(false);
                           }}
                           className={cn(
-                            'flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors',
+                            'flex w-full items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors',
                             'hover:bg-surface-3',
                             isSelected && 'bg-primary/10',
                           )}
@@ -182,8 +219,8 @@ function ModelPicker({
                               {item.model.modelId ?? item.model.id}
                             </div>
                           </div>
-                          {isSelected && <Check className="size-3.5 text-primary shrink-0" />}
-                        </div>
+                          {isSelected && <Check className="size-3.5 text-primary shrink-0" aria-hidden />}
+                        </button>
                       );
                     })}
                   </div>
@@ -207,29 +244,15 @@ function ModelPicker({
 /* -------------------------------------------------------------------------- */
 
 function CodeBlock({ code, label }: { code: string; label: string }) {
-  const [copied, setCopied] = React.useState(false);
-
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   return (
-    <div className="relative group">
+    <div>
       <div className="flex items-center justify-between px-3 py-1.5 bg-surface-3 rounded-t-lg border border-border border-b-0">
         <span className="text-[10px] text-fg-subtle font-medium">{label}</span>
-        <button
-          onClick={handleCopy}
-          className="text-fg-subtle hover:text-fg transition-colors"
-          title="Copy to clipboard"
-        >
-          {copied ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
-        </button>
+        <CopyButton value={code} label={`Copy ${label}`} />
       </div>
-      <pre className="px-3 py-2 bg-surface-2 rounded-b-lg border border-border overflow-x-auto text-[11px] font-mono text-fg leading-relaxed">
+      <Code inline={false} language={label} className="rounded-t-none text-[11px]">
         {code}
-      </pre>
+      </Code>
     </div>
   );
 }
@@ -239,35 +262,27 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
 /* -------------------------------------------------------------------------- */
 
 export function OpenCodePage() {
-  const [providers, setProviders] = React.useState<ApiProvider[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const load = useApiData<OpenCodePageData>(fetchOpenCodePageData, []);
+
   const [saving, setSaving] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [testResult, setTestResult] = React.useState<TestResult | null>(null);
   const [selected, setSelected] = React.useState<{ providerId: string; modelId: string } | null>(null);
   const [configFormat, setConfigFormat] = React.useState<'toml' | 'env'>('toml');
 
-  // Load saved config from backend
+  // Sync local editable state from the loaded config once it arrives.
   React.useEffect(() => {
-    Promise.all([
-      Admin.listProviders(),
-      Admin.getAgentIntegrationConfig(),
-    ])
-      .then(([providerList, config]) => {
-        setProviders(providerList);
-        if (config.opencode) {
-          const oc = config.opencode;
-          if (oc.modelId && oc.providerId) {
-            setSelected({ providerId: oc.providerId as string, modelId: oc.modelId as string });
-          }
-          if (oc.configFormat === 'toml' || oc.configFormat === 'env') {
-            setConfigFormat(oc.configFormat);
-          }
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    const oc = load.data?.config.opencode;
+    if (!oc) return;
+    if (typeof oc.modelId === 'string' && typeof oc.providerId === 'string') {
+      setSelected({ providerId: oc.providerId, modelId: oc.modelId });
+    }
+    if (oc.configFormat === 'toml' || oc.configFormat === 'env') {
+      setConfigFormat(oc.configFormat);
+    }
+  }, [load.data]);
+
+  const providers = load.data?.providers ?? [];
 
   const resolveModel = React.useMemo(() => {
     const model = selected
@@ -293,7 +308,7 @@ export function OpenCodePage() {
     }
   }
 }`;
-  }, [selected, providers, resolveModel]);
+  }, [resolveModel]);
 
   const envConfig = React.useMemo(() => {
     const modelId = resolveModel;
@@ -309,7 +324,7 @@ export OPENAI_MODEL="${modelId}"
 
 # Then run:
 opencode "your prompt here"`;
-  }, [selected, providers, resolveModel]);
+  }, [resolveModel]);
 
   // Save config to backend
   const handleSave = async () => {
@@ -329,9 +344,8 @@ opencode "your prompt here"`;
         description: 'Your OpenCode integration settings have been saved.',
       });
     } catch (err) {
-      toast.error('Failed to save', {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
     } finally {
       setSaving(false);
     }
@@ -354,10 +368,9 @@ opencode "your prompt here"`;
         });
       }
     } catch (err) {
-      setTestResult({ success: false, latencyMs: 0, error: err instanceof Error ? err.message : String(err) });
-      toast.error('Test failed', {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      const e = interpretError(err);
+      setTestResult({ success: false, latencyMs: 0, error: e.description });
+      toast.error(e.title, { description: e.description });
     } finally {
       setTesting(false);
     }
@@ -388,23 +401,6 @@ opencode "your prompt here"`;
     toast.show('Reset', { description: 'Model selection cleared.' });
   };
 
-  if (loading) {
-    return (
-      <PageContainer>
-        <PageHeader
-          title="OpenCode Integration"
-          description="Configure DMR-X as a model provider for the OpenCode CLI"
-          icon={<Terminal className="size-5" />}
-        />
-        <div className="mt-5 space-y-4">
-          {Array.from({ length: 2 }).map((_, i) => (
-            <div key={i} className="h-24 rounded-lg bg-surface-2 animate-pulse" />
-          ))}
-        </div>
-      </PageContainer>
-    );
-  }
-
   return (
     <PageContainer>
       <PageHeader
@@ -413,8 +409,13 @@ opencode "your prompt here"`;
         icon={<Terminal className="size-5" />}
         actions={
           <>
-            <Button variant="ghost" size="sm" onClick={handleReset}>
-              <RotateCcw className="size-3" />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleReset}
+              aria-label="Reset OpenCode model selection"
+            >
+              <RotateCcw className="size-3" aria-hidden />
               Reset
             </Button>
             <Button
@@ -422,152 +423,190 @@ opencode "your prompt here"`;
               size="sm"
               onClick={handleTestConnection}
               loading={testing}
-              leftIcon={testResult?.success ? <Wifi className="size-3" /> : testResult ? <WifiOff className="size-3" /> : undefined}
+              aria-label="Test OpenCode gateway connection"
+              leftIcon={
+                testResult?.success ? (
+                  <Wifi className="size-3" aria-hidden />
+                ) : testResult ? (
+                  <WifiOff className="size-3" aria-hidden />
+                ) : undefined
+              }
             >
               Test Connection
             </Button>
-            <Button size="sm" onClick={handleSave} loading={saving}>
-              <Save className="size-3" />
+            <Button size="sm" onClick={handleSave} loading={saving} aria-label="Save OpenCode configuration">
+              <Save className="size-3" aria-hidden />
               Save
             </Button>
           </>
         }
       />
 
-      <div className="mt-5 space-y-4">
-        {/* Model Selection */}
-        <Card padding="md">
-          <CardHeader className="px-0 pt-0">
-            <CardTitle>Model</CardTitle>
-            <p className="text-[10px] text-fg-muted mt-0.5">
-              Select the model OpenCode should use. DMR-X routes to the best available provider.
-            </p>
-          </CardHeader>
-          <CardContent className="px-0">
-            <ModelPicker
-              providers={providers}
-              selected={selected}
-              onSelect={(providerId, modelId) => setSelected({ providerId, modelId })}
-            />
-          </CardContent>
-        </Card>
+      <div className="mt-5">
+        <DataState
+          data={load.data}
+          isLoading={load.isLoading}
+          error={load.error}
+          onRetry={load.refetch}
+          loading={
+            <div className="space-y-4">
+              <Skeleton className="h-24 w-full rounded-xl" />
+              <Skeleton className="h-40 w-full rounded-xl" />
+            </div>
+          }
+        >
+          {(data) => (
+            <div className="space-y-4">
+              {/* Model Selection */}
+              <Card padding="md">
+                <CardHeader className="px-0 pt-0">
+                  <CardTitle>Model</CardTitle>
+                  <p className="text-[10px] text-fg-muted mt-0.5">
+                    Select the model OpenCode should use. DMR-X routes to the best available provider.
+                  </p>
+                </CardHeader>
+                <CardContent className="px-0">
+                  <ModelPicker
+                    providers={data.providers}
+                    selected={selected}
+                    onSelect={(providerId, modelId) => setSelected({ providerId, modelId })}
+                  />
+                </CardContent>
+              </Card>
 
-        {/* Test Result */}
-        {testResult && (
-          <div
-            className={cn(
-              'rounded-lg border px-4 py-3',
-              testResult.success
-                ? 'border-success/30 bg-success/5'
-                : 'border-danger/30 bg-danger/5',
-            )}
-          >
-            <div className="flex items-start gap-2">
-              {testResult.success ? (
-                <Wifi className="size-4 text-success shrink-0 mt-0.5" />
-              ) : (
-                <WifiOff className="size-4 text-danger shrink-0 mt-0.5" />
+              {/* Test Result */}
+              {testResult && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className={cn(
+                    'rounded-lg border px-4 py-3',
+                    testResult.success
+                      ? 'border-success/30 bg-success/5'
+                      : 'border-danger/30 bg-danger/5',
+                  )}
+                >
+                  <div className="flex items-start gap-2">
+                    {testResult.success ? (
+                      <Wifi className="size-4 text-success shrink-0 mt-0.5" aria-hidden />
+                    ) : (
+                      <WifiOff className="size-4 text-danger shrink-0 mt-0.5" aria-hidden />
+                    )}
+                    <div className="text-xs text-fg leading-relaxed">
+                      <p className="font-medium">
+                        {testResult.success ? 'Connection successful' : 'Connection failed'}
+                      </p>
+                      <p className="text-fg-muted">
+                        {testResult.success
+                          ? `Gateway responded in ${testResult.latencyMs}ms`
+                          : testResult.error}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               )}
-              <div className="text-xs text-fg leading-relaxed">
-                <p className="font-medium">
-                  {testResult.success ? 'Connection successful' : 'Connection failed'}
-                </p>
-                <p className="text-fg-muted">
-                  {testResult.success
-                    ? `Gateway responded in ${testResult.latencyMs}ms`
-                    : testResult.error}
-                </p>
+
+              {/* Generated Config */}
+              <Tabs value={configFormat} onValueChange={(v) => setConfigFormat(v as 'toml' | 'env')}>
+                <TabsList variant="pills">
+                  <TabsTrigger value="toml" variant="pills">Config File (JSON)</TabsTrigger>
+                  <TabsTrigger value="env" variant="pills">Environment Variables</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="toml">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <CardTitle>Configuration File</CardTitle>
+                          <p className="text-[10px] text-fg-muted mt-0.5">
+                            Add this to ~/.config/opencode/opencode.json
+                          </p>
+                        </div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleDownloadConfig}
+                          aria-label="Download OpenCode JSON configuration"
+                        >
+                          <Download className="size-3" aria-hidden />
+                          Download
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="px-0">
+                      <CodeBlock code={tomlConfig} label="opencode.json" />
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="env">
+                  <Card padding="md">
+                    <CardHeader className="px-0 pt-0">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <CardTitle>Environment Variables</CardTitle>
+                          <p className="text-[10px] text-fg-muted mt-0.5">
+                            Set these environment variables before launching OpenCode
+                          </p>
+                        </div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleDownloadConfig}
+                          aria-label="Download OpenCode shell configuration"
+                        >
+                          <Download className="size-3" aria-hidden />
+                          Download
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="px-0">
+                      <CodeBlock code={envConfig} label="shell" />
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+              </Tabs>
+
+              {/* How it works */}
+              <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="size-4 text-primary shrink-0 mt-0.5" aria-hidden />
+                  <div className="text-xs text-fg leading-relaxed">
+                    <p className="font-medium mb-1">How it works</p>
+                    <p className="text-fg-muted">
+                      DMR-X acts as an OpenAI-compatible proxy for OpenCode. Point{' '}
+                      <code className="font-mono bg-surface-2 px-1 rounded">baseUrl</code> or{' '}
+                      <code className="font-mono bg-surface-2 px-1 rounded">OPENAI_BASE_URL</code> to
+                      your gateway, and OpenCode will route requests through your configured
+                      providers with automatic fallback, rate limiting, and cost tracking.
+                    </p>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* Config Format Toggle */}
-        <div className="flex gap-2">
-          <Button
-            variant={configFormat === 'toml' ? 'primary' : 'ghost'}
-            size="sm"
-            onClick={() => setConfigFormat('toml')}
-          >
-            Config File (JSON)
-          </Button>
-          <Button
-            variant={configFormat === 'env' ? 'primary' : 'ghost'}
-            size="sm"
-            onClick={() => setConfigFormat('env')}
-          >
-            Environment Variables
-          </Button>
-        </div>
-
-        {/* Generated Config */}
-        <Card padding="md">
-          <CardHeader className="px-0 pt-0">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle>
-                  {configFormat === 'toml' ? 'Configuration File' : 'Environment Variables'}
-                </CardTitle>
-                <p className="text-[10px] text-fg-muted mt-0.5">
-                  {configFormat === 'toml'
-                    ? 'Add this to ~/.config/opencode/opencode.json'
-                    : 'Set these environment variables before launching OpenCode'}
-                </p>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleDownloadConfig}
-                leftIcon={<Download className="size-3" />}
-              >
-                Download
-              </Button>
+              {/* Quick Start */}
+              <Card padding="md">
+                <CardHeader className="px-0 pt-0">
+                  <CardTitle>Quick Start</CardTitle>
+                </CardHeader>
+                <CardContent className="px-0 space-y-2">
+                  <div className="text-xs text-fg-muted">
+                    <p className="mb-1">1. Start the DMR-X gateway:</p>
+                    <CodeBlock code="bun run dev:gateway" label="terminal" />
+                  </div>
+                  <div className="text-xs text-fg-muted mt-3">
+                    <p className="mb-1">2. Configure OpenCode (see above), then run:</p>
+                    <CodeBlock
+                      code={`opencode "Explain this codebase"`}
+                      label="terminal"
+                    />
+                  </div>
+                </CardContent>
+              </Card>
             </div>
-          </CardHeader>
-          <CardContent className="px-0">
-            <CodeBlock
-              code={configFormat === 'toml' ? tomlConfig : envConfig}
-              label={configFormat === 'toml' ? 'opencode.json' : 'shell'}
-            />
-          </CardContent>
-        </Card>
-
-        {/* How it works */}
-        <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="size-4 text-primary shrink-0 mt-0.5" />
-            <div className="text-xs text-fg leading-relaxed">
-              <p className="font-medium mb-1">How it works</p>
-              <p className="text-fg-muted">
-                DMR-X acts as an OpenAI-compatible proxy for OpenCode. Point{' '}
-                <code className="font-mono bg-surface-2 px-1 rounded">baseUrl</code> or{' '}
-                <code className="font-mono bg-surface-2 px-1 rounded">OPENAI_BASE_URL</code> to
-                your gateway, and OpenCode will route requests through your configured
-                providers with automatic fallback, rate limiting, and cost tracking.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Quick Start */}
-        <Card padding="md">
-          <CardHeader className="px-0 pt-0">
-            <CardTitle>Quick Start</CardTitle>
-          </CardHeader>
-          <CardContent className="px-0 space-y-2">
-            <div className="text-xs text-fg-muted">
-              <p className="mb-1">1. Start the DMR-X gateway:</p>
-              <CodeBlock code="bun run dev:gateway" label="terminal" />
-            </div>
-            <div className="text-xs text-fg-muted mt-3">
-              <p className="mb-1">2. Configure OpenCode (see above), then run:</p>
-              <CodeBlock
-                code={`opencode "Explain this codebase"`}
-                label="terminal"
-              />
-            </div>
-          </CardContent>
-        </Card>
+          )}
+        </DataState>
       </div>
     </PageContainer>
   );

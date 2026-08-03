@@ -26,7 +26,10 @@ function waitForPort(port: number, timeoutMs: number): Promise<boolean> {
 }
 
 function killTree(pid: number) {
-  try { process.kill(pid, 'SIGTERM'); } catch {}
+  try { process.kill(pid, 'SIGTERM'); } catch {
+    // Best-effort only: the child may have already exited (ESRCH) between
+    // the readiness check failing and this call, which is not an error here.
+  }
 }
 
 async function main() {

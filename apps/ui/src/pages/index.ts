@@ -12,9 +12,7 @@ export { BillingPage } from './Billing';
 export { InfrastructurePage } from './Infrastructure';
 export { SettingsTabsPage } from './SettingsTabs';
 export { NotFoundPage } from './NotFound';
-export { AgentsPage } from './Agents';
 export { MarketplacePage } from './Marketplace';
-export { AgentAnalyticsPage } from './AgentAnalytics';
 export { AgentIntegrationsPage } from './AgentIntegrations';
 
 // ── Sub-pages / tab content ──
@@ -23,7 +21,6 @@ export { CreditsPage } from './Credits';
 export { QuotaPage } from './Quota';
 export { BenchmarksPage } from './Benchmarks';
 export { MemoryPage } from './Memory';
-export { MCPPage } from './MCP';
 export { ToolsPage } from './Tools';
 export { WorkersPage } from './Workers';
 export { FederationPage } from './Federation';
@@ -34,7 +31,17 @@ export { ConnectPage } from './Connect';
 export { ClaudeCodePage } from './ClaudeCode';
 export { CodexPage } from './Codex';
 export { AntigravityPage } from './Antigravity';
-export { FreeTierPage } from './FreeTier';
-export { FreeTierDashboardPage } from './FreeTierDashboard';
 export { CostDashboardPage } from './CostDashboard';
 export { ObservabilityPage } from './Observability';
+
+// Rebuilt surfaces live in their own directories now.
+export { AgentsPage } from './agents/AgentsPage';
+export { AgentAnalyticsPage } from './agents/AgentAnalyticsPage';
+export { AgentDetailPage } from './agents/AgentDetailPage';
+export { AgentCreatePage } from './agents/AgentCreatePage';
+export { McpPage } from './mcp/McpPage';
+export { McpDiscoverPage } from './mcp/McpDiscoverPage';
+export { McpToolsPage } from './mcp/McpToolsPage';
+export { McpSettingsPage } from './mcp/McpSettingsPage';
+export { A2APage } from './A2A';
+export { FreeTierPage } from './free-tier/FreeTierPage';

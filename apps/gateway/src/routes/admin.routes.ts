@@ -18,6 +18,7 @@ import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
+import { computeSavings } from '../services/savings.js';
 import { refreshAdminKey } from '../middleware/auth.middleware.js';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 
@@ -343,15 +344,27 @@ const CreateTenantSchema = z.object({
   name: z.string().min(1).max(255),
 });
 
+/**
+ * Agent RBAC roles, mirroring AGENT_ROLES in
+ * services/agent-registry/src/agent-permissions.ts. Note that 'admin' also
+ * unlocks cross-tenant reads there, so it should be assigned deliberately.
+ */
+const AgentRoleSchema = z.enum(['admin', 'developer', 'user', 'viewer']);
+
 const CreateApiKeySchema = z.object({
   tenant_id: z.string().uuid(),
   name: z.string().max(255).optional(),
   scopes: z.array(z.string()).optional(),
   allowed_tools: z.array(z.string()).optional(),
+  role: AgentRoleSchema.optional(),
   expires_at: z.string().datetime().optional().nullable(),
   compression_enabled: z.boolean().optional(),
   compression_algorithm: z.enum(['auto', 'smartcrusher', 'codecompressor', 'kompress']).optional(),
   compression_reversible: z.boolean().optional(),
+});
+
+const UpdateApiKeyRoleSchema = z.object({
+  role: AgentRoleSchema,
 });
 
 const CreateTenantApiKeySchema = z.object({
@@ -1097,15 +1110,16 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Tenant not found');
     }
 
-    const { generateApiKey, hashApiKeyWithSalt } = await import('@dmr-x/utils');
+    const { generateApiKey, hashApiKeyWithSalt, hashApiKey } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
     const keyHash = hashApiKeyWithSalt(apiKey);
+    const keyLookupHash = hashApiKey(apiKey);
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO api_keys (id, tenant_id, key_hash, key_lookup_hash, name, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      id, tenantId, keyHash, name, expiresAt || null,
+      id, tenantId, keyHash, keyLookupHash, name, expiresAt || null,
       compression?.enabled !== undefined ? (compression.enabled ? 1 : 0) : null,
       compression?.algorithm || null,
       compression?.reversible !== undefined ? (compression.reversible ? 1 : 0) : null,
@@ -3191,7 +3205,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
-    const { tenant_id, name, scopes, allowed_tools, expires_at, compression_enabled, compression_algorithm, compression_reversible } = parsed.data;
+    const { tenant_id, name, scopes, allowed_tools, role, expires_at, compression_enabled, compression_algorithm, compression_reversible } = parsed.data;
 
     const db = getDb();
 
@@ -3201,18 +3215,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       throw new ValidationError('Tenant not found');
     }
 
-    const { generateApiKey, hashApiKeyWithSalt } = await import('@dmr-x/utils');
+    const { generateApiKey, hashApiKeyWithSalt, hashApiKey } = await import('@dmr-x/utils');
     const apiKey = generateApiKey();
     const keyHash = hashApiKeyWithSalt(apiKey);
+    const keyLookupHash = hashApiKey(apiKey);
 
     const id = crypto.randomUUID();
 
     db.prepare(
-      'INSERT INTO api_keys (id, tenant_id, key_hash, name, scopes, allowed_tools, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO api_keys (id, tenant_id, key_hash, key_lookup_hash, name, scopes, allowed_tools, role, expires_at, compression_enabled, compression_algorithm, compression_reversible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      id, tenant_id, keyHash, name,
+      id, tenant_id, keyHash, keyLookupHash, name,
       scopes ? JSON.stringify(scopes) : null,
       allowed_tools ? JSON.stringify(allowed_tools) : null,
+      // NOT NULL with a column default �?" pass the default explicitly rather
+      // than null, which would violate the constraint.
+      role ?? 'developer',
       expires_at || null,
       compression_enabled !== undefined ? (compression_enabled ? 1 : 0) : null,
       compression_algorithm || null,
@@ -3223,12 +3241,13 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     logAdminAction(request, 'create', 'api_key', id, {
       tenant_id,
       name,
+      role: role ?? 'developer',
       has_expiry: !!expires_at,
       compression_enabled: compression_enabled ?? null,
     });
 
     const row = db.prepare(
-      'SELECT id, tenant_id, name, scopes, allowed_tools, created_at, expires_at, compression_enabled, compression_algorithm, compression_reversible FROM api_keys WHERE id = ?'
+      'SELECT id, tenant_id, name, scopes, allowed_tools, role, created_at, expires_at, compression_enabled, compression_algorithm, compression_reversible FROM api_keys WHERE id = ?'
     ).get(id);
 
     reply.status(201);
@@ -3453,13 +3472,38 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.get('/admin/api-keys', async () => {
     const db = getDb();
     const rows = db.prepare(`
-      SELECT ak.id, ak.tenant_id, t.name as tenant_name, ak.name, ak.scopes, ak.is_active, ak.created_at, ak.last_used_at, ak.expires_at,
+      SELECT ak.id, ak.tenant_id, t.name as tenant_name, ak.name, ak.scopes, ak.role, ak.is_active, ak.created_at, ak.last_used_at, ak.expires_at,
              ak.compression_enabled, ak.compression_algorithm, ak.compression_reversible
       FROM api_keys ak
       JOIN tenants t ON t.id = ak.tenant_id
       ORDER BY ak.created_at DESC
     `).all();
     return { api_keys: rows };
+  });
+
+  /**
+   * Update an API key's agent RBAC role.
+   *
+   * Roles gate the agent platform (agent-rbac.middleware.ts). Without this a
+   * key would be stuck on the migration default for its whole life.
+   */
+  server.patch('/admin/api-keys/:id/role', async (request) => {
+    const { id } = request.params as { id: string };
+    const parsed = UpdateApiKeyRoleSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
+    }
+
+    const db = getDb();
+    const key = db.prepare('SELECT id FROM api_keys WHERE id = ?').get(id);
+    if (!key) {
+      throw new ValidationError('API key not found');
+    }
+
+    db.prepare('UPDATE api_keys SET role = ? WHERE id = ?').run(parsed.data.role, id);
+    logAdminAction(request, 'update', 'api_key', id, { role: parsed.data.role });
+
+    return { id, role: parsed.data.role };
   });
 
   // Update API key expiry
@@ -3801,7 +3845,14 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Dashboard stats
-  server.get('/admin/dashboard/stats', async () => {
+  /**
+   * Compute the dashboard stat block.
+   *
+   * Extracted from the route handler so the SSE stream can send a real initial
+   * snapshot on connect. Without one, a client that subscribed between updates
+   * sat on heartbeats showing nothing until the next request happened to fire.
+   */
+  function computeDashboardStats(): Record<string, unknown> {
     const db = getDb();
 
     // Total requests today
@@ -3877,7 +3928,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       worker_utilization: 0,
       system_status: providerTotal === 0 ? 'no_providers' : healthPercent === 100 ? 'operational' : healthPercent >= 50 ? 'degraded' : 'outage',
     };
-  });
+  }
+
+  server.get('/admin/dashboard/stats', async () => computeDashboardStats());
 
   // Route decisions
   server.get('/admin/routing/decisions', async (_request, reply) => {
@@ -4087,15 +4140,95 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       LIMIT 50
     `).all() as any[];
 
+    // `estimated_tokens_saved` is a token count, which cannot answer "how much
+    // money did this save". Carry the priced counterfactual alongside it so
+    // callers have both, and keep the original key for compatibility.
+    const savings = computeSavings(30);
+
     return {
       summary: {
         total_monthly_budget: totalMonthlyBudget,
         total_free_models: totalModels,
         healthy_free_providers: healthyProviders.size,
         estimated_tokens_saved: usage.reduce((sum: number, u: any) => sum + (u.total_tokens || 0), 0),
+        cost_avoided_usd: savings.costAvoidedUsd,
+        savings_basis: savings.basis,
       },
       providers: Object.values(providerBreakdown),
       recent_usage: usage,
+    };
+  });
+
+  /**
+   * Counterfactual free-tier savings — the priced version of
+   * `free-tier/summary`'s token count.
+   */
+  server.get('/admin/free-tier/savings', async (request) => {
+    const query = request.query as Record<string, string | undefined>;
+    const days = Math.min(Math.max(parseInt(query.days ?? '30', 10) || 30, 1), 365);
+    return computeSavings(days);
+  });
+
+  /**
+   * Seed for the live token counters on the Free Tier and Models pages.
+   *
+   * Split free vs paid so each page shows its own side, and returns the window
+   * boundaries so the client can increment from `usage_delta` telemetry frames
+   * without re-polling. Free-ness is decided by classification, not by a zero
+   * cost, for the same reason as the savings query.
+   */
+  server.get('/admin/usage/live', async (request) => {
+    const query = request.query as Record<string, string | undefined>;
+    const windows: Record<string, string> = {
+      '1h': '-1 hour',
+      '24h': '-1 day',
+      '7d': '-7 days',
+      '30d': '-30 days',
+    };
+    const windowKey = query.window && windows[query.window] ? query.window : '24h';
+    const offset = windows[windowKey];
+
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN is_free THEN tokens_input + tokens_output ELSE 0 END), 0) AS free_tokens,
+        COALESCE(SUM(CASE WHEN is_free THEN 1 ELSE 0 END), 0)                            AS free_requests,
+        COALESCE(SUM(CASE WHEN NOT is_free THEN tokens_input + tokens_output ELSE 0 END), 0) AS paid_tokens,
+        COALESCE(SUM(CASE WHEN NOT is_free THEN 1 ELSE 0 END), 0)                         AS paid_requests,
+        COALESCE(SUM(CASE WHEN NOT is_free THEN estimated_cost ELSE 0 END), 0)            AS paid_cost
+      FROM (
+        SELECT
+          rl.tokens_input,
+          rl.tokens_output,
+          rl.estimated_cost,
+          CASE WHEN mc.has_free_tier = 1 OR mc.verified_free = 1
+                    OR mc.pricingTier IN ('free', 'free_with_limits')
+               THEN 1 ELSE 0 END AS is_free
+        FROM request_logs rl
+        LEFT JOIN model_classifications mc
+          ON mc.provider_id = rl.selected_provider
+         AND mc.model_id   = rl.selected_model
+        WHERE rl.timestamp > datetime('now', ?)
+      )
+    `).get(offset) as any;
+
+    const days = windowKey === '1h' ? 1 : windowKey === '24h' ? 1 : windowKey === '7d' ? 7 : 30;
+    const savings = computeSavings(days);
+
+    return {
+      window: windowKey,
+      windowStart: new Date(Date.now() - (windowKey === '1h' ? 3600e3 : days * 86400e3)).toISOString(),
+      free: {
+        tokens: Number(row?.free_tokens ?? 0),
+        requests: Number(row?.free_requests ?? 0),
+      },
+      paid: {
+        tokens: Number(row?.paid_tokens ?? 0),
+        requests: Number(row?.paid_requests ?? 0),
+        costUsd: Number(row?.paid_cost ?? 0),
+      },
+      costAvoidedUsd: savings.costAvoidedUsd,
+      savingsBasis: savings.basis,
     };
   });
 
@@ -4174,12 +4307,19 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       ORDER BY date ASC
     `).all(start) as any[];
 
+    // `costSavings` used to be SUM(CASE WHEN cost = 0 THEN cost ELSE 0 END),
+    // which is identically zero. It now comes from the counterfactual in
+    // services/savings.ts, which prices free-served tokens against the
+    // cheapest comparable paid model.
+    const savings = computeSavings(days);
+
     return {
       period: { start: new Date(start), end: new Date() },
       totalCost: totals?.total_cost ?? 0,
       freeTierCost: totals?.free_cost ?? 0,
       paidCost: (totals?.total_cost ?? 0) - (totals?.free_cost ?? 0),
-      costSavings: totals?.free_cost ?? 0,
+      costSavings: savings.costAvoidedUsd,
+      savingsBasis: savings.basis,
       byTenant: enrichedByTenant,
       byProvider: Object.fromEntries(byProvider.map((p: any) => [p.provider, {
         cost: p.cost,
@@ -4516,6 +4656,35 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     dashboardStatsEvents.emit('stats', stats);
   }
 
+  /**
+   * Recompute and broadcast dashboard stats, at most once a second.
+   *
+   * `publishDashboardStatsUpdate` was exposed on the server object but nothing
+   * ever called it, so the stream only ever emitted heartbeats. This is the
+   * missing producer: the request lifecycle hook calls it on every completed
+   * request.
+   *
+   * Two guards keep it off the hot path — it no-ops when nobody is listening,
+   * and it coalesces bursts into one recompute per second. The stat block is
+   * six aggregate queries, which is fine once a second and not fine per
+   * request under load.
+   */
+  let lastStatsPublish = 0;
+  function publishDashboardStatsThrottled(): void {
+    if (dashboardStatsEvents.listenerCount('stats') === 0) return;
+
+    const now = Date.now();
+    if (now - lastStatsPublish < 1000) return;
+    lastStatsPublish = now;
+
+    try {
+      publishDashboardStatsUpdate(computeDashboardStats());
+    } catch (err) {
+      // Telemetry must never break a request.
+      logger.warn({ err }, 'Dashboard stats publish failed');
+    }
+  }
+
   server.get('/admin/dashboard/stream', async (request, reply) => {
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -4532,6 +4701,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       }
     };
     dashboardStatsEvents.on('stats', onStats);
+
+    // Initial snapshot. The telemetry stream already replays its buffer on
+    // connect; this stream did not, so a client that subscribed while the
+    // system was idle rendered an empty dashboard indefinitely.
+    try {
+      onStats(computeDashboardStats());
+    } catch (err) {
+      logger.warn({ err }, 'Failed to send initial dashboard stats snapshot');
+    }
 
     // Heartbeat every 15s to keep the connection alive
     const heartbeat = setInterval(() => {
@@ -4551,6 +4729,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // Expose publisher for dashboard stats updates
   (server as unknown as Record<string, unknown>).publishDashboardStatsUpdate = publishDashboardStatsUpdate;
+  (server as unknown as Record<string, unknown>).publishDashboardStatsThrottled = publishDashboardStatsThrottled;
 
   // Expose buffer + publisher for adding events from other routes
   (server as unknown as Record<string, unknown>).telemetryBuffer = telemetryBuffer;

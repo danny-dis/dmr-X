@@ -76,7 +76,7 @@ export const PROVIDER_INIT_CONFIG: ProviderInitConfig[] = [
   // endpoint. The key (OPENCODE_ZEN_API_KEY) is an OpenRouter-style key, so
   // point at OpenRouter's /v1. (The gateway has no opencode-zen entry of its
   // own; this mirrors the OpenRouter-style free-tier providers.)
-  { id: 'opencode-zen', envApiKey: 'OPENC...KEY', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
+  { id: 'opencode-zen', envApiKey: 'OPENCODE_ZEN_API_KEY', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
   { id: 'mistral', envApiKey: 'MISTRAL_API_KEY' },
   { id: 'cohere-free', envApiKey: 'COHERE_API_KEY' },
   { id: 'nvidia', envApiKey: 'NVIDIA_API_KEY' },

@@ -1,4 +1,4 @@
-import { Copy, Check, ThumbsUp, ThumbsDown, RotateCcw, Clock, Zap, DollarSign, Info } from 'lucide-react';
+import { Copy, Check, ThumbsUp, ThumbsDown, RotateCcw, Clock, Zap, DollarSign, Info, Cpu, Server } from 'lucide-react';
 import * as React from 'react';
 
 import { Button } from '@/components/primitives/Button';
@@ -83,13 +83,24 @@ function MessageBubbleComponent({ message }: MessageBubbleProps) {
           <audio controls src={message.audioUrl} className="mt-2 w-full h-8" />
         )}
 
-        {/* Metadata */}
-        {!isUser && (message.latencyMs ?? 0) > 0 && (
+        {/* Metadata footer — latency, tokens, cost, model/provider. Only
+            assistant messages carry this (set once the stream completes),
+            so a message mid-stream or a plain user turn renders nothing. */}
+        {!isUser && (
+          (message.latencyMs ?? 0) > 0 ||
+          message.model ||
+          message.provider ||
+          message.tokensInput ||
+          message.tokensOutput ||
+          (message.cost ?? 0) > 0
+        ) && (
           <div className="mt-3 pt-3 border-t border-border/60 flex flex-wrap items-center gap-4 text-[10px] text-fg-subtle">
-            <span className="flex items-center gap-1">
-              <Clock className="size-3" />
-              {formatDuration(message.latencyMs ?? 0)}
-            </span>
+            {(message.latencyMs ?? 0) > 0 && (
+              <span className="flex items-center gap-1">
+                <Clock className="size-3" />
+                {formatDuration(message.latencyMs ?? 0)}
+              </span>
+            )}
             {(message.tokensInput || message.tokensOutput) ? (
               <span className="flex items-center gap-1">
                 <Zap className="size-3" />
@@ -100,6 +111,18 @@ function MessageBubbleComponent({ message }: MessageBubbleProps) {
               <span className="flex items-center gap-1">
                 <DollarSign className="size-3" />
                 {message.cost.toFixed(4)}
+              </span>
+            ) : null}
+            {message.model ? (
+              <span className="flex items-center gap-1 truncate">
+                <Cpu className="size-3 shrink-0" />
+                {message.model}
+              </span>
+            ) : null}
+            {message.provider ? (
+              <span className="flex items-center gap-1">
+                <Server className="size-3" />
+                {message.provider}
               </span>
             ) : null}
           </div>

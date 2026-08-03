@@ -120,7 +120,7 @@ export function ConnectPage() {
         <Card padding="md">
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Server className="size-5" />
+              <Server className="size-5" aria-hidden />
             </div>
             <div>
               <p className="text-[10px] text-fg-muted uppercase tracking-wider">Endpoint</p>
@@ -131,7 +131,7 @@ export function ConnectPage() {
         <Card padding="md">
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
-              <KeyRound className="size-5" />
+              <KeyRound className="size-5" aria-hidden />
             </div>
             <div>
               <p className="text-[10px] text-fg-muted uppercase tracking-wider">Auth</p>
@@ -142,7 +142,7 @@ export function ConnectPage() {
         <Card padding="md">
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center rounded-xl bg-success/10 text-success">
-              <Webhook className="size-5" />
+              <Webhook className="size-5" aria-hidden />
             </div>
             <div>
               <p className="text-[10px] text-fg-muted uppercase tracking-wider">Webhooks</p>
@@ -174,7 +174,7 @@ export function ConnectPage() {
                     variant="ghost"
                     onClick={() => navigate('/playground')}
                   >
-                    <Play className="size-3" /> Try in Playground
+                    <Play className="size-3" aria-hidden /> Try in Playground
                   </Button>
                   <CopyButton value={v.code} />
                 </div>
@@ -204,7 +204,7 @@ export function ConnectPage() {
                 key={s.name}
                 className="flex items-center gap-3 rounded-lg border border-border bg-surface-2 p-2.5"
               >
-                <Code className="size-3.5 text-fg-muted" />
+                <Code className="size-3.5 text-fg-muted" aria-hidden />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-mono text-fg">{s.name}</p>
                   <p className="text-[10px] text-fg-muted">{s.desc}</p>

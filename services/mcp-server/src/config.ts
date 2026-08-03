@@ -56,6 +56,14 @@ export interface McpConfigFile {
   corsOrigin?: string;
   /** Session idle timeout in milliseconds */
   sessionTimeoutMs?: number;
+  /**
+   * Root directory the filesystem/bash tools (dmrx_read_file, dmrx_write_file,
+   * dmrx_edit_file, dmrx_list_files, dmrx_search_files, dmrx_bash) are
+   * confined to. All tool `path`/`cwd` arguments are resolved relative to
+   * this root and rejected if they escape it. Defaults to process.cwd().
+   * Env override: DMRX_MCP_WORKSPACE_ROOT.
+   */
+  workspaceRoot?: string;
 
   /** Router configuration */
   router?: {

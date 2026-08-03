@@ -5,7 +5,7 @@ import { formatDuration } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiTelemetryEvent } from '@/types/api';
 
-const ICON_FOR = {
+const ICON_FOR: Record<string, React.ReactNode> = {
   request: <Network className="size-3.5" />,
   routing: <Zap className="size-3.5" />,
   model: <Cpu className="size-3.5" />,
@@ -21,7 +21,7 @@ export interface TelemetryEventRowProps {
 
 export function TelemetryEventRow({ event, className }: TelemetryEventRowProps) {
   const ok = event.status === 'ok' || event.status == null;
-  const Icon = ICON_FOR[event.kind] ?? <Info className="size-3.5" />;
+  const Icon = ICON_FOR[event.kind ?? ''] ?? <Info className="size-3.5" />;
   return (
     <div
       className={cn(

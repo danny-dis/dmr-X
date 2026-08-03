@@ -4,6 +4,52 @@ import { logger } from '@dmr-x/utils';
 import { getDb } from '@dmr-x/db';
 import { tracer, contentCaptureService } from '@dmr-x/telemetry';
 
+/**
+ * Cached free/paid classification, keyed `providerId:modelId`.
+ *
+ * The live token counters need to attribute each request to a tier, but this
+ * runs on every response — a classification query per request would put a read
+ * on the hot path for data that changes only when an operator reclassifies a
+ * model. Entries expire so a reclassification is picked up without a restart.
+ */
+const tierCache = new Map<string, { tier: 'free' | 'paid'; at: number }>();
+const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function resolveTier(providerId: string, modelId: string): 'free' | 'paid' {
+  const key = `${providerId}:${modelId}`;
+  const cached = tierCache.get(key);
+  if (cached && Date.now() - cached.at < TIER_CACHE_TTL_MS) return cached.tier;
+
+  let tier: 'free' | 'paid' = 'paid';
+  try {
+    const row = getDb()
+      .prepare(
+        `SELECT has_free_tier, verified_free, pricingTier
+           FROM model_classifications
+          WHERE provider_id = ? AND model_id = ?`,
+      )
+      .get(providerId, modelId) as
+      | { has_free_tier?: number; verified_free?: number; pricingTier?: string }
+      | undefined;
+
+    if (
+      row &&
+      (row.has_free_tier === 1 ||
+        row.verified_free === 1 ||
+        row.pricingTier === 'free' ||
+        row.pricingTier === 'free_with_limits')
+    ) {
+      tier = 'free';
+    }
+  } catch {
+    // Unclassified or unreadable: default to 'paid'. Under-reporting savings
+    // is the safe direction — claiming a paid model was free is not.
+  }
+
+  tierCache.set(key, { tier, at: Date.now() });
+  return tier;
+}
+
 export function registerTelemetryHooks(server: FastifyInstance, telemetry: any): void {
   // Telemetry: record request count + latency per request, token usage
   // and errors when the route handler populated `request.metrics`.
@@ -148,20 +194,37 @@ export function registerTelemetryHooks(server: FastifyInstance, telemetry: any):
             metrics.freeTierStrategy ?? null,
           );
 
-          // Publish dashboard stats update for SSE subscribers
+          // Two distinct frames go out on the dashboard stream, discriminated
+          // by `type`:
+          //
+          //  1. `usage_delta` — this one request's tokens/cost, so the live
+          //     counters on the Free Tier and Models pages can increment
+          //     without re-polling. Carries `tier` because "cost is zero" is
+          //     not proof a model is free (an unpriced paid model also logs
+          //     zero); the classification lookup is what decides.
+          //
+          //  2. `stats` — the recomputed dashboard stat block, throttled to
+          //     1/s. Previously this stream only ever carried the per-request
+          //     frame, so a client expecting the stat block received a payload
+          //     it could not parse and rendered nothing.
           const publishStats = (server as any).publishDashboardStatsUpdate;
           if (publishStats) {
             publishStats({
-              type: 'request_completed',
+              type: 'usage_delta',
+              tier: resolveTier(metrics.providerId, metrics.modelId),
               provider: metrics.providerId,
               model: metrics.modelId,
               latency_ms: latencyMs,
+              tokens_in: metrics.tokens?.prompt ?? 0,
+              tokens_out: metrics.tokens?.completion ?? 0,
               tokens: (metrics.tokens?.prompt ?? 0) + (metrics.tokens?.completion ?? 0),
               cost: metrics.tokens?.costUsd ?? 0,
               error: !!metrics.errorCode,
               timestamp: new Date().toISOString(),
             });
           }
+
+          (server as any).publishDashboardStatsThrottled?.();
         } catch (writeErr) {
           // Persistence failures must never break the request. The debounced
           // save will retry the export on the next batch, so a single bad

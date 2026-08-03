@@ -13,8 +13,9 @@ import type { FastifyInstance } from 'fastify';
 import crypto from 'crypto';
 
 import { writeSSE } from '../lib/sse.js';
-import { executeToolCall, getRegisteredToolDefinitions } from './tools.routes.js';
+import { getRegisteredToolDefinitions, cleanupSandboxDir } from './tools.routes.js';
 import { runAgentChatLoop } from './agent-chat-loop.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +29,9 @@ interface AgentChatBody {
   maxSteps?: number;
   conversationId?: string;
   max_cost_budget?: number;
+  stopWhen?: Array<{ type: string; value: number | string }>;
+  approvalRequired?: boolean;
+  approvalDecisions?: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +164,25 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         loadedSkillIds,
         runtime: agentRuntimeService,
         conversationId: convId,
+        onCheckpoint: (turn, conversation) => {
+          agentSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId: convId,
+            instanceId,
+            agentDefinitionId: definition.id,
+            state: conversation,
+            status: 'in_progress',
+            lastTurn: turn,
+            metadata: {
+              loadedSkillIds: JSON.stringify(loadedSkillIds),
+              totalTokensUsed: 0,
+            },
+          });
+        },
+        stopWhen: body.stopWhen,
+        approvalRequired: body.approvalRequired,
+        approvalDecisions: body.approvalDecisions,
+        qualityTarget: parseQualityTarget(request.headers['x-quality-target'] as string),
       });
 
       agentSessionStore.upsert({
@@ -168,7 +191,11 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         instanceId,
         agentDefinitionId: definition.id,
         state: conversation,
-        status: result.budgetExceeded ? 'interrupted' : conversation.status,
+        status: result.awaitingApproval
+          ? 'awaiting_approval'
+          : result.budgetExceeded
+            ? 'interrupted'
+            : conversation.status,
         metadata: {
           lastResponseText: result.lastResponseText,
           totalTokensUsed: result.totalTokensUsed,
@@ -201,12 +228,15 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
       if (body.stream) {
         writeSSE(reply, 'done', {
-          status: 'completed',
+          status: result.awaitingApproval ? 'awaiting_approval' : 'completed',
           conversationId: conversation.id,
           durationMs: Date.now() - startTime,
           totalTokensUsed: result.totalTokensUsed,
           totalCost: result.totalCost,
           budget_exceeded: result.budgetExceeded,
+          ...(result.awaitingApproval
+            ? { pending_tool_calls: conversation.pendingToolCalls ?? [] }
+            : {}),
         });
         reply.raw.end();
         return reply;
@@ -223,6 +253,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         steps_completed: result.stepsCompleted,
         all_steps: result.allSteps,
         durationMs: Date.now() - startTime,
+        ...(result.awaitingApproval
+          ? { status: 'awaiting_approval', pending_tool_calls: conversation.pendingToolCalls ?? [] }
+          : {}),
         ...(result.budgetExceeded
           ? { budget_exceeded: true, max_cost_budget: body.max_cost_budget, totalCost: result.totalCost }
           : {}),
@@ -278,79 +311,130 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const maxSteps = body.maxSteps ?? 10;
     const startTime = Date.now();
 
-    const context = await agentRuntimeService.loadContext(instanceId, tenant.id);
-    if (!context) {
-      return reply.code(404).send({ error: { message: 'Agent instance not found or inactive' } });
+    // Serialize against any other request (a concurrent /chat call or another
+    // /resume) touching the same conversationId. This was already required to
+    // avoid racing the durable ConversationState; it now ALSO protects the
+    // coding-tool sandbox, which is keyed on conversationId (see
+    // tools.routes.ts resolveSandboxDir) so all turns of a session share one
+    // workspace directory. Without this lock, two overlapping requests for
+    // the same conversation could interleave reads/writes to that shared
+    // directory. Requests for DIFFERENT conversations are unaffected — each
+    // conversationId gets its own lock key and its own workspace directory.
+    const locks = agentSessionStore.locks;
+    while (locks.has(conversationId)) {
+      await locks.get(conversationId)!;
     }
-    const persisted = agentSessionStore.get(tenant.id, conversationId);
-    if (!persisted) {
-      return reply.code(404).send({ error: { message: 'No durable session to resume' } });
+    let lockResolver: (() => void) | undefined;
+    const lockPromise = new Promise<void>((resolve) => { lockResolver = resolve; });
+    locks.set(conversationId, lockPromise);
+    const releaseLock = () => {
+      lockResolver?.();
+      if (locks.get(conversationId) === lockPromise) locks.delete(conversationId);
+    };
+
+    try {
+      const context = await agentRuntimeService.loadContext(instanceId, tenant.id);
+      if (!context) {
+        return reply.code(404).send({ error: { message: 'Agent instance not found or inactive' } });
+      }
+      const persisted = agentSessionStore.get(tenant.id, conversationId);
+      if (!persisted) {
+        return reply.code(404).send({ error: { message: 'No durable session to resume' } });
+      }
+      const loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');
+
+      const conversation = updateState(persisted.state as ConversationState, {
+        messages: [...persisted.state.messages, ...body.messages],
+        status: 'in_progress',
+      });
+
+      const definition = context.definition;
+      const model = agentRuntimeService.resolveModel(definition);
+      const agentTools = definition.allowedTools;
+      const agentToolDefs = buildAgentTools(agentTools);
+
+      const result = await runAgentChatLoop({
+        conversation,
+        maxSteps,
+        model,
+        agentTools,
+        agentToolDefs,
+        body,
+        requestId,
+        tenant,
+        router,
+        context,
+        stream: false,
+        onStreamEvent: () => {},
+        buildSystemPrompt: (turn) =>
+          agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds),
+        agentDefinition: {
+          id: definition.id,
+          name: definition.name,
+          tenantId: definition.tenantId,
+          allowedTools: definition.allowedTools,
+        },
+        loadedSkillIds,
+        runtime: agentRuntimeService,
+        conversationId,
+        onCheckpoint: (turn, conversation) => {
+          agentSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId,
+            instanceId,
+            agentDefinitionId: definition.id,
+            state: conversation,
+            status: 'in_progress',
+            lastTurn: turn,
+            metadata: {
+              loadedSkillIds: JSON.stringify(loadedSkillIds),
+              totalTokensUsed: 0,
+            },
+          });
+        },
+        stopWhen: body.stopWhen,
+        approvalRequired: body.approvalRequired,
+        approvalDecisions: body.approvalDecisions,
+        qualityTarget: parseQualityTarget(request.headers['x-quality-target'] as string),
+      });
+
+      agentSessionStore.upsert({
+        tenantId: tenant.id,
+        conversationId,
+        instanceId,
+        agentDefinitionId: definition.id,
+        state: conversation,
+        status: result.awaitingApproval
+          ? 'awaiting_approval'
+          : result.budgetExceeded
+            ? 'interrupted'
+            : conversation.status,
+        metadata: {
+          lastResponseText: result.lastResponseText,
+          totalTokensUsed: result.totalTokensUsed,
+          loadedSkillIds: JSON.stringify(loadedSkillIds),
+        },
+      });
+
+      return reply.send({
+        id: requestId,
+        agentInstanceId: instanceId,
+        agentName: definition.name,
+        content: result.lastResponseText,
+        model,
+        usage: result.finalUsage,
+        conversationId,
+        steps_completed: result.stepsCompleted,
+        durationMs: Date.now() - startTime,
+        loadedSkills: loadedSkillIds,
+        resumed: true,
+        ...(result.awaitingApproval
+          ? { status: 'awaiting_approval', pending_tool_calls: conversation.pendingToolCalls ?? [] }
+          : {}),
+      });
+    } finally {
+      releaseLock();
     }
-    const loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');
-
-    const conversation = updateState(persisted.state as ConversationState, {
-      messages: [...persisted.state.messages, ...body.messages],
-      status: 'in_progress',
-    });
-
-    const definition = context.definition;
-    const model = agentRuntimeService.resolveModel(definition);
-    const agentTools = definition.allowedTools;
-    const agentToolDefs = buildAgentTools(agentTools);
-
-    const result = await runAgentChatLoop({
-      conversation,
-      maxSteps,
-      model,
-      agentTools,
-      agentToolDefs,
-      body,
-      requestId,
-      tenant,
-      router,
-      context,
-      stream: false,
-      onStreamEvent: () => {},
-      buildSystemPrompt: (turn) =>
-        agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds),
-      agentDefinition: {
-        id: definition.id,
-        name: definition.name,
-        tenantId: definition.tenantId,
-        allowedTools: definition.allowedTools,
-      },
-      loadedSkillIds,
-      runtime: agentRuntimeService,
-      conversationId,
-    });
-
-    agentSessionStore.upsert({
-      tenantId: tenant.id,
-      conversationId,
-      instanceId,
-      agentDefinitionId: definition.id,
-      state: conversation,
-      status: result.budgetExceeded ? 'interrupted' : conversation.status,
-      metadata: {
-        lastResponseText: result.lastResponseText,
-        totalTokensUsed: result.totalTokensUsed,
-        loadedSkillIds: JSON.stringify(loadedSkillIds),
-      },
-    });
-
-    return reply.send({
-      id: requestId,
-      agentInstanceId: instanceId,
-      agentName: definition.name,
-      content: result.lastResponseText,
-      model,
-      usage: result.finalUsage,
-      conversationId,
-      steps_completed: result.stepsCompleted,
-      durationMs: Date.now() - startTime,
-      loadedSkills: loadedSkillIds,
-      resumed: true,
-    });
   });
 
   /**
@@ -370,13 +454,18 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
   /**
    * DELETE /agents/:instanceId/chat/:conversationId
    *
-   * Forget a durable session.
+   * Forget a durable session. Also reclaims the conversation's on-disk coding
+   * sandbox (apps/gateway/src/routes/tools.routes.ts keys the workspace on
+   * conversationId), since deletion is the one point where we know for
+   * certain the workspace will never be read again — unlike a plain
+   * cancel/timeout, which may still be resumed later.
    */
   server.delete('/agents/:instanceId/chat/:conversationId', async (request, reply) => {
     const tenant = (request as any).tenant;
     if (!tenant) return reply.code(401).send({ error: { message: 'Unauthorized' } });
     const { conversationId } = request.params as { conversationId: string };
     agentSessionStore.delete(conversationId);
+    cleanupSandboxDir(tenant.id, conversationId);
     return reply.send({ status: 'deleted', conversationId });
   });
 
@@ -431,5 +520,13 @@ function parsedResumeBody(body: unknown): AgentChatBody {
   return {
     messages: (b.messages as AgentChatBody['messages']) ?? [],
     maxSteps: (b.maxSteps as number) ?? undefined,
+    stopWhen: (b.stopWhen as AgentChatBody['stopWhen']) ?? undefined,
+    approvalRequired: (b.approvalRequired as boolean) ?? undefined,
+    approvalDecisions: (b.approvalDecisions as AgentChatBody['approvalDecisions']) ?? undefined,
+    max_cost_budget: (b.max_cost_budget as number) ?? undefined,
+    temperature: (b.temperature as number) ?? undefined,
+    maxTokens: (b.maxTokens as number) ?? undefined,
+    stream: (b.stream as boolean) ?? undefined,
+    conversationId: (b.conversationId as string) ?? undefined,
   } as AgentChatBody;
 }

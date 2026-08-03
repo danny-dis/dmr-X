@@ -68,6 +68,10 @@ export const createConversationsSlice: StateCreator<PlaygroundState, [], [], Con
     const trimmed = title.trim();
     if (!trimmed) return;
 
+    // Capture the previous title so a failed write can roll back to it
+    // instead of blanking the conversation's name.
+    const previousTitle = get().conversations.find(c => c.id === id)?.title ?? '';
+
     set(state => ({
       conversations: state.conversations.map(c =>
         c.id === id ? { ...c, title: trimmed, updatedAt: new Date().toISOString() } : c
@@ -79,7 +83,7 @@ export const createConversationsSlice: StateCreator<PlaygroundState, [], [], Con
     } catch (_error) {
       set(state => ({
         conversations: state.conversations.map(c =>
-          c.id === id ? { ...c, title: '' } : c
+          c.id === id ? { ...c, title: previousTitle } : c
         ),
       }));
     }

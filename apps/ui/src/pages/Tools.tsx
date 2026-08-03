@@ -6,14 +6,17 @@ import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent } from '@/components/primitives/Card';
 import { Code } from '@/components/primitives/Code';
+import { DataState } from '@/components/primitives/DataState';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import { InlineError, interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
-import { Skeleton } from '@/components/primitives/Skeleton';
+import { Slider } from '@/components/primitives/Slider';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
+import { Admin, api } from '@/lib/admin';
 import { cn } from '@/lib/utils';
 import type { ApiModel } from '@/types/api';
 
@@ -59,7 +62,7 @@ export function ToolsPage() {
   const [temperature, setTemperature] = React.useState(0.7);
   const [response, setResponse] = React.useState<unknown>(null);
   const [status, setStatus] = React.useState<RequestStatus>('idle');
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<unknown>(null);
   const [latency, setLatency] = React.useState<number | null>(null);
   const [messagesParseError, setMessagesParseError] = React.useState<string | null>(null);
   const [toolsParseError, setToolsParseError] = React.useState<string | null>(null);
@@ -95,16 +98,18 @@ export function ToolsPage() {
       parsedMessages = JSON.parse(messagesText);
     } catch (e) {
       setMessagesParseError((e as Error).message);
-      setStatus('error');
+      setStatus('idle');
       return;
     }
     try {
       parsedTools = JSON.parse(toolsText);
     } catch (e) {
       setToolsParseError((e as Error).message);
-      setStatus('error');
+      setStatus('idle');
       return;
     }
+    setMessagesParseError(null);
+    setToolsParseError(null);
 
     const endpoint = mode === 'execute' ? '/v1/tools/execute' : '/v1/tools/loop';
     const body: Record<string, unknown> = {
@@ -120,25 +125,20 @@ export function ToolsPage() {
 
     const start = performance.now();
     try {
-      const res = await fetch(endpoint, {
+      const data = await api<unknown>(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('dmrx_tenant_token') || localStorage.getItem('dmrx_token') || ''}`,
-          ...(costFilter === 'free' ? { 'x-cost-filter': 'free' } : {}),
-        },
-        body: JSON.stringify(body),
+        body,
+        headers: costFilter === 'free' ? { 'x-cost-filter': 'free' } : {},
       });
-      const data = await res.json();
       setLatency(performance.now() - start);
-      if (!res.ok) {
-        throw new Error(data.error?.message ?? `Request failed (${res.status})`);
-      }
       setResponse(data);
       setStatus('success');
     } catch (e) {
-      setError((e as Error).message);
+      setLatency(performance.now() - start);
+      setError(e);
       setStatus('error');
+      const interpreted = interpretError(e);
+      toast.error(interpreted.title, { description: interpreted.description });
     }
   }
 
@@ -185,35 +185,44 @@ export function ToolsPage() {
           <CardContent className="flex flex-col gap-4 px-0">
             {/* Model selector */}
             <div>
-              <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Model</label>
+              <label htmlFor="tools-model-select" className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Model</label>
               <Select value={model} onValueChange={setModel}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger id="tools-model-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {allModelOptions.map((m) => (
                     <SelectItem key={m.id} value={m.id}>{m.displayName}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {models.error && (
+                <InlineError error={models.error} onRetry={models.refetch} className="mt-2" />
+              )}
             </div>
 
             {/* Cost Filter — only visible for meta-model aliases */}
             {model.startsWith('auto') && (
               <div>
-                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Cost Filter</label>
-                <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 p-0.5">
+                <span id="tools-cost-filter-label" className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Cost Filter</span>
+                <div
+                  role="group"
+                  aria-labelledby="tools-cost-filter-label"
+                  className="flex items-center gap-1 rounded-md border border-border bg-surface-2 p-0.5"
+                >
                   <button
                     type="button"
+                    aria-pressed={costFilter === 'all'}
                     onClick={() => setCostFilter('all')}
                     className={cn(
                       'flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors',
                       costFilter === 'all' ? 'bg-primary text-primary-foreground' : 'text-fg-muted hover:text-fg'
                     )}
                   >
-                    <Coins className="size-2.5" />
+                    <Coins className="size-2.5" aria-hidden />
                     All providers
                   </button>
                   <button
                     type="button"
+                    aria-pressed={costFilter === 'free'}
                     onClick={() => setCostFilter('free')}
                     className={cn(
                       'flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors',
@@ -240,8 +249,9 @@ export function ToolsPage() {
             {/* Max steps (loop only) */}
             {mode === 'loop' && (
               <div>
-                <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Max Steps</label>
+                <label htmlFor="tools-max-steps" className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Max Steps</label>
                 <Input
+                  id="tools-max-steps"
                   type="number"
                   value={String(maxSteps)}
                   onChange={(e) => setMaxSteps(Number(e.target.value))}
@@ -252,8 +262,9 @@ export function ToolsPage() {
 
             {/* Messages */}
             <div>
-              <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Messages (JSON array)</label>
+              <label htmlFor="tools-messages" className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Messages (JSON array)</label>
               <Textarea
+                id="tools-messages"
                 value={messagesText}
                 onChange={(e) => {
                   setMessagesText(e.target.value);
@@ -261,17 +272,20 @@ export function ToolsPage() {
                 }}
                 rows={8}
                 invalid={!!messagesParseError}
+                aria-invalid={!!messagesParseError}
+                aria-describedby={messagesParseError ? 'tools-messages-error' : undefined}
                 className="font-mono text-xs"
               />
               {messagesParseError && (
-                <p className="text-[10px] text-danger mt-0.5">{messagesParseError}</p>
+                <p id="tools-messages-error" className="text-[10px] text-danger mt-0.5">{messagesParseError}</p>
               )}
             </div>
 
             {/* Tools */}
             <div>
-              <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Tools (JSON array)</label>
+              <label htmlFor="tools-tools" className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Tools (JSON array)</label>
               <Textarea
+                id="tools-tools"
                 value={toolsText}
                 onChange={(e) => {
                   setToolsText(e.target.value);
@@ -279,10 +293,12 @@ export function ToolsPage() {
                 }}
                 rows={8}
                 invalid={!!toolsParseError}
+                aria-invalid={!!toolsParseError}
+                aria-describedby={toolsParseError ? 'tools-tools-error' : undefined}
                 className="font-mono text-xs"
               />
               {toolsParseError && (
-                <p className="text-[10px] text-danger mt-0.5">{toolsParseError}</p>
+                <p id="tools-tools-error" className="text-[10px] text-danger mt-0.5">{toolsParseError}</p>
               )}
             </div>
 
@@ -290,16 +306,17 @@ export function ToolsPage() {
             <div>
               <label className="text-[10px] text-fg-muted mb-1 block uppercase tracking-wider">Temperature</label>
               <div className="flex items-center gap-3">
-                <input
-                  type="range"
+                <Slider
+                  value={[temperature]}
                   min={0}
                   max={2}
                   step={0.05}
-                  value={temperature}
-                  onChange={(e) => setTemperature(Number(e.target.value))}
-                  className="flex-1 accent-primary h-1.5 cursor-pointer"
+                  onValueChange={(v) => setTemperature(v[0] ?? 0.7)}
+                  className="flex-1"
                 />
-                <span className="text-xs text-fg-muted tabular-nums w-8 text-right">{temperature.toFixed(2)}</span>
+                <span className="text-xs text-fg-muted tabular-nums w-8 text-right" aria-live="polite">
+                  {temperature.toFixed(2)}
+                </span>
               </div>
             </div>
 
@@ -308,13 +325,10 @@ export function ToolsPage() {
               size="sm"
               className="w-full mt-2"
               onClick={onSubmit}
-              disabled={status === 'loading'}
+              loading={status === 'loading'}
+              leftIcon={<Play className="size-3" aria-hidden />}
             >
-              {status === 'loading' ? (
-                <>Executing...</>
-              ) : (
-                <><Play className="size-3" /> Execute</>
-              )}
+              Execute
             </Button>
           </CardContent>
         </Card>
@@ -347,79 +361,68 @@ export function ToolsPage() {
               </div>
               {(status === 'success' || status === 'error') && (
                 <Button size="sm" variant="secondary" onClick={reset}>
-                  <RotateCcw className="size-3" />
+                  <RotateCcw className="size-3" aria-hidden />
                   Reset
                 </Button>
               )}
             </div>
 
-            {status === 'idle' && (
-              <EmptyState
-                icon={<Terminal className="size-8" />}
-                title="Ready"
-                description="Configure the request and press Execute to see the response."
-              />
-            )}
+            <DataState
+              data={response}
+              isLoading={status === 'loading'}
+              error={status === 'error' ? error : null}
+              onRetry={onSubmit}
+              skeletonRows={4}
+              empty={{
+                icon: <Terminal className="size-8" />,
+                title: 'Ready',
+                description: 'Configure the request and press Execute to see the response.',
+              }}
+            >
+              {(data) => (
+                <Tabs defaultValue="response" className="w-full">
+                  <TabsList>
+                    <TabsTrigger value="response">
+                      <CodeIcon className="size-3" aria-hidden />
+                      Response
+                    </TabsTrigger>
+                    <TabsTrigger value="tool-results" disabled={!toolResults}>
+                      <Terminal className="size-3" aria-hidden />
+                      Tool Results
+                    </TabsTrigger>
+                    <TabsTrigger value="raw">
+                      <CodeIcon className="size-3" aria-hidden />
+                      Raw
+                    </TabsTrigger>
+                  </TabsList>
 
-            {status === 'loading' && (
-              <div className="flex flex-col gap-2">
-                <Skeleton className="h-6 w-3/4" />
-                <Skeleton className="h-6 w-1/2" />
-                <Skeleton className="h-6 w-2/3" />
-                <Skeleton className="h-6 w-1/3" />
-              </div>
-            )}
-
-            {error && (
-              <div className="rounded-lg border border-danger/20 bg-danger/5 p-3">
-                <p className="text-xs text-danger font-medium mb-1">Error</p>
-                <Code inline={false}>{error}</Code>
-              </div>
-            )}
-
-            {status === 'success' && response != null && !error && (
-              <Tabs defaultValue="response" className="w-full">
-                <TabsList>
-                  <TabsTrigger value="response">
-                    <CodeIcon className="size-3" />
-                    Response
-                  </TabsTrigger>
-                  <TabsTrigger value="tool-results" disabled={!toolResults}>
-                    <Terminal className="size-3" />
-                    Tool Results
-                  </TabsTrigger>
-                  <TabsTrigger value="raw">
-                    <CodeIcon className="size-3" />
-                    Raw
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="response" className="max-h-[500px] overflow-auto">
-                  <Code copyable inline={false}>
-                    {JSON.stringify(response, null, 2)}
-                  </Code>
-                </TabsContent>
-
-                <TabsContent value="tool-results" className="max-h-[500px] overflow-auto">
-                  {toolResults ? (
+                  <TabsContent value="response" className="max-h-[500px] overflow-auto">
                     <Code copyable inline={false}>
-                      {JSON.stringify(toolResults, null, 2)}
+                      {JSON.stringify(data, null, 2)}
                     </Code>
-                  ) : (
-                    <EmptyState
-                      title="No tool results"
-                      description="The response does not contain any tool results."
-                    />
-                  )}
-                </TabsContent>
+                  </TabsContent>
 
-                <TabsContent value="raw" className="max-h-[500px] overflow-auto">
-                  <Code copyable inline={false}>
-                    {JSON.stringify(response, null, 2)}
-                  </Code>
-                </TabsContent>
-              </Tabs>
-            )}
+                  <TabsContent value="tool-results" className="max-h-[500px] overflow-auto">
+                    {toolResults ? (
+                      <Code copyable inline={false}>
+                        {JSON.stringify(toolResults, null, 2)}
+                      </Code>
+                    ) : (
+                      <EmptyState
+                        title="No tool results"
+                        description="The response does not contain any tool results."
+                      />
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="raw" className="max-h-[500px] overflow-auto">
+                    <Code copyable inline={false}>
+                      {JSON.stringify(data, null, 2)}
+                    </Code>
+                  </TabsContent>
+                </Tabs>
+              )}
+            </DataState>
           </CardContent>
         </Card>
       </div>

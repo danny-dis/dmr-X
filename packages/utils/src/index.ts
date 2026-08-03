@@ -221,6 +221,8 @@ export {
   type ClaudeImageBlockParam,
   type ClaudeToolUseBlockParam,
   type ClaudeToolResultBlockParam,
+  type ClaudeRedactedThinkingBlockParam,
+  type ClaudeDocumentBlockParam,
   type EasyInputMessage,
   type InputMessageItem,
   type FunctionCallItem,

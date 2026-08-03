@@ -18,6 +18,16 @@ export default defineWorkspace([
         test: {
             name: 'unit',
             include: ['tests/unit/**/*.test.ts'],
+            // Vitest's defaults (5s test / 10s hook) assume a machine with CPU
+            // to spare. The base config pins `maxForks: 1`, so the whole suite
+            // shares one starvable process: anything else busy on the box
+            // (a parallel build, an indexer, a loaded CI runner) can stall a
+            // hook doing nothing but `Fastify({ logger: false })` past 10s.
+            // That surfaced as `telemetry-integration.test.ts` failing with
+            // "Hook timed out in 10000ms" only under load. These bounds still
+            // catch a genuine hang, just not a busy neighbour.
+            testTimeout: 20_000,
+            hookTimeout: 30_000,
             exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude', 'tests/e2e/**',
                 // These 2 tests are run in the dedicated `mcp` workspace project
                 // (isolated fork) — they hang in the combined vitest fork pool on

@@ -275,7 +275,7 @@ export async function cloudcodeRoutes(app: FastifyInstance): Promise<void> {
       const registryService = (app as any).registryService;
       const db = (app as any).db;
 
-      let models: Record<string, { displayName: string; quotaInfo?: Record<string, unknown> }> = {};
+      const models: Record<string, { displayName: string; quotaInfo?: Record<string, unknown> }> = {};
 
       if (registryService) {
         const allModels = await registryService.listModels?.();

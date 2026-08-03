@@ -26,10 +26,16 @@ export function ProviderCard({
   onTest,
   className,
 }: ProviderCardProps) {
-  const healthStatus = 
-    provider.status === 'healthy' || provider.status === 'operational' ? 'online' : 
-    provider.status === 'degraded' ? 'degraded' : 
-    provider.status === 'unavailable' || provider.status === 'outage' ? 'offline' : 
+  // ProviderStatus only ever carries 'healthy' | 'degraded' | 'unavailable' |
+  // 'maintenance' | 'online' | 'offline' | 'unknown' — 'operational' and
+  // 'outage' were never real values, so those two branches always fell
+  // through and 'maintenance'/'online'/'offline' were silently dropped to
+  // 'unknown'.
+  const healthStatus =
+    provider.status === 'healthy' || provider.status === 'online' ? 'online' :
+    provider.status === 'degraded' ? 'degraded' :
+    provider.status === 'unavailable' || provider.status === 'offline' ? 'offline' :
+    provider.status === 'maintenance' ? 'pending' :
     'unknown';
   const latency = provider.health?.latencyMs;
   return (

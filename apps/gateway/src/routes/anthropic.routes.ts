@@ -9,11 +9,27 @@ import {
   convertUnifiedResponseToAnthropic,
 } from '../converters/anthropic-converter.js';
 import { createAnthropicSSEStream } from '../converters/anthropic-stream-serializer.js';
+import {
+  anthropicWireError,
+  shouldExposeInternalError,
+} from '../lib/wire-errors.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
 
-const AnthropicContentBlockSchema = z.union([
-  z.object({ type: z.literal('text'), text: z.string() }),
+// `cache_control` (prompt caching) is accepted and preserved through parsing
+// on every block type that supports it below. It is NOT yet threaded through
+// convertAnthropicRequestToUnified / UnifiedRequest / the provider adapters --
+// forwarding it all the way to the upstream request is a larger change
+// (touches packages/core's ContentPart type and every adapter's message
+// builder) and is left as follow-up work. Accepting it here at least stops
+// Zod from silently stripping it off requests that include it.
+const CacheControlSchema = z.object({
+  type: z.literal('ephemeral'),
+  ttl: z.enum(['5m', '1h']).optional(),
+});
+
+export const AnthropicContentBlockSchema = z.union([
+  z.object({ type: z.literal('text'), text: z.string(), cache_control: CacheControlSchema.optional() }),
   z.object({
     type: z.literal('image'),
     source: z.object({
@@ -21,17 +37,42 @@ const AnthropicContentBlockSchema = z.union([
       media_type: z.string(),
       data: z.string(),
     }),
+    cache_control: CacheControlSchema.optional(),
   }),
   z.object({
     type: z.literal('tool_use'),
     id: z.string(),
     name: z.string(),
     input: z.record(z.unknown()),
+    cache_control: CacheControlSchema.optional(),
   }),
   z.object({
     type: z.literal('tool_result'),
     tool_use_id: z.string(),
     content: z.union([z.string(), z.array(z.any())]).optional(),
+    cache_control: CacheControlSchema.optional(),
+  }),
+  // Extended-thinking blocks replayed back on a second turn. Clients that
+  // enable thinking MUST send these back verbatim alongside the assistant
+  // message that produced them, or Anthropic rejects the request -- previously
+  // this union matched neither shape and Zod rejected the WHOLE request.
+  z.object({
+    type: z.literal('thinking'),
+    thinking: z.string(),
+    signature: z.string(),
+  }),
+  z.object({
+    type: z.literal('redacted_thinking'),
+    data: z.string(),
+  }),
+  // Native document (PDF) input.
+  z.object({
+    type: z.literal('document'),
+    source: z.union([
+      z.object({ type: z.literal('base64'), media_type: z.string(), data: z.string() }),
+      z.object({ type: z.literal('url'), url: z.string() }),
+    ]),
+    cache_control: CacheControlSchema.optional(),
   }),
 ]);
 
@@ -46,7 +87,7 @@ const AnthropicToolSchema = z.object({
   input_schema: z.record(z.unknown()),
 });
 
-const AnthropicMessagesRequestSchema = z.object({
+export const AnthropicMessagesRequestSchema = z.object({
   model: z.string(),
   max_tokens: z.number().positive(),
   system: z.union([z.string(), z.array(z.any())]).optional(),
@@ -68,6 +109,21 @@ const AnthropicMessagesRequestSchema = z.object({
 });
 
 export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
+  // Encapsulated error handler: this plugin only registers `/messages`, so
+  // non-streaming failures are serialized in the Anthropic wire format the
+  // official SDKs parse (`{ type: 'error', error: { type, message } }`)
+  // instead of the gateway-wide `{ error: { message, type, code } }` shape.
+  // Streaming errors stay inline as event-typed SSE (see the route below).
+  server.setErrorHandler((error, request, reply) => {
+    const err = error as { statusCode?: number; message?: string } & Error;
+    logger.error({ err, req: request, requestId: request.id }, `Anthropic API error: ${err.message}`);
+    const { statusCode, body } = anthropicWireError(err, {
+      exposeMessage: shouldExposeInternalError(),
+      requestId: request.id,
+    });
+    return reply.status(statusCode).send(body);
+  });
+
   server.post('/messages', async (request, reply) => {
     const parsed = AnthropicMessagesRequestSchema.safeParse(request.body);
     if (!parsed.success) {

@@ -12,6 +12,17 @@ export interface ExecuteInput {
   language: string;
   code: string;
   timeoutMs: number;
+  /**
+   * Working directory for the spawned interpreter. When provided, the
+   * directory is created if missing and the process is spawned with `cwd`
+   * set to it, so code executed here sees the SAME files the read_file /
+   * write_file coding tools operate on (they resolve into this same
+   * per-conversation workspace — see apps/gateway/src/routes/tools.routes.ts
+   * `resolveSandboxDir`). When omitted, the process inherits the host
+   * process's cwd (legacy behavior — kept for callers with no workspace,
+   * e.g. sandbox jobs submitted outside an agent conversation).
+   */
+  workspaceDir?: string;
 }
 
 export interface ExecuteResult {
@@ -163,12 +174,25 @@ export class Executor {
       this.cgroups.set(jobId, cgroupPath);
     }
 
+    // Ensure the workspace directory exists before spawning into it as cwd.
+    if (input.workspaceDir) {
+      try {
+        mkdirSync(input.workspaceDir, { recursive: true });
+      } catch (err) {
+        logger.warn({ err, workspaceDir: input.workspaceDir }, 'Failed to create sandbox workspace dir');
+      }
+    }
+
     return new Promise((resolve) => {
       const spawnOptions: any = {
         stdio: ['pipe', 'pipe', 'pipe'],
         // SECURITY: Use a stripped environment — never inherit process.env
         // which contains DMRX_ADMIN_API_KEY, DMRX_ENCRYPTION_KEY, etc.
         env: { ...SANDBOX_ENV, ...runner.env },
+        // Run inside the same per-conversation workspace the file tools use
+        // (falls back to the host process's own cwd when absent, matching
+        // the previous behavior for callers with no workspace).
+        ...(input.workspaceDir ? { cwd: input.workspaceDir } : {}),
       };
 
       // NOTE: Network isolation requires running as root with unshare:

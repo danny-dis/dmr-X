@@ -7,10 +7,16 @@ import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 
 import { Toaster } from '@/components/primitives/Toast';
+import { useLiveStream } from '@/hooks/useLiveStream';
 import { useUIStore } from '@/store/useUIStore';
 
 export function Shell() {
   const location = useLocation();
+
+  // One SSE subscription for the whole app, feeding useLiveStore. Pages read
+  // from the store rather than each opening their own stream or poll loop.
+  useLiveStream();
+
   const pushRecentPage = useUIStore((s) => s.pushRecentPage);
   const mobileMenuOpen = useUIStore((s) => s.mobileMenuOpen);
   const setMobileMenuOpen = useUIStore((s) => s.setMobileMenuOpen);

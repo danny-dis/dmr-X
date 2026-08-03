@@ -62,6 +62,40 @@ export interface AgentInstance {
   updatedAt: string;
 }
 
+/**
+ * An instance joined to its parent definition's display fields and a rollup of
+ * its executions — what a list view needs to render a card without an extra
+ * request per row. Returned by `listInstances`.
+ */
+export interface AgentInstanceDetail extends AgentInstance {
+  definitionName: string | null;
+  definitionHumanName: string | null;
+  definitionDescription: string | null;
+  definitionCategory: string | null;
+  definitionIcon: string | null;
+  definitionModelTier: string | null;
+  executionCount: number;
+  lastExecutionAt: string | null;
+  /** Cents, matching agent_executions.cost_cents. */
+  costCents24h: number;
+}
+
+/**
+ * Parse a JSON column that is expected to hold a particular shape, falling back
+ * rather than throwing.
+ *
+ * Step rows are audit records: a single corrupt value should degrade that one
+ * field, not blow up the whole trace the operator opened the page to read.
+ */
+function safeJsonParse<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== 'string' || raw.length === 0) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export interface AgentExecution {
   id: string;
   agentInstanceId: string;
@@ -377,12 +411,224 @@ export class AgentRegistryService {
     return this.rowToInstance(row);
   }
 
-  async listInstances(tenantId: string): Promise<AgentInstance[]> {
+  /**
+   * List a tenant's deployed instances, enriched with the parent definition's
+   * display fields and a rollup of that instance's executions.
+   *
+   * The join and the rollup exist so a list view can render name, category,
+   * last-run time and 24h spend without an N+1 per card. Returns the same
+   * `{ items, total }` envelope as `listDefinitions` — the bare array this
+   * used to return was inconsistent with every other list endpoint.
+   *
+   * @param status Optional filter, e.g. 'active' or 'paused'.
+   */
+  async listInstances(
+    tenantId: string,
+    opts: { status?: string } = {},
+  ): Promise<{ items: AgentInstanceDetail[]; total: number }> {
     const db = getDb();
-    const rows = db.prepare(
-      'SELECT * FROM agent_instances WHERE tenant_id = ? ORDER BY created_at DESC'
-    ).all(tenantId) as any[];
-    return rows.map((r) => this.rowToInstance(r));
+    const conditions = ['i.tenant_id = ?'];
+    const params: unknown[] = [tenantId];
+    if (opts.status) {
+      conditions.push('i.status = ?');
+      params.push(opts.status);
+    }
+    const where = conditions.join(' AND ');
+
+    // LEFT JOIN on definitions: an instance whose definition was deleted still
+    // has rows (agent_definitions has ON DELETE CASCADE, but a manual delete or
+    // a restore could leave one behind) and must not vanish from the list.
+    const rows = db.prepare(`
+      SELECT
+        i.*,
+        d.name        AS definition_name,
+        d.human_name  AS definition_human_name,
+        d.description AS definition_description,
+        d.category    AS definition_category,
+        d.icon        AS definition_icon,
+        d.model_tier  AS definition_model_tier,
+        (SELECT COUNT(*)        FROM agent_executions e WHERE e.agent_instance_id = i.id) AS execution_count,
+        (SELECT MAX(created_at) FROM agent_executions e WHERE e.agent_instance_id = i.id) AS last_execution_at,
+        (SELECT COALESCE(SUM(cost_cents), 0) FROM agent_executions e
+           WHERE e.agent_instance_id = i.id
+             AND e.created_at > datetime('now', '-1 day')) AS cost_cents_24h
+      FROM agent_instances i
+      LEFT JOIN agent_definitions d ON d.id = i.agent_definition_id
+      WHERE ${where}
+      ORDER BY i.created_at DESC
+    `).all(...params) as any[];
+
+    const items = rows.map((r) => ({
+      ...this.rowToInstance(r),
+      definitionName: r.definition_name ?? null,
+      definitionHumanName: r.definition_human_name ?? null,
+      definitionDescription: r.definition_description ?? null,
+      definitionCategory: r.definition_category ?? null,
+      definitionIcon: r.definition_icon ?? null,
+      definitionModelTier: r.definition_model_tier ?? null,
+      executionCount: Number(r.execution_count ?? 0),
+      lastExecutionAt: r.last_execution_at ?? null,
+      costCents24h: Number(r.cost_cents_24h ?? 0),
+    }));
+
+    return { items, total: items.length };
+  }
+
+  /**
+   * Set an instance's lifecycle status.
+   *
+   * 'paused' is honoured with no further wiring because the two places that
+   * consume instances — the runtime context loader and the dispatch candidate
+   * query — already filter on `status = 'active'`. Pausing therefore stops
+   * both scheduled and dispatched work while preserving the instance id, so
+   * resuming does not invalidate anything holding that id.
+   */
+  async setInstanceStatus(id: string, tenantId: string, status: 'active' | 'paused'): Promise<AgentInstance | null> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM agent_instances WHERE id = ? AND tenant_id = ?').get(id, tenantId) as any;
+    if (!row) return null;
+
+    db.prepare('UPDATE agent_instances SET status = ?, updated_at = ? WHERE id = ?')
+      .run(status, new Date().toISOString(), id);
+
+    logger.info({ id, tenantId, status }, 'Agent instance status changed');
+    return this.getInstance(id);
+  }
+
+  /**
+   * Per-definition cost and usage rollup over a time window.
+   *
+   * Aggregates `agent_executions` up through `agent_instances` to the parent
+   * definition, so a definition deployed as several instances reports one
+   * combined figure. Costs are stored in cents; `costUsd` is the divided value
+   * callers actually want to display.
+   */
+  async getCostAnalytics(
+    tenantId: string,
+    opts: { from?: string; to?: string } = {},
+  ): Promise<{
+    from: string;
+    to: string;
+    totals: { executions: number; inputTokens: number; outputTokens: number; costUsd: number; errorCount: number };
+    items: Array<{
+      agentDefinitionId: string | null;
+      agentName: string | null;
+      instanceCount: number;
+      executions: number;
+      successCount: number;
+      errorCount: number;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      costUsd: number;
+      avgDurationMs: number;
+      lastExecutionAt: string | null;
+    }>;
+  }> {
+    const db = getDb();
+    const to = opts.to ?? new Date().toISOString();
+    const from = opts.from ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const rows = db.prepare(`
+      SELECT
+        i.agent_definition_id                         AS agent_definition_id,
+        d.name                                        AS agent_name,
+        COUNT(DISTINCT i.id)                          AS instance_count,
+        COUNT(e.id)                                   AS executions,
+        SUM(CASE WHEN e.status = 'success' THEN 1 ELSE 0 END) AS success_count,
+        SUM(CASE WHEN e.status != 'success' THEN 1 ELSE 0 END) AS error_count,
+        COALESCE(SUM(e.input_tokens), 0)              AS input_tokens,
+        COALESCE(SUM(e.output_tokens), 0)             AS output_tokens,
+        COALESCE(SUM(e.cost_cents), 0)                AS cost_cents,
+        COALESCE(AVG(e.duration_ms), 0)               AS avg_duration_ms,
+        MAX(e.created_at)                             AS last_execution_at
+      FROM agent_executions e
+      JOIN agent_instances i   ON i.id = e.agent_instance_id
+      LEFT JOIN agent_definitions d ON d.id = i.agent_definition_id
+      WHERE e.tenant_id = ?
+        AND e.created_at >= ?
+        AND e.created_at <= ?
+      GROUP BY i.agent_definition_id
+      ORDER BY cost_cents DESC
+    `).all(tenantId, from, to) as any[];
+
+    const items = rows.map((r) => ({
+      agentDefinitionId: r.agent_definition_id ?? null,
+      agentName: r.agent_name ?? null,
+      instanceCount: Number(r.instance_count ?? 0),
+      executions: Number(r.executions ?? 0),
+      successCount: Number(r.success_count ?? 0),
+      errorCount: Number(r.error_count ?? 0),
+      inputTokens: Number(r.input_tokens ?? 0),
+      outputTokens: Number(r.output_tokens ?? 0),
+      totalTokens: Number(r.input_tokens ?? 0) + Number(r.output_tokens ?? 0),
+      costUsd: Number(r.cost_cents ?? 0) / 100,
+      avgDurationMs: Math.round(Number(r.avg_duration_ms ?? 0)),
+      lastExecutionAt: r.last_execution_at ?? null,
+    }));
+
+    return {
+      from,
+      to,
+      totals: {
+        executions: items.reduce((s, i) => s + i.executions, 0),
+        inputTokens: items.reduce((s, i) => s + i.inputTokens, 0),
+        outputTokens: items.reduce((s, i) => s + i.outputTokens, 0),
+        costUsd: items.reduce((s, i) => s + i.costUsd, 0),
+        errorCount: items.reduce((s, i) => s + i.errorCount, 0),
+      },
+      items,
+    };
+  }
+
+  /**
+   * Per-turn step trace for an instance's runs.
+   *
+   * `session_steps` is written on every agent turn (allowed vs blocked tool
+   * calls, token and cost deltas, budget status) but had no read path over
+   * HTTP, so the detail needed to explain *why* a run behaved as it did was
+   * being recorded and discarded. Scoped through agent_sessions so a tenant
+   * cannot read another tenant's steps.
+   */
+  async listSessionSteps(
+    instanceId: string,
+    tenantId: string,
+    opts: { conversationId?: string; limit?: number } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    const db = getDb();
+    const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
+
+    const conditions = ['s.agent_instance_id = ?', 's.tenant_id = ?'];
+    const params: unknown[] = [instanceId, tenantId];
+    if (opts.conversationId) {
+      conditions.push('st.conversation_id = ?');
+      params.push(opts.conversationId);
+    }
+
+    // agent_sessions has no `conversation_id` column — its primary key *is* the
+    // conversation id (agent-session.store.ts deletes by `id` using the
+    // conversationId). Joining on s.id is what scopes these steps to a tenant.
+    const rows = db.prepare(`
+      SELECT st.*
+      FROM session_steps st
+      JOIN agent_sessions s ON s.id = st.conversation_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY st.conversation_id ASC, st.turn ASC
+      LIMIT ?
+    `).all(...params, limit) as any[];
+
+    return rows.map((r) => ({
+      conversationId: r.conversation_id,
+      turn: Number(r.turn ?? 0),
+      status: r.status ?? null,
+      budgetStatus: r.budget_status ?? null,
+      allowedToolCalls: safeJsonParse(r.allowed_tool_calls, []),
+      blockedToolCalls: safeJsonParse(r.blocked_tool_calls, []),
+      toolResults: safeJsonParse(r.tool_results, []),
+      tokenDelta: Number(r.token_delta ?? 0),
+      costDelta: Number(r.cost_delta ?? 0),
+      createdAt: r.created_at ?? null,
+    }));
   }
 
   async deleteInstance(id: string, tenantId: string): Promise<boolean> {

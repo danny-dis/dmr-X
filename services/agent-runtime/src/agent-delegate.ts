@@ -6,13 +6,28 @@ import type { AgentRuntimeService } from './agent-runtime.js';
 // ---------------------------------------------------------------------------
 // Subagent delegation (isolation boundary)
 //
-// Borrowed from Vercel EVE's declared-subagent model. A subagent is a
-// SPECIALIST with its own definition; when the parent delegates to it, the
-// child runs in a FRESH, ISOLATED session:
+// Borrowed from Vercel EVE's declared-subagent model, but scoped down to a
+// SINGLE-SHOT, TOOLLESS task hand-off (see the note below on why this is not
+// yet the full model). A subagent is a specialist with its own definition;
+// when the parent delegates to it, the child runs in a FRESH, ISOLATED
+// session:
 //   - brand-new conversation history (parent's messages are NOT visible),
-//   - tool surface NARROWED to the subagent's own `allowedTools`,
 //   - its own system prompt (built from its own definition + skills),
-//   - runs to completion in a single call (task mode) and returns a result.
+//   - exactly ONE model completion (no tool calls, no ReAct loop) whose text
+//     is returned as the child's answer.
+//
+// IMPORTANT — this does NOT narrow to the subagent's `allowedTools` today:
+// the child is never given a `tools` array at all, so it cannot call ANY
+// tool, regardless of what `allowedTools` declares. If a subagent's job
+// requires calling tools, delegation is currently the wrong primitive for it.
+// This is a deliberate, documented limitation (not a bug) — building a real
+// bounded tool-calling loop here would require threading executable tool
+// handlers from the gateway (apps/gateway/src/routes/tools.routes.ts) down
+// into this service, which `services/*` is not allowed to depend on
+// (packages/core has the shared types; apps/gateway is the only place the
+// handlers and the ReAct loop live). Narrowing + a real loop should be
+// implemented at the call site in tools.routes.ts's `delegate` handler
+// instead, passing an execute callback + tool defs into `runSubagent`.
 //
 // This is a HARD isolation boundary: the child inherits nothing from the
 // parent except (optionally) the task message it was handed. Multiple
@@ -91,12 +106,14 @@ export async function runSubagent(args: {
     return { ok: false, name: subagent.name, output: '', error: 'Failed to load subagent context' };
   }
 
-  // 2. Narrow the tool surface to the child's OWN allowedTools (isolation).
-  const childTools = subagent.allowedTools ?? [];
+  // NOTE: this is single-shot and TOOLLESS (see module docstring above) — the
+  // child is not given `subagent.allowedTools` here on purpose; there is no
+  // tool-calling loop to narrow. Do not resurrect a `childTools` computation
+  // without also wiring an execute path and a bounded loop for it.
   const model = runtime.resolveModel(subagent);
   const systemPrompt = await runtime.buildSystemPrompt(subagent, 0, []);
 
-  // 3. Single-shot task mode: one fresh conversation, run to completion.
+  // 2. Single-shot task mode: one fresh conversation, run to completion.
   const requestId = generateRequestId();
   try {
     const { response } = await router.route(

@@ -5,11 +5,12 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from '@/components/primitives/Dialog';
-import { EmptyState } from '@/components/primitives/EmptyState';
 import { Input } from '@/components/primitives/Input';
-import { Skeleton } from '@/components/primitives/Skeleton';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { StatTile } from '@/components/primitives/StatTile';
+import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatCurrency, formatNumber } from '@/lib/formatters';
@@ -64,13 +65,15 @@ export function CreditsPage() {
     setIsSubmitting(true);
     try {
       await Admin.topupCredits(Math.round(amount * 100), topupDescription || undefined);
+      toast.success('Credits added', { description: `${formatCurrency(amount)} added to your account` });
       setTopupOpen(false);
       setTopupAmount('');
       setTopupDescription('');
       void balance.refetch();
       void transactions.refetch();
     } catch (err) {
-      console.error('Top-up failed:', err);
+      const interpreted = interpretError(err);
+      toast.error(interpreted.title, { description: interpreted.description });
     } finally {
       setIsSubmitting(false);
     }
@@ -92,6 +95,7 @@ export function CreditsPage() {
               variant="secondary"
               onClick={() => void balance.refetch()}
               leftIcon={<RefreshCw className="size-3" />}
+              aria-label="Refresh balance"
             >
               Refresh
             </Button>
@@ -99,6 +103,7 @@ export function CreditsPage() {
               size="sm"
               onClick={() => setTopupOpen(true)}
               leftIcon={<Plus className="size-3" />}
+              aria-label="Add credits"
             >
               Top up
             </Button>
@@ -140,39 +145,45 @@ export function CreditsPage() {
           <CardTitle>Balance Overview</CardTitle>
         </CardHeader>
         <CardContent>
-          {balance.isLoading ? (
-            <Skeleton className="h-20 w-full" />
-          ) : bal ? (
-            <div className="flex items-center gap-8">
-              <div>
-                <div className="text-3xl font-bold text-fg">
-                  {formatCurrency(bal.balanceCents / 100)}
-                </div>
-                <div className="text-sm text-fg-muted mt-1">Available balance</div>
-              </div>
-              <div className="h-12 w-px bg-border" />
-              <div className="flex-1">
-                <div className="text-sm text-fg-muted mb-2">Usage breakdown</div>
-                <div className="flex gap-4">
-                  <div>
-                    <div className="text-lg font-semibold">{formatCurrency(bal.totalTopupCents / 100)}</div>
-                    <div className="text-xs text-fg-muted">Total added</div>
-                  </div>
-                  <div>
-                    <div className="text-lg font-semibold text-fg">{formatCurrency(bal.totalUsedCents / 100)}</div>
-                    <div className="text-xs text-fg-muted">Total spent</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="text-center py-8">
-              <div className="text-fg-muted mb-3">No credit account yet</div>
-              <Button size="sm" onClick={() => setTopupOpen(true)} leftIcon={<Plus className="size-3" />}>
+          <DataState
+            data={bal}
+            isLoading={balance.isLoading}
+            error={balance.error}
+            onRetry={balance.refetch}
+            skeletonRows={1}
+            empty={{
+              title: 'No credit account yet',
+              description: 'Create an account and top up to start using prepaid credits.',
+              action: <Button size="sm" onClick={() => setTopupOpen(true)} leftIcon={<Plus className="size-3" />}>
                 Create account & top up
-              </Button>
-            </div>
-          )}
+              </Button>,
+            }}
+          >
+            {(data) => (
+              <div className="flex items-center gap-8">
+                <div>
+                  <div className="text-3xl font-bold text-fg">
+                    {formatCurrency(data.balanceCents / 100)}
+                  </div>
+                  <div className="text-sm text-fg-muted mt-1">Available balance</div>
+                </div>
+                <div className="h-12 w-px bg-border" />
+                <div className="flex-1">
+                  <div className="text-sm text-fg-muted mb-2">Usage breakdown</div>
+                  <div className="flex gap-4">
+                    <div>
+                      <div className="text-lg font-semibold">{formatCurrency(data.totalTopupCents / 100)}</div>
+                      <div className="text-xs text-fg-muted">Total added</div>
+                    </div>
+                    <div>
+                      <div className="text-lg font-semibold text-fg">{formatCurrency(data.totalUsedCents / 100)}</div>
+                      <div className="text-xs text-fg-muted">Total spent</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </DataState>
         </CardContent>
       </Card>
 
@@ -182,51 +193,58 @@ export function CreditsPage() {
           <CardTitle>Transaction History</CardTitle>
         </CardHeader>
         <CardContent>
-          {txs.length === 0 ? (
-            <EmptyState
-              icon={<CreditCard className="size-8" />}
-              title="No transactions yet"
-              description="Top up your balance to start using credits"
-            />
-          ) : (
-            <div className="space-y-1">
-              {txs.map((tx) => {
-                const config = TYPE_CONFIG[tx.type] ?? TYPE_CONFIG.adjustment;
-                const isPositive = tx.type === 'topup' || tx.type === 'refund';
-                return (
-                  <div
-                    key={tx.id}
-                    className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-surface-2 transition-colors"
-                  >
-                    <div className="p-1.5 rounded-full bg-surface-3">
-                      {config.icon}
+          <DataState
+            data={transactions.data?.transactions}
+            isLoading={transactions.isLoading}
+            error={transactions.error}
+            onRetry={transactions.refetch}
+            skeletonRows={4}
+            empty={{
+              icon: <CreditCard className="size-8" />,
+              title: 'No transactions yet',
+              description: 'Top up your balance to start using credits',
+            }}
+          >
+            {(txs) => (
+              <div className="space-y-1">
+                {txs.map((tx) => {
+                  const config = TYPE_CONFIG[tx.type] ?? TYPE_CONFIG.adjustment;
+                  const isPositive = tx.type === 'topup' || tx.type === 'refund';
+                  return (
+                    <div
+                      key={tx.id}
+                      className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-surface-2 transition-colors"
+                    >
+                      <div className="p-1.5 rounded-full bg-surface-3">
+                        {config.icon}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Badge size="sm" tone={config.tone}>
+                            {config.label}
+                          </Badge>
+                          {tx.description && (
+                            <span className="text-xs text-fg-muted truncate">{tx.description}</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-fg-subtle mt-0.5">
+                          {new Date(tx.createdAt).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`font-mono text-sm font-medium ${isPositive ? 'text-success' : 'text-danger'}`}>
+                          {isPositive ? '+' : '-'}{formatCurrency(Math.abs(tx.amountCents) / 100)}
+                        </div>
+                        <div className="text-xs text-fg-subtle">
+                          Balance: {formatCurrency(tx.balanceAfterCents / 100)}
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Badge size="sm" tone={config.tone}>
-                          {config.label}
-                        </Badge>
-                        {tx.description && (
-                          <span className="text-xs text-fg-muted truncate">{tx.description}</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-fg-subtle mt-0.5">
-                        {new Date(tx.createdAt).toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className={`font-mono text-sm font-medium ${isPositive ? 'text-success' : 'text-danger'}`}>
-                        {isPositive ? '+' : '-'}{formatCurrency(Math.abs(tx.amountCents) / 100)}
-                      </div>
-                      <div className="text-xs text-fg-subtle">
-                        Balance: {formatCurrency(tx.balanceAfterCents / 100)}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            )}
+          </DataState>
         </CardContent>
       </Card>
 
@@ -285,10 +303,11 @@ export function CreditsPage() {
             <Button variant="secondary" onClick={() => setTopupOpen(false)}>Cancel</Button>
             <Button
               onClick={handleTopup}
-              disabled={!topupAmount || isNaN(parseFloat(topupAmount)) || parseFloat(topupAmount) <= 0 || isSubmitting}
+              disabled={!topupAmount || isNaN(parseFloat(topupAmount)) || parseFloat(topupAmount) <= 0}
+              loading={isSubmitting}
               leftIcon={<Plus className="size-3" />}
             >
-              {isSubmitting ? 'Processing...' : 'Top up'}
+              Top up
             </Button>
           </DialogFooter>
         </DialogContent>

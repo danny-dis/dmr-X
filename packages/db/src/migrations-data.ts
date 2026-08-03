@@ -1982,4 +1982,127 @@ ALTER TABLE server_instances ADD COLUMN llm_base_url TEXT;
 ALTER TABLE server_instances ADD COLUMN llm_api_key TEXT;
 `,
   },
+  62: {
+    filename: '062_model_operator_disabled.sql',
+    sql: `-- Preserve an operator's decision to disable a model.
+--
+-- \`is_active\` was doing two jobs at once: "discovery last saw this model
+-- upstream" and "the operator wants this model routable". Two code paths in
+-- auto-register.ts blindly set \`is_active = 1\` — the per-model refresh during
+-- live discovery, and the bulk re-activation that runs when a provider's key
+-- becomes available. Both meant an admin disabling a model saw it silently
+-- come back on the next gateway restart.
+--
+-- That is not hypothetical. Google's /v1/models lists 57 entries including
+-- several that cannot be called at all (\`aqa\`, the \`deep-research-*\` family,
+-- \`antigravity-preview-*\`): they are listed, so discovery re-enables them,
+-- so the router keeps selecting models that fail 100% of the time.
+--
+-- Splitting the two meanings fixes it: discovery continues to own \`is_active\`,
+-- while \`operator_disabled\` records human intent and always wins.
+ALTER TABLE model_profiles ADD COLUMN operator_disabled INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_model_profiles_operator_disabled
+  ON model_profiles(provider_id, operator_disabled);
+`,
+  },
+  63: {
+    filename: '063_api_key_role.sql',
+    sql: `-- Per-API-key RBAC role.
+--
+-- The agent platform is gated by \`requireAgentPermission\` (see
+-- apps/gateway/src/middleware/agent-rbac.middleware.ts), which reads
+-- \`tenant.role\`. The auth middleware never attached one, so every
+-- authenticated tenant fell through to the 'viewer' default and was
+-- refused agent:create / :update / :deploy — the whole agent API was
+-- unreachable outside LOCAL_MODE.
+--
+-- Roles are defined in services/agent-registry/src/agent-permissions.ts:
+--   admin | developer | user | viewer
+--
+-- 'developer' is the default because it is the role that matches what a
+-- tenant API key could already do everywhere else in the gateway (create
+-- and run its own resources within its own tenant). Defaulting to 'viewer'
+-- would keep the API broken; defaulting to 'admin' would grant cross-tenant
+-- reads (agent-permissions.ts checks \`tenantRole === 'admin'\` for that), so
+-- admin must be assigned deliberately.
+--
+-- Idempotent: the migration runner skips "duplicate column name".
+ALTER TABLE api_keys ADD COLUMN role TEXT NOT NULL DEFAULT 'developer';
+`,
+  },
+  64: {
+    filename: '064_api_key_lookup_hash.sql',
+    sql: `-- Deterministic API-key lookup hash for O(1) auth, instead of scanning
+-- every active key and calling verifyApiKey() on each (the old hot path).
+--
+-- key_hash stores either a legacy unsalted SHA-256 ("<hex>") or the current
+-- salted format ("<salt>:<hash>"). Neither is directly queryable from the
+-- plaintext key. key_lookup_hash is a THIRD value: plain SHA-256 of the raw
+-- key, computed at creation time and indexed, so auth can do:
+--
+--   SELECT ... WHERE key_lookup_hash = ?  (indexed, single row)
+--
+-- and then constant-time verifyApiKey() against the stored salted key_hash
+-- to rule out collisions (SHA-256 preimage resistance makes them
+-- impossible in practice; the verify is kept for defense in depth).
+--
+-- Security note: key_lookup_hash is unsalted SHA-256 of a 64-hex-char
+-- random key (256 bits of entropy), so it is not brute-forceable even if
+-- the DB leaks. It is stored ONLY for indexing; verification always uses
+-- the salted key_hash.
+--
+-- Backfill: any existing row whose key_hash is the legacy unsalted format
+-- (no colon) has key_lookup_hash := key_hash, since both are SHA-256 of the
+-- same key. Salted rows cannot be backfilled without the plaintext key;
+-- they fall back to the legacy scan path (bounded to rows that still have
+-- key_lookup_hash IS NULL) until the key is rotated.
+ALTER TABLE api_keys ADD COLUMN key_lookup_hash TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_lookup_hash
+  ON api_keys(key_lookup_hash)
+  WHERE key_lookup_hash IS NOT NULL;
+
+UPDATE api_keys
+   SET key_lookup_hash = key_hash
+ WHERE key_lookup_hash IS NULL
+   AND instr(key_hash, ':') = 0;
+`,
+  },
+  65: {
+    filename: '065_agentic_sessions.sql',
+    sql: `-- Durable /agentic/chat conversations (remediation #13 second half).
+-- The /agentic/chat route used a bare in-process Map with a 30-minute TTL,
+-- so a gateway restart or idle period destroyed every conversation's state
+-- (approval gates, pending tool calls, message history). It cannot reuse
+-- agent_sessions because that table's agent_instance_id is a NOT NULL FK to
+-- agent_instances, while /agentic/chat is an instance-less generic endpoint.
+--
+-- This table persists the same ConversationState JSON, keyed by conversation
+-- id and scoped to a tenant, with a machine-readable status so an
+-- 'awaiting_approval' conversation can be resumed after a restart.
+
+CREATE TABLE IF NOT EXISTS agentic_sessions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  -- Full ConversationState serialized as JSON
+  state TEXT NOT NULL,
+  -- Arbitrary metadata (model, request id, token counts)
+  metadata TEXT,
+  -- Machine status: 'in_progress' | 'awaiting_approval' | 'interrupted' | 'completed' | 'error'
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  -- Free-text reason for an interrupted/awaiting state
+  status_reason TEXT,
+  -- Which agent turn was last executed
+  last_turn INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Optional hard expiry; NULL = live until completed/cancelled
+  expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agentic_sessions_tenant
+  ON agentic_sessions(tenant_id, id);
+`,
+  },
 };

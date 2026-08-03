@@ -114,7 +114,7 @@ export function registerSkillRoutes(server: FastifyInstance): void {
     const tenant = (request as any).tenant;
     const contentType = String(request.headers['content-type'] ?? '');
 
-    let items: { markdown: string; source: 'md' | 'zip' | 'github'; externalId?: string }[] = [];
+    const items: { markdown: string; source: 'md' | 'zip' | 'github'; externalId?: string }[] = [];
 
     try {
       if (contentType.includes('multipart/form-data')) {

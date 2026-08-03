@@ -26,9 +26,6 @@ import type {
   TransformRequest,
   TransformResponse,
   GodmodeTierInfo,
-  GodmodeFeedbackRequest,
-  GodmodeFeedbackResponse,
-  GodmodeFeedbackStats,
 } from './types.js';
 
 export class GodmodeService {
@@ -347,53 +344,6 @@ export class GodmodeService {
   }
 
   /**
-   * Submit feedback to the G0DM0D3 EMA learning loop.
-   */
-  async submitFeedback(request: GodmodeFeedbackRequest): Promise<GodmodeFeedbackResponse> {
-    this.assertInitialized();
-
-    const response = await this.fetchWithTimeout(
-      `${this.config.baseUrl}/v1/feedback`,
-      {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(request),
-        timeoutMs: 30000,
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`G0DM0D3 feedback submission failed: ${response.status} ${errorText}`);
-    }
-
-    return response.json() as Promise<GodmodeFeedbackResponse>;
-  }
-
-  /**
-   * Get learning statistics (EMA state) from the G0DM0D3 feedback endpoint.
-   */
-  async getFeedbackStats(): Promise<GodmodeFeedbackStats> {
-    this.assertInitialized();
-
-    const response = await this.fetchWithTimeout(
-      `${this.config.baseUrl}/v1/feedback/stats`,
-      {
-        method: 'GET',
-        headers: this.getHeaders(),
-        timeoutMs: 10000,
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`G0DM0D3 feedback stats failed: ${response.status} ${errorText}`);
-    }
-
-    return response.json() as Promise<GodmodeFeedbackStats>;
-  }
-
-  /**
    * Health check
    */
   async healthCheck(): Promise<boolean> {
@@ -562,7 +512,7 @@ function setGodmodeInstance(v: GodmodeService | null): void {
   gGod.__dmrxGodmode = v;
 }
 
-let instance: GodmodeService | null = null;
+const instance: GodmodeService | null = null;
 
 export function getGodmodeService(): GodmodeService {
   let inst = getGodmodeInstance();
@@ -590,7 +540,7 @@ export function createGodmodeService(config: GodmodeConfig): GodmodeService {
  * getGodmodeService() returns a service pointed at the new URL.
  */
 export function setGodmodeConfig(config: Partial<GodmodeConfig>): GodmodeService {
-  let inst = getGodmodeInstance();
+  const inst = getGodmodeInstance();
   if (!inst) {
     return createGodmodeService({
       baseUrl: config.baseUrl ?? process.env.GODMODE_API_URL ?? 'http://localhost:7860',

@@ -44,7 +44,7 @@ import { toast } from '@/components/primitives/Toast';
 import { Admin, apiPost } from '@/lib/admin';
 import { formatDateTime, formatDuration } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
-import type { ApiProvider, ApiProviderKey, ApiModel } from '@/types/api';
+import type { ApiProvider, ApiProviderKey, ApiModel, Modality } from '@/types/api';
 
 export interface ProviderDetailDrawerProps {
   provider: ApiProvider | null;

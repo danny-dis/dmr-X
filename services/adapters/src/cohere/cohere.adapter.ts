@@ -193,7 +193,7 @@ export class CohereAdapter extends BaseAdapter {
     const decoder = new TextDecoder();
     let buffer = '';
     let completionText = '';
-    let toolBuffers = new Map<number, { id?: string; name?: string; args: string }>();
+    const toolBuffers = new Map<number, { id?: string; name?: string; args: string }>();
     let nextToolIndex = 0;
     let finishReason: string | undefined;
     let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;

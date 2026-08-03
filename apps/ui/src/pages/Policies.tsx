@@ -6,9 +6,8 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
-import { EmptyState } from '@/components/primitives/EmptyState';
+import { DataState } from '@/components/primitives/DataState';
 import { Input } from '@/components/primitives/Input';
-import { Skeleton } from '@/components/primitives/Skeleton';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
@@ -81,88 +80,87 @@ export function PoliciesPage() {
       </div>
 
       <div className="mt-4">
-        {policies.isLoading ? (
-          <div className="flex flex-col gap-2">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-20 w-full" />
-            ))}
-          </div>
-        ) : filtered.length > 0 ? (
-          <div className="flex flex-col gap-2">
-            {filtered.map((p) => (
-              <Card
-                key={p.id}
-                padding="none"
-                interactive
-                onClick={() => openEdit(p)}
-              >
-                <div className="flex items-center gap-3 p-4">
-                  <div
-                    className={`flex size-10 items-center justify-center rounded-xl ${
-                      p.action === 'allow'
-                        ? 'bg-success/10 text-success'
-                        : p.action === 'deny'
-                          ? 'bg-danger/10 text-danger'
-                          : 'bg-warning/10 text-warning'
-                    }`}
-                  >
-                    {p.action === 'allow' ? <Zap className="size-4" /> : p.action === 'deny' ? <AlertCircle className="size-4" /> : <Shield className="size-4" />}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-semibold text-fg truncate">{p.name}</h3>
-                      <Badge
-                        tone={p.action === 'allow' ? 'success' : p.action === 'deny' ? 'danger' : 'warning'}
-                        size="sm"
-                      >
-                        {p.action}
-                      </Badge>
-                      {p.priority != null && (
-                        <Badge tone="muted" size="sm">P{p.priority}</Badge>
-                      )}
+        <DataState
+          data={filtered}
+          isLoading={policies.isLoading}
+          error={policies.error}
+          onRetry={policies.refetch}
+          skeletonRows={4}
+          empty={{
+            title: 'No policies configured',
+            description: 'Create routing, access, and cost policies to govern traffic.',
+            action: (
+              <Button onClick={openCreate} size="sm">
+                <Plus className="size-3" />
+                New policy
+              </Button>
+            ),
+          }}
+        >
+          {(items) => (
+            <div className="flex flex-col gap-2">
+              {items.map((p) => (
+                <Card
+                  key={p.id}
+                  padding="none"
+                  interactive
+                  onClick={() => openEdit(p)}
+                >
+                  <div className="flex items-center gap-3 p-4">
+                    <div
+                      className={`flex size-10 items-center justify-center rounded-xl ${
+                        p.action === 'allow'
+                          ? 'bg-success/10 text-success'
+                          : p.action === 'deny'
+                            ? 'bg-danger/10 text-danger'
+                            : 'bg-warning/10 text-warning'
+                      }`}
+                    >
+                      {p.action === 'allow' ? <Zap className="size-4" /> : p.action === 'deny' ? <AlertCircle className="size-4" /> : <Shield className="size-4" />}
                     </div>
-                    {p.description && (
-                      <p className="text-[11px] text-fg-muted mt-0.5 truncate">{p.description}</p>
-                    )}
-                    <div className="flex items-center gap-3 mt-1.5 text-[10px] text-fg-subtle">
-                      {p.match?.model && (
-                        <span className="font-mono">{p.match.model}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold text-fg truncate">{p.name}</h3>
+                        <Badge
+                          tone={p.action === 'allow' ? 'success' : p.action === 'deny' ? 'danger' : 'warning'}
+                          size="sm"
+                        >
+                          {p.action}
+                        </Badge>
+                        {p.priority != null && (
+                          <Badge tone="muted" size="sm">P{p.priority}</Badge>
+                        )}
+                      </div>
+                      {p.description && (
+                        <p className="text-[11px] text-fg-muted mt-0.5 truncate">{p.description}</p>
                       )}
-                      {p.match?.tenantId && (
-                        <span>tenant: {p.match.tenantId}</span>
-                      )}
-                      {p.match?.tag && (
-                        <span>tag: {p.match.tag}</span>
-                      )}
-                      {p.updatedAt && <span>· {timeAgo(p.updatedAt)}</span>}
+                      <div className="flex items-center gap-3 mt-1.5 text-[10px] text-fg-subtle">
+                        {p.match?.model && (
+                          <span className="font-mono">{p.match.model}</span>
+                        )}
+                        {p.match?.tenantId && (
+                          <span>tenant: {p.match.tenantId}</span>
+                        )}
+                        {p.match?.tag && (
+                          <span>tag: {p.match.tag}</span>
+                        )}
+                        {p.updatedAt && <span>· {timeAgo(p.updatedAt)}</span>}
+                      </div>
                     </div>
+                    <Switch
+                      checked={p.enabled ?? true}
+                      disabled={togglingId === p.id}
+                      onCheckedChange={(v) => void toggleEnabled(p, v)}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`${p.name} enabled`}
+                    />
+                    <ChevronRight className="size-3.5 text-fg-subtle" />
                   </div>
-                  <Switch
-                    checked={p.enabled ?? true}
-                    disabled={togglingId === p.id}
-                    onCheckedChange={(v) => void toggleEnabled(p, v)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`${p.name} enabled`}
-                  />
-                  <ChevronRight className="size-3.5 text-fg-subtle" />
-                </div>
-              </Card>
-            ))}
-          </div>
-        ) : (
-          <Card padding="none" className="border-dashed">
-            <EmptyState
-              title="No policies configured"
-              description="Create routing, access, and cost policies to govern traffic."
-              action={
-                <Button onClick={openCreate}>
-                  <Plus className="size-3" />
-                  New policy
-                </Button>
-              }
-            />
-          </Card>
-        )}
+                </Card>
+              ))}
+            </div>
+          )}
+        </DataState>
       </div>
 
       <PolicyDialog

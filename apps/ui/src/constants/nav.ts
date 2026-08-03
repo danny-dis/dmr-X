@@ -2,6 +2,8 @@ import {
   Bot,
   Cpu,
   Layers,
+  Network,
+  Plug,
   ShoppingBag,
   Terminal,
   TrendingUp,
@@ -15,8 +17,14 @@ export interface NavItem {
   label: string;
   path: string;
   icon: ComponentType<{ className?: string; size?: number }>;
+  /** Rendered as a pill in the sidebar. Used for live counts. */
   badge?: string;
   description?: string;
+  /**
+   * Extra path prefixes this item owns, so a nested route keeps its parent
+   * highlighted (e.g. /agents/new and /agents/:id both light up "Agents").
+   */
+  matches?: string[];
 }
 
 export interface NavGroup {
@@ -36,9 +44,10 @@ export const NAV_GROUPS: NavGroup[] = [
       },
       {
         label: 'Playground',
-        path: '/playground',
+        path: '/playground/chat',
         icon: SidebarIcons.PlaygroundIcon,
-        description: 'Test models & routing',
+        description: 'Chat, agents & godmode',
+        matches: ['/playground'],
       },
     ],
   },
@@ -92,22 +101,25 @@ export const NAV_GROUPS: NavGroup[] = [
         description: 'AI provider catalog',
       },
       {
+        // Free and paid are separate surfaces, not tabs of one page: they
+        // answer different questions (what am I saving vs. what am I spending)
+        // and are managed by different flows.
+        label: 'Free Tier',
+        path: '/free-tier',
+        icon: SidebarIcons.FreeTierIcon,
+        description: 'Free models, usage & savings',
+      },
+      {
         label: 'Models',
         path: '/models',
         icon: SidebarIcons.ModelsIcon,
-        description: 'Model registry',
+        description: 'Paid model registry & spend',
       },
       {
         label: 'Tenants',
         path: '/tenants',
         icon: SidebarIcons.TenantsIcon,
         description: 'Tenants & API keys',
-      },
-      {
-        label: 'Free Tier',
-        path: '/free-tier',
-        icon: SidebarIcons.FreeTierIcon,
-        description: 'Free provider budget & routing',
       },
     ],
   },
@@ -118,13 +130,14 @@ export const NAV_GROUPS: NavGroup[] = [
         label: 'Agents',
         path: '/agents',
         icon: Bot,
-        description: 'Agent definitions & instances',
+        description: 'Build, deploy & run agents',
+        matches: ['/agents'],
       },
       {
-        label: 'Integrations',
-        path: '/integrations',
-        icon: Terminal,
-        description: 'Claude Code, Codex & Antigravity',
+        label: 'Analytics',
+        path: '/agents/analytics',
+        icon: TrendingUp,
+        description: 'Agent cost & performance',
       },
       {
         label: 'Marketplace',
@@ -133,10 +146,28 @@ export const NAV_GROUPS: NavGroup[] = [
         description: 'Community agent marketplace',
       },
       {
-        label: 'Analytics',
-        path: '/agent-analytics',
-        icon: TrendingUp,
-        description: 'Agent performance metrics',
+        label: 'Integrations',
+        path: '/integrations',
+        icon: Terminal,
+        description: 'Claude Code, Codex & Antigravity',
+      },
+    ],
+  },
+  {
+    label: 'Connectivity',
+    items: [
+      {
+        label: 'MCP Servers',
+        path: '/mcp',
+        icon: Plug,
+        description: 'Connect & discover MCP servers',
+        matches: ['/mcp'],
+      },
+      {
+        label: 'A2A',
+        path: '/a2a',
+        icon: Network,
+        description: 'Agent-to-agent protocol',
       },
     ],
   },
@@ -164,7 +195,7 @@ export const NAV_GROUPS: NavGroup[] = [
         label: 'Infrastructure',
         path: '/infrastructure',
         icon: Cpu,
-        description: 'MCP, tools, workers & sandbox',
+        description: 'Tools, workers & sandbox',
       },
     ],
   },
@@ -186,17 +217,35 @@ export interface BreadcrumbItem {
   path?: string;
 }
 
+/**
+ * Resolve the nav item that owns a path.
+ *
+ * Prefers an exact match, then the longest `matches` prefix — so `/agents/new`
+ * resolves to Agents rather than to whichever item happens to be checked
+ * first, and `/agents/analytics` still wins over `/agents` because its exact
+ * match is tried first.
+ */
 export function findNavItem(path: string): NavItem | undefined {
-  for (const g of NAV_GROUPS) {
-    const found = g.items.find((i) => i.path === path);
-    if (found) return found;
+  const all = NAV_GROUPS.flatMap((g) => g.items);
+
+  const exact = all.find((i) => i.path === path);
+  if (exact) return exact;
+
+  let best: NavItem | undefined;
+  let bestLength = -1;
+  for (const item of all) {
+    for (const prefix of item.matches ?? []) {
+      if ((path === prefix || path.startsWith(`${prefix}/`)) && prefix.length > bestLength) {
+        best = item;
+        bestLength = prefix.length;
+      }
+    }
   }
-  return undefined;
+  return best;
 }
 
 export function findGroup(path: string): NavGroup | undefined {
-  for (const g of NAV_GROUPS) {
-    if (g.items.some((i) => i.path === path)) return g;
-  }
-  return undefined;
+  const item = findNavItem(path);
+  if (!item) return undefined;
+  return NAV_GROUPS.find((g) => g.items.includes(item));
 }

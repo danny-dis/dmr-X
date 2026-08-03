@@ -159,9 +159,9 @@ function ConversationItemComponent({ conversation, isActive, onClick }: Conversa
               Rename
             </Button>
             <Button
-              variant="ghost"
+              variant="danger"
               size="sm"
-              className="w-full justify-start text-destructive"
+              className="w-full justify-start"
               onClick={(e) => {
                 e.stopPropagation();
                 deleteConversation(conversation.id);

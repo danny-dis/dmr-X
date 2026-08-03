@@ -1,4 +1,4 @@
-import { Server, Zap } from 'lucide-react';
+import { Brain, Server, Zap } from 'lucide-react';
 import { Badge } from '@/components/primitives/Badge';
 import { Card } from '@/components/primitives/Card';
 import { formatNumber } from '@/lib/formatters';
@@ -35,7 +35,7 @@ export function FreeTierProviderGrid({ providers }: FreeTierProviderGridProps) {
               <Server className="h-4 w-4 text-muted-foreground" />
               <h4 className="font-medium">{provider.provider_name}</h4>
             </div>
-            <Badge variant={provider.is_healthy ? 'default' : 'destructive'}>
+            <Badge tone={provider.is_healthy ? 'success' : 'danger'} variant="solid">
               {provider.is_healthy ? 'Healthy' : 'Unhealthy'}
             </Badge>
           </div>

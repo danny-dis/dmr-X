@@ -401,6 +401,15 @@ export class OpenAIAdapter extends BaseAdapter {
           tool_choice: request.tool_choice,
           temperature: request.temperature,
           max_tokens: request.max_tokens,
+          top_p: request.top_p,
+          frequency_penalty: request.frequency_penalty,
+          presence_penalty: request.presence_penalty,
+          stop: request.stop,
+          response_format: request.response_format,
+          seed: request.seed,
+          // `n` is not forwarded: it's meaningless for a single SSE stream
+          // (OpenAI would multiplex `n` completions across one stream, which
+          // the normalizer/consumer here isn't set up to demux).
           stream: true,
         }),
         // Forward the caller's AbortSignal so a client disconnect

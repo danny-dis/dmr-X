@@ -123,6 +123,19 @@ export const AgentChatRequestSchema = z.object({
   conversationId: z.string().min(1).max(256).optional(),
   maxSteps: z.number().int().min(1).max(50).optional(),
   max_cost_budget: z.number().positive().optional(),
+  // Opt-in: composable SDK stop conditions for the durable loop.
+  stopWhen: z.array(z.object({
+    type: z.enum(['step_count', 'tool_call', 'text_match', 'max_tokens', 'max_cost', 'finish_reason']),
+    value: z.union([z.number(), z.string()]),
+  })).optional(),
+  // Opt-in: pause before executing tool calls, persisted as awaiting_approval for /resume.
+  approvalRequired: z.boolean().optional().default(false),
+  // Opt-in: human approval decisions supplied on the /resume path.
+  approvalDecisions: z.array(z.object({
+    tool_call_id: z.string(),
+    approved: z.boolean(),
+    result: z.any().optional(),
+  })).optional(),
 });
 
 export type AgentChatRequest = z.infer<typeof AgentChatRequestSchema>;

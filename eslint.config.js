@@ -25,6 +25,10 @@ export default [
       'jan-repo/**',
       'temp-clawrouter/**',
       'check-db.js',
+      // Runtime-downloaded server payloads and virtualenv bundled code — not source
+      '**/.dmrx-data/**',
+      '**/.venv/**',
+      '**/site-packages/**',
     ],
   },
   {

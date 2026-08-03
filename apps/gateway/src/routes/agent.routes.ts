@@ -134,11 +134,55 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     return reply.code(201).send(instance);
   });
 
+  /**
+   * Tenant-wide instance list.
+   *
+   * Fastify's radix router scores a static segment above a parametric one, so
+   * this wins over `/agents/:id` regardless of registration order — but it is
+   * declared first anyway to make the precedence obvious to a reader.
+   */
+  server.get('/agents/instances', { preHandler: [agentPermissions.read()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { status } = request.query as { status?: string };
+
+    if (status && status !== 'active' && status !== 'paused') {
+      return reply.code(400).send({ error: { message: "status must be 'active' or 'paused'" } });
+    }
+
+    const result = await agentRegistryService.listInstances(tenant.id, { status });
+    return reply.send(result);
+  });
+
+  /**
+   * Per-definition cost/usage rollup. Declared before `/agents/:id` for the
+   * same readability reason as above.
+   */
+  server.get('/agents/analytics/costs', { preHandler: [agentPermissions.analyticsRead()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { from, to } = request.query as { from?: string; to?: string };
+
+    // Reject unparseable dates rather than silently substituting the default
+    // window — a chart quietly showing the wrong period is worse than an error.
+    for (const [label, value] of [['from', from], ['to', to]] as const) {
+      if (value !== undefined && Number.isNaN(Date.parse(value))) {
+        return reply.code(400).send({ error: { message: `Invalid ${label} date: ${value}` } });
+      }
+    }
+
+    const analytics = await agentRegistryService.getCostAnalytics(tenant.id, { from, to });
+    return reply.send(analytics);
+  });
+
   server.get('/agents/:id/instances', { preHandler: [agentPermissions.read()] }, async (request, reply) => {
     const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
 
-    const instances = await agentRegistryService.listInstances(tenant.id);
-    return reply.send(instances);
+    // Scoped to the requested definition. This route previously ignored `:id`
+    // and returned every instance the tenant owned, which made the nested path
+    // silently identical to the tenant-wide one.
+    const result = await agentRegistryService.listInstances(tenant.id);
+    const items = result.items.filter((i) => i.agentDefinitionId === id);
+    return reply.send({ items, total: items.length });
   });
 
   server.delete('/instances/:id', { preHandler: [agentPermissions.delete()] }, async (request, reply) => {
@@ -148,6 +192,48 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     const deleted = await agentRegistryService.deleteInstance(id, tenant.id);
     if (!deleted) return reply.code(404).send({ error: { message: 'Instance not found' } });
     return reply.code(204).send();
+  });
+
+  /**
+   * Pause / resume a deployed instance.
+   *
+   * Uses `agent:deploy` rather than `agent:update`: pausing changes what is
+   * running, not what the agent is, which is the same class of action as
+   * deploying it.
+   */
+  server.post('/instances/:id/pause', { preHandler: [agentPermissions.deploy()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+
+    const instance = await agentRegistryService.setInstanceStatus(id, tenant.id, 'paused');
+    if (!instance) return reply.code(404).send({ error: { message: 'Instance not found' } });
+    return reply.send(instance);
+  });
+
+  server.post('/instances/:id/resume', { preHandler: [agentPermissions.deploy()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+
+    const instance = await agentRegistryService.setInstanceStatus(id, tenant.id, 'active');
+    if (!instance) return reply.code(404).send({ error: { message: 'Instance not found' } });
+    return reply.send(instance);
+  });
+
+  /**
+   * Per-turn step trace for an instance's runs — the "why did this run do
+   * that" view. Reads `session_steps`, which was being written on every agent
+   * turn with no way to read it back.
+   */
+  server.get('/instances/:id/steps', { preHandler: [agentPermissions.analyticsRead()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const { conversationId, limit } = request.query as { conversationId?: string; limit?: string };
+
+    const steps = await agentRegistryService.listSessionSteps(id, tenant.id, {
+      conversationId,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+    return reply.send({ items: steps, total: steps.length });
   });
 
   // ── Agent Executions ──────────────────────────────────────────────────────

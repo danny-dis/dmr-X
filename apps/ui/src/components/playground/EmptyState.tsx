@@ -1,4 +1,4 @@
-import { MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Cpu, Workflow, Sparkles } from 'lucide-react';
+import { MessageSquare, Image, Volume2, ArrowUpDown, Zap, ShieldAlert, Cpu, Workflow, Sparkles, Bot } from 'lucide-react';
 import * as React from 'react';
 
 import { Button } from '@/components/primitives/Button';
@@ -72,6 +72,12 @@ const samplePrompts: SamplePrompt[] = [
     title: 'Run a tool loop',
     prompt: 'Use the available tools to solve this problem step by step.',
   },
+  {
+    mode: 'agent',
+    icon: Bot,
+    title: 'Talk to a deployed agent',
+    prompt: 'Give me a status update on what you can help with.',
+  },
 ];
 
 const MODE_CONFIG: Record<PlaygroundMode, { icon: typeof MessageSquare; title: string; description: string }> = {
@@ -84,6 +90,7 @@ const MODE_CONFIG: Record<PlaygroundMode, { icon: typeof MessageSquare; title: s
   agentic: { icon: Cpu, title: 'Run an agentic task', description: 'Let the AI plan and execute multi-step tasks autonomously.' },
   'tool-loop': { icon: Workflow, title: 'Execute a tool loop', description: 'Run iterative tool-calling workflows to accomplish complex goals.' },
   godmode: { icon: Sparkles, title: 'Run a G0DM0D3 pipeline', description: 'Multi-model chat with ULTRAPLINIAN / CONSORTIUM and prompt-obfuscation pipelines.' },
+  agent: { icon: Bot, title: 'Chat with a deployed agent', description: 'Pick an agent instance above and send a message — it runs its full tool-calling loop and streams back a step trace.' },
 };
 
 // Defensive fallback: if a PlaygroundMode is ever added to the type but

@@ -29,8 +29,8 @@ export interface AuditEventRowProps {
 }
 
 export function AuditEventRow({ event, onClick, className }: AuditEventRowProps) {
-  const tone = TONE_FOR[event.action] ?? 'muted';
-  const icon = ICON_FOR[event.resource] ?? <FileText className="size-3.5" />;
+  const tone = TONE_FOR[event.action ?? ''] ?? 'muted';
+  const icon = ICON_FOR[event.resource ?? ''] ?? <FileText className="size-3.5" />;
   return (
     <div
       onClick={() => onClick?.(event)}

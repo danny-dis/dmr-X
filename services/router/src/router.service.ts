@@ -981,6 +981,11 @@ export class Router {
       const parsed = this.parseModelTarget(normalized);
       return parsed;
     }
+    // If the model string exactly matches a known provider slug, treat it as a provider pin
+    // (e.g. model="opencode-zen" → scope to all opencode-zen models).
+    if (!normalized.includes('/') && this.candidates.some(c => c.providerName === normalized)) {
+      return { providerName: normalized, modelId: '' };
+    }
     const slash = normalized.indexOf('/');
     if (slash <= 0) return { modelId: normalized };
     const providerName = normalized.slice(0, slash);

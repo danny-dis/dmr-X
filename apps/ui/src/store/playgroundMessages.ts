@@ -4,7 +4,8 @@ import type {
   Message,
 } from './usePlaygroundStore';
 import { Admin } from '@/lib/admin';
-import { api, apiPost, apiDelete, fetchAuthenticated } from '@/lib/api';
+import { api, apiPost, apiDelete } from '@/lib/api';
+import { streamSSE, SSE_DONE } from '@/lib/sse';
 
 export interface MessagesSlice {
   messages: Message[];
@@ -22,6 +23,7 @@ export interface MessagesSlice {
     mode: PlaygroundState['mode'];
     model: string;
     config: PlaygroundState['config'];
+    agentInstanceId?: string | null;
   }) => { endpoint: string; body: any };
   _streamToEndpoint: (opts: {
     endpoint: string;
@@ -47,7 +49,14 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
   messages: [],
 
   sendMessage: async (content: string) => {
-    const { currentConversationId, mode, model, config, messages } = get();
+    const { currentConversationId, mode, model, config, messages, agentInstanceId } = get();
+
+    // Agent mode needs an instance to build the endpoint
+    // (`/v1/agents/:instanceId/chat`) — fail before touching the transcript
+    // rather than sending a user message nothing will ever answer.
+    if (mode === 'agent' && !agentInstanceId) {
+      throw new Error('Select an agent instance before sending a message.');
+    }
 
     let conversationId = currentConversationId;
 
@@ -74,6 +83,7 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
       mode,
       model,
       config,
+      agentInstanceId,
     });
 
     await get()._streamToEndpoint({
@@ -108,7 +118,7 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
       // Non-fatal
     }
 
-    const { mode, model, config } = get();
+    const { mode, model, config, agentInstanceId } = get();
     const assistant = get()._createAssistantPlaceholder(currentConversationId);
     const req = get()._buildRequest({
       content: userMessage.content,
@@ -116,6 +126,7 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
       mode,
       model,
       config,
+      agentInstanceId,
     });
 
     await get()._streamToEndpoint({
@@ -229,8 +240,9 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
     mode: PlaygroundState['mode'];
     model: string;
     config: PlaygroundState['config'];
+    agentInstanceId?: string | null;
   }): { endpoint: string; body: any } => {
-    const { content, history, mode, model, config } = opts;
+    const { content, history, mode, model, config, agentInstanceId } = opts;
     let endpoint = '/v1/chat/completions';
     let body: any = { model, stream: config.stream };
 
@@ -312,6 +324,20 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
         body.custom_system_prompt = config.godmode.customSystemPrompt;
       }
       if (config.maxTokens) body.max_tokens = config.maxTokens;
+    } else if (mode === 'agent') {
+      // Body shape matches AgentChatRequestSchema (services/agent-registry) —
+      // camelCase `maxTokens`/`maxSteps`, snake_case `max_cost_budget`. The
+      // instance id lives in the path, not the body.
+      endpoint = `/v1/agents/${agentInstanceId ?? ''}/chat`;
+      const hist = history.map(m => ({ role: m.role, content: m.content }));
+      body = {
+        messages: [...hist, { role: 'user', content }],
+        stream: true,
+      };
+      if (config.temperature !== undefined) body.temperature = config.temperature;
+      if (config.maxTokens) body.maxTokens = config.maxTokens;
+      if (config.maxSteps) body.maxSteps = config.maxSteps;
+      if (config.maxCostBudget) body.max_cost_budget = config.maxCostBudget;
     }
 
     return { endpoint, body };
@@ -338,79 +364,71 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
       ? { 'x-cost-filter': 'free' }
       : {};
 
+    // `streamSSE` resolves cleanly (rather than throwing) when `signal` is
+    // aborted — a user pressing Stop isn't an error. The old raw-`fetch`
+    // parsers relied on the reject to show "[Generation cancelled]"; each
+    // branch below checks this instead, right after its `streamSSE` call.
+    const markCancelled = () => {
+      set(state => ({
+        messages: state.messages.map(m =>
+          m.id === assistantMessageId
+            ? { ...m, content: '[Generation cancelled]', isStreaming: false }
+            : m
+        ),
+        isStreaming: false,
+      }));
+    };
+
     try {
       if (mode === 'agentic' || mode === 'tool-loop') {
         get().clearStreamingEvents();
 
         body.conversationId = conversationId;
 
-        const response = await fetchAuthenticated(endpoint, {
-          method: 'POST',
-          body: JSON.stringify(body),
-          signal: abortController.signal,
-          headers: extraHeaders,
-        });
-
-        if (!response.ok || !response.body) {
-          const errText = await response.text().catch(() => response.statusText);
-          throw new Error(`Stream failed: ${response.status} ${errText}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let lastContent = '';
         let lastModel = model;
         let lastUsage: any = null;
         let firstErrorMessage: string | null = null;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const rawEvents = buffer.split('\n\n');
-          buffer = rawEvents.pop() ?? '';
-
-          for (const evt of rawEvents) {
-            const lines = evt.split('\n');
-            let name = 'message';
-            let data = '';
-            for (const line of lines) {
-              if (line.startsWith('event: ')) name = line.slice(7).trim();
-              else if (line.startsWith('data: ')) data = line.slice(6).trim();
-            }
-            if (data === '[DONE]') continue;
-            if (!data) continue;
-
-            let parsed: any = {};
+        await streamSSE(endpoint, {
+          body,
+          signal: abortController.signal,
+          headers: extraHeaders,
+          onFrame: (frame) => {
+            if (frame.data === SSE_DONE) return;
+            let parsed: any;
             try {
-              parsed = JSON.parse(data);
+              parsed = JSON.parse(frame.data);
             } catch {
-              continue;
+              return;
             }
 
-            get().addStreamingEvent({ name, data: parsed });
+            get().addStreamingEvent({ name: frame.event, data: parsed });
 
-            if (name === 'error' && parsed?.error?.message) {
+            if (frame.event === 'error' && parsed?.error?.message) {
               if (firstErrorMessage === null) firstErrorMessage = parsed.error.message;
-              continue;
+              return;
             }
 
-            if (mode === 'agentic' && name === 'turn' && parsed.message) {
+            if (mode === 'agentic' && frame.event === 'turn' && parsed.message) {
               const text = typeof parsed.message.content === 'string'
                 ? parsed.message.content
                 : '';
               if (text) lastContent = text;
               if (parsed.model) lastModel = parsed.model;
               if (parsed.usage) lastUsage = parsed.usage;
-            } else if (mode === 'tool-loop' && name === 'step' && parsed.choices?.[0]?.message) {
+            } else if (mode === 'tool-loop' && frame.event === 'step' && parsed.choices?.[0]?.message) {
               const text = parsed.choices[0].message.content;
               if (typeof text === 'string' && text) lastContent = text;
               if (parsed.model) lastModel = parsed.model;
               if (parsed.usage) lastUsage = parsed.usage;
             }
-          }
+          },
+        });
+
+        if (abortController.signal.aborted) {
+          markCancelled();
+          return;
         }
 
         const latency = performance.now() - start;
@@ -447,51 +465,121 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
             tokensOutput: lastUsage?.completion_tokens,
             events: capturedEvents && capturedEvents.length > 0 ? capturedEvents : undefined,
           });
-      } else if (config.stream && mode === 'chat') {
-        const response = await fetchAuthenticated(endpoint, {
-          method: 'POST',
-          body: JSON.stringify(body),
+      } else if (mode === 'agent') {
+        // `/v1/agents/:instanceId/chat` — same durable-session conversation
+        // id doubles as the `:conversationId` in the cancel endpoint
+        // (`cancelStreaming` in playgroundStreaming.ts uses it).
+        get().clearStreamingEvents();
+
+        body.conversationId = conversationId;
+
+        let lastContent = '';
+        let lastModel = model;
+        let lastUsage: any = null;
+        let firstErrorMessage: string | null = null;
+        let doneInfo: any = null;
+
+        await streamSSE(endpoint, {
+          body,
           signal: abortController.signal,
           headers: extraHeaders,
+          onFrame: (frame) => {
+            let parsed: any;
+            try {
+              parsed = JSON.parse(frame.data);
+            } catch {
+              return;
+            }
+
+            get().addStreamingEvent({ name: frame.event, data: parsed });
+
+            if (frame.event === 'error' && parsed?.message) {
+              if (firstErrorMessage === null) firstErrorMessage = parsed.message;
+              return;
+            }
+            if (frame.event === 'turn' && parsed.message) {
+              const text = typeof parsed.message.content === 'string'
+                ? parsed.message.content
+                : '';
+              if (text) lastContent = text;
+              if (parsed.model) lastModel = parsed.model;
+              if (parsed.usage) lastUsage = parsed.usage;
+            } else if (frame.event === 'done') {
+              doneInfo = parsed;
+            }
+          },
         });
 
-        if (!response.ok || !response.body) {
-          const errText = await response.text().catch(() => response.statusText);
-          throw new Error(`Stream failed: ${response.status} ${errText}`);
+        if (abortController.signal.aborted) {
+          markCancelled();
+          return;
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
+        const latency = doneInfo?.durationMs ?? (performance.now() - start);
+        const finalContent = firstErrorMessage
+          ? `Error: ${firstErrorMessage}`
+          : lastContent;
+
+        const capturedEvents = get().streamingEvents;
+        set(state => ({
+          messages: state.messages.map(m =>
+            m.id === assistantMessageId
+              ? {
+                  ...m,
+                  content: finalContent,
+                  events: capturedEvents,
+                  isStreaming: false,
+                  latencyMs: latency,
+                  model: lastModel,
+                  tokensInput: lastUsage?.prompt_tokens,
+                  tokensOutput: lastUsage?.completion_tokens,
+                  cost: doneInfo?.totalCost,
+                }
+              : m
+          ),
+          isStreaming: false,
+          streamingEvents: [],
+        }));
+
+        await apiPost(`/v1/conversations/${conversationId}/messages`, {
+            role: 'assistant',
+            content: finalContent,
+            model: lastModel,
+            latencyMs: latency,
+            tokensInput: lastUsage?.prompt_tokens,
+            tokensOutput: lastUsage?.completion_tokens,
+            cost: doneInfo?.totalCost,
+            events: capturedEvents && capturedEvents.length > 0 ? capturedEvents : undefined,
+          });
+      } else if (config.stream && mode === 'chat') {
         let fullContent = '';
         let lastChunk: any = null;
-        let sawDone = false;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
-
-          for (const line of lines) {
-            if (line === 'data: [DONE]') {
-              sawDone = true;
-              break;
-            }
+        await streamSSE(endpoint, {
+          body,
+          signal: abortController.signal,
+          headers: extraHeaders,
+          onFrame: (frame) => {
+            if (frame.data === SSE_DONE) return;
+            let data: any;
             try {
-              const data = JSON.parse(line.slice(6));
-              lastChunk = data;
-              if (data.error?.message) {
-                lastChunk = { error: data.error };
-              } else if (data.choices?.[0]?.delta?.content) {
-                fullContent += data.choices[0].delta.content;
-                get().updateStreamingMessage(fullContent);
-              }
-            } catch (_e) {
-              // Skip invalid JSON
+              data = JSON.parse(frame.data);
+            } catch {
+              return;
             }
-          }
-          if (sawDone) break;
+            lastChunk = data;
+            if (data.error?.message) {
+              lastChunk = { error: data.error };
+            } else if (data.choices?.[0]?.delta?.content) {
+              fullContent += data.choices[0].delta.content;
+              get().updateStreamingMessage(fullContent);
+            }
+          },
+        });
+
+        if (abortController.signal.aborted) {
+          markCancelled();
+          return;
         }
 
         const latency = performance.now() - start;
@@ -532,50 +620,34 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
             routingDecision: lastChunk?.routing_decision,
           });
       } else if (config.stream && mode === 'godmode') {
-        const response = await fetchAuthenticated(endpoint, {
-          method: 'POST',
-          body: JSON.stringify(body),
-          signal: abortController.signal,
-          headers: extraHeaders,
-        });
-
-        if (!response.ok || !response.body) {
-          const errText = await response.text().catch(() => response.statusText);
-          throw new Error(`Godmode stream failed: ${response.status} ${errText}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
         let fullContent = '';
         let lastChunk: any = null;
-        let sawDone = false;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
-
-          for (const line of lines) {
-            if (line === 'data: [DONE]') {
-              sawDone = true;
-              break;
-            }
+        await streamSSE(endpoint, {
+          body,
+          signal: abortController.signal,
+          headers: extraHeaders,
+          onFrame: (frame) => {
+            if (frame.data === SSE_DONE) return;
+            let data: any;
             try {
-              const data = JSON.parse(line.slice(6));
-              lastChunk = data;
-              if (data.error?.message) {
-                lastChunk = { error: data.error };
-              } else if (data.choices?.[0]?.delta?.content) {
-                fullContent += data.choices[0].delta.content;
-                get().updateStreamingMessage(fullContent);
-              }
+              data = JSON.parse(frame.data);
             } catch {
-              // Skip invalid JSON
+              return;
             }
-          }
-          if (sawDone) break;
+            lastChunk = data;
+            if (data.error?.message) {
+              lastChunk = { error: data.error };
+            } else if (data.choices?.[0]?.delta?.content) {
+              fullContent += data.choices[0].delta.content;
+              get().updateStreamingMessage(fullContent);
+            }
+          },
+        });
+
+        if (abortController.signal.aborted) {
+          markCancelled();
+          return;
         }
 
         const latency = performance.now() - start;

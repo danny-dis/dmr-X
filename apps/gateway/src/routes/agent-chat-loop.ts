@@ -1,10 +1,20 @@
 import type { ToolCall, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
-import { updateState, type ConversationState, logger } from '@dmr-x/utils';
+import {
+  updateState,
+  stepCountIs,
+  hasToolCall,
+  isStopConditionMet,
+  logger,
+  type StopCondition,
+  type StepResult,
+  type ConversationState,
+} from '@dmr-x/utils';
 import type { AgentRuntimeService, AgentExecutionContext } from '@dmr-x/agent-runtime';
 import type { AgentDefinition } from '@dmr-x/agent-registry';
 
 import { executeToolCall } from './tools.routes.js';
+import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
 // Shared agentic loop engine for the /agents/:instanceId/chat route.
@@ -18,6 +28,12 @@ export interface AgentChatLoopBody {
   maxSteps?: number;
   resolvedConversationId?: string;
   max_cost_budget?: number;
+  /** Composable stop conditions (step_count/tool_call/text_match/max_tokens/max_cost/finish_reason). */
+  stopWhen?: Array<{ type: string; value: number | string }>;
+  /** Pause before executing tool calls, persisting an awaiting_approval state for /resume. */
+  approvalRequired?: boolean;
+  /** Human approval decisions supplied on the /resume path. */
+  approvalDecisions?: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>;
 }
 
 export interface AgentChatLoopResult {
@@ -26,6 +42,8 @@ export interface AgentChatLoopResult {
   totalCost: number;
   stepsCompleted: number;
   budgetExceeded: boolean;
+  /** True when the loop paused for human approval (status awaiting_approval). */
+  awaitingApproval?: boolean;
   finalUsage: any;
   allSteps: Array<{
     turn: number;
@@ -64,9 +82,23 @@ interface RunAgentChatLoopArgs {
   executionId?: string;
   /** Conversation id for durable session linkage. Defaults to conversation.id. */
   conversationId?: string;
+  /** Per-turn checkpoint hook — invoked whenever the loop's messages change. */
+  onCheckpoint?: (turn: number, conversation: ConversationState) => void;
+  /** Composable stop conditions; also honored from body.stopWhen. */
+  stopWhen?: Array<{ type: string; value: number | string }>;
+  /** Pause before tool execution; also honored from body.approvalRequired. */
+  approvalRequired?: boolean;
+  /** Resume-path approval decisions; also honored from body.approvalDecisions. */
+  approvalDecisions?: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>;
+  /** Router quality target (from the X-Quality-Target header). Defaults to 'balanced'. */
+  qualityTarget?: ReturnType<typeof parseQualityTarget>;
 }
 
 const MAX_TURN_RETRIES = 2;
+
+// Per-turn model-call timeout. A hung provider call must not hang the whole
+// durable run; abort the single turn and surface a recoverable error.
+const TURN_TIMEOUT_MS = Number(process.env.DMRX_AGENTIC_TURN_TIMEOUT_MS) || 120_000;
 
 function toUnifiedRequest(
   body: {
@@ -239,6 +271,164 @@ async function summarizeHistory(args: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Opt-in agentic upgrades ported from /agentic/chat (all default OFF)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run router.route with a per-turn timeout. Throws on timeout / transport error.
+ * `timeoutMs` defaults to the module-level env knob (DMRX_AGENTIC_TURN_TIMEOUT_MS);
+ * overridable so tests can exercise the abort path without importing late.
+ */
+export async function routeWithTimeout(
+  router: Router,
+  unifiedRequest: UnifiedRequest,
+  qualityTarget: ReturnType<typeof parseQualityTarget>,
+  timeoutMs: number = TURN_TIMEOUT_MS,
+): Promise<{ response: any }> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    return await router.route(
+      { ...unifiedRequest, signal: ac.signal } as UnifiedRequest,
+      { path: '/v1/agents/chat', qualityTarget },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Build composable SDK stop conditions from request-body conditions. Closures
+ * read the loop's live lastResponseText / totalTokensUsed / totalCost, so the
+ * conditions stay current across turns.
+ */
+export function buildStopConditions(
+  conditions: Array<{ type: string; value: number | string }>,
+  getResponseText: () => string,
+  getTotalTokens: () => number,
+  getTotalCost: () => number,
+): StopCondition[] {
+  return conditions.map((c) => {
+    switch (c.type) {
+      case 'step_count':
+        return stepCountIs(c.value as number);
+      case 'tool_call':
+        return hasToolCall(c.value as string);
+      case 'text_match': {
+        const text = c.value as string;
+        return () => getResponseText().includes(text);
+      }
+      case 'max_tokens': {
+        const maxTokens = c.value as number;
+        return () => getTotalTokens() >= maxTokens;
+      }
+      case 'max_cost': {
+        const maxCost = c.value as number;
+        return () => getTotalCost() >= maxCost;
+      }
+      case 'finish_reason': {
+        const reason = c.value as string;
+        return ({ steps }) => steps.some((s) => s.finishReason === reason);
+      }
+      default:
+        return () => false;
+    }
+  });
+}
+
+/**
+ * Process human approval decisions against a paused conversation's pending
+ * tool calls. Executes approved calls (injecting their tool-result messages),
+ * injects rejection messages for the rest, then clears pendingToolCalls and
+ * returns the conversation to in_progress. No-op unless the conversation is
+ * awaiting approval with pending calls.
+ */
+export async function processApprovalDecisions(
+  conversation: ConversationState,
+  approvalDecisions: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>,
+  context: {
+    requestId: string;
+    tenant?: { id: string; name: string };
+    agentDefinition?: RunAgentChatLoopArgs['agentDefinition'];
+    router?: Router;
+    loadedSkills?: string[];
+    conversationId?: string;
+  },
+): Promise<{ processed: boolean }> {
+  if (
+    !approvalDecisions ||
+    approvalDecisions.length === 0 ||
+    conversation.status !== 'awaiting_approval' ||
+    !conversation.pendingToolCalls
+  ) {
+    return { processed: false };
+  }
+
+  const approvedCalls: typeof conversation.pendingToolCalls = [];
+  const rejectedCalls: typeof conversation.pendingToolCalls = [];
+
+  for (const decision of approvalDecisions) {
+    const pending = conversation.pendingToolCalls.find((tc) => tc.id === decision.tool_call_id);
+    if (pending) {
+      if (decision.approved) approvedCalls.push(pending);
+      else rejectedCalls.push(pending);
+    }
+  }
+
+  for (const tc of approvedCalls) {
+    const args = typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments);
+    const mockToolCall: ToolCall = {
+      id: tc.id,
+      type: 'function',
+      function: { name: tc.name, arguments: args },
+    };
+    const result = await executeToolCall(mockToolCall, {
+      requestId: context.requestId,
+      tenant: context.tenant,
+      agentDefinition: context.agentDefinition,
+      router: context.router,
+      loadedSkills: context.loadedSkills,
+      conversationId: context.conversationId,
+    });
+    conversation.messages.push({
+      role: 'tool',
+      tool_call_id: tc.id,
+      content: result.error
+        ? JSON.stringify({ error: result.error.message })
+        : JSON.stringify(result.result),
+    });
+  }
+
+  for (const tc of rejectedCalls) {
+    conversation.messages.push({
+      role: 'tool',
+      tool_call_id: tc.id,
+      content: JSON.stringify({ error: 'Tool call rejected by user' }),
+    });
+  }
+
+  Object.assign(
+    conversation,
+    updateState(conversation, { pendingToolCalls: undefined, status: 'in_progress' }),
+  );
+
+  return { processed: true };
+}
+
+/**
+ * Commit the loop's accumulated messages + status into the conversation object
+ * in place. The route holds the same object reference, so this is what makes
+ * per-turn checkpointing and the final durable upsert see the live state.
+ */
+function commitConversationState(
+  conversation: ConversationState,
+  messages: any[],
+  status: ConversationState['status'],
+): void {
+  Object.assign(conversation, updateState(conversation, { messages, status }));
+}
+
 export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<AgentChatLoopResult> {
   const {
     conversation,
@@ -259,11 +449,32 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     runtime,
     executionId,
     conversationId,
+    onCheckpoint,
+    qualityTarget,
   } = args;
 
   // conversationId is optional; fall back to the conversation's own id so
   // callers that don't thread it still persist telemetry correctly.
   const resolvedConversationId = conversationId ?? conversation.id;
+
+  // Opt-in flags; honored from either the args or the request body.
+  const approvalRequired = args.approvalRequired ?? body.approvalRequired ?? false;
+  const approvalDecisions = args.approvalDecisions ?? body.approvalDecisions;
+  const stopConditions = args.stopWhen ?? body.stopWhen ?? [];
+  const target = qualityTarget ?? parseQualityTarget(undefined);
+
+  // Resume path: process human approval decisions for a previously paused run
+  // BEFORE the loop so the model sees the injected tool-result messages.
+  if (approvalDecisions && approvalDecisions.length > 0) {
+    await processApprovalDecisions(conversation, approvalDecisions, {
+      requestId,
+      tenant,
+      agentDefinition,
+      router,
+      loadedSkills: loadedSkillIds,
+      conversationId: resolvedConversationId,
+    });
+  }
 
   const messages = [...conversation.messages] as any[];
 
@@ -291,8 +502,16 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   let totalTokensUsed = 0;
   let totalCost = 0;
   let budgetExceeded = false;
+  let awaitingApproval = false;
   let finalUsage: any;
   const allSteps: AgentChatLoopResult['allSteps'] = [];
+  const allStepResults: StepResult[] = [];
+  const sdkStopConditions = buildStopConditions(
+    stopConditions,
+    () => lastResponseText,
+    () => totalTokensUsed,
+    () => totalCost,
+  );
 
   if (stream) {
     onStreamEvent('agent_start', {
@@ -328,9 +547,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     let response: UnifiedResponse;
 
     try {
-      ({ response } = await router.route(unifiedRequest, {
-        path: '/v1/agents/chat',
-      }));
+      ({ response } = await routeWithTimeout(router, unifiedRequest, target));
     } catch (error) {
       const decision = resolveFallbackForError(runtime, error, context.definition, model);
 
@@ -364,9 +581,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         tenant,
       );
 
-      ({ response } = await router.route(retryRequest, {
-        path: '/v1/agents/chat',
-      }));
+      ({ response } = await routeWithTimeout(router, retryRequest, target));
     }
 
     const toolCalls = response.message?.tool_calls ?? [];
@@ -384,7 +599,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // Stop if cost budget exceeded
     if (body.max_cost_budget && totalCost >= body.max_cost_budget) {
       if (response.message) messages.push(response.message);
-      updateState(conversation, { messages, status: 'completed' });
+      commitConversationState(conversation, messages, 'completed');
       budgetExceeded = true;
       if (stream) {
         onStreamEvent('budget_exceeded', {
@@ -393,6 +608,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           totalCost,
         });
       }
+      onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
       break;
     }
 
@@ -407,16 +623,29 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       });
     }
 
-    // Stop if no tool calls or at step limit
-    if (toolCalls.length === 0 || turn === maxSteps - 1) {
+    // Accumulate the step result for SDK stop-condition evaluation.
+    const stepResult: StepResult = {
+      toolCalls: toolCalls.map((tc: ToolCall) => ({ name: tc.function.name })),
+      usage: response.usage ? { totalTokens: response.usage.total_tokens } : undefined,
+      finishReason: response.finishReason ?? undefined,
+    };
+    allStepResults.push(stepResult);
+
+    // Stop if no tool calls, at step limit, or a stop condition is met.
+    if (
+      toolCalls.length === 0 ||
+      turn === maxSteps - 1 ||
+      (await isStopConditionMet({ stopConditions: sdkStopConditions, steps: allStepResults }))
+    ) {
       if (response.message) messages.push(response.message);
-      updateState(conversation, { messages, status: 'completed' });
+      commitConversationState(conversation, messages, 'completed');
       allSteps.push({
         turn,
         message: response.message,
         tool_calls: toolCalls,
         tool_results: [],
       });
+      onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
       break;
     }
 
@@ -450,12 +679,60 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       });
     }
 
+    // Approval gate: pause before executing any tool when human approval is
+    // required. The conversation is persisted in an awaiting_approval state;
+    // a later /resume supplies approvalDecisions.
+    if (approvalRequired && allowedCalls.length > 0) {
+      const pendingToolCalls = allowedCalls.map((tc: ToolCall) => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: JSON.parse(tc.function.arguments || '{}'),
+      }));
+      if (response.message) messages.push(response.message);
+      Object.assign(
+        conversation,
+        updateState(conversation, {
+          messages,
+          pendingToolCalls,
+          status: 'awaiting_approval',
+        }),
+      );
+      allSteps.push({
+        turn,
+        message: response.message,
+        tool_calls: allowedCalls,
+        tool_results: [],
+      });
+      if (stream) {
+        onStreamEvent('approval_required', {
+          turn,
+          resolvedConversationId,
+          pending_tool_calls: pendingToolCalls,
+        });
+        onStreamEvent('done', {
+          status: 'awaiting_approval',
+          conversationId: resolvedConversationId,
+        });
+      }
+      awaitingApproval = true;
+      break;
+    }
+
     // Execute tool calls
     const assistantMessage = { ...response.message };
     messages.push(assistantMessage);
 
     const executionPromises = allowedCalls.map((tc: ToolCall) =>
-      executeToolCall(tc, { requestId, tenant, agentDefinition, router, loadedSkills: loadedSkillIds }),
+      executeToolCall(tc, {
+        requestId,
+        tenant,
+        agentDefinition,
+        router,
+        loadedSkills: loadedSkillIds,
+        // Key the coding sandbox on the conversation, not the request, so
+        // every turn of this (possibly resumed) session shares one workspace.
+        conversationId: resolvedConversationId,
+      }),
     );
 
     const settled = await Promise.allSettled(executionPromises);
@@ -487,6 +764,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           : JSON.stringify(tr.result),
       });
     }
+
+    onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
 
     // Opt-in history compaction: once the transcript is large, fold the early
     // tool-activity turns into a single rolling summary. Non-fatal — on any
@@ -530,6 +809,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     totalCost,
     stepsCompleted: allSteps.length || maxSteps,
     budgetExceeded,
+    awaitingApproval,
     finalUsage,
     allSteps,
   };

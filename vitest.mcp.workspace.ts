@@ -58,7 +58,6 @@ export default defineWorkspace([
       exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
       pool: 'forks',
       poolOptions: { forks: { singleFork: true } },
-      coverage: { enabled: false },
     },
   },
 ]);

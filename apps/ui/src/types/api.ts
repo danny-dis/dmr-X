@@ -157,11 +157,21 @@ export interface ApiModel {
   // 9-Dimension Taxonomy Fields
   architecture?: ArchitectureTier;
   task_categories?: string[];
+  /** @deprecated Use task_categories. camelCase alias. */
+  taskCategories?: string[];
   context_tier?: ContextTier;
+  /** @deprecated Use context_tier. camelCase alias. */
+  contextTier?: ContextTier;
   deployment?: DeploymentModel;
   reasoning_mode?: ReasoningMode;
+  /** @deprecated Use reasoning_mode. camelCase alias. */
+  reasoningMode?: ReasoningMode;
   safety_tier?: SafetyTier;
+  /** @deprecated Use safety_tier. camelCase alias. */
+  safetyTier?: SafetyTier;
   agentic_level?: AgenticLevel;
+  /** @deprecated Use agentic_level. camelCase alias. */
+  agenticLevel?: AgenticLevel;
   context_window?: number | null;
   /** @deprecated Use context_window. camelCase alias. */
   contextWindow?: number | null;

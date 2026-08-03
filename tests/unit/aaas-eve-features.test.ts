@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 
 import {
   agentSessionStore,
@@ -29,7 +29,7 @@ let closeDb: (...args: any[]) => Promise<unknown>;
 
 let tmpDir: string;
 
-beforeEach(async () => {
+beforeAll(async () => {
   const dbMod = await import('@dmr-x/db');
   initDb = dbMod.initDb as any;
   getDb = dbMod.getDb as any;
@@ -43,7 +43,7 @@ beforeEach(async () => {
   }
   await initDb();
 });
-afterEach(async () => {
+afterAll(async () => {
   try {
     await closeDb();
   } catch {
@@ -54,6 +54,16 @@ afterEach(async () => {
   } catch {
     /* ignore */
   }
+});
+beforeEach(() => {
+  // Wipe rows between tests so each case starts from an empty table.
+  // Order is child-before-parent for the FK chain (agent_sessions ->
+  // agent_instances -> agent_definitions); skills is independent.
+  const db = getDb();
+  db.exec('DELETE FROM agent_sessions;');
+  db.exec('DELETE FROM agent_instances;');
+  db.exec('DELETE FROM agent_definitions;');
+  db.exec('DELETE FROM skills;');
 });
 
 // ---------------------------------------------------------------------------

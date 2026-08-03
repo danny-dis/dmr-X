@@ -111,15 +111,16 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       return reply.code(401).send({ error: { message: 'Authentication required' } });
     }
 
-    // Gather all active subagent instances for this tenant.
-    let instances: any[];
+    // Gather all active subagent instances for this tenant. Filtering on
+    // status in SQL also means a paused instance is never a dispatch target.
+    let active: any[];
     try {
-      instances = await agentRegistryService.listInstances(tenant.id);
+      const result = await agentRegistryService.listInstances(tenant.id, { status: 'active' });
+      active = result.items;
     } catch (err) {
       logger.error({ err }, 'agent-dispatch: failed to list instances');
       return reply.code(500).send({ error: { message: 'Failed to list subagents' } });
     }
-    const active = instances.filter((i) => i.status === 'active');
 
     if (active.length === 0) {
       return reply.code(404).send({

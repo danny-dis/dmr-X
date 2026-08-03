@@ -1,6 +1,6 @@
 import { type SVGProps } from 'react';
 
-type IconProps = SVGProps<SVGSVGElement> & { size?: number; color?: string };
+type IconProps = SVGProps<SVGSVGElement> & { size?: number; color?: string; title?: string };
 
 const base = (props: IconProps) => {
   const { size = 24, ...rest } = props;

@@ -161,8 +161,6 @@ dmr-x/
 │   │   │   │   ├── anthropic-stream-serializer.ts
 │   │   │   │   ├── cloudcode-converter.ts
 │   │   │   │   ├── gemini-converter.ts
-│   │   │   │   ├── crossformat.ts
-│   │   │   │   ├── stream-translator.ts
 │   │   │   │   └── ...
 │   │   │   ├── middleware/   # Auth, agent-RBAC, cost-headers, request-id, SIEM/audit forwarding
 │   │   │   ├── routes/       # Route handlers per feature

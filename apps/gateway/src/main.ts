@@ -14,6 +14,7 @@ import { logger, parseBodyLimit, parseTrustProxy } from '@dmr-x/utils';
 import { workersService } from '@dmr-x/workers';
 
 import { createServer } from './server.js';
+import { connectPersistedMcpServers } from './routes/mcp-admin.routes.js';
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -220,6 +221,15 @@ async function main(): Promise<void> {
   // (both default true). Skip-if-healthy so an external supervisor can own them.
   const { startCompanionServices, stopMcpSidecar, stopGodmode } = await import('./lib/sidecar-boot.js');
   startCompanionServices();
+
+  // Dial out to persisted upstream MCP servers. Deliberately after listen and
+  // not awaited: a stdio server spawns a child process and an SSE one may be
+  // unreachable, and neither should delay the port opening. Individual
+  // failures are logged inside and leave the entry as 'disconnected' in
+  // GET /admin/mcp/servers, which is what the UI renders a retry against.
+  void connectPersistedMcpServers().catch((err) => {
+    logger.error({ err }, 'Failed to connect persisted MCP servers');
+  });
 
   // Graceful shutdown with 30-second timeout
   const SHUTDOWN_TIMEOUT_MS = 30_000;

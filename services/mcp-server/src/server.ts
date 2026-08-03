@@ -37,13 +37,15 @@ import { persistentContextStore, initDb, getDb } from '@dmr-x/db';
 // (The entry point also calls initDb, but under bun the entry and this module
 // can resolve @dmr-x/db to separate instances, so we initialize defensively.)
 void initDb().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('[mcp-server] DB init (deferred) failed:', err);
 });
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import path from 'node:path';
+import fs from 'node:fs';
 
 import { TOOL_ANNOTATIONS, type ToolAnnotations } from './annotations.js';
+import { loadConfigFile, resolveConfig } from './config.js';
 import {
   resolveGatewayKey,
   autoProvisionTenantKey,
@@ -345,6 +347,113 @@ function toolError(
     content: [{ type: 'text' as const, text: JSON.stringify({ error: errorPayload }, null, 2) }],
     isError: true as const,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem/bash workspace containment
+//
+// dmrx_read_file/write_file/edit_file/list_files/search_files/bash all take
+// a caller-supplied path (or cwd) that the tool schemas document as
+// "relative to workspace" (see tools.ts). resolveWithinWorkspace() is the
+// single choke point that makes that documented contract actually true.
+//
+// This mirrors apps/gateway/src/routes/tools.routes.ts's `safePath` (that
+// file's containment approach, generalized to a single global workspace
+// root instead of a per-tenant sandbox dir). It is a parallel
+// implementation rather than a shared import: services/* must not depend
+// on apps/* (see CLAUDE.md architecture rules).
+// ---------------------------------------------------------------------------
+
+const workspaceConfigFileForRoot = loadConfigFile();
+
+/**
+ * Root directory that MCP filesystem/bash tools are confined to.
+ * Configurable via the `workspaceRoot` config file key or the
+ * DMRX_MCP_WORKSPACE_ROOT env var (env wins — see config.ts). Defaults to
+ * the server process's current working directory.
+ */
+const MCP_WORKSPACE_ROOT = path.resolve(
+  resolveConfig(workspaceConfigFileForRoot, 'workspaceRoot', 'DMRX_MCP_WORKSPACE_ROOT', process.cwd())
+);
+
+/**
+ * Thrown by resolveWithinWorkspace(). The message is always safe to return
+ * to an MCP caller as-is — it never contains the resolved absolute
+ * filesystem path, only a generic reason.
+ */
+class WorkspacePathError extends Error {}
+
+/**
+ * True if `candidate` is inside (or equal to) `root`.
+ *
+ * Uses path.relative() rather than string-prefix matching: a prefix check
+ * would wrongly treat "/workspace-evil" as contained within "/workspace".
+ * Comparison is case-insensitive on Windows (NTFS is case-insensitive by
+ * default), case-sensitive elsewhere.
+ */
+function isContained(root: string, candidate: string): boolean {
+  const caseFold = process.platform === 'win32';
+  const a = caseFold ? root.toLowerCase() : root;
+  const b = caseFold ? candidate.toLowerCase() : candidate;
+  const rel = path.relative(a, b);
+  if (rel === '') return true;
+  if (path.isAbsolute(rel)) return false; // e.g. different drive letter on Windows
+  if (rel === '..' || rel.startsWith(`..${path.sep}`)) return false;
+  return true;
+}
+
+/**
+ * Resolve a caller-supplied path (relative to the MCP workspace root) to an
+ * absolute, symlink-resolved filesystem path, and verify it stays inside
+ * the workspace. Use this for every path-like argument the filesystem/bash
+ * tools accept before touching node:fs or node:child_process.
+ *
+ * - Rejects absolute paths outright (path.isAbsolute() covers POSIX
+ *   absolute paths, Windows drive-letter paths, UNC paths, and `\\?\`
+ *   device paths).
+ * - Resolves symlinks with fs.realpathSync() BEFORE the containment check,
+ *   so a symlink inside the workspace cannot be used to point outside it.
+ * - realpathSync() throws for paths that don't exist yet (write_file /
+ *   edit_file creating a new file, or a not-yet-existing bash cwd) — in
+ *   that case the resolved *parent* directory is validated instead, and
+ *   the (non-existent) child path is still checked for containment.
+ *
+ * @throws WorkspacePathError with a message safe to surface to callers.
+ */
+function resolveWithinWorkspace(userPath: string | null | undefined): string {
+  const raw = userPath ?? '.';
+  if (typeof raw !== 'string') {
+    throw new WorkspacePathError('path must be a string');
+  }
+  if (raw.includes('\0')) {
+    throw new WorkspacePathError('path contains invalid characters');
+  }
+  if (path.isAbsolute(raw)) {
+    throw new WorkspacePathError('path must be relative to the workspace root');
+  }
+
+  const resolved = path.resolve(MCP_WORKSPACE_ROOT, raw);
+
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(resolved);
+  } catch {
+    // Doesn't exist yet - validate the parent directory's real path instead.
+    const parentDir = path.dirname(resolved);
+    try {
+      realPath = path.join(fs.realpathSync(parentDir), path.basename(resolved));
+    } catch {
+      // Parent doesn't exist either - fall back to the unresolved path;
+      // it is still subject to the containment check below.
+      realPath = resolved;
+    }
+  }
+
+  if (!isContained(MCP_WORKSPACE_ROOT, realPath)) {
+    throw new WorkspacePathError('path escapes the workspace root');
+  }
+
+  return realPath;
 }
 
 function toUnifiedRequest(
@@ -2983,11 +3092,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.READ_FILE);
       if (rateLimitResponse) return rateLimitResponse;
+
+      // Input validation
+      const requestId = crypto.randomUUID();
+      const validationError = validateToolInput(state, TOOL_NAMES.READ_FILE, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.READ_FILE, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       try {
         const fs = await import('node:fs');
         const filePath = params.path;
         if (!filePath) return { content: [{ type: 'text' as const, text: 'Error: path is required' }], isError: true };
-        const content = fs.readFileSync(filePath, 'utf-8');
+        const fullPath = resolveWithinWorkspace(filePath);
+        const content = fs.readFileSync(fullPath, 'utf-8');
         const lines = content.split('\n');
         const start = (params.offset ?? 1) - 1;
         const end = params.limit ? start + params.limit : lines.length;
@@ -3029,9 +3150,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const filePath = params.path;
         const content = params.content;
         if (!filePath || content === undefined) return { content: [{ type: 'text' as const, text: 'Error: path and content are required' }], isError: true };
-        const dir = path.dirname(filePath);
+        const fullPath = resolveWithinWorkspace(filePath);
+        const dir = path.dirname(fullPath);
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(filePath, content, 'utf-8');
+        fs.writeFileSync(fullPath, content, 'utf-8');
         return { content: [{ type: 'text' as const, text: JSON.stringify({ path: filePath, bytes: Buffer.byteLength(content), lines: content.split('\n').length }, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
@@ -3052,18 +3174,30 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.EDIT_FILE);
       if (rateLimitResponse) return rateLimitResponse;
+
+      // Input validation
+      const requestId = crypto.randomUUID();
+      const validationError = validateToolInput(state, TOOL_NAMES.EDIT_FILE, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.EDIT_FILE, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       try {
         const fs = await import('node:fs');
         const filePath = params.path;
         const oldStr = params.old_string;
         const newStr = params.new_string;
         if (!filePath || !oldStr || newStr === undefined) return { content: [{ type: 'text' as const, text: 'Error: path, old_string, and new_string are required' }], isError: true };
-        let content = fs.readFileSync(filePath, 'utf-8');
+        const fullPath = resolveWithinWorkspace(filePath);
+        let content = fs.readFileSync(fullPath, 'utf-8');
         const count = content.split(oldStr).length - 1;
         if (count === 0) return { content: [{ type: 'text' as const, text: `Error: old_string not found in ${filePath}` }], isError: true };
         if (count > 1) return { content: [{ type: 'text' as const, text: `Error: Found ${count} matches for old_string. Provide more context.` }], isError: true };
         content = content.replace(oldStr, newStr);
-        fs.writeFileSync(filePath, content, 'utf-8');
+        fs.writeFileSync(fullPath, content, 'utf-8');
         return { content: [{ type: 'text' as const, text: JSON.stringify({ path: filePath, replaced: 1, lines: content.split('\n').length }, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
@@ -3084,10 +3218,21 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.LIST_FILES);
       if (rateLimitResponse) return rateLimitResponse;
+
+      // Input validation
+      const requestId = crypto.randomUUID();
+      const validationError = validateToolInput(state, TOOL_NAMES.LIST_FILES, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.LIST_FILES, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       try {
         const fs = await import('node:fs');
         const path = await import('node:path');
-        const dirPath = params.path || '.';
+        const dirPath = resolveWithinWorkspace(params.path);
         const results: string[] = [];
         const skip = ['node_modules', '.git', 'dist'];
         function walk(dir: string, prefix: string) {
@@ -3141,7 +3286,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         if (!cmd) return { content: [{ type: 'text' as const, text: 'Error: command is required' }], isError: true };
         const blocked = ['rm -rf /', 'mkfs', ':(){', 'dd if=/dev'];
         if (blocked.some(b => cmd.includes(b))) return { content: [{ type: 'text' as const, text: 'Error: Command blocked for safety' }], isError: true };
-        const stdout = execSync(cmd, { cwd: params.cwd || undefined, timeout: params.timeout_ms || 30000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }) as string;
+        // NOTE: this blocklist is a substring match on the raw command and is
+        // trivially bypassed (e.g. quoting, `dd  if=/dev`, aliases, wrapping
+        // in `sh -c`). It is not a real sandbox. Left as-is per the security
+        // fix scope; a proper replacement is tracked separately.
+        const cwd = resolveWithinWorkspace(params.cwd);
+        const stdout = execSync(cmd, { cwd, timeout: params.timeout_ms || 30000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }) as string;
         return { content: [{ type: 'text' as const, text: JSON.stringify({ stdout, exitCode: 0 }, null, 2) }] };
       } catch (err: any) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ stdout: err.stdout || '', stderr: err.stderr || '', exitCode: err.status ?? 1, error: err.message }, null, 2) }], isError: true };
@@ -3162,12 +3312,23 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     async (params: any) => {
       const rateLimitResponse = checkRateLimit(state, TOOL_NAMES.SEARCH_FILES);
       if (rateLimitResponse) return rateLimitResponse;
+
+      // Input validation
+      const requestId = crypto.randomUUID();
+      const validationError = validateToolInput(state, TOOL_NAMES.SEARCH_FILES, params, requestId);
+      if (validationError) return validationError;
+
+      // Tool invocation policy check
+      const tenantId = params._tenant_id || 'default';
+      const policyError = evaluateToolPolicy(state, TOOL_NAMES.SEARCH_FILES, params, requestId, tenantId);
+      if (policyError) return policyError;
+
       try {
         const fs = await import('node:fs');
         const path = await import('node:path');
         const searchPattern = params.pattern;
-        const dirPath = params.path || '.';
         if (!searchPattern) return { content: [{ type: 'text' as const, text: 'Error: pattern is required' }], isError: true };
+        const dirPath = resolveWithinWorkspace(params.path);
         const results: Array<{ file: string; line: number; text: string }> = [];
         const skip = ['node_modules', '.git', 'dist'];
         function walk(dir: string) {
@@ -3184,7 +3345,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
                 const lines = content.split('\n');
                 for (let i = 0; i < lines.length; i++) {
                   if (lines[i].includes(searchPattern)) {
-                    results.push({ file: path.relative('.', fullPath), line: i + 1, text: lines[i].trim() });
+                    results.push({ file: path.relative(MCP_WORKSPACE_ROOT, fullPath), line: i + 1, text: lines[i].trim() });
                     if (results.length >= 100) return;
                   }
                 }

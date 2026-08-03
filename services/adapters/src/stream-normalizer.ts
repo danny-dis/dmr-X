@@ -1,6 +1,8 @@
 import type { StreamChunk, TokenStreamChunk, DoneStreamChunk } from '@dmr-x/core';
 import { EventStream, logger, type SseMessage } from '@dmr-x/utils';
 
+import { mapAnthropicStopReason } from './anthropic-tools.js';
+
 /**
  * Parse an OpenAI-compatible SSE response into StreamChunks.
  * Uses the robust EventStream parser that handles multiple boundary formats.
@@ -96,6 +98,171 @@ export function createOpenAISSEIterator(
       const onAbort = () => {
         void eventStream.cancel(signal.reason);
       };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
+
+  return eventStream;
+}
+
+/**
+ * Parse an Anthropic-compatible SSE response (native `/v1/messages` wire
+ * format) into StreamChunks.
+ *
+ * Anthropic's stream is event-typed rather than choice/delta-shaped like
+ * OpenAI's: message_start / content_block_start / content_block_delta /
+ * content_block_stop / message_delta / message_stop / ping / error. None of
+ * those carry a `.choices` array, so `createOpenAISSEIterator` (which only
+ * reads `parsed.choices?.[0]?.delta`) silently yields nothing for an
+ * Anthropic-shaped stream -- this is what left GenericAnthropicAdapter's
+ * streaming responses empty.
+ *
+ * Events that carry no chunk-worthy data (message_start, content_block_stop,
+ * ping, unrecognized malformed JSON) make the parser return bare `undefined`
+ * rather than an IteratorResult wrapping `undefined`. Returning the latter
+ * would enqueue an `undefined` chunk into the stream -- in EventStream.pull,
+ * `item && !item.done` is true for `{done:false, value:undefined}` and that
+ * gets enqueued -- and every downstream consumer dereferences `chunk.type`
+ * unconditionally, so an `undefined` chunk would throw.
+ */
+export function createAnthropicSSEIterator(
+  response: Response,
+  options?: { signal?: AbortSignal },
+): AsyncIterable<StreamChunk> {
+  const body = response.body;
+  if (!body) {
+    throw new Error('Response body is null');
+  }
+
+  let index = 0;
+  let requestId = '';
+  let modelId = '';
+  let outputTokens = 0;
+  let stopReason: string | undefined;
+
+  const skip = undefined as unknown as IteratorResult<StreamChunk, undefined>;
+
+  const eventStream = new EventStream<StreamChunk>(
+    body,
+    (msg: SseMessage<string>): IteratorResult<StreamChunk, undefined> => {
+      if (!msg.data) return skip;
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(msg.data);
+      } catch (parseErr) {
+        logger.debug({ err: parseErr }, 'Anthropic SSE: skipped malformed JSON chunk');
+        return skip;
+      }
+
+      switch (parsed.type) {
+        case 'message_start': {
+          const message = parsed.message as Record<string, unknown> | undefined;
+          if (typeof message?.id === 'string') requestId = message.id;
+          if (typeof message?.model === 'string') modelId = message.model;
+          return skip;
+        }
+
+        case 'content_block_start': {
+          const block = parsed.content_block as Record<string, unknown> | undefined;
+          if (block?.type !== 'tool_use') return skip;
+          return {
+            done: false,
+            value: {
+              type: 'token',
+              index: index++,
+              data: {
+                tool_calls: [{
+                  index: (parsed.index as number) ?? 0,
+                  id: block.id as string | undefined,
+                  type: 'function' as const,
+                  function: { name: block.name as string | undefined },
+                }],
+              },
+            } as TokenStreamChunk,
+          };
+        }
+
+        case 'content_block_delta': {
+          const delta = parsed.delta as Record<string, unknown> | undefined;
+          if (delta?.type === 'text_delta') {
+            return {
+              done: false,
+              value: {
+                type: 'token',
+                index: index++,
+                data: { content: (delta.text as string) ?? '' },
+              } as TokenStreamChunk,
+            };
+          }
+          if (delta?.type === 'input_json_delta') {
+            return {
+              done: false,
+              value: {
+                type: 'token',
+                index: index++,
+                data: {
+                  tool_calls: [{
+                    index: (parsed.index as number) ?? 0,
+                    function: { arguments: (delta.partial_json as string) ?? '' },
+                  }],
+                },
+              } as TokenStreamChunk,
+            };
+          }
+          return skip;
+        }
+
+        case 'message_delta': {
+          const delta = parsed.delta as Record<string, unknown> | undefined;
+          if (typeof delta?.stop_reason === 'string') stopReason = delta.stop_reason;
+          const usage = parsed.usage as Record<string, unknown> | undefined;
+          if (typeof usage?.output_tokens === 'number') outputTokens = usage.output_tokens;
+          return skip;
+        }
+
+        case 'message_stop': {
+          return {
+            done: false,
+            value: {
+              type: 'done',
+              index: index++,
+              data: {
+                requestId,
+                modelId,
+                finishReason: mapAnthropicStopReason(stopReason) ?? 'stop',
+                usage: {
+                  prompt_tokens: 0,
+                  completion_tokens: outputTokens,
+                  total_tokens: outputTokens,
+                },
+              },
+            } as DoneStreamChunk,
+          };
+        }
+
+        case 'error': {
+          const err = parsed.error as Record<string, unknown> | undefined;
+          throw new Error(`Anthropic SSE error: ${(err?.message as string) ?? 'Unknown error'}`);
+        }
+
+        case 'content_block_stop':
+        case 'ping':
+        default:
+          return skip;
+      }
+    },
+    { dataRequired: true },
+  );
+
+  // Wire external abort signal → cancel the upstream ReadableStream. See
+  // createOpenAISSEIterator for the full rationale.
+  if (options?.signal) {
+    const signal = options.signal;
+    if (signal.aborted) {
+      void eventStream.cancel(signal.reason);
+    } else {
+      const onAbort = () => { void eventStream.cancel(signal.reason); };
       signal.addEventListener('abort', onAbort, { once: true });
     }
   }

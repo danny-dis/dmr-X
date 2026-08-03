@@ -58,7 +58,10 @@ async function addKey(provider, pid, persona, key) {
     const pid = ids[provider];
     const map = KEYS[provider] || {};
     for (const [persona, key] of Object.entries(map)) {
-      try { (await addKey(provider, pid, persona, key)) ? ok++ : err++; }
+      try {
+        const success = await addKey(provider, pid, persona, key);
+        if (success) ok++; else err++;
+      }
       catch (e) { err++; console.log('FAIL', provider, persona, e.message); }
     }
   }

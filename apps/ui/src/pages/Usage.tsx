@@ -1,4 +1,4 @@
-import { Wallet, TrendingUp, DollarSign, Users, Sparkles } from 'lucide-react';
+import { Wallet, TrendingUp, DollarSign, Users, Sparkles, Receipt } from 'lucide-react';
 import * as React from 'react';
 
 import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
@@ -8,23 +8,16 @@ import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from '@/components/primitives/Dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { chartColor } from '@/lib/chartPalette';
 import { formatCurrency, formatNumber, formatTokens } from '@/lib/formatters';
 import type { ApiBillingSummary, ApiUsagePoint, ApiTenant } from '@/types/api';
-
-const TONE = {
-  primary: '#7C5CFF',
-  accent: '#22D3EE',
-  success: '#34D399',
-  warning: '#FBBF24',
-  danger: '#F87171',
-  pink: '#F472B6',
-};
 
 export function UsagePage() {
   const [period, setPeriod] = React.useState<'day' | 'week' | 'month'>('day');
@@ -42,7 +35,7 @@ export function UsagePage() {
   const [selectedInvoice, setSelectedInvoice] = React.useState<NonNullable<ApiBillingSummary['invoices']>[number] | null>(null);
 
   const series = (usage.data?.points ?? []).map((p) => ({
-    t: p.t,
+    t: p.t ?? 0,
     cost: p.cost ?? 0,
     tokens: (p.tokens ?? 0) / 1000,
   }));
@@ -60,7 +53,7 @@ export function UsagePage() {
         icon={<Wallet className="size-5" />}
         actions={
           <Select value={period} onValueChange={(v) => setPeriod(v as typeof period)}>
-            <SelectTrigger size="sm" className="w-32">
+            <SelectTrigger size="sm" className="w-32" aria-label="Time period">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -112,20 +105,32 @@ export function UsagePage() {
             <p className="text-[10px] text-fg-muted mt-0.5">Total spend by interval</p>
           </CardHeader>
           <CardContent className="px-0">
-            {series.length > 0 ? (
-              <TimeSeriesChart
-                data={series}
-                xKey="t"
-                height={220}
-                series={[
-                  { key: 'cost', name: 'Cost', color: TONE.warning },
-                ]}
-                yFormatter={(v) => `$${v.toFixed(2)}`}
-                xFormatter={(v) => new Date(v as number).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-              />
-            ) : (
-              <Skeleton className="h-[220px] w-full" />
-            )}
+            <DataState
+              data={usage.data?.points}
+              isLoading={usage.isLoading}
+              error={usage.error}
+              onRetry={usage.refetch}
+              loading={<Skeleton className="h-[220px] w-full" />}
+              isEmpty={() => series.length === 0}
+              empty={{
+                icon: <TrendingUp className="size-8" />,
+                title: 'No usage data yet',
+                description: 'Cost history will appear once requests have been routed in this period.',
+              }}
+            >
+              {() => (
+                <TimeSeriesChart
+                  data={series}
+                  xKey="t"
+                  height={220}
+                  series={[
+                    { key: 'cost', name: 'Cost', color: chartColor('warning') },
+                  ]}
+                  yFormatter={(v) => formatCurrency(v)}
+                  xFormatter={(v) => new Date(v as number).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                />
+              )}
+            </DataState>
           </CardContent>
         </Card>
 
@@ -135,22 +140,40 @@ export function UsagePage() {
             <p className="text-[10px] text-fg-muted mt-0.5">How total spend was reached</p>
           </CardHeader>
           <CardContent className="px-0">
-            {billing.data ? (
-              <WaterfallChart
-                steps={[
-                  { label: 'Base', value: 0, type: 'start' },
-                  { label: 'LLM', value: (billing.data.byCategory?.llm ?? 0) },
-                  { label: 'Image', value: (billing.data.byCategory?.diffusion ?? 0) },
-                  { label: 'Audio', value: (billing.data.byCategory?.audio ?? 0) },
-                  { label: 'Embed', value: (billing.data.byCategory?.embedding ?? 0) },
-                  { label: 'Total', value: 0, type: 'total' },
-                ]}
-                height={220}
-                unit="currency"
-              />
-            ) : (
-              <Skeleton className="h-[220px] w-full" />
-            )}
+            <DataState
+              data={billing.data}
+              isLoading={billing.isLoading}
+              error={billing.error}
+              onRetry={billing.refetch}
+              loading={<Skeleton className="h-[220px] w-full" />}
+              isEmpty={(d) =>
+                (d.byCategory?.llm ?? 0) +
+                  (d.byCategory?.diffusion ?? 0) +
+                  (d.byCategory?.audio ?? 0) +
+                  (d.byCategory?.embedding ?? 0) ===
+                0
+              }
+              empty={{
+                icon: <DollarSign className="size-8" />,
+                title: 'No cost breakdown yet',
+                description: 'Cost breakdown will appear once requests have been routed in this period.',
+              }}
+            >
+              {(data) => (
+                <WaterfallChart
+                  steps={[
+                    { label: 'Base', value: 0, type: 'start' },
+                    { label: 'LLM', value: (data.byCategory?.llm ?? 0) },
+                    { label: 'Image', value: (data.byCategory?.diffusion ?? 0) },
+                    { label: 'Audio', value: (data.byCategory?.audio ?? 0) },
+                    { label: 'Embed', value: (data.byCategory?.embedding ?? 0) },
+                    { label: 'Total', value: 0, type: 'total' },
+                  ]}
+                  height={220}
+                  unit="currency"
+                />
+              )}
+            </DataState>
           </CardContent>
         </Card>
       </div>
@@ -162,18 +185,30 @@ export function UsagePage() {
             <p className="text-[10px] text-fg-muted mt-0.5">Cost attribution</p>
           </CardHeader>
           <CardContent className="px-0">
-            {tenantCosts.length > 0 ? (
-              <BarSeriesChart
-                data={tenantCosts}
-                xKey="label"
-                bars={[{ key: 'value', color: TONE.primary }]}
-                layout="vertical"
-                height={260}
-                yFormatter={(v) => `$${v.toFixed(2)}`}
-              />
-            ) : (
-              <Skeleton className="h-[260px] w-full" />
-            )}
+            <DataState
+              data={tenants.data}
+              isLoading={tenants.isLoading}
+              error={tenants.error}
+              onRetry={tenants.refetch}
+              loading={<Skeleton className="h-[260px] w-full" />}
+              isEmpty={() => tenantCosts.length === 0}
+              empty={{
+                icon: <Users className="size-8" />,
+                title: 'No tenant cost data yet',
+                description: 'Cost attribution will appear once tenants have routed requests.',
+              }}
+            >
+              {() => (
+                <BarSeriesChart
+                  data={tenantCosts}
+                  xKey="label"
+                  bars={[{ key: 'value', color: chartColor('primary') }]}
+                  layout="vertical"
+                  height={260}
+                  yFormatter={(v) => formatCurrency(v)}
+                />
+              )}
+            </DataState>
           </CardContent>
         </Card>
 
@@ -183,37 +218,50 @@ export function UsagePage() {
             <p className="text-[10px] text-fg-muted mt-0.5">Per-period billing</p>
           </CardHeader>
           <CardContent className="px-0">
-            <div className="flex flex-col gap-1">
-              {(billing.data?.invoices ?? []).slice(0, 6).map((inv) => (
-                <button
-                  key={inv.id}
-                  onClick={() => setSelectedInvoice(inv)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-2 w-full text-left"
-                >
-                  <div className="flex size-8 items-center justify-center rounded-lg bg-warning/10 text-warning">
-                    <Wallet className="size-3.5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-fg truncate">{inv.tenantName ?? inv.tenantId}</p>
-                    <p className="text-[10px] text-fg-muted">
-                      {new Date(inv.periodStart).toLocaleDateString()} → {new Date(inv.periodEnd).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-semibold text-fg tabular-nums">{formatCurrency(inv.amount ?? 0)}</p>
-                    <Badge
-                      tone={inv.status === 'paid' ? 'success' : inv.status === 'overdue' ? 'danger' : 'muted'}
-                      size="sm"
+            <DataState
+              data={billing.data}
+              isLoading={billing.isLoading}
+              error={billing.error}
+              onRetry={billing.refetch}
+              loading={<Skeleton className="h-[260px] w-full" />}
+              isEmpty={(d) => (d.invoices ?? []).length === 0}
+              empty={{
+                icon: <Receipt className="size-8" />,
+                title: 'No invoices yet',
+                description: 'Invoices will appear here once a billing period closes.',
+              }}
+            >
+              {(data) => (
+                <div className="flex flex-col gap-1">
+                  {(data.invoices ?? []).slice(0, 6).map((inv) => (
+                    <button
+                      key={inv.id}
+                      onClick={() => setSelectedInvoice(inv)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-2 w-full text-left"
                     >
-                      {inv.status}
-                    </Badge>
-                  </div>
-                </button>
-              ))}
-              {(!billing.data?.invoices || billing.data.invoices.length === 0) && (
-                <p className="py-8 text-center text-fg-subtle text-xs">No invoices yet</p>
+                      <div className="flex size-8 items-center justify-center rounded-lg bg-warning/10 text-warning">
+                        <Wallet className="size-3.5" aria-hidden />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-fg truncate">{inv.tenantName ?? inv.tenantId}</p>
+                        <p className="text-[10px] text-fg-muted">
+                          {new Date(inv.periodStart).toLocaleDateString()} → {new Date(inv.periodEnd).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-semibold text-fg tabular-nums">{formatCurrency(inv.amount ?? 0)}</p>
+                        <Badge
+                          tone={inv.status === 'paid' ? 'success' : inv.status === 'overdue' ? 'danger' : 'muted'}
+                          size="sm"
+                        >
+                          {inv.status}
+                        </Badge>
+                      </div>
+                    </button>
+                  ))}
+                </div>
               )}
-            </div>
+            </DataState>
           </CardContent>
         </Card>
       </div>

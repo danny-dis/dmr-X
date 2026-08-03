@@ -1,4 +1,5 @@
 import { api, apiGet, apiPost, apiPut, apiDelete, getTokenForPath } from './api';
+import { streamSSE } from './sse';
 
 import type {
   ApiProvider,
@@ -37,6 +38,12 @@ import type {
   ApiRbacPolicy,
   ApiMcpFederationPeer,
   ApiMcpAggregatedServer,
+  ApiWorkerJob,
+  ApiMcpToolSearchConfig,
+  ApiMcpGuardrailsConfig,
+  ApiMcpAuditConfig,
+  ApiMcpFederationConfig,
+  ApiMcpA2AConfig,
 } from '@/types/api';
 
 
@@ -231,7 +238,7 @@ export const Admin = {
    * can be tested independently so the operator knows exactly which
    * credential is working and which needs rotation. */
   testProviderKey: (providerId: string, keyId: string) =>
-    apiPost<{ ok: boolean; latencyMs: number; key_id: string; error?: string }>(
+    apiPost<{ ok: boolean; latencyMs?: number; latency_ms?: number; key_id: string; error?: string }>(
       `/admin/providers/${providerId}/keys/${keyId}/test`,
     ).then((r) => ({
       ok: r.ok,
@@ -359,90 +366,46 @@ export const Admin = {
     apiGet<{ events: ApiAuditEvent[] }>('/admin/audit/events').then(r => r.events.map(normalizeAuditEvent)),
   listTelemetry: () =>
     apiGet<{ events: ApiTelemetryEvent[] }>('/admin/telemetry/events').then(r => r.events.map(normalizeTelemetryEvent)),
+  /**
+   * Live telemetry events.
+   *
+   * Both stream helpers used to put the token in the query string
+   * (`?token=...`), which the gateway's `extractApiKey` never reads — so they
+   * 401'd outside LOCAL_MODE and every consumer quietly fell back to polling.
+   * They now delegate to `streamSSE`, which sends a real Authorization header
+   * and buffers across chunk boundaries.
+   */
   streamTelemetry: async (signal: AbortSignal, onEvent: (e: ApiTelemetryEvent) => void) => {
-    const token = getTokenForPath('/admin/telemetry/stream');
-    const url = buildSseUrl(token ? `/admin/telemetry/stream?token=${token}` : '/admin/telemetry/stream');
-
-    const res = await fetch(url, {
-      headers: {
-        Accept: 'text/event-stream',
-      },
+    await streamSSE('/admin/telemetry/stream', {
+      method: 'GET',
       signal,
-    });
-
-    if (!res.ok || !res.body) throw new Error('Failed to connect to telemetry stream');
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              onEvent(normalizeTelemetryEvent(JSON.parse(line.slice(6))));
-            } catch {
-              // ignore invalid JSON
-            }
-          }
+      onFrame: (frame) => {
+        try {
+          onEvent(normalizeTelemetryEvent(JSON.parse(frame.data)));
+        } catch {
+          // heartbeat or malformed frame
         }
-      }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        console.error('Telemetry stream error:', err);
-      }
-    }
+      },
+    });
   },
 
-  streamDashboardStats: async (signal: AbortSignal, onStats: (stats: Record<string, unknown>) => void) => {
-    const token = getTokenForPath('/admin/dashboard/stream');
-    const url = buildSseUrl(token ? `/admin/dashboard/stream?token=${token}` : '/admin/dashboard/stream');
-
-    const res = await fetch(url, {
-      headers: {
-        Accept: 'text/event-stream',
-      },
+  streamDashboardStats: async (signal: AbortSignal, onStats: (s: ApiDashboardStats) => void) => {
+    await streamSSE('/admin/dashboard/stream', {
+      method: 'GET',
       signal,
-    });
-
-    if (!res.ok || !res.body) throw new Error('Failed to connect to dashboard stream');
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              onStats(JSON.parse(line.slice(6)));
-            } catch {
-              // ignore invalid JSON
-            }
+      onFrame: (frame) => {
+        try {
+          const payload = JSON.parse(frame.data);
+          // The stream also carries per-request `usage_delta` frames, which
+          // are not stat blocks. Only forward the snapshot.
+          if (payload && typeof payload.total_requests === 'number') {
+            onStats(normalizeDashboard(payload));
           }
+        } catch {
+          // heartbeat or malformed frame
         }
-      }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        console.error('Dashboard stream error:', err);
-      }
-    }
+      },
+    });
   },
 
   // Benchmarks
@@ -515,10 +478,10 @@ export const Admin = {
   },
 
   // Free-tier summary
-  getFreeTierSummary: () => apiGet('/admin/free-tier/summary'),
+  getFreeTierSummary: <T = unknown>() => apiGet<T>('/admin/free-tier/summary'),
 
   // Cost dashboard
-  getCostDashboard: (days: number = 30) => apiGet('/admin/cost/dashboard', { days }),
+  getCostDashboard: <T = unknown>(days: number = 30) => apiGet<T>('/admin/cost/dashboard', { days }),
 
   // Benchmarks
   listBenchmarks: () => apiGet<{ benchmarks: ApiBenchmarkResult[] }>('/admin/benchmarks').then(r => r.benchmarks ?? []),
@@ -563,15 +526,15 @@ export const Admin = {
   updateMcpConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/config', body),
 
   // MCP Tool Search
-  getToolSearchConfig: () => apiGet('/admin/mcp/tool-search/config'),
+  getToolSearchConfig: () => apiGet<ApiMcpToolSearchConfig>('/admin/mcp/tool-search/config'),
   updateToolSearchConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/tool-search/config', body),
 
   // MCP Guardrails
-  getGuardrailsConfig: () => apiGet('/admin/mcp/guardrails/config'),
+  getGuardrailsConfig: () => apiGet<ApiMcpGuardrailsConfig>('/admin/mcp/guardrails/config'),
   updateGuardrailsConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/guardrails/config', body),
 
   // MCP Audit
-  getAuditConfig: () => apiGet('/admin/mcp/audit/config'),
+  getAuditConfig: () => apiGet<ApiMcpAuditConfig>('/admin/mcp/audit/config'),
   updateAuditConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/audit/config', body),
 
   // MCP RBAC
@@ -580,18 +543,19 @@ export const Admin = {
   deleteRbacPolicy: (id: string) => apiDelete<{ ok: true }>(`/admin/mcp/rbac/policies/${id}`),
 
   // MCP Federation
-  getFederationConfig: () => apiGet('/admin/mcp/federation/config'),
+  getFederationConfig: () => apiGet<ApiMcpFederationConfig>('/admin/mcp/federation/config'),
   updateFederationConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/federation/config', body),
   listFederationPeers: () => apiGet<{ peers: ApiMcpFederationPeer[] }>('/admin/mcp/federation/peers'),
   addFederationPeer: (body: { name: string; endpoint: string; secretRef?: string }) => apiPost<ApiMcpFederationPeer>('/admin/mcp/federation/peers', body),
   removeFederationPeer: (id: string) => apiDelete<{ ok: true }>(`/admin/mcp/federation/peers/${id}`),
 
   // MCP A2A
-  getA2AConfig: () => apiGet('/admin/mcp/a2a/config'),
+  getA2AConfig: () => apiGet<ApiMcpA2AConfig>('/admin/mcp/a2a/config'),
   updateA2AConfig: (body: Record<string, unknown>) => apiPut('/admin/mcp/a2a/config', body),
 
   // MCP Aggregation
-  listAggregatedServers: () => apiGet<{ servers: ApiMcpAggregatedServer[] }>('/admin/mcp/aggregation/servers'),
+  listAggregatedServers: () =>
+    apiGet<{ servers: ApiMcpAggregatedServer[] }>('/admin/mcp/aggregation/servers').then((r) => r.servers ?? []),
   addAggregatedServer: (body: { id: string; name: string; transport: string; url?: string; command?: string; args?: string[] }) => apiPost<ApiMcpAggregatedServer>('/admin/mcp/aggregation/servers', body),
   removeAggregatedServer: (id: string) => apiDelete<{ ok: true }>(`/admin/mcp/aggregation/servers/${id}`),
 
@@ -669,12 +633,6 @@ export const Admin = {
     });
   },
 };
-
-function buildSseUrl(path: string): string {
-  const RAW_BASE = (import.meta.env.VITE_API_BASE ?? '') as string;
-  const base = RAW_BASE.replace(/\/+$/, '');
-  return `${base || ''}${path.startsWith('/') ? path : `/${path}`}`;
-}
 
 // ---------------------------------------------------------------------------
 // Response normalizers

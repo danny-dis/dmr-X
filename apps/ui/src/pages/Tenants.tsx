@@ -5,9 +5,21 @@ import { ApiKeyCard } from '@/components/domain/ApiKeyCard';
 import { CreateApiKeyDialog } from '@/components/domain/CreateApiKeyDialog';
 import { CreateTenantDialog } from '@/components/domain/CreateTenantDialog';
 import { PageHeader, PageContainer } from '@/components/layout';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from '@/components/primitives/AlertDialog';
 import { Badge } from '@/components/primitives/Badge';
-import { Button } from '@/components/primitives/Button';
+import { Button, buttonVariants } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
+import { DataState } from '@/components/primitives/DataState';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Pagination } from '@/components/primitives/Pagination';
@@ -18,7 +30,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitive
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import { formatNumber, timeAgo } from '@/lib/formatters';
+import { formatCurrency, formatNumber, timeAgo } from '@/lib/formatters';
 import type { ApiTenant, ApiKey } from '@/types/api';
 
 export function TenantsPage() {
@@ -43,12 +55,12 @@ export function TenantsPage() {
   const [settingsSuspended, setSettingsSuspended] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
 
-  // Tenant delete: two-step inline confirm (mirrors ProviderDetailDrawer / ModelDetailDrawer).
-  const [confirmingDelete, setConfirmingDelete] = React.useState(false);
+  // Tenant delete: confirmed via AlertDialog, named after the specific tenant.
+  const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
   const [deletingTenant, setDeletingTenant] = React.useState(false);
 
-  // API key revoke: two-step inline confirm + optimistic remove from the local list.
-  const [confirmingRevokeId, setConfirmingRevokeId] = React.useState<string | null>(null);
+  // API key revoke: confirmed via AlertDialog + optimistic remove from the local list.
+  const [revokeTarget, setRevokeTarget] = React.useState<ApiKey | null>(null);
   const [optimisticallyHidden, setOptimisticallyHidden] = React.useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -72,74 +84,12 @@ export function TenantsPage() {
     [keys.data, optimisticallyHidden],
   );
 
-  // Auto-cancel the inline-confirm state after a short window so the user doesn't
-  // get stuck in "Click again to confirm" if they change their mind.
+  // A confirm dialog left open across a tenant switch would end up confirming
+  // against the wrong tenant/key, so close both when the selection changes.
   React.useEffect(() => {
-    if (!confirmingDelete) return;
-    const t = setTimeout(() => setConfirmingDelete(false), 3000);
-    return () => clearTimeout(t);
-  }, [confirmingDelete]);
-  React.useEffect(() => {
-    if (!confirmingRevokeId) return;
-    const t = setTimeout(() => setConfirmingRevokeId(null), 3000);
-    return () => clearTimeout(t);
-  }, [confirmingRevokeId]);
-  // Reset the confirm state when the selected tenant changes (a new selection
-  // shouldn't inherit a half-finished confirmation).
-  React.useEffect(() => {
-    setConfirmingDelete(false);
+    setDeleteDialogOpen(false);
+    setRevokeTarget(null);
   }, [selectedTenant]);
-
-  const handleDeleteTenant = async () => {
-    if (!selected) return;
-    if (!confirmingDelete) {
-      setConfirmingDelete(true);
-      return;
-    }
-    setConfirmingDelete(false);
-    setDeletingTenant(true);
-    try {
-      await Admin.deleteTenant(selected.id);
-      toast.success('Tenant deleted', { description: selected.name });
-      if (selectedTenant === selected.id) setSelectedTenant(null);
-      await tenants.refetch();
-    } catch (err) {
-      toast.error('Failed to delete tenant', {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setDeletingTenant(false);
-    }
-  };
-
-  const handleRevokeKey = async (id: string) => {
-    if (confirmingRevokeId !== id) {
-      setConfirmingRevokeId(id);
-      return;
-    }
-    setConfirmingRevokeId(null);
-    // Optimistic remove so the card disappears immediately.
-    setOptimisticallyHidden((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
-    try {
-      await Admin.revokeApiKey(id);
-      toast.success('API key revoked');
-      await keys.refetch();
-    } catch (err) {
-      // Restore on failure.
-      setOptimisticallyHidden((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-      toast.error('Failed to revoke API key', {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    }
-  };
 
   React.useEffect(() => {
     if (!selectedTenant && tenants.data && tenants.data.length > 0) {
@@ -156,6 +106,49 @@ export function TenantsPage() {
     }
   }, [selected]);
 
+  const handleDeleteTenant = async () => {
+    if (!selected) return;
+    setDeletingTenant(true);
+    try {
+      await Admin.deleteTenant(selected.id);
+      toast.success('Tenant deleted', { description: selected.name });
+      setSelectedTenant(null);
+      await tenants.refetch();
+    } catch (err) {
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    } finally {
+      setDeletingTenant(false);
+      setDeleteDialogOpen(false);
+    }
+  };
+
+  const handleRevokeKey = async () => {
+    if (!revokeTarget) return;
+    const target = revokeTarget;
+    // Optimistic remove so the card disappears immediately.
+    setOptimisticallyHidden((prev) => {
+      const next = new Set(prev);
+      next.add(target.id);
+      return next;
+    });
+    try {
+      await Admin.revokeApiKey(target.id);
+      toast.success('API key revoked', { description: target.name });
+      setRevokeTarget(null);
+      await keys.refetch();
+    } catch (err) {
+      // Restore on failure.
+      setOptimisticallyHidden((prev) => {
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
+    }
+  };
+
   const saveSettings = async () => {
     if (!selected) return;
     setSaving(true);
@@ -166,12 +159,11 @@ export function TenantsPage() {
         tier: settingsTier,
         suspended: settingsSuspended,
       });
-      toast.success('Tenant updated');
+      toast.success('Tenant updated', { description: settingsName });
       void tenants.refetch();
     } catch (err) {
-      toast.error('Failed to update tenant', {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      const e = interpretError(err);
+      toast.error(e.title, { description: e.description });
     } finally {
       setSaving(false);
     }
@@ -185,7 +177,7 @@ export function TenantsPage() {
         icon={<Users className="size-5" />}
         actions={
           <Button size="sm" onClick={() => setCreateTenantOpen(true)}>
-            <Plus className="size-3" />
+            <Plus className="size-3" aria-hidden />
             New tenant
           </Button>
         }
@@ -198,45 +190,67 @@ export function TenantsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search tenants…"
-              prefix={<Search className="size-3.5" />}
+              prefix={<Search className="size-3.5" aria-hidden />}
+              aria-label="Search tenants"
               size="sm"
             />
           </div>
           <div className="p-1 max-h-[600px] overflow-y-auto">
-            {tenants.isLoading ? (
-              <div className="p-2 flex flex-col gap-1.5">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-14 w-full" />
-                ))}
-              </div>
-            ) : filtered.length > 0 ? (
-              paginatedData.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => setSelectedTenant(t.id)}
-                  className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-                    selectedTenant === t.id ? 'bg-primary/10' : 'hover:bg-surface-2'
-                  }`}
-                >
-                  <div className="flex size-9 items-center justify-center rounded-lg bg-surface-2 text-fg-muted text-xs font-semibold uppercase">
-                    {t.name.slice(0, 2)}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-fg truncate">{t.name}</p>
-<p className="text-[10px] text-fg-muted">
-                       {t.tier ?? 'free'} · {formatNumber(t.tokens_used ?? 0, true)} tokens
-                     </p>
-                  </div>
-                  <StatusPill
-                    status={t.suspended ? 'offline' : 'online'}
-                    size="sm"
-                    showDot={false}
-                  />
-                </button>
-              ))
-            ) : (
-              <p className="p-6 text-center text-fg-subtle text-xs">No tenants</p>
-            )}
+            <DataState
+              data={filtered}
+              isLoading={tenants.isLoading}
+              error={tenants.error}
+              onRetry={tenants.refetch}
+              loading={
+                <div className="p-2 flex flex-col gap-1.5">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <Skeleton key={i} className="h-14 w-full" />
+                  ))}
+                </div>
+              }
+              empty={{
+                icon: <Users className="size-6" />,
+                title: query ? 'No matching tenants' : 'No tenants yet',
+                description: query
+                  ? 'Try a different search term.'
+                  : 'Create a tenant to start issuing API keys.',
+                action: query ? undefined : (
+                  <Button size="sm" onClick={() => setCreateTenantOpen(true)} leftIcon={<Plus className="size-3" aria-hidden />}>
+                    New tenant
+                  </Button>
+                ),
+                size: 'sm',
+              }}
+            >
+              {() => (
+                <>
+                  {paginatedData.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setSelectedTenant(t.id)}
+                      className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+                        selectedTenant === t.id ? 'bg-primary/10' : 'hover:bg-surface-2'
+                      }`}
+                    >
+                      <div className="flex size-9 items-center justify-center rounded-lg bg-surface-2 text-fg-muted text-xs font-semibold uppercase">
+                        {t.name.slice(0, 2)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-fg truncate">{t.name}</p>
+                        <p className="text-[10px] text-fg-muted">
+                          {t.tier ?? 'free'} · {formatNumber(t.tokens_used ?? 0, true)} tokens
+                        </p>
+                      </div>
+                      <StatusPill
+                        status={t.suspended ? 'offline' : 'online'}
+                        size="sm"
+                        showDot={false}
+                      />
+                    </button>
+                  ))}
+                </>
+              )}
+            </DataState>
           </div>
           {totalPages > 1 && (
             <div className="p-3 border-t border-border">
@@ -264,13 +278,13 @@ export function TenantsPage() {
                         <Badge tone="primary" size="sm">{selected.tier ?? 'free'}</Badge>
                         {selected.email && (
                           <span className="flex items-center gap-1">
-                            <Mail className="size-2.5" />
+                            <Mail className="size-2.5" aria-hidden />
                             {selected.email}
                           </span>
                         )}
                         {selected.createdAt && (
                           <span className="flex items-center gap-1">
-                            <Calendar className="size-2.5" />
+                            <Calendar className="size-2.5" aria-hidden />
                             {timeAgo(selected.createdAt)}
                           </span>
                         )}
@@ -285,28 +299,21 @@ export function TenantsPage() {
                         <Button
                           variant="secondary"
                           size="sm"
-                          onClick={handleDeleteTenant}
+                          onClick={() => setDeleteDialogOpen(true)}
                           loading={deletingTenant}
                           disabled={protectedTenant}
                           title={
                             protectedTenant
                               ? `Cannot delete the "${selected.name}" tenant`
-                              : confirmingDelete
-                                ? 'Click again to confirm'
-                                : 'Delete tenant'
+                              : 'Delete tenant'
                           }
-                          className={confirmingDelete ? 'border-danger/40 text-danger' : ''}
                         >
                           {protectedTenant ? (
-                            <Lock className="size-3" />
+                            <Lock className="size-3" aria-hidden />
                           ) : (
-                            <Trash2 className="size-3" />
+                            <Trash2 className="size-3" aria-hidden />
                           )}
-                          {protectedTenant
-                            ? 'Protected'
-                            : confirmingDelete
-                              ? 'Click again'
-                              : 'Delete'}
+                          {protectedTenant ? 'Protected' : 'Delete'}
                         </Button>
                       );
                     })()}
@@ -324,36 +331,50 @@ export function TenantsPage() {
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-semibold text-fg">API Keys</h3>
                     <Button size="sm" onClick={() => setCreateKeyOpen(true)}>
-                      <Plus className="size-3" />
+                      <Plus className="size-3" aria-hidden />
                       New key
                     </Button>
                   </div>
-                  {keys.isLoading ? (
-                    <div className="grid grid-cols-1 gap-2">
-                      {Array.from({ length: 2 }).map((_, i) => (
-                        <Skeleton key={i} className="h-20 w-full" />
-                      ))}
-                    </div>
-                  ) : visibleKeys.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {visibleKeys.map((k) => (
-                        <ApiKeyCard
-                          key={k.id}
-                          apiKey={k}
-                          revoking={confirmingRevokeId === k.id}
-                          onRevoke={() => void handleRevokeKey(k.id)}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-border p-8 text-center">
-                      <KeyRound className="size-5 text-fg-subtle mx-auto mb-2" />
-                      <p className="text-sm text-fg-muted">No API keys yet</p>
-                      <p className="text-[10px] text-fg-subtle mt-1">Create one to start using the gateway</p>
-                    </div>
-                  )}
+                  <DataState
+                    data={visibleKeys}
+                    isLoading={keys.isLoading}
+                    error={keys.error}
+                    onRetry={keys.refetch}
+                    loading={
+                      <div className="grid grid-cols-1 gap-2">
+                        {Array.from({ length: 2 }).map((_, i) => (
+                          <Skeleton key={i} className="h-20 w-full" />
+                        ))}
+                      </div>
+                    }
+                    empty={{
+                      icon: <KeyRound className="size-8" />,
+                      title: 'No API keys yet',
+                      description: 'Create one to start using the gateway.',
+                      action: (
+                        <Button size="sm" onClick={() => setCreateKeyOpen(true)} leftIcon={<Plus className="size-3" aria-hidden />}>
+                          New key
+                        </Button>
+                      ),
+                    }}
+                  >
+                    {(list) => (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {list.map((k) => (
+                          <ApiKeyCard
+                            key={k.id}
+                            apiKey={k}
+                            onRevoke={(id) => {
+                              const target = list.find((item) => item.id === id) ?? null;
+                              setRevokeTarget(target);
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </DataState>
                 </TabsContent>
-<TabsContent value="usage" className="px-3 pb-3">
+                <TabsContent value="usage" className="px-3 pb-3">
                   <div className="grid grid-cols-3 gap-3">
                     <div className="rounded-lg border border-border p-3">
                       <p className="text-[10px] text-fg-muted uppercase tracking-wider">Tokens</p>
@@ -370,7 +391,7 @@ export function TenantsPage() {
                     <div className="rounded-lg border border-border p-3">
                       <p className="text-[10px] text-fg-muted uppercase tracking-wider">Cost</p>
                       <p className="text-lg font-semibold text-fg mt-1">
-                        ${(selected.cost_used ?? 0).toFixed(2)}
+                        {formatCurrency(selected.cost_used ?? 0)}
                       </p>
                     </div>
                   </div>
@@ -378,8 +399,9 @@ export function TenantsPage() {
                 <TabsContent value="settings" className="px-3 pb-3">
                   <div className="space-y-4">
                     <div>
-                      <label className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Name</label>
+                      <label htmlFor="tenant-name-input" className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Name</label>
                       <Input
+                        id="tenant-name-input"
                         value={settingsName}
                         onChange={(e) => setSettingsName(e.target.value)}
                         placeholder="Tenant name"
@@ -387,8 +409,9 @@ export function TenantsPage() {
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Email</label>
+                      <label htmlFor="tenant-email-input" className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Email</label>
                       <Input
+                        id="tenant-email-input"
                         type="email"
                         value={settingsEmail}
                         onChange={(e) => setSettingsEmail(e.target.value)}
@@ -397,9 +420,9 @@ export function TenantsPage() {
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Tier</label>
+                      <label htmlFor="tenant-tier-select" className="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider block mb-1">Tier</label>
                       <Select value={settingsTier} onValueChange={setSettingsTier}>
-                        <SelectTrigger size="sm" className="w-full">
+                        <SelectTrigger id="tenant-tier-select" size="sm" className="w-full">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -423,21 +446,22 @@ export function TenantsPage() {
                         </div>
                         <div>
                           <p className="text-fg-subtle">Cost</p>
-                          <p className="text-fg tabular-nums">${(selected.cost_used ?? 0).toFixed(2)} / ${(selected.cost_limit ?? 0).toFixed(2)}</p>
+                          <p className="text-fg tabular-nums">{formatCurrency(selected.cost_used ?? 0)} / {formatCurrency(selected.cost_limit ?? 0)}</p>
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm text-fg">Suspended</p>
+                        <label htmlFor="tenant-suspended-switch" className="text-sm text-fg cursor-pointer">Suspended</label>
                         <p className="text-[10px] text-fg-muted">Block all API access for this tenant</p>
                       </div>
                       <Switch
+                        id="tenant-suspended-switch"
                         checked={settingsSuspended}
                         onCheckedChange={setSettingsSuspended}
                       />
                     </div>
-                    <Button onClick={saveSettings} loading={saving} leftIcon={<Save className="size-3" />}>
+                    <Button onClick={saveSettings} loading={saving} leftIcon={<Save className="size-3" aria-hidden />}>
                       Save
                     </Button>
                   </div>
@@ -470,6 +494,53 @@ export function TenantsPage() {
         tenantName={selected?.name}
         onCreated={() => void keys.refetch()}
       />
+
+      {/* Delete tenant confirm — names the tenant, never window.confirm. */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selected?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes the tenant "{selected?.name}" and revokes all of its API
+              keys. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: 'danger' })}
+              onClick={() => void handleDeleteTenant()}
+            >
+              Delete tenant
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Revoke API key confirm — names the key, never window.confirm. */}
+      <AlertDialog
+        open={revokeTarget !== null}
+        onOpenChange={(open) => { if (!open) setRevokeTarget(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revoke {revokeTarget?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Any application using the key "{revokeTarget?.name}" will immediately lose access.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: 'danger' })}
+              onClick={() => void handleRevokeKey()}
+            >
+              Revoke key
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageContainer>
   );
 }
