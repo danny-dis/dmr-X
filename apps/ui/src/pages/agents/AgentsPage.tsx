@@ -1,4 +1,4 @@
-import { Bot, MessageSquare, Pause, Play, Plus, Rocket, Trash2, Loader2 } from 'lucide-react';
+import { Bot, MessageSquare, Pause, Play, Plus, Rocket, Trash2, Loader2, Upload } from 'lucide-react';
 import * as React from 'react';
 import { Link, useNavigate } from 'react-router';
 
@@ -23,6 +23,7 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { toast } from '@/components/primitives/Toast';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/primitives/Tooltip';
+import { ImportAgentsDialog } from '@/components/domain/ImportAgentsDialog';
 import { useUrlState } from '@/hooks/useUrlState';
 import { formatCurrency, formatDate, formatNumber } from '@/lib/formatters';
 import {
@@ -44,6 +45,7 @@ import {
  */
 export function AgentsPage() {
   const [search, setSearch] = useUrlState('q', '');
+  const [importOpen, setImportOpen] = React.useState(false);
   const agents = useAgents(search ? { search } : {});
   const instances = useAgentInstances();
 
@@ -64,11 +66,22 @@ export function AgentsPage() {
         description="Build an agent, deploy it as an instance, then talk to it or let the router dispatch to it."
         icon={<Bot className="size-5 text-primary" />}
         actions={
-          <Button leftIcon={<Plus className="size-4" />} asChild>
-            <Link to="/agents/new">New agent</Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              leftIcon={<Upload className="size-4" />}
+              onClick={() => setImportOpen(true)}
+            >
+              Import
+            </Button>
+            <Button leftIcon={<Plus className="size-4" />} asChild>
+              <Link to="/agents/new">New agent</Link>
+            </Button>
+          </div>
         }
       />
+
+      <ImportAgentsDialog open={importOpen} onOpenChange={setImportOpen} />
 
       <Input
         value={search}
