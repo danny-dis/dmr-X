@@ -264,7 +264,6 @@ export function ImportAgentsDialog({ open, onOpenChange }: ImportAgentsDialogPro
                       <SelectValue placeholder="Detect from content" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Detect from content</SelectItem>
                       {CATEGORIES.map((c) => (
                         <SelectItem key={c} value={c}>{c}</SelectItem>
                       ))}
