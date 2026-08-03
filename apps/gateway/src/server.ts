@@ -535,6 +535,20 @@ void (async () => {
       prefix: '/',
       wildcard: true,
       decorateReply: false,
+      // Build outputs are content-addressed: `/assets/*` filenames (Vite
+      // hashed bundles) never change for a given content, so they can be
+      // cached for a year, immutable. Everything else (notably `index.html`,
+      // which re-addresses the assets on every rebuild) must be revalidated
+      // so already-open tabs never serve stale bundle references.
+      cacheControl: false,
+      setHeaders(res, filePath) {
+        const relative = path.relative(uiDir, filePath).split(path.sep).join('/');
+        if (relative.startsWith('assets/')) {
+          res.raw.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.raw.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+      },
     });
     logger.info({ dir: uiDir }, 'Serving UI from static directory');
   } catch (err) {
