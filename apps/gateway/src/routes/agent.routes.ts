@@ -283,8 +283,11 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
   // ── Marketplace ───────────────────────────────────────────────────────────
 
   server.get('/marketplace', async (request, reply) => {
-    const query = MarketplaceQuerySchema.parse(request.query);
-    const result = await agentRegistryService.browseMarketplace(query);
+    const parsed = MarketplaceQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: { message: 'Invalid query', details: parsed.error.issues } });
+    }
+    const result = await agentRegistryService.browseMarketplace(parsed.data);
     return reply.send(result);
   });
 

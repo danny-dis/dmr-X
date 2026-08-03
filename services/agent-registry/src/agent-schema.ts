@@ -185,8 +185,10 @@ export const MarketplaceQuerySchema = z.object({
   tag: z.string().optional(),
   search: z.string().optional(),
   sort: z.enum(['rating', 'installs', 'newest', 'price']).optional().default('rating'),
-  page: z.number().min(1).optional().default(1),
-  limit: z.number().min(1).max(100).optional().default(20),
+  // Query params arrive as strings from the router — coerce like
+  // AgentListQuerySchema above, or any ?page=&limit= request 500s.
+  page: z.coerce.number().min(1).optional().default(1),
+  limit: z.coerce.number().min(1).max(100).optional().default(20),
 });
 
 export type MarketplaceQuery = z.infer<typeof MarketplaceQuerySchema>;
