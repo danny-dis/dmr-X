@@ -377,6 +377,27 @@ const MCP_WORKSPACE_ROOT = path.resolve(
 );
 
 /**
+ * Directory names skipped when dmrx_list_files / dmrx_search_files walk the
+ * tree. Matched by name at any depth, so nested copies (e.g. a workspace
+ * package's own node_modules) are skipped too, not just a root-level one.
+ */
+const WALK_SKIP_DIRS = [
+  'node_modules', '.git', 'dist', 'build', 'out', 'coverage',
+  '.turbo', '.next', '.cache', '.dmrx-data', '.dmrx-data-mcp',
+];
+
+/**
+ * Ceiling on the number of files dmrx_search_files will readFileSync before
+ * giving up and returning a partial, explicitly-flagged result. Unlike
+ * dmrx_list_files (cheap readdirSync-only walk), search_files reads every
+ * visited file's full contents — an unscoped call at a monorepo root walks
+ * tens of thousands of files and reliably exceeds the upstream MCP call
+ * timeout with no result at all. A bounded partial result is strictly
+ * better than that.
+ */
+const MAX_SEARCH_FILES_SCANNED = 3000;
+
+/**
  * Thrown by resolveWithinWorkspace(). The message is always safe to return
  * to an MCP caller as-is — it never contains the resolved absolute
  * filesystem path, only a generic reason.
@@ -3234,7 +3255,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const path = await import('node:path');
         const dirPath = resolveWithinWorkspace(params.path);
         const results: string[] = [];
-        const skip = ['node_modules', '.git', 'dist'];
+        const skip = WALK_SKIP_DIRS;
         function walk(dir: string, prefix: string) {
           const entries = fs.readdirSync(dir, { withFileTypes: true });
           for (const entry of entries) {
@@ -3330,16 +3351,35 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         if (!searchPattern) return { content: [{ type: 'text' as const, text: 'Error: pattern is required' }], isError: true };
         const dirPath = resolveWithinWorkspace(params.path);
         const results: Array<{ file: string; line: number; text: string }> = [];
-        const skip = ['node_modules', '.git', 'dist'];
+        const skip = WALK_SKIP_DIRS;
+        // Guards against the walk running away on an unscoped call (e.g.
+        // `path: '.'` at a monorepo root): this tool reads every visited
+        // file synchronously via readFileSync, which — unlike dmrx_list_files'
+        // cheap readdirSync-only walk — is expensive enough per file that an
+        // unbounded walk over tens of thousands of files reliably exceeds the
+        // MCP client's upstream call timeout (verified: root-scoped call
+        // against this repo timed out; the same call scoped to a
+        // subdirectory completed in ~200ms). Capping the number of files
+        // *visited* (not just matches) bounds worst-case latency regardless
+        // of match density.
+        let filesScanned = 0;
+        let scanLimitReached = false;
         function walk(dir: string) {
+          if (scanLimitReached) return;
           const entries = fs.readdirSync(dir, { withFileTypes: true });
           for (const entry of entries) {
             if (skip.includes(entry.name)) continue;
             const fullPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
               walk(fullPath);
+              if (scanLimitReached) return;
             } else {
               if (params.include && !entry.name.includes(params.include)) continue;
+              filesScanned++;
+              if (filesScanned > MAX_SEARCH_FILES_SCANNED) {
+                scanLimitReached = true;
+                return;
+              }
               try {
                 const content = fs.readFileSync(fullPath, 'utf-8');
                 const lines = content.split('\n');
@@ -3351,10 +3391,11 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
                 }
               } catch { /* skip binary files */ }
             }
+            if (results.length >= 100) return;
           }
         }
         walk(dirPath);
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ matches: results, total: results.length }, null, 2) }] };
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ matches: results, total: results.length, filesScanned, scanLimitReached, ...(scanLimitReached ? { warning: `Stopped after scanning ${MAX_SEARCH_FILES_SCANNED} files — narrow "path" for a complete search of large trees.` } : {}) }, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
       }

@@ -21,6 +21,7 @@ import { compressionService } from '../services/compression.js';
 import { computeSavings } from '../services/savings.js';
 import { refreshAdminKey } from '../middleware/auth.middleware.js';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
+import { isNeedleEnabled, getNeedleTelemetry, needleHealthUrl } from '../lib/needlePreFilter.js';
 
 const HTML_ESCAPE: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escapeHtml(str: string): string {
@@ -479,6 +480,10 @@ const UpdateSettingsSchema = z.object({
   // Caching & streaming
   cacheTtlSec: z.union([z.string(), z.number()]).optional(),
   streamingChunkSize: z.union([z.string(), z.number()]).optional(),
+
+  // Needle tool pre-filter (services/needle-router). Runtime toggle read
+  // fresh per-request by needlePreFilter.ts — no gateway restart needed.
+  needleRouterEnabled: z.boolean().optional(),
 
   // Worker / runtime
   workerConcurrency: z.union([z.string(), z.number()]).optional(),
@@ -1004,7 +1009,7 @@ async function autoDiscoverModelsOnKeyAdd(
         input_cost_per_1k, output_cost_per_1k, cost_per_image,
         quality_score, is_active,
         task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level, architecture
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     let inserted = 0;
@@ -2804,7 +2809,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
               input_cost_per_1k, output_cost_per_1k, cost_per_image,
               quality_score, is_active,
               task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level, architecture
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           );
           let inserted = 0;
           for (const m of discovered) {
@@ -3073,7 +3078,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         input_cost_per_1k, output_cost_per_1k, cost_per_image,
         quality_score, is_active,
         task_categories, context_tier, deployment, reasoning_mode, safety_tier, agentic_level, architecture
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     let inserted = 0;
@@ -5347,6 +5352,63 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return { success: true };
   });
 
+  // --- Needle tool pre-filter status -----------------------------------
+  //
+  // services/needle-router is a local CPU model that trims the tool list
+  // before the real model sees it (apps/gateway/src/lib/needlePreFilter.ts).
+  // Measured on this class of hardware, single-request CPU inference runs
+  // 50-90+ seconds regardless of tool count — far past anything viable as
+  // a synchronous pre-request hop — so the filter is a settings-backed
+  // opt-in (default off) rather than always-on. This route gives the UI
+  // toggle honest, live feedback: is the sidecar even reachable, is the
+  // toggle currently on, and what happened the last time the filter
+  // actually ran (matched / timed out / errored, and how long it took).
+  server.get('/admin/needle/status', async () => {
+    const enabled = isNeedleEnabled();
+    const telemetry = getNeedleTelemetry();
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    const probeStart = Date.now();
+    let reachable = false;
+    let modelLoaded: boolean | null = null;
+    try {
+      const res = await fetch(needleHealthUrl(), { signal: controller.signal });
+      if (res.ok) {
+        reachable = true;
+        const body = (await res.json().catch(() => null)) as { model_loaded?: boolean } | null;
+        modelLoaded = typeof body?.model_loaded === 'boolean' ? body.model_loaded : null;
+      }
+    } catch {
+      reachable = false;
+    } finally {
+      clearTimeout(timer);
+    }
+    const probeLatencyMs = Date.now() - probeStart;
+
+    return {
+      enabled,
+      reachable,
+      modelLoaded,
+      probeLatencyMs,
+      timeoutBudgetMs: (() => {
+        const raw = process.env.DMRX_NEEDLE_TIMEOUT_MS;
+        const parsed = raw === undefined ? 1500 : Number(raw);
+        return Number.isFinite(parsed) ? parsed : 1500;
+      })(),
+      lastAttempt: telemetry.lastAttemptAt
+        ? {
+            at: telemetry.lastAttemptAt,
+            outcome: telemetry.lastOutcome,
+            latencyMs: telemetry.lastLatencyMs,
+            error: telemetry.lastError,
+            matchedCount: telemetry.lastMatchedCount,
+            toolCount: telemetry.lastToolCount,
+          }
+        : null,
+    };
+  });
+
   // Test agent integration connectivity
   server.post('/admin/integrations/test', async (request) => {
     const { tool } = request.body as { tool: string };
@@ -5941,30 +6003,35 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
 
   // --- MCP server status ----------------------------------------------------
   //
-  // The MCP server is a separate process (services/mcp-server) — the gateway
-  // does NOT import or manage it. This route reports:
-  //   * the gateway's env-derived view of the MCP config (matching the
-  //     MCP server's own documented defaults)
-  //   * a live reachability probe against the MCP server's /health
-  //     endpoint when transport is HTTP/SSE
-  //   * a static tool catalogue (the same tools services/mcp-server exports)
+  // services/mcp-server runs as a companion process. Two ways that can
+  // happen:
+  //   * gateway-autostarted (apps/gateway/src/lib/sidecar-boot.ts,
+  //     `DMRX_MCP_AUTOSTART`, default true) — the common case. Its spawn env
+  //     unconditionally sets `DMRX_MCP_TRANSPORT=http` for the CHILD process,
+  //     regardless of what (if anything) is set in this process's own env.
+  //   * externally managed (operator runs `bun services/mcp-server` by hand,
+  //     any transport).
   //
-  // For stdio transport the MCP server is a per-client child process and
-  // there is no daemon to probe, so `available` is returned as `null` to
-  // distinguish "unknown / separate process" from "reachable: false".
+  // This route used to gate its probe on *this* process's own
+  // `process.env.DMRX_MCP_TRANSPORT`, which defaults to 'stdio' and is
+  // normally left unset in .env. That meant it never probed even when the
+  // autostarted sidecar was live and serving real tool data on
+  // DMRX_MCP_PORT — operators always got the hardcoded fallback list below
+  // silently missing every filesystem/bash/template/preset/subagent tool
+  // added since it was written. Fixed: always attempt the probe (bounded by
+  // a short timeout) regardless of the declared transport, and report
+  // whether the returned data is live or fabricated via `source`.
   server.get('/admin/mcp/status', async (request, reply) => {
     const transport = (process.env.DMRX_MCP_TRANSPORT || 'stdio').toLowerCase();
     const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
     const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
     const hasApiKey = !!process.env.DMRX_MCP_API_KEY;
 
-    // Probing the MCP server requires a fetch — cap it so a slow/unreachable
-    // server can't hold up the admin response.
-    const probeable = transport === 'sse' || transport === 'http'
-      || transport === 'streamable' || transport === 'streamable-http';
-
+    // Always attempt the reachability probe — capped so a slow/unreachable
+    // server can't hold up the admin response. See comment above for why we
+    // no longer gate this on the declared transport.
     let available: boolean | null = null;
-    if (probeable) {
+    {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 1500);
       try {
@@ -6003,8 +6070,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     ];
 
     let tools = fallbackTools;
+    let source: 'live' | 'fallback' = 'fallback';
 
-    if (probeable) {
+    {
       const toolsController = new AbortController();
       const toolsTimer = setTimeout(() => toolsController.abort(), 2000);
       try {
@@ -6020,6 +6088,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           const toolsData: any = await toolsRes.json();
           if (toolsData.tools) {
             tools = toolsData.tools;
+            source = 'live';
           }
         }
       } catch {
@@ -6037,15 +6106,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       hasApiKey,
       uptime: Math.round(process.uptime()),
       tools,
+      /** 'live' when `tools` came from the running MCP server; 'fallback' when it's the hardcoded catalogue below (stale — will not reflect newly added tools). */
+      source,
     };
   });
 
   // MCP tools list endpoint that fetches from MCP server if possible
   server.get('/admin/mcp/tools', async () => {
-    const transport = (process.env.DMRX_MCP_TRANSPORT || 'stdio').toLowerCase();
     const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
     const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
-    const probeable = transport === 'sse' || transport === 'http' || transport === 'streamable' || transport === 'streamable-http';
 
     const fallbackTools = [
       { name: 'dmrx_chat', description: 'Send a chat completion request through DMR-X. Automatically routes to the best available LLM based on quality, cost, and latency targets.' },
@@ -6070,11 +6139,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       { name: 'dmrx_generate_3d', description: 'Generate 3D models through DMR-X. Routes to text-to-3d or image-to-3d models.' },
     ];
 
-    if (!probeable) {
-      return { tools: fallbackTools };
-    }
-
-    // Try to fetch from MCP server
+    // Always attempt to fetch the live tool list from the MCP server — do
+    // not gate on this process's own DMRX_MCP_TRANSPORT (see the comment on
+    // /admin/mcp/status above; the same staleness bug applied here and is
+    // the more severe of the two since this is the endpoint the UI's tool
+    // tester (`listMcpTools` / `executeMcpTool`) reads).
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
     try {
@@ -6088,10 +6157,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       });
       if (!res.ok) throw new Error('MCP server not reachable');
       const data: any = await res.json();
-      return { tools: data.tools || fallbackTools };
+      if (data.tools) return { tools: data.tools, source: 'live' as const };
+      return { tools: fallbackTools, source: 'fallback' as const };
     } catch {
-      // Fallback to hardcoded
-      return { tools: fallbackTools };
+      // Fallback to hardcoded — stale, will not reflect newly added tools.
+      return { tools: fallbackTools, source: 'fallback' as const };
     } finally {
       clearTimeout(timer);
     }
