@@ -52,8 +52,9 @@ export function KeyPoolHealth() {
 }
 
 function PoolRow({ pool }: { pool: KeyRotationPool }) {
-  const idleKeys = pool.keys.filter((k) => k.selections === 0);
-  const allIdle = pool.keys.length > 0 && idleKeys.length === pool.keys.length;
+  const keys = pool.keys ?? [];
+  const idleKeys = keys.filter((k) => k.selections === 0);
+  const allIdle = keys.length > 0 && idleKeys.length === keys.length;
   // balance is min/max selections: 1.0 even, near 0 = one hot key.
   const uneven = pool.totalSelections > 0 && pool.balance < 0.5;
 
@@ -84,7 +85,7 @@ function PoolRow({ pool }: { pool: KeyRotationPool }) {
         <KeySquare className="size-3.5 text-fg-subtle" aria-hidden />
         <span className="text-sm text-fg">{pool.providerName}</span>
         <span className="text-2xs text-fg-subtle">
-          {pool.keysUsed}/{pool.keys.length} keys used
+          {pool.keysUsed}/{keys.length} keys used
         </span>
         <Tooltip>
           <TooltipTrigger asChild>

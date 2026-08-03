@@ -4060,15 +4060,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.get('/admin/free-tier/summary', async () => {
     const db = getDb();
 
-    // Get all free-tier models from the catalog
+    // Get all free-tier models from the catalog. intelligence_rank, speed_rank
+    // and monthly_token_budget live on model_profiles (model_classifications
+    // carries pricing/rate-limit/free flags but not those ranking columns), so
+    // join the profile in to resolve them.
     const freeModels = db.prepare(`
       SELECT
         mc.provider_id,
         mc.model_id,
         mc.has_free_tier,
-        mc.intelligence_rank,
-        mc.speed_rank,
-        mc.monthly_token_budget,
+        mp.intelligence_rank,
+        mp.speed_rank,
+        COALESCE(mp.monthly_token_budget, mc.monthly_budget, 0) AS monthly_token_budget,
         mc.rate_limit_rpm,
         mc.rate_limit_rpd,
         mc.rate_limit_tpm,
@@ -4076,9 +4079,11 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         p.name as provider_name,
         p.is_healthy
       FROM model_classifications mc
+      LEFT JOIN model_profiles mp
+        ON mp.provider_id = mc.provider_id AND mp.model_id = mc.model_id
       JOIN providers p ON mc.provider_id = p.id
       WHERE mc.has_free_tier = 1
-      ORDER BY mc.monthly_token_budget DESC
+      ORDER BY monthly_token_budget DESC
     `).all() as any[];
 
     // Aggregate totals
