@@ -40,3 +40,19 @@ export {
   type RecordDataAccessInput,
   type VerifyResult,
 } from './data-access-audit.js';
+
+export {
+  JobStore,
+  jobStore,
+  type Job,
+  type JobSource,
+  type JobStatus,
+  type CreateJobInput,
+  type JobPatch,
+  type ListJobsOptions,
+  type JobTask,
+  type JobTaskStatus,
+  type CreateTaskInput,
+  type TaskPatch,
+  type AssignTaskInput,
+} from './job.store.js';
