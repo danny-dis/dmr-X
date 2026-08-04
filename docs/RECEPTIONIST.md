@@ -474,9 +474,9 @@ Each phase is independently useful and independently shippable.
 
 | Phase | Scope | Touches |
 |---|---|---|
-| **P0** | Capability schema + controlled vocabulary + migration + UI fields + `find_agents` matcher with tests | `agent-schema.ts`, `packages/db/src/migrations/059_agent_capabilities.sql`, agent editor UI |
+| **P0** | Capability schema + controlled vocabulary + migration + UI fields + `find_agents` matcher with tests | `agent-schema.ts`, `packages/db/src/migrations/071_agent_capabilities.sql` (verify the number first), agent editor UI |
 | **P1** | Receptionist agent def + `find_agents`/`assign_task` tools; **single**-agent routing. Replaces name-based delegation with capability-based. Already valuable alone. | `tools.routes.ts`, new `services/agent-runtime/src/receptionist.ts` |
-| **P2** | `jobs`/`job_tasks` tables + job workspace + job board + sequential multi-task execution | migration `060_jobs.sql`, `tools.routes.ts`, job store |
+| **P2** | `jobs`/`job_tasks` tables + job workspace + job board + sequential multi-task execution | migration `070_jobs.sql`, `tools.routes.ts`, job store |
 | **P3** | MCP job tools — the external Claude Code path | `services/mcp-server/src/tools.ts`, `server.ts` |
 | **P4** | Acceptance criteria + verification loop + honest partial delivery | Receptionist, sandbox |
 | **P5** | Parallel fan-out via isolated task workspaces + merge, `request_specialist`, replay | Receptionist |
@@ -495,8 +495,20 @@ Cleanup, do it in P1: delete or consolidate
 - `apps/gateway/src/routes/agent-dispatch.routes.ts` **already exists**.
   Read it first; it may already host part of this surface, and P1 might be
   an extension rather than a new file.
-- Confirm the highest existing migration number (058 was the last seen) so
-  059 does not collide.
+- **Migration numbering — check the database, not just the directory.**
+  Migrations are keyed by version *number*. A number already recorded in an
+  existing database is treated as applied and the file is silently skipped,
+  even if it is an entirely different migration.
+
+  This bit for real. The tree's highest file was `063_api_key_role.sql`, so
+  the jobs migration was written as 064 — but a live database already had
+  version 64 applied from a `064_api_key_lookup_hash.sql` that no longer
+  exists in the tree. The migration never ran, and every job route failed
+  with `no such table: jobs`. A fresh database did not reproduce it, which is
+  exactly why it survived testing. It shipped as **`070_jobs.sql`**.
+
+  P0's capability migration should take 071 or later. Before adding one,
+  check both the directory *and* `schema_migrations` in a real database.
 - Run `gitnexus_impact` on `agent-delegate.ts` and `agent-schema.ts` before
   editing — both are load-bearing.
 
