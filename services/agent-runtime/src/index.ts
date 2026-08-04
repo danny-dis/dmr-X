@@ -64,3 +64,12 @@ export {
   renderBoardForPrompt,
   type JobBoardEntry,
 } from './job-board.js';
+
+export {
+  findCycles,
+  findMissingDependencies,
+  topologicalOrder,
+  readyTasks,
+  schedulerState,
+  type SchedulerState,
+} from './job-scheduler.js';
