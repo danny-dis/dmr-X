@@ -14,6 +14,8 @@ import type {
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
 import { convertMessagesToAnthropic } from '../anthropic-messages.js';
+import { planPromptCache } from '../prompt-cache.js';
+import { normalizeAnthropicUsage } from '../cache-usage.js';
 import {
   toAnthropicTools,
   toAnthropicToolChoice,
@@ -82,8 +84,11 @@ export class AnthropicAdapter extends BaseAdapter {
     const baseUrl = this.getBaseUrl();
     const start = Date.now();
 
-    // Convert internal messages to Anthropic ClaudeMessageParam format
-    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
+    // Convert internal messages to Anthropic ClaudeMessageParam format,
+    // injecting prompt-cache breakpoints when the request doesn't already
+    // carry its own (planPromptCache defers to caller-supplied ones).
+    const plan = planPromptCache(request);
+    const { system, messages } = convertMessagesToAnthropic(request.messages || [], plan);
 
     try {
       const response = await this.fetchWithTimeout(`${baseUrl}/v1/messages`, {
@@ -132,11 +137,11 @@ export class AnthropicAdapter extends BaseAdapter {
           content: parsedContent.text,
           ...(parsedContent.toolCalls ? { tool_calls: parsedContent.toolCalls } : {}),
         },
-        usage: {
-          prompt_tokens: (data.usage as Record<string, number>)?.input_tokens || 0,
-          completion_tokens: (data.usage as Record<string, number>)?.output_tokens || 0,
-          total_tokens: ((data.usage as Record<string, number>)?.input_tokens || 0) + ((data.usage as Record<string, number>)?.output_tokens || 0),
-        },
+        // Anthropic's `input_tokens` is only the uncached remainder --
+        // normalizeAnthropicUsage adds the cache read/write components back
+        // in so prompt_tokens reflects the full prompt, matching the other
+        // providers' meaning of the field.
+        usage: normalizeAnthropicUsage(data.usage),
         finishReason: mapAnthropicStopReason(data.stop_reason as string | null | undefined),
         latencyMs,
       };
@@ -149,7 +154,8 @@ export class AnthropicAdapter extends BaseAdapter {
     this.assertInitialized();
 
     const baseUrl = this.getBaseUrl();
-    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
+    const plan = planPromptCache(request);
+    const { system, messages } = convertMessagesToAnthropic(request.messages || [], plan);
 
     let response: Response;
     try {

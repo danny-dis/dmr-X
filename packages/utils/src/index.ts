@@ -216,7 +216,9 @@ export {
   fromClaudeMessages,
   toClaudeMessage,
   // Types
+  type ClaudeCacheControl,
   type ClaudeMessageParam,
+  type ClaudeSystemBlockParam,
   type ClaudeTextBlockParam,
   type ClaudeImageBlockParam,
   type ClaudeToolUseBlockParam,

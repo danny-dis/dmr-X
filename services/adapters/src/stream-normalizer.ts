@@ -2,6 +2,7 @@ import type { StreamChunk, TokenStreamChunk, DoneStreamChunk } from '@dmr-x/core
 import { EventStream, logger, type SseMessage } from '@dmr-x/utils';
 
 import { mapAnthropicStopReason } from './anthropic-tools.js';
+import { normalizeAnthropicUsage } from './cache-usage.js';
 
 /**
  * Parse an OpenAI-compatible SSE response into StreamChunks.
@@ -140,6 +141,14 @@ export function createAnthropicSSEIterator(
   let outputTokens = 0;
   let stopReason: string | undefined;
 
+  // Anthropic splits usage across two events: the input side (including cache
+  // read/write counts) arrives once on `message_start`, while the final output
+  // count only settles on `message_delta`. Both have to be held until
+  // `message_stop` to emit a complete usage record.
+  let inputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+
   const skip = undefined as unknown as IteratorResult<StreamChunk, undefined>;
 
   const eventStream = new EventStream<StreamChunk>(
@@ -160,6 +169,15 @@ export function createAnthropicSSEIterator(
           const message = parsed.message as Record<string, unknown> | undefined;
           if (typeof message?.id === 'string') requestId = message.id;
           if (typeof message?.model === 'string') modelId = message.model;
+
+          const usage = message?.usage as Record<string, unknown> | undefined;
+          if (typeof usage?.input_tokens === 'number') inputTokens = usage.input_tokens;
+          if (typeof usage?.cache_read_input_tokens === 'number') {
+            cacheReadTokens = usage.cache_read_input_tokens;
+          }
+          if (typeof usage?.cache_creation_input_tokens === 'number') {
+            cacheWriteTokens = usage.cache_creation_input_tokens;
+          }
           return skip;
         }
 
@@ -231,11 +249,18 @@ export function createAnthropicSSEIterator(
                 requestId,
                 modelId,
                 finishReason: mapAnthropicStopReason(stopReason) ?? 'stop',
-                usage: {
-                  prompt_tokens: 0,
-                  completion_tokens: outputTokens,
-                  total_tokens: outputTokens,
-                },
+                // Routed through the shared normalizer so streamed responses
+                // account for cached prompt tokens the same way non-streamed
+                // ones do. `input_tokens` is Anthropic's uncached remainder,
+                // so the cache components have to be added back in to get the
+                // real prompt size -- reading it alone reported 0 here, which
+                // zeroed out cost tracking for every streamed request.
+                usage: normalizeAnthropicUsage({
+                  input_tokens: inputTokens,
+                  cache_read_input_tokens: cacheReadTokens,
+                  cache_creation_input_tokens: cacheWriteTokens,
+                  output_tokens: outputTokens,
+                }),
               },
             } as DoneStreamChunk,
           };

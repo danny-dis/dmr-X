@@ -13,6 +13,7 @@ export interface AnthropicToolParam {
   name: string;
   description?: string;
   input_schema: Record<string, unknown>;
+  cache_control?: { type: string; ttl?: string };
 }
 
 export type AnthropicToolChoiceParam =
@@ -26,14 +27,24 @@ export type AnthropicToolChoiceParam =
  * `{name, description, input_schema}` shape. Returns `undefined` when there
  * are no tools so callers can spread the result straight into a JSON body
  * and have `JSON.stringify` drop the key entirely.
+ *
+ * Carries through `cache_control` when present: Anthropic renders tools first
+ * in the prompt, so a breakpoint on a tool definition caches the tool block,
+ * improving latency and cost for multi-turn conversations.
  */
 export function toAnthropicTools(tools: Tool[] | undefined): AnthropicToolParam[] | undefined {
   if (!tools || tools.length === 0) return undefined;
-  return tools.map((t) => ({
-    name: t.function.name,
-    description: t.function.description,
-    input_schema: t.function.parameters ?? {},
-  }));
+  return tools.map((t) => {
+    const tool: AnthropicToolParam = {
+      name: t.function.name,
+      description: t.function.description,
+      input_schema: t.function.parameters ?? {},
+    };
+    if (t.cache_control !== undefined) {
+      tool.cache_control = t.cache_control;
+    }
+    return tool;
+  });
 }
 
 /**

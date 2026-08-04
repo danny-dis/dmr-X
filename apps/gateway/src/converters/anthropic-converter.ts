@@ -5,6 +5,7 @@ import type {
   ContentPart,
   Tool,
   ToolCall,
+  CacheControl,
 } from '@dmr-x/core';
 import {
   fromClaudeMessages,
@@ -29,7 +30,7 @@ import {
 export interface AnthropicMessagesRequest {
   model: string;
   max_tokens: number;
-  system?: string | { type: 'text'; text: string }[];
+  system?: string | { type: 'text'; text: string; cache_control?: { type: string; ttl?: string } | null }[];
   messages: AnthropicMessage[];
   tools?: AnthropicTool[];
   tool_choice?: AnthropicToolChoice;
@@ -191,6 +192,132 @@ function inputsUnionToMessages(inputs: InputsUnion): Message[] {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound cache_control reconstruction
+// ---------------------------------------------------------------------------
+
+/**
+ * `fromClaudeMessages` (packages/utils) intentionally drops `cache_control` --
+ * it has no internal representation for it. Recovering it here means walking
+ * the original wire blocks a second time, in lockstep with the same
+ * grouping/ordering rules `fromClaudeMessages` + `inputsUnionToMessages` use,
+ * so a cursor over the already-built `messages` array lines up with the wire
+ * blocks that produced each entry.
+ */
+function blocksOfType<T extends AnthropicContentBlock['type']>(
+  content: AnthropicContentBlock[],
+  type: T,
+): Extract<AnthropicContentBlock, { type: T }>[] {
+  return content.filter((b): b is Extract<AnthropicContentBlock, { type: T }> => b.type === type);
+}
+
+/** Only 'ephemeral' is a defined type on the wire, and only '5m'/'1h' are defined TTLs -- anything else is ignored rather than forwarded as an opaque string. */
+function toInternalCacheControl(
+  cc: { type: string; ttl?: string } | null | undefined,
+): CacheControl | undefined {
+  if (!cc || cc.type !== 'ephemeral') return undefined;
+  return cc.ttl === '5m' || cc.ttl === '1h' ? { type: 'ephemeral', ttl: cc.ttl } : { type: 'ephemeral' };
+}
+
+/** Total length of a tool_result block's text output, mirroring fromClaudeMessages' own computation -- it only emits a message for non-empty output, so this must match exactly or the cursor drifts. */
+function toolResultOutputLength(block: Extract<AnthropicContentBlock, { type: 'tool_result' }>): number {
+  if (typeof block.content === 'string') return block.content.length;
+  if (!block.content) return 0;
+  return blocksOfType(block.content, 'text').reduce((n, b) => n + b.text.length, 0);
+}
+
+/**
+ * Re-attach `cache_control` from `body.messages` onto the already-converted
+ * `messages`, mutating in place.
+ *
+ * `cursor` tracks the next unclaimed index in `messages` and only advances
+ * where `fromClaudeMessages` + `inputsUnionToMessages` are known to push a
+ * new entry -- tool_result blocks with non-empty output (one message each,
+ * in order), then at most one message for a wire message's text/image
+ * content, then tool_use blocks (which attach onto that same message, or
+ * onto the prior message if it's already the tail of an assistant turn,
+ * exactly like `inputsUnionToMessages`'s function_call case).
+ *
+ * Document blocks fold into the text stream ahead of the real text blocks'
+ * positions inside `fromClaudeMessages`, which would misalign a precise
+ * block-by-block zip against the resulting ContentPart array. Rather than
+ * replicate that placeholder text verbatim here too, a message containing a
+ * document block still advances the cursor correctly but skips per-part
+ * cache_control assignment for that message -- documents are already a
+ * placeholder-only feature (see fromClaudeMessages' document handling).
+ */
+function applyInboundCacheControl(body: AnthropicMessagesRequest, messages: Message[]): void {
+  let cursor = 0;
+
+  for (const anthMsg of body.messages) {
+    if (typeof anthMsg.content === 'string') continue; // no block to carry cache_control
+
+    const textBlocks = blocksOfType(anthMsg.content, 'text');
+    const imageBlocks = blocksOfType(anthMsg.content, 'image');
+    const toolUseBlocks = blocksOfType(anthMsg.content, 'tool_use');
+    const toolResultBlocks = blocksOfType(anthMsg.content, 'tool_result');
+    const documentBlocks = blocksOfType(anthMsg.content, 'document');
+
+    // tool_result -> one 'tool' message per block, in order, skipping the
+    // ones fromClaudeMessages drops entirely (empty text output).
+    for (const block of toolResultBlocks) {
+      if (toolResultOutputLength(block) === 0) continue;
+      const cc = toInternalCacheControl(block.cache_control);
+      if (cc && messages[cursor]) messages[cursor].cache_control = cc;
+      cursor++;
+    }
+
+    // text/image -> at most one message. Documents fold into the text
+    // stream too (as non-empty placeholder text), so their presence alone
+    // can trigger a push even with no real text/image blocks.
+    const realTextLength = textBlocks.map((b) => b.text).join('').length;
+    let combinedMessageIndex: number | null = null;
+
+    if (imageBlocks.length > 0) {
+      combinedMessageIndex = cursor;
+      if (documentBlocks.length === 0) {
+        const ordered = [...textBlocks, ...imageBlocks];
+        const target = messages[cursor];
+        if (Array.isArray(target?.content)) {
+          target.content.forEach((part, idx) => {
+            // input_audio never appears here -- this branch only ever holds
+            // parts built from text/image blocks -- but the union type needs
+            // the narrowing since input_audio has no cache_control field.
+            if (part.type === 'input_audio') return;
+            const cc = toInternalCacheControl(ordered[idx]?.cache_control);
+            if (cc) part.cache_control = cc;
+          });
+        }
+      }
+      cursor++;
+    } else if (realTextLength > 0 || documentBlocks.length > 0) {
+      combinedMessageIndex = cursor;
+      if (documentBlocks.length === 0 && textBlocks.length > 0 && messages[cursor]) {
+        const cc = toInternalCacheControl(textBlocks[textBlocks.length - 1].cache_control);
+        if (cc) messages[cursor].cache_control = cc;
+      }
+      cursor++;
+    }
+
+    // tool_use -> attaches to the text/image message from this same wire
+    // message when there was one, else to the prior message if that's
+    // already an assistant turn, else starts a fresh assistant message.
+    if (toolUseBlocks.length > 0) {
+      const cc = toInternalCacheControl(toolUseBlocks[toolUseBlocks.length - 1].cache_control);
+      let targetIndex: number;
+      if (combinedMessageIndex !== null) {
+        targetIndex = combinedMessageIndex;
+      } else if (cursor > 0 && messages[cursor - 1]?.role === 'assistant') {
+        targetIndex = cursor - 1;
+      } else {
+        targetIndex = cursor;
+        cursor++;
+      }
+      if (cc && messages[targetIndex]) messages[targetIndex].cache_control = cc;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Request conversion: Anthropic -> Unified
 // ---------------------------------------------------------------------------
 
@@ -201,10 +328,17 @@ export function convertAnthropicRequestToUnified(
   // Extract system prompt before passing messages to fromClaudeMessages
   // (Anthropic's system is a top-level field, not a message)
   let systemContent: string | undefined;
+  let systemCacheControl: CacheControl | undefined;
   if (body.system) {
-    systemContent = typeof body.system === 'string'
-      ? body.system
-      : body.system.map(b => b.text).join('');
+    if (typeof body.system === 'string') {
+      systemContent = body.system;
+    } else {
+      systemContent = body.system.map(b => b.text).join('');
+      // Render order is tools -> system -> messages, so the breakpoint that
+      // matters is the one on the LAST system block -- it's the one that
+      // covers everything before it.
+      systemCacheControl = toInternalCacheControl(body.system[body.system.length - 1]?.cache_control);
+    }
   }
 
   // Use fromClaudeMessages to parse Anthropic message content blocks
@@ -227,9 +361,15 @@ export function convertAnthropicRequestToUnified(
   // Bridge from InputsUnion to internal Message[] format
   const messages = inputsUnionToMessages(inputs);
 
+  // Recover cache_control that fromClaudeMessages dropped, before the
+  // system message is unshifted (the cursor walk only covers body.messages).
+  applyInboundCacheControl(body, messages);
+
   // Prepend system message if present
   if (systemContent) {
-    messages.unshift({ role: 'system', content: systemContent });
+    const systemMessage: Message = { role: 'system', content: systemContent };
+    if (systemCacheControl) systemMessage.cache_control = systemCacheControl;
+    messages.unshift(systemMessage);
   }
 
   // Convert tools (DMR-X specific -- fromClaudeMessages doesn't handle tools)
