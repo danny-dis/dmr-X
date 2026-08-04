@@ -56,3 +56,11 @@ export {
   type TaskPatch,
   type AssignTaskInput,
 } from './job.store.js';
+
+export {
+  writeBoardEntry,
+  readBoard,
+  readBoardFor,
+  renderBoardForPrompt,
+  type JobBoardEntry,
+} from './job-board.js';
