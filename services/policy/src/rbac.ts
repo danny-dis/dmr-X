@@ -12,6 +12,7 @@
  */
 
 import crypto from 'node:crypto';
+import { isIP } from 'node:net';
 
 import { createLogger } from '@dmr-x/utils';
 
@@ -102,7 +103,7 @@ export function parsePolicy(policyString: string): PolicyRule {
   // In production, use a proper parser library
   
   const trimmed = policyString.trim();
-  
+
   // Extract effect
   const effectMatch = trimmed.match(/^(permit|deny)\s*\(/);
   if (!effectMatch) {
@@ -110,18 +111,49 @@ export function parsePolicy(policyString: string): PolicyRule {
   }
   const effect = effectMatch[1] as Effect;
 
+  // Fail CLOSED on constructs this parser cannot faithfully represent.
+  // The previous parser silently defaulted missing clauses to '*' (wildcard),
+  // which turned malformed policies into broad grants.
+  if (/principal\s*!=|action\s*!=|resource\s*!=/.test(trimmed)) {
+    throw new Error('Unsupported policy: "!=" negation cannot be expressed safely by this parser — refusing to guess');
+  }
+  if (/\b(?:action|resource)\s+in\s+\[/.test(trimmed)) {
+    throw new Error('Unsupported policy: "in [...]" lists cannot be expressed by this parser — refusing to grant');
+  }
+
   // Extract principal
-  const principalMatch = trimmed.match(/principal\s*([!=]=)\s*(?:Role|User|Group|Service)::"([^"]+)"/);
-  const principalType = principalMatch ? extractPrincipalType(trimmed) : 'user';
-  const principalId = principalMatch ? principalMatch[2] : '*';
+  const principalMatch = trimmed.match(/principal\s*==\s*(?:Role|User|Group|Service)::"([^"]+)"/);
+  const principalTypeMatch = trimmed.match(/principal\.type\s*==\s*"(user|role|group|service)"/);
+  const hasPrincipalClause = /\bprincipal\b/.test(trimmed);
+  let principalType: Principal['type'] = 'user';
+  let principalId = '*';
+  if (principalMatch) {
+    principalType = extractPrincipalType(trimmed);
+    principalId = principalMatch[1];
+  } else if (principalTypeMatch) {
+    principalType = principalTypeMatch[1] as Principal['type'];
+    principalId = '*';
+  } else if (!hasPrincipalClause) {
+    throw new Error('Invalid policy: missing principal clause — refusing to default to wildcard');
+  }
 
   // Extract action
-  const actionMatch = trimmed.match(/action\s*([!=]=)\s*(?:Action)::"([^"]+)"/);
-  const actionId = actionMatch ? actionMatch[2] : '*';
+  const actionMatch = trimmed.match(/action\s*==\s*(?:Action)::"([^"]+)"/);
+  let actionId = '*';
+  if (actionMatch) {
+    actionId = actionMatch[1];
+  } else if (!/\baction\b/.test(trimmed)) {
+    throw new Error('Invalid policy: missing action clause — refusing to default to wildcard');
+  }
 
   // Extract resource
-  const resourceMatch = trimmed.match(/resource\s*([!=]=)\s*(?:Resource)::"([^"]+)"/);
-  const resourceId = resourceMatch ? resourceMatch[2] : '*';
+  const resourceMatch = trimmed.match(/resource\s*==\s*(?:Resource)::"([^"]+)"/);
+  let resourceId = '*';
+  if (resourceMatch) {
+    resourceId = resourceMatch[1];
+  } else if (!/\bresource\b/.test(trimmed)) {
+    throw new Error('Invalid policy: missing resource clause — refusing to default to wildcard');
+  }
 
   return {
     id: crypto.randomUUID(),
@@ -301,22 +333,46 @@ export class RBACPolicyEngine {
   }
 
   /**
-   * Simple IP in CIDR check
+   * IP in CIDR check (IPv4 and IPv6).
    */
   private isIpInCidr(ip: string, cidr: string): boolean {
-    // Simplified implementation - in production use a proper IP library
-    const [range, bits] = cidr.split('/');
-    if (!range || !bits) return false;
-    
-    const ipNum = this.ipToNumber(ip);
-    const rangeNum = this.ipToNumber(range);
-    const mask = ~((1 << (32 - parseInt(bits))) - 1);
-    
-    return (ipNum & mask) === (rangeNum & mask);
-  }
+    const slashIndex = cidr.indexOf('/');
+    if (slashIndex <= 0 || slashIndex === cidr.length - 1) return false;
+    const range = cidr.slice(0, slashIndex);
+    const bitsStr = cidr.slice(slashIndex + 1);
+    if (!/^\d{1,3}$/.test(bitsStr)) return false;
+    const bits = parseInt(bitsStr, 10);
 
-  private ipToNumber(ip: string): number {
-    return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet), 0) >>> 0;
+    const ipVersion = isIP(ip);
+    const rangeVersion = isIP(range);
+    if (ipVersion === 0 || rangeVersion === 0 || ipVersion !== rangeVersion) return false;
+
+    if (ipVersion === 4) {
+      if (bits > 32) return false;
+      if (bits === 0) return true;
+      const ipNum = ipv4ToUint32(ip);
+      const rangeNum = ipv4ToUint32(range);
+      if (ipNum === null || rangeNum === null) return false;
+      const mask = (0xffffffff << (32 - bits)) >>> 0;
+      return ((ipNum & mask) >>> 0) === ((rangeNum & mask) >>> 0);
+    }
+
+    if (bits > 128) return false;
+    if (bits === 0) return true;
+    const ipBytes = ipv6ToBytes(ip);
+    const rangeBytes = ipv6ToBytes(range);
+    if (ipBytes === null || rangeBytes === null) return false;
+
+    const fullBytes = bits >> 3;
+    for (let i = 0; i < fullBytes; i++) {
+      if (ipBytes[i] !== rangeBytes[i]) return false;
+    }
+    const remBits = bits & 7;
+    if (remBits > 0) {
+      const mask = 0xff << (8 - remBits);
+      return ((ipBytes[fullBytes] & mask) & 0xff) === ((rangeBytes[fullBytes] & mask) & 0xff);
+    }
+    return true;
   }
 
   /**
@@ -347,6 +403,42 @@ export class RBACPolicyEngine {
   clear(): void {
     this.policies = [];
   }
+}
+
+function ipv4ToUint32(ip: string): number | null {
+  const octets = ip.split('.');
+  if (octets.length !== 4) return null;
+  let result = 0;
+  for (const octet of octets) {
+    if (!/^\d{1,3}$/.test(octet)) return null;
+    const num = parseInt(octet, 10);
+    if (num < 0 || num > 255) return null;
+    result = (result << 8) | num;
+  }
+  return result >>> 0;
+}
+
+function ipv6ToBytes(ip: string): number[] | null {
+  const parts = ip.split('::');
+  if (parts.length > 2) return null;
+  const hasDoubleColon = ip.includes('::');
+  const head = hasDoubleColon ? parts[0] : parts[0];
+  const tail = hasDoubleColon ? (parts[1] ?? '') : '';
+  const headBytes: number[] = [];
+  const tailBytes: number[] = [];
+  for (const part of (head ? head.split(':') : [])) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(part)) return null;
+    const num = parseInt(part, 16);
+    headBytes.push((num >> 8) & 0xff, num & 0xff);
+  }
+  for (const part of (tail ? tail.split(':') : [])) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(part)) return null;
+    const num = parseInt(part, 16);
+    tailBytes.push((num >> 8) & 0xff, num & 0xff);
+  }
+  if (headBytes.length + tailBytes.length > 16) return null;
+  const zeros = 16 - headBytes.length - tailBytes.length;
+  return [...headBytes, ...new Array(zeros).fill(0), ...tailBytes];
 }
 
 // ---------------------------------------------------------------------------
