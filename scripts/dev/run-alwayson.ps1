@@ -61,7 +61,9 @@ if (Test-Path '.env') {
 
 if (-not $env:DMRX_LOCAL_MODE) { $env:DMRX_LOCAL_MODE = 'true' }
 if (-not $env:DMRX_GATEWAY_URL) { $env:DMRX_GATEWAY_URL = 'http://localhost:47113' }
-if (-not $env:DMRX_GODMODE_AUTOSTART) { $env:DMRX_GODMODE_AUTOSTART = 'true' }
+# Opt-in only: autostart clones and executes a third-party repo, so this dev
+# helper must not silently turn it on. Set DMRX_GODMODE_AUTOSTART=true to opt in.
+if (-not $env:DMRX_GODMODE_AUTOSTART) { $env:DMRX_GODMODE_AUTOSTART = 'false' }
 if (-not $env:DMRX_MCP_AUTOSTART) { $env:DMRX_MCP_AUTOSTART = 'true' }
 
 $GwLog = Join-Path $Root 'gateway.log'

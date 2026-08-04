@@ -129,11 +129,22 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 | `DMRX_MCP_AUTOSTART` | `true` | No | When the gateway boots, spawn the MCP HTTP server (with A2A) as a sidecar if `:DMRX_MCP_PORT` is not already healthy. |
 | `DMRX_A2A_ENABLED` | `true` (sidecar) | No | Enable A2A agent-card + task endpoints on the MCP server. |
 | `DMRX_A2A_AGENT_URL` | `http://127.0.0.1:3100` | No | Public URL advertised in the A2A agent card. |
-| `DMRX_GODMODE_AUTOSTART` | `true` | No | When the gateway boots, start the local G0DM0D3 proxy in relay mode if it is not already healthy. |
+| `DMRX_GODMODE_AUTOSTART` | `false` | No | When the gateway boots, start the local G0DM0D3 proxy in relay mode if it is not already healthy. **Off by default:** enabling it makes the gateway clone and execute a third-party GitHub repo at boot, so it must be opted into explicitly with `DMRX_GODMODE_AUTOSTART=true`. |
 | `DMRX_GODMODE_REPO` | `https://github.com/danny-dis/G0DM0D3.git` | No | Repo the managed G0DM0D3 server is cloned from. Defaults to DMR-X's own fork, not upstream, so `scripts/dev/sync-godmode-fork.*` controls when upstream changes reach it. |
 | `DMRX_GODMODE_REF` | pinned commit SHA | No | Commit SHA (or branch/tag) the clone is pinned to. Fetched directly (works for a branch, tag, or SHA), so every fresh install is byte-identical regardless of when it runs. See `patches/g0dm0d3/README.md`. |
 
 **Security:** The MCP server binds to `127.0.0.1` by default. Only change to `0.0.0.0` if you need remote access, and always set `DMRX_MCP_API_KEY` when exposing externally.
+
+## G0DM0D3
+
+Runtime connection settings for the managed G0DM0D3 sidecar (in addition to
+`DMRX_GODMODE_AUTOSTART`, `DMRX_GODMODE_REPO`, and `DMRX_GODMODE_REF` above):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GODMODE_API_URL` | `http://localhost:7860` | Base URL the gateway uses to reach the G0DM0D3 API server. |
+| `GODMODE_API_KEY` | — | API key for the G0DM0D3 instance, only needed if it requires auth. |
+| `GODMODE_OPENROUTER_API_KEY` | — | OpenRouter key for G0DM0D3 to route via OpenRouter; falls back to `OPENROUTER_API_KEY` when unset. |
 
 ## Federation
 
@@ -237,6 +248,8 @@ All provider keys are optional. Set the ones you want to use. None of these are 
 | `MISTRAL_API_KEY` | Mistral AI | API key — *no dedicated adapter; reach Mistral via `GenericOpenAI`/`OpenRouter` with a Mistral base URL* |
 | `DEEPSEEK_API_KEY` | DeepSeek | API key |
 | `XAI_API_KEY` | xAI (Grok) | API key |
+| `OLLAMA_CLOUD_API_KEY` | Ollama Cloud (hosted models at ollama.com) | API key |
+| `OLLAMA_CLOUD_BASE_URL` | `https://ollama.com/v1` | Ollama Cloud endpoint |
 
 ### Cloud / Aggregator
 

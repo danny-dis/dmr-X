@@ -522,7 +522,8 @@ class ServerManagerService {
         'run',
         '-d',
         '--name', CONTAINER_NAME,
-        '-p', `${port}:${DEFAULT_PORT}`,
+        // Bind to loopback only: the companion must never be reachable off-host.
+        '-p', `127.0.0.1:${port}:${DEFAULT_PORT}`,
         ...runEnv,
         IMAGE_TAG,
       ],
@@ -541,25 +542,11 @@ class ServerManagerService {
     llmApiKey: string,
   ): Promise<void> {
     const dir = g0dm0d3Dir();
-    const env: Record<string, string> = {
-      ...process.env,
-      OPENROUTER_API_KEY: openrouterKey,
-      PORT: String(port),
-    };
-    // Only set GODMODE_API_KEY when non-empty AND not in relay mode. An empty
-    // string (or relay mode) turns AUTH ON (the server requires a Bearer key);
-    // leaving it UNSET disables auth in relay/local mode so the proxy can talk
-    // to the child without a shared secret. The gateway proxy injects its own
-    // key via getHeaders() when one is configured.
-    if (godmodeKey && !llmBaseUrl) env.GODMODE_API_KEY = godmodeKey;
-    if (llmBaseUrl) {
-      env.G0DM0D3_LLM_BASE_URL = llmBaseUrl;
-      env.G0DM0D3_LLM_API_KEY = llmApiKey;
-      // Signals the child it's running as DMR-X's internal relay proxy.
-      // The rate-limit middleware skips limiting in this mode (single-tenant,
-      // no external API key to protect).
-      env.GODMODE_RELAY = '1';
-    }
+    // The child ALWAYS receives the generated GODMODE_API_KEY, relay mode
+    // included. Relaying into the DMR-X provider vault without requiring a key
+    // would leave the companion's HTTP endpoint open to anyone who can reach
+    // the host (C3) — auth is never disabled.
+    const env = buildGodmodeNativeEnv({ port, openrouterKey, godmodeKey, llmBaseUrl, llmApiKey });
 
     if (isBun()) {
       // Use Bun.spawn for a managed, killable child.
@@ -632,3 +619,40 @@ export function createServerManager(): ServerManagerService {
   return new ServerManagerService();
 }
 export { ServerManagerService };
+
+/**
+ * Build the environment for a natively-spawned G0DM0D3 child process.
+ *
+ * The generated `GODMODE_API_KEY` is ALWAYS set — the child must require auth
+ * even in relay mode, where it forwards into the DMR-X gateway's provider
+ * vault (C3: it used to be omitted when relaying, leaving the child's HTTP
+ * endpoint unauthenticated). Kept as a pure, exported function so the env
+ * contract is unit-testable without spawning a process.
+ */
+export interface BuildGodmodeNativeEnvOptions {
+  /** Parent env to inherit (defaults to process.env). */
+  baseEnv?: NodeJS.ProcessEnv;
+  port: number;
+  openrouterKey: string;
+  godmodeKey: string;
+  llmBaseUrl: string;
+  llmApiKey: string;
+}
+
+export function buildGodmodeNativeEnv(opts: BuildGodmodeNativeEnvOptions): Record<string, string> {
+  const env: Record<string, string> = {
+    ...(opts.baseEnv ?? process.env),
+    OPENROUTER_API_KEY: opts.openrouterKey,
+    PORT: String(opts.port),
+  };
+  if (opts.godmodeKey) env.GODMODE_API_KEY = opts.godmodeKey;
+  if (opts.llmBaseUrl) {
+    env.G0DM0D3_LLM_BASE_URL = opts.llmBaseUrl;
+    env.G0DM0D3_LLM_API_KEY = opts.llmApiKey;
+    // Signals the child it's running as DMR-X's internal relay proxy.
+    // The rate-limit middleware skips limiting in this mode (single-tenant,
+    // no external API key to protect).
+    env.GODMODE_RELAY = '1';
+  }
+  return env;
+}

@@ -31,7 +31,9 @@ fi
 
 export DMRX_LOCAL_MODE="${DMRX_LOCAL_MODE:-true}"
 export DMRX_GATEWAY_URL="${DMRX_GATEWAY_URL:-http://localhost:47113}"
-export DMRX_GODMODE_AUTOSTART="${DMRX_GODMODE_AUTOSTART:-true}"
+# Opt-in only: autostart clones and executes a third-party repo, so this dev
+# helper must not silently turn it on. Export DMRX_GODMODE_AUTOSTART=true to opt in.
+export DMRX_GODMODE_AUTOSTART="${DMRX_GODMODE_AUTOSTART:-false}"
 export DMRX_MCP_AUTOSTART="${DMRX_MCP_AUTOSTART:-true}"
 
 if [ -f "$ROOT/scripts/dev/patch-g0dm0d3.sh" ]; then
