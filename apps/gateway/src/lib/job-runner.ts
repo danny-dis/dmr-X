@@ -1,0 +1,268 @@
+import {
+  jobStore,
+  buildPlanPrompt,
+  parsePlanResponse,
+  materializePlan,
+  runJobPass,
+  type AgentSummary,
+  type JobRunResult,
+  type JobTask,
+  type TaskExecutionResult,
+  type TaskExecutor,
+} from '@dmr-x/agent-runtime';
+import { logger } from '@dmr-x/utils';
+
+// ---------------------------------------------------------------------------
+// Job runner
+//
+// Gateway-side glue between a stored job and the work that fulfils it:
+//
+//   planJob   brief -> LLM -> parsed plan -> real tasks
+//   createTaskExecutor  a TaskExecutor that runs one task by calling an agent
+//   driveJob  repeats runJobPass until the job stops making progress
+//
+// The orchestrator lives in services/ and may not import from apps/, so it
+// takes an injected executor. This file supplies the real one. It reaches the
+// gateway over HTTP rather than importing the chat loop directly, which is the
+// pattern agent-scheduler.ts already uses for scheduled runs.
+// ---------------------------------------------------------------------------
+
+/** A hung agent call must not hang a job forever. */
+const DEFAULT_CALL_TIMEOUT_MS = 300_000;
+
+/** Upper bound on passes so a mis-planned job cannot loop indefinitely. */
+const DEFAULT_MAX_PASSES = 20;
+
+export interface GatewayCallOptions {
+  gatewayUrl?: string;
+  apiKey?: string;
+  timeoutMs?: number;
+}
+
+interface ResolvedGateway {
+  url: string;
+  headers: Record<string, string>;
+  timeoutMs: number;
+}
+
+function resolveGateway(opts: GatewayCallOptions = {}): ResolvedGateway {
+  const url = opts.gatewayUrl ?? process.env.DMRX_GATEWAY_URL ?? 'http://localhost:3000';
+  const key = opts.apiKey ?? process.env.DMRX_INTERNAL_API_KEY;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (key) headers['authorization'] = `Bearer ${key}`;
+  return { url, headers, timeoutMs: opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS };
+}
+
+interface GatewayResponse {
+  ok: boolean;
+  status: number;
+  body: any;
+}
+
+/** Call the gateway. Never throws — transport failures come back as ok:false. */
+async function callGateway(
+  gw: ResolvedGateway,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+): Promise<GatewayResponse> {
+  try {
+    const res = await fetch(`${gw.url}${path}`, {
+      method,
+      headers: gw.headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(gw.timeoutMs),
+    });
+    let parsed: any = null;
+    try {
+      parsed = await res.json();
+    } catch {
+      parsed = null;
+    }
+    return { ok: res.ok, status: res.status, body: parsed };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, status: 0, body: { error: { message } } };
+  }
+}
+
+/** Pull assistant text out of whichever response shape the gateway returned. */
+function extractText(body: any): string {
+  return (
+    body?.content ??
+    body?.output ??
+    body?.result ??
+    body?.choices?.[0]?.message?.content ??
+    ''
+  );
+}
+
+function buildTaskMessage(task: JobTask, boardContext: string): string {
+  const parts = [`Task: ${task.title}`];
+  if (task.description) parts.push(`\nDescription:\n${task.description}`);
+  if (task.deliverable) parts.push(`\nDeliverable:\n${task.deliverable}`);
+  if (task.acceptance) parts.push(`\nAcceptance criteria:\n${task.acceptance}`);
+  // boardContext is already a fenced untrusted-data block. Append it verbatim;
+  // reformatting or unwrapping it would break the fence it relies on.
+  if (boardContext) parts.push(`\n${boardContext}`);
+  return parts.join('\n');
+}
+
+/**
+ * Build the executor the orchestrator calls for each task. It resolves an
+ * agent (using the task's assignment, or asking /agentic/dispatch to pick one),
+ * sends the task plus its dependency context, and reports the outcome.
+ *
+ * It never throws: every failure is returned as ok:false so the orchestrator
+ * can record a failed task rather than stranding it.
+ */
+export function createTaskExecutor(opts: GatewayCallOptions = {}): TaskExecutor {
+  const gw = resolveGateway(opts);
+
+  return async ({ task, boardContext }): Promise<TaskExecutionResult> => {
+    const failure = (error: string, agentName = 'unassigned'): TaskExecutionResult => ({
+      ok: false,
+      agentName,
+      summary: '',
+      error,
+    });
+
+    try {
+      let instanceId = task.assignedInstanceId ?? null;
+
+      // No agent assigned at plan time: let DMR-X choose one for this task.
+      if (!instanceId) {
+        const dispatch = await callGateway(gw, 'POST', '/v1/agentic/dispatch', {
+          task: [task.title, task.description].filter(Boolean).join('\n'),
+          run: false,
+        });
+        if (!dispatch.ok) {
+          return failure(`agent selection failed: ${dispatch.status} ${JSON.stringify(dispatch.body)}`);
+        }
+        instanceId =
+          dispatch.body?.instanceId ??
+          dispatch.body?.instance?.id ??
+          dispatch.body?.selected?.instanceId ??
+          dispatch.body?.selected?.id ??
+          null;
+      }
+
+      if (!instanceId) return failure('no agent available for task');
+
+      const chat = await callGateway(
+        gw,
+        'POST',
+        `/v1/agents/${encodeURIComponent(instanceId)}/chat`,
+        { messages: [{ role: 'user', content: buildTaskMessage(task, boardContext) }], stream: false },
+      );
+
+      if (!chat.ok) {
+        return failure(`agent call failed: ${chat.status} ${JSON.stringify(chat.body)}`, instanceId);
+      }
+
+      const usage = chat.body?.usage ?? {};
+      return {
+        ok: true,
+        agentName: chat.body?.agentName ?? instanceId,
+        summary: extractText(chat.body),
+        artifacts: [],
+        openQuestions: [],
+        forNext: [],
+        costUsd: Number(chat.body?.costUsd ?? usage.cost_usd ?? 0) || 0,
+        tokens: Number(usage.total_tokens ?? usage.totalTokens ?? 0) || 0,
+      };
+    } catch (error) {
+      return failure(error instanceof Error ? error.message : String(error));
+    }
+  };
+}
+
+export type PlanJobResult = { ok: true; taskCount: number } | { ok: false; error: string };
+
+/**
+ * Turn a job's brief into tasks. Asks a model to decompose it, parses the
+ * response, and persists the plan — but only if the plan is sound, since
+ * materializePlan throws rather than writing a cyclic or dangling graph.
+ *
+ * A job is planned once. Planning twice would duplicate every task.
+ */
+export async function planJob(
+  tenantId: string,
+  jobId: string,
+  opts: GatewayCallOptions & { model?: string } = {},
+): Promise<PlanJobResult> {
+  const gw = resolveGateway(opts);
+
+  const job = jobStore.getJob(tenantId, jobId);
+  if (!job) return { ok: false, error: 'job not found' };
+  if (jobStore.listTasks(tenantId, jobId).length > 0) {
+    return { ok: false, error: 'job already planned' };
+  }
+
+  const instances = await callGateway(gw, 'GET', '/v1/agents/instances?status=active');
+  const agents: AgentSummary[] = (instances.body?.items ?? []).map((item: any) => ({
+    instanceId: item.id,
+    name: item.definitionHumanName ?? item.definitionName ?? item.id,
+    description: item.definitionDescription ?? undefined,
+    category: item.definitionCategory ?? undefined,
+  }));
+
+  jobStore.updateJobStatus(tenantId, jobId, 'planning');
+
+  const completion = await callGateway(gw, 'POST', '/v1/chat/completions', {
+    model: opts.model ?? 'auto',
+    messages: [{ role: 'user', content: buildPlanPrompt(job, agents) }],
+    stream: false,
+  });
+
+  if (!completion.ok) {
+    jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    return { ok: false, error: `planning call failed: ${completion.status}` };
+  }
+
+  const parsed = parsePlanResponse(extractText(completion.body));
+  if (!parsed.ok) {
+    jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    return { ok: false, error: `could not parse plan: ${parsed.error}` };
+  }
+
+  try {
+    const created = materializePlan(tenantId, jobId, parsed.tasks);
+    jobStore.updateJobStatus(tenantId, jobId, 'running');
+    return { ok: true, taskCount: created.length };
+  } catch (error) {
+    jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Run passes until the job stops progressing. Each pass runs every currently
+ * unblocked task, so a chain of N dependent tasks needs N passes.
+ *
+ * Two stop conditions matter: a pass that reports 'running' while having run
+ * nothing made no progress and would spin forever, and maxPasses bounds a plan
+ * that somehow keeps producing work.
+ */
+export async function driveJob(
+  tenantId: string,
+  jobId: string,
+  executor: TaskExecutor,
+  opts: { maxPasses?: number } = {},
+): Promise<JobRunResult> {
+  const maxPasses = opts.maxPasses ?? DEFAULT_MAX_PASSES;
+  let last: JobRunResult = { state: 'empty', ranTaskIds: [] };
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    last = await runJobPass(tenantId, jobId, executor);
+    if (last.state !== 'running') return last;
+
+    if (last.ranTaskIds.length === 0) {
+      logger.warn({ jobId, pass }, 'job-runner: pass made no progress, stopping');
+      return { ...last, reason: 'no progress' };
+    }
+  }
+
+  logger.warn({ jobId, maxPasses }, 'job-runner: max passes reached');
+  return { ...last, reason: 'max passes reached' };
+}

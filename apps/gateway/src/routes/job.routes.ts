@@ -8,6 +8,8 @@ import {
   type ListJobsOptions,
 } from '@dmr-x/agent-runtime';
 
+import { createTaskExecutor, driveJob, planJob } from '../lib/job-runner.js';
+
 // ---------------------------------------------------------------------------
 // Job intake routes
 //
@@ -162,5 +164,61 @@ export function registerJobRoutes(server: FastifyInstance): void {
     // ordered by seq ascending.
     const tasks = jobStore.listTasks(tenant.id, id);
     return reply.send(tasks);
+  });
+
+  // ── Plan job ───────────────────────────────────────────────────────────
+  // Decompose the brief into tasks. Separate from creation so a caller can
+  // inspect (or replace) the plan before any agent is paid to act on it.
+  server.post('/jobs/:id/plan', {
+    preHandler: [agentPermissions.update()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    if (!jobStore.getJob(tenant.id, id)) {
+      return reply.code(404).send({ error: { message: 'Job not found' } });
+    }
+
+    const body = (request.body ?? {}) as { model?: string };
+    const result = await planJob(tenant.id, id, { model: body.model });
+    if (!result.ok) {
+      // 'already planned' is a conflict, not a server fault.
+      const code = /already planned/i.test(result.error) ? 409 : 422;
+      return reply.code(code).send({ error: { message: result.error } });
+    }
+
+    return reply.send({ jobId: id, taskCount: result.taskCount, tasks: jobStore.listTasks(tenant.id, id) });
+  });
+
+  // ── Run job ────────────────────────────────────────────────────────────
+  // Drive passes until the job stops progressing. Synchronous by design for
+  // now: the caller waits. A background queue is the next step, not a
+  // fire-and-forget that silently drops failures.
+  server.post('/jobs/:id/run', {
+    preHandler: [agentPermissions.update()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const job = jobStore.getJob(tenant.id, id);
+    if (!job) {
+      return reply.code(404).send({ error: { message: 'Job not found' } });
+    }
+    if (jobStore.listTasks(tenant.id, id).length === 0) {
+      return reply.code(422).send({
+        error: { message: 'Job has no tasks — call POST /jobs/:id/plan first' },
+      });
+    }
+
+    const body = (request.body ?? {}) as { maxPasses?: number };
+    const result = await driveJob(tenant.id, id, createTaskExecutor(), {
+      maxPasses: body.maxPasses,
+    });
+
+    return reply.send({
+      jobId: id,
+      state: result.state,
+      ranTaskIds: result.ranTaskIds,
+      reason: result.reason,
+      job: jobStore.getJob(tenant.id, id),
+    });
   });
 }
