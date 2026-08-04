@@ -16,6 +16,13 @@ export interface AgentConfigFile {
   definition: AgentDefinitionCreate;
 }
 
+/**
+ * Frontmatter keys whose value is a list even when it is written without
+ * brackets. Only these are split on commas — a description or prompt line
+ * routinely contains commas and must stay a single string.
+ */
+const LIST_VALUED_KEYS = new Set(['tools', 'allowedtools', 'tags', 'skills', 'triggers']);
+
 // ---------------------------------------------------------------------------
 // YAML-like config parser (simple key: value format)
 // ---------------------------------------------------------------------------
@@ -56,6 +63,13 @@ function parseSimpleConfig(content: string): Record<string, unknown> {
         } catch {
           result[currentKey] = val.slice(1, -1).split(',').map((s) => s.trim());
         }
+      } else if (LIST_VALUED_KEYS.has(currentKey.toLowerCase()) && val.includes(',')) {
+        // Unbracketed list: `tools: Read, Write, Edit`. This is the shape
+        // Claude Code subagent frontmatter uses, and treating it as a plain
+        // string stored 68 imported agents with `allowedTools` set to a bare
+        // string. Downstream code declared `string[]` and called `.map()` on
+        // it, which threw before the agent could run at all.
+        result[currentKey] = val.split(',').map((s) => s.trim()).filter(Boolean);
       } else if (val === 'true') {
         result[currentKey] = true;
       } else if (val === 'false') {

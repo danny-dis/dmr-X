@@ -13,7 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import crypto from 'crypto';
 
 import { writeSSE } from '../lib/sse.js';
-import { getRegisteredToolDefinitions, cleanupSandboxDir } from './tools.routes.js';
+import { getRegisteredToolDefinitions, normalizeAllowedTools, cleanupSandboxDir } from './tools.routes.js';
 import { runAgentChatLoop } from './agent-chat-loop.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 
@@ -47,9 +47,10 @@ interface AgentChatBody {
  * `allowedTools`. Returns `undefined` when the agent has no allowed tools, so
  * the model is never handed an empty tool list.
  */
-function buildAgentTools(allowedTools: string[]): any[] | undefined {
-  if (!allowedTools || allowedTools.length === 0) return undefined;
-  const defs = getRegisteredToolDefinitions(allowedTools);
+function buildAgentTools(allowedTools: unknown): any[] | undefined {
+  const names = normalizeAllowedTools(allowedTools);
+  if (names.length === 0) return undefined;
+  const defs = getRegisteredToolDefinitions(names);
   return defs.length > 0 ? defs : undefined;
 }
 
@@ -92,7 +93,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
     const definition = context.definition;
     const model = agentRuntimeService.resolveModel(definition);
-    const agentTools = definition.allowedTools;
+    const agentTools = normalizeAllowedTools(definition.allowedTools);
     const agentToolDefs = buildAgentTools(agentTools);
 
     // Acquire conversation lock. Key per-conversation (not per-instance) so
@@ -159,7 +160,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           id: definition.id,
           name: definition.name,
           tenantId: definition.tenantId,
-          allowedTools: definition.allowedTools,
+          allowedTools: agentTools,
         },
         loadedSkillIds,
         runtime: agentRuntimeService,
@@ -355,7 +356,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
       const definition = context.definition;
       const model = agentRuntimeService.resolveModel(definition);
-      const agentTools = definition.allowedTools;
+      const agentTools = normalizeAllowedTools(definition.allowedTools);
       const agentToolDefs = buildAgentTools(agentTools);
 
       const result = await runAgentChatLoop({
@@ -377,7 +378,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           id: definition.id,
           name: definition.name,
           tenantId: definition.tenantId,
-          allowedTools: definition.allowedTools,
+          allowedTools: agentTools,
         },
         loadedSkillIds,
         runtime: agentRuntimeService,
