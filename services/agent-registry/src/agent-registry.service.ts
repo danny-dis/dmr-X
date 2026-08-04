@@ -311,18 +311,25 @@ export class AgentRegistryService {
 
   /**
    * Bulk-import agent definitions and automatically deploy an instance for
-   * each so they are ready to call immediately. On name collision the
-   * duplicate is created with an incrementing numeric suffix
-   * (e.g. "Frontend Developer", "Frontend Developer (1)"). Visibility is
-   * forced to 'public' regardless of per-definition value.
+   * each so they are ready to call immediately. Visibility is forced to
+   * 'public' regardless of per-definition value.
+   *
+   * On name collision, `onDuplicate` decides:
+   *   'skip'   (default) leave the existing agent alone and import nothing
+   *   'rename' import a copy with a numeric suffix, e.g. "Historian (1)"
+   *
+   * Skip is the default because importing a repository is normally a sync,
+   * not an append. Renaming meant re-running the same import multiplied every
+   * agent: four runs of a 271-agent repository left 1084 deployed instances.
    */
   async importAgents(
     tenantId: string,
     definitions: AgentDefinitionCreate[],
-    options: { modelTier?: string } = {},
+    options: { modelTier?: string; onDuplicate?: 'skip' | 'rename' } = {},
   ): Promise<AgentImportResult> {
     const visibility = 'public'; // forced per import policy
     const modelTier = options.modelTier ?? 'auto';
+    const onDuplicate = options.onDuplicate ?? 'skip';
     const imported: AgentImportResult['agents'] = [];
     const errors: AgentImportResult['errors'] = [];
     let skipped = 0;
@@ -336,13 +343,16 @@ export class AgentRegistryService {
           continue;
         }
 
-        // Duplicate handling: create with incrementing suffix
         let finalName = def.name;
         if (existingNames.has(finalName.toLowerCase())) {
+          if (onDuplicate === 'skip') {
+            // Genuinely skip: no definition, and no instance deployed for it.
+            skipped++;
+            continue;
+          }
           let suffix = 1;
           while (existingNames.has(`${finalName} (${suffix})`.toLowerCase())) suffix++;
           finalName = `${finalName} (${suffix})`;
-          skipped++;
         }
         existingNames.add(finalName.toLowerCase());
 

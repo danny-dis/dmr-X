@@ -249,6 +249,11 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         content: result.lastResponseText,
         model,
         usage: result.finalUsage,
+        // finalUsage is only the last step. The loop accumulates across every
+        // step, and a caller metering a multi-step run (a job charging spend
+        // against a budget, say) needs the totals, not the tail.
+        totalTokens: result.totalTokensUsed,
+        costUsd: result.totalCost,
         conversationId: conversation.id,
         steps_completed: result.stepsCompleted,
         all_steps: result.allSteps,
@@ -423,6 +428,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         content: result.lastResponseText,
         model,
         usage: result.finalUsage,
+        totalTokens: result.totalTokensUsed,
+        costUsd: result.totalCost,
         conversationId,
         steps_completed: result.stepsCompleted,
         durationMs: Date.now() - startTime,

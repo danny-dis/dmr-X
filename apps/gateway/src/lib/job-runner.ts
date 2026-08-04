@@ -62,31 +62,55 @@ interface GatewayResponse {
   body: any;
 }
 
-/** Call the gateway. Never throws — transport failures come back as ok:false. */
+/** Transport-level retries. See callGateway for why these happen at all. */
+const TRANSPORT_RETRIES = 2;
+const TRANSPORT_RETRY_DELAY_MS = 1_500;
+
+/**
+ * Call the gateway. Never throws — transport failures come back as ok:false.
+ *
+ * Connection-level failures are retried, HTTP errors are not. These calls go
+ * to the gateway's own port, and sql.js is synchronous WebAssembly on the one
+ * JS thread: while a query runs, nothing else is serviced, so a self-call can
+ * have its socket closed under load. Retrying a dropped connection is safe;
+ * retrying a 4xx or 5xx would just repeat work the server already rejected or
+ * already performed.
+ */
 async function callGateway(
   gw: ResolvedGateway,
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
 ): Promise<GatewayResponse> {
-  try {
-    const res = await fetch(`${gw.url}${path}`, {
-      method,
-      headers: gw.headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(gw.timeoutMs),
-    });
-    let parsed: any = null;
+  let lastMessage = 'request failed';
+
+  for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt++) {
     try {
-      parsed = await res.json();
-    } catch {
-      parsed = null;
+      const res = await fetch(`${gw.url}${path}`, {
+        method,
+        headers: gw.headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(gw.timeoutMs),
+      });
+      let parsed: any = null;
+      try {
+        parsed = await res.json();
+      } catch {
+        parsed = null;
+      }
+      return { ok: res.ok, status: res.status, body: parsed };
+    } catch (error) {
+      lastMessage = error instanceof Error ? error.message : String(error);
+      // A timeout means the work may still be running server-side; repeating it
+      // would double-charge the caller. Only reconnect on a dropped socket.
+      const isTimeout = error instanceof Error && error.name === 'TimeoutError';
+      if (isTimeout || attempt === TRANSPORT_RETRIES) break;
+      logger.warn({ path, attempt: attempt + 1, err: lastMessage }, 'job-runner: retrying gateway call');
+      await new Promise((r) => setTimeout(r, TRANSPORT_RETRY_DELAY_MS * (attempt + 1)));
     }
-    return { ok: res.ok, status: res.status, body: parsed };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, status: 0, body: { error: { message } } };
   }
+
+  return { ok: false, status: 0, body: { error: { message: lastMessage } } };
 }
 
 /** Pull assistant text out of whichever response shape the gateway returned. */
@@ -164,6 +188,9 @@ export function createTaskExecutor(opts: GatewayCallOptions = {}): TaskExecutor 
       }
 
       const usage = chat.body?.usage ?? {};
+      // Prefer the run totals the chat route reports. `usage` is the final
+      // step only, so billing a multi-step run from it undercounts everything
+      // before the last turn.
       return {
         ok: true,
         agentName: chat.body?.agentName ?? instanceId,
@@ -171,8 +198,9 @@ export function createTaskExecutor(opts: GatewayCallOptions = {}): TaskExecutor 
         artifacts: [],
         openQuestions: [],
         forNext: [],
-        costUsd: Number(chat.body?.costUsd ?? usage.cost_usd ?? 0) || 0,
-        tokens: Number(usage.total_tokens ?? usage.totalTokens ?? 0) || 0,
+        costUsd: Number(chat.body?.costUsd ?? usage.cost ?? usage.total_cost ?? 0) || 0,
+        tokens:
+          Number(chat.body?.totalTokens ?? usage.total_tokens ?? usage.totalTokens ?? 0) || 0,
       };
     } catch (error) {
       return failure(error instanceof Error ? error.message : String(error));

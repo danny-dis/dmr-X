@@ -1,3 +1,5 @@
+import { logger } from '@dmr-x/utils';
+
 import { jobStore, type Job, type JobStatus, type JobTask } from './job.store.js';
 import { readBoardFor, renderBoardForPrompt, writeBoardEntry } from './job-board.js';
 import { findCycles, findMissingDependencies, schedulerState } from './job-scheduler.js';
@@ -85,6 +87,14 @@ export async function runJobPass(
       reason: `job is ${job.status}`,
     };
   }
+
+  // Reclaim orphans before doing anything else. runJobPass always resolves a
+  // task it starts, so a task still 'running' when a pass begins belongs to a
+  // pass that died — a crash, a restart, or a client aborting the request that
+  // was driving it. Left alone it blocks every dependent forever, because
+  // 'running' is neither ready nor complete. Reset to 'pending' so the work is
+  // retried rather than silently lost.
+  reclaimOrphanedTasks(tenantId, jobId);
 
   const tasks = jobStore.listTasks(tenantId, jobId);
 
@@ -175,6 +185,24 @@ async function runTask(
   }
 
   return result;
+}
+
+/**
+ * Return tasks stranded in 'running' by a pass that never finished, so they
+ * can be attempted again. `attempt` is incremented to record the retry.
+ */
+function reclaimOrphanedTasks(tenantId: string, jobId: string): void {
+  for (const task of jobStore.listTasks(tenantId, jobId)) {
+    if (task.status !== 'running') continue;
+    logger.warn(
+      { jobId, taskId: task.id, attempt: task.attempt },
+      'job-orchestrator: reclaiming task orphaned by an interrupted pass',
+    );
+    jobStore.updateTask(tenantId, task.id, {
+      status: 'pending',
+      attempt: (task.attempt ?? 0) + 1,
+    });
+  }
 }
 
 /** Describe why a plan can never complete, or null when it is sound. */

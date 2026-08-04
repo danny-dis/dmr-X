@@ -456,10 +456,15 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     }
 
     // Single orchestration call: import agents + skills + write .md/.zip artifacts.
+    // Re-importing the same repository is a sync, not an append. 'rename' is
+    // available for callers that really do want a second copy.
+    const onDuplicate = query.onDuplicate === 'rename' ? 'rename' : 'skip';
+
     const result = await importAgentsWithSkills(tenant.id, files, {
       modelTier,
       category: categoryOverride,
       source,
+      onDuplicate,
     });
 
     return reply.code(201).send({
