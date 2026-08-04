@@ -1,111 +1,86 @@
 # Distribution
 
-DMR-X compiles to standalone executables for Windows, Linux, and macOS using `bun build --compile`. Each release archive contains the binary, UI assets, and an install script.
+DMR-X is distributed as standalone executables (via `bun build --compile`) and
+as OCI container images pushed to GHCR. Releases are produced entirely by the
+GitHub Actions workflow in `.github/workflows/release.yml`.
 
-## Building Binaries
-
-### Single Platform
+## Building Binaries Locally
 
 ```bash
 bun run build                       # Build all packages + UI
 cd apps/gateway
 bun run build:exe                   # Windows (dmrx.exe)
-bun run build:exe:linux             # Linux (dmrx-linux)
-bun run build:exe:macos             # macOS (dmrx-darwin)
+bun run build:exe:linux             # Linux
+bun run build:exe:macos             # macOS
 ```
 
-### All Platforms (CI)
+## What a Release Actually Produces
 
-The GitHub Actions workflow (`.github/workflows/release.yml`) builds all three platforms in parallel.
+The `release.yml` workflow runs on every `v*` tag (or via
+`workflow_dispatch`). There is no build matrix — all compilation happens in one
+`ubuntu-latest` job, producing binaries for each target with
+`bun build --compile`:
 
-## Release Packaging
+| Platform | Artifact |
+|----------|----------|
+| Linux x64 | `dmrx-linux-x64.tar.gz` |
+| Linux arm64 | `dmrx-linux-arm64.tar.gz` |
+| macOS x64 | `dmrx-darwin-x64.tar.gz` |
+| macOS arm64 | `dmrx-darwin-arm64.tar.gz` |
+| Windows x64 | `dmrx-windows-x64.zip` |
 
-The `scripts/package-release.sh` script creates distributable archives from built binaries:
+Each archive contains the compiled binary plus the built UI assets in
+`public/` only:
 
-```bash
-# After building binaries
-./scripts/package-release.sh
+```
+dmrx-linux-x64/
+├── dmrx-linux-x64      # Binary (dmrx.exe inside the Windows zip)
+└── public/             # UI assets
 ```
 
-This creates in `release/`:
-- `dmrx-windows-x64.zip`
-- `dmrx-linux-x64.tar.gz`
-- `dmrx-darwin-x64.tar.gz`
+There are no install scripts packaged inside the archives; unzip/untar and run
+the binary. The data directory defaults to `~/.dmr-x/` (configurable via
+`DMRX_DATA_DIR`).
 
-Each archive contains:
-```
-dmrx-{platform}-x64/
-├── dmrx              # Binary (or dmrx.exe on Windows)
-├── public/           # UI assets
-├── install.sh        # Install script (Linux/macOS)
-├── install.bat       # Install script (Windows)
-└── README.txt        # Quick start guide
-```
+## Containers
 
-## Install Scripts
+The `container` job builds and pushes to GitHub Container Registry:
 
-### Linux / macOS (`install.sh`)
+- **Node runtime image** — multi-arch (`linux/amd64`, `linux/arm64`), built from
+  the `production-node` Dockerfile target:
+  - `ghcr.io/danny-dis/dmr-x:<version>`
+  - `ghcr.io/danny-dis/dmr-x:<version>-node`
+  - `ghcr.io/danny-dis/dmr-x:latest`
+- **Binary image** — single-arch (`linux/amd64`), `production-binary` target:
+  - `ghcr.io/danny-dis/dmr-x:<version>-binary`
 
-The install script:
-1. Detects OS (Linux/Darwin) and architecture (x64/arm64)
-2. Downloads the latest release archive from GitHub
-3. Extracts to `~/.dmr-x/bin/`
-4. Adds `~/.dmr-x/bin` to PATH (bash/zsh/profile)
-5. Creates a `start-dmrx` convenience script
+Images are signed with **cosign keyless signing** (using the workflow's OIDC
+token) and a **CycloneDX SBOM** is generated and uploaded as a workflow artifact.
 
-```bash
-# One-liner install
-curl -sL https://github.com/dmr-x/dmr-x/releases/latest/download/dmrx-linux-x64.tar.gz | tar xz
-cd dmrx-linux-x64 && ./install.sh
-```
+## GitHub Release
 
-### Windows (`install.bat`)
+The `release` job (after `binaries` and `container` succeed):
 
-The install script:
-1. Downloads the latest release zip from GitHub via curl
-2. Extracts to `%USERPROFILE%\.dmr-x\bin\`
-3. Adds to PATH via `setx`
-4. Creates a `start-dmrx.bat` convenience script
+1. Downloads the binary artifacts, checksums, and SBOM.
+2. Reads the version's section from `docs/CHANGELOG.md` for release notes
+   (falls back to a generic note if the section is missing).
+3. Creates a GitHub Release and attaches the platform archives, `checksums.txt`,
+   and `sbom.cdx.json`.
 
-```cmd
-:: Download and extract
-curl -sL https://github.com/dmr-x/dmr-x/releases/latest/download/dmrx-windows-x64.zip -o dmrx.zip
-powershell -Command "Expand-Archive -Path dmrx.zip -DestinationPath $env:USERPROFILE\.dmr-x\bin -Force"
-:: Run installer
-%USERPROFILE%\.dmr-x\bin\install.bat
-```
-
-## CI/CD Release Workflow
-
-`.github/workflows/release.yml` triggers on `v*` tags:
-
-1. **Build job** (matrix: windows, linux, macos)
-   - Checkout code
-   - Install Bun
-   - `bun install --frozen-lockfile`
-   - `bun run build` (all packages)
-   - `bun run --cwd apps/ui build` (UI)
-   - `bun run build:exe` (platform-specific binary)
-   - Package into archive with UI assets, install script, README
-   - Upload as GitHub Actions artifact
-
-2. **Release job** (runs after all builds pass)
-   - Downloads all platform artifacts
-   - Creates GitHub Release with auto-generated release notes
-   - Attaches `.zip` and `.tar.gz` archives
-
-### Triggering a Release
+## Triggering a Release
 
 ```bash
 git tag v0.5.0
 git push origin v0.5.0
 ```
 
-The workflow creates a GitHub Release with binaries for all three platforms.
+The workflow creates a GitHub Release with binaries for all platforms and
+pushes the container images to GHCR.
 
 ## Binary Size
 
-Pre-built binaries are approximately 38-39MB each (includes Bun runtime + all packages + UI assets).
+Pre-built binaries are approximately 38–39 MB each (Bun runtime + all packages
++ UI assets).
 
 ## Data Directory
 
@@ -113,7 +88,7 @@ The binary stores data at `~/.dmr-x/` (configurable via `DMRX_DATA_DIR`):
 
 ```
 ~/.dmr-x/
-├── data.db           # SQLite database
+├── data.db           # SQLite database (data.db.enc when encrypted)
 └── logs/             # Application logs (if configured)
 ```
 

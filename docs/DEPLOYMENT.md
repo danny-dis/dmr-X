@@ -65,10 +65,11 @@ This uses the root `Dockerfile` and `docker-compose.yml`:
 - Multi-stage build (builder + production)
 - `oven/bun:1-alpine` base image
 - Non-root user (`dmrx`)
-- Health check on `/health`
+- Health check on `/healthz`
 - Resource limits: 2GB memory, 2 CPUs
 - Log rotation: 50MB max, 3 files
-- Persistent volume for data at `/home/dmrx/.dmr-x`
+- Persistent volume for data at `/app/data` (the Dockerfile sets
+  `DMRX_DATA_DIR=/app/data`; this is where the SQLite database is written)
 
 > **Important:** Use `docker compose stop` (graceful) rather than `docker kill` (forced) to ensure SQLite data is properly flushed. The gateway handles SIGTERM with a 30-second grace period for clean shutdown.
 
@@ -97,7 +98,8 @@ docker run -d \
   -p 3000:3000 \
   -e NODE_ENV=production \
   -e DMRX_ADMIN_API_KEY=your-admin-key \
-  -v dmr-x-data:/home/dmrx/.dmr-x \
+  -e DMRX_DATA_DIR=/app/data \
+  -v dmr-x-data:/app/data \
   dmr-x
 ```
 
@@ -170,14 +172,16 @@ See [DISTRIBUTION.md](DISTRIBUTION.md) for install script details and CI/CD work
 ### Observability
 
 - [ ] Verify health endpoint: `GET /health` (liveness), `GET /healthz` (subsystem health)
-- [ ] **Scrape Prometheus metrics from `:9464/metrics`** (separate port, see below)
+- [ ] **Scrape Prometheus metrics from `:9464/metrics`** (separate port, see below). Note: `/metrics` is only served if the telemetry service started successfully — it is best-effort and the gateway boots healthy even when it fails (a `warn` is logged). Verify it exists before wiring the scraper: `curl -s http://localhost:9464/metrics | head`; if empty, check the gateway log for "Failed to start telemetry service".
 - [ ] Set up log aggregation (JSON logs to stdout)
 - [ ] Monitor disk usage for SQLite data file
 - [ ] Watch for `request_id` in 5xx error responses — quote it in incident reports
 
 ### Backup
 
-- [ ] Back up `~/.dmr-x/data.db` (SQLite database)
+- [ ] Back up the SQLite database. Plaintext installs write `~/.dmr-x/data.db`
+      (or `$DMRX_DATA_DIR/data.db`); with `DMRX_ENCRYPTION_KEY` set the active
+      file is `data.db.enc`. `scripts/backup/backup.sh` handles both.
 - [ ] Back up `.env` or secrets manager configuration
 
 ## Health Checks
@@ -213,7 +217,16 @@ curl http://localhost:3000/livez
 
 ## Metrics
 
-DMR-X exposes Prometheus metrics on a **separate port** (default `:9464/metrics`) to keep the gateway's HTTP listener focused on user traffic. The metrics include:
+DMR-X exposes Prometheus metrics on a **separate port** (default `:9464/metrics`) to keep the gateway's HTTP listener focused on user traffic.
+
+> **The endpoint is not guaranteed to exist.** Telemetry starts in a best-effort
+> background task (`server.ts`): if the OTel/Prometheus exporter fails to
+> initialize, the gateway boots healthy with **no `/metrics`** and logs a single
+> `warn` ("Failed to start telemetry service"). Before wiring a scraper, confirm
+> it is present: `curl -s http://<host>:9464/metrics`. If it is empty/absent,
+> check the gateway log for that warn line. (O7)
+
+The metrics include:
 
 - `dmr_request_count` — total requests by provider, model, modality, status
 - `dmr_request_latency_ms` — request latency histogram

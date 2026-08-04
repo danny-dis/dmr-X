@@ -125,7 +125,14 @@ DMRX_RUN_E2E=true bun run test -- tests/e2e/   # E2E (requires running gateway)
 
 Unit tests cover: routing pipeline, anthropic converter/stream, API contracts, auth middleware, task classifier, tool orchestrator, SQLite client, memory cache, crypto, meta-models, event streams, HTTP errors.
 
-**Vitest issue on Windows + Node v24:** vitest/tinypool spawn fails with UNKNOWN. Use `npx tsc` directly for type checking instead.
+**Vitest issue on Windows + Node v24:** vitest/tinypool spawn fails with UNKNOWN. Type-check directly instead:
+
+```bash
+node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit        # backend
+node node_modules/typescript/bin/tsc -p apps/ui/tsconfig.app.json --noEmit   # UI
+```
+
+Do **not** use `npx tsc` — in this repo it resolves to a decoy package that prints "This is not the tsc command you are looking for" and exits 1 without compiling anything.
 
 ## Documentation
 
@@ -143,7 +150,7 @@ When updating docs, keep them accurate to the actual codebase state. The authori
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dmr-X** (11980 symbols, 29322 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dmr-X** (12415 symbols, 30512 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

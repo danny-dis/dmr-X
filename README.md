@@ -26,8 +26,8 @@ DMR-X is also an **Agent-as-a-Service (AaaS) runtime**. Define agents as markdow
 
 ```bash
 # Clone and install
-git clone https://github.com/dmr-x/dmr-x.git
-cd dmr-x
+git clone https://github.com/danny-dis/dmr-X.git
+cd dmr-X
 bun install
 
 # Configure
@@ -43,7 +43,7 @@ bun run dev:gateway
 
 ```bash
 # Linux / macOS
-curl -sL https://github.com/dmr-x/dmr-x/releases/latest/download/dmrx-linux-x64.tar.gz | tar xz
+curl -sL https://github.com/danny-dis/dmr-X/releases/latest/download/dmrx-linux-x64.tar.gz | tar xz
 ./dmrx
 
 # Windows
@@ -384,7 +384,7 @@ See [docs/TESTING.md](docs/TESTING.md) for details.
 
 ## Distribution
 
-DMR-X compiles to a single standalone binary via `bun build --compile`. Pre-built binaries are available on the [Releases](https://github.com/dmr-x/dmr-x/releases) page for:
+DMR-X compiles to a single standalone binary via `bun build --compile`. Pre-built binaries are available on the [Releases](https://github.com/danny-dis/dmr-X/releases) page for:
 
 - **Linux x64** — `dmrx-linux-x64.tar.gz`
 - **macOS x64** — `dmrx-darwin-x64.tar.gz`
