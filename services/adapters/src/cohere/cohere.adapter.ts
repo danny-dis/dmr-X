@@ -5,6 +5,14 @@ import { createHttpError, type HttpMeta } from '@dmr-x/utils';
 import type { ProviderConfig, ModelInfo, ExecuteOptions } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
 
+/**
+ * Fallback when a request reaches this adapter without a model. The previous
+ * default, plain `command-r`, was retired by Cohere on 2025-09-15 and now 404s,
+ * so an unmodelled request failed outright. This is its dated successor, which
+ * the live /v2/models listing still serves.
+ */
+const COHERE_DEFAULT_MODEL = 'command-r-08-2024';
+
 export class CohereAdapter extends BaseAdapter {
   readonly providerId = 'cohere';
   readonly supportedModalities: Modality[] = ['reranking', 'embedding', 'llm'];
@@ -277,7 +285,7 @@ export class CohereAdapter extends BaseAdapter {
       index: 0,
       data: {
         requestId: `cohere_${Date.now()}`,
-        modelId: request.model || 'command-r',
+        modelId: request.model || COHERE_DEFAULT_MODEL,
         usage,
         finishReason: this.mapFinishReason(finishReason),
         latencyMs: Date.now() - start,
@@ -290,7 +298,7 @@ export class CohereAdapter extends BaseAdapter {
   private buildCohereChatBody(request: UnifiedRequest, stream: boolean): Record<string, unknown> {
     const messages = (request.messages || []).map((m) => this.toCohereMessage(m));
     const body: Record<string, unknown> = {
-      model: request.model || 'command-r',
+      model: request.model || COHERE_DEFAULT_MODEL,
       messages,
       stream,
     };
@@ -399,7 +407,7 @@ export class CohereAdapter extends BaseAdapter {
       modality: 'llm',
       requestId: `cohere_${Date.now()}`,
       providerId: this.providerId,
-      modelId: request.model || 'command-r',
+      modelId: request.model || COHERE_DEFAULT_MODEL,
       message: {
         role: 'assistant',
         content: textParts,
