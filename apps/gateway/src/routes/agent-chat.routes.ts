@@ -349,9 +349,19 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       }
       const loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');
 
-      const conversation = updateState(persisted.state as ConversationState, {
-        messages: [...persisted.state.messages, ...body.messages],
-        status: 'in_progress',
+      // Keep `awaiting_approval` when the caller is answering an approval
+      // prompt. processApprovalDecisions() refuses to act on any other status,
+      // so forcing 'in_progress' here made every approval a no-op: the resume
+      // reported success, the approved tool never ran, and the unanswered
+      // tool_calls message was resent to the provider on the next turn.
+      const hasApprovalDecisions = (body.approvalDecisions?.length ?? 0) > 0;
+      const persistedState = persisted.state as ConversationState;
+      const conversation = updateState(persistedState, {
+        messages: [...persistedState.messages, ...body.messages],
+        status:
+          hasApprovalDecisions && persistedState.status === 'awaiting_approval'
+            ? 'awaiting_approval'
+            : 'in_progress',
       });
 
       const definition = context.definition;
