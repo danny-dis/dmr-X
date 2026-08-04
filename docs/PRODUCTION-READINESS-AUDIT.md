@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-04
 **Version audited:** 0.5.12 (`main`, working tree dirty)
-**Status:** Security, runtime, ops/deployment, and completeness passes complete
-and cross-verified. Build/typecheck/test pass still running.
+**Status:** Complete. Five passes — security, runtime, ops/deployment,
+completeness, build/test — plus a verification pass over the critical security
+claims.
 
 ## Baseline
 
@@ -33,6 +34,20 @@ and they are blocking for different reasons — this is not one bad area.
    script cannot run in the shipped production configuration, and a wrong or
    rotated encryption key silently boots an empty database while reporting
    healthy (O1–O4).
+
+4. **Verification.** The code itself passes its gates — 0 type errors, 33/33
+   packages build, 1103/1103 unit tests pass. But `bun run test` never
+   terminates (B1), CI type-checks zero UI files (B3), a security test executes
+   nowhere (B2), and the billing path — `billing.service.ts`,
+   `credit.service.ts`, `quota.service.ts`, `cost-headers.ts` — is untested on a
+   platform that bills by token (B6). The gates are green partly because they are
+   not looking.
+
+**Worth separating:** the *shipped code* is healthier than the surrounding
+system. It compiles clean, builds clean, and its tests pass. The blocking
+problems are in the architecture it sits on, the credentials it exposes, the
+operational envelope it was never run through, and the coverage that would have
+caught the rest.
 
 **Safe envelope as-is:** single-instance local development, demos, and personal
 use — which matches the project's stated local-first origin, and it is genuinely
@@ -218,6 +233,79 @@ route surfaces (`cloudcode.routes.ts:335`, `gemini.routes.ts:309`) and found
 `generateContent`/`loadCodeAssist`, which is mutually exclusive with the
 `.json`/`.js` suffix the bypass needs. But any future GET or dot-suffixed route
 registered outside `/v1/` inherits an auth bypass.
+
+## Build, typecheck, and test health
+
+Measured on Windows 10, Node v24.15.0, Bun 1.3.14, TypeScript 5.9.3.
+
+| Gate | Result |
+|---|---|
+| Typecheck | **0 errors** across all 33 backend workspaces and the UI |
+| Build | **33/33 packages + UI build clean** (per-package fallback) |
+| Unit tests | **1103/1103 pass** in 172s via `bun run test:unit` |
+| Lint | 0 errors, 284 warnings (non-gating) |
+
+**The shipped code is in good shape. The verification apparatus around it is
+not.** Nothing here is broken in production code — these are gaps that would let
+regressions through unnoticed.
+
+- **B1 — `bun run test`, the command documented in CLAUDE.md, never terminates.**
+  `vitest.workspace.ts`'s `e2e` project sets `extends` *and* its own `include`;
+  vitest ignores a project's `include` when `extends` is present — a behavior
+  this repo already documents in `vitest.mcp.workspace.ts:5-8`. So the `e2e`
+  project inherits `include: ['tests/**/*.test.ts']`, loses the unit project's
+  quarantine, **re-runs the entire unit suite**, then OOMs on
+  `mcp-input-validator.test.ts`. Observed: memory climbing past 3.9 GB toward the
+  8192 MB cap with a frozen log. CI survives only because it runs
+  `bun run test:unit` instead. Cheap fix: drop `extends` from the `e2e` project
+  or give it the same `exclude`.
+- **B2 — `mcp-input-validator.test.ts` executes nowhere.** Excluded from the unit
+  project and absent from `vitest.mcp.workspace.ts`'s `include`. A
+  security-surface test, silently dead.
+- **B3 — CI type-checks zero UI files.** `.github/workflows/ci.yml:36` loops over
+  `tsconfig.json` files, which for the UI resolves to `apps/ui/tsconfig.json` —
+  `{"files": [], "references": [...]}`. Confirmed: exits 0 having checked nothing.
+  The real config (`tsconfig.app.json`, 216 files) and the UI's own `typecheck`
+  script are never invoked. It is clean today; nothing guards it.
+- **B4 — `.gitignore:17` is a blanket `*.d.ts`, so `apps/ui/src/vite-env.d.ts` is
+  not tracked** (`git ls-files '*.d.ts'` returns nothing). `tsconfig.app.json` has
+  no `types: ["vite/client"]`, so it depends entirely on that untracked
+  triple-slash reference, and `EmptyState.tsx:109` uses `import.meta.env.DEV`. On
+  a fresh clone the UI typecheck fails — and nobody notices, per B3.
+- **B5 — `tests/` (82 files) is excluded from every tsconfig** and contains real
+  drift, e.g. `availability-filter.test.ts:13` and `capability-filter.test.ts:13`
+  build fixtures with `capabilityTier: 'executor'`, which is an `IntelligenceLayer`
+  value, not a `CapabilityTier` (`packages/core/src/types/modality.ts:27,39`).
+  They pass only because vitest strips types.
+- **B6 — Coverage is thin where it matters most.** 78 unit + 4 e2e test files
+  against 401 backend + 216 UI sources; **zero UI tests**. Only 7 of 35 routes are
+  referenced by any test — `chat.routes` (the primary OpenAI endpoint),
+  `anthropic.routes`, and `gemini.routes` have none. 7 of 44 adapters. 2 of 7
+  converters (all Gemini and CloudCode converters and stream serializers
+  untested). **Billing is the weakest critical surface:** `billing.service.ts`,
+  `credit.service.ts`, `quota.service.ts`, and `cost-headers.ts` are all untested
+  on a platform that bills by token. 18 packages/services have no test reference
+  at all, including `secrets` and `policy`.
+- **B7 — `api-contracts.test.ts` cannot detect backend drift.** Presented as the
+  frontend-backend contract source of truth, it validates hand-written literals
+  declared inside the test file; no backend code executes.
+- **B8 — `vitest.config.ts:27-30` hardcodes bun-store paths with pinned versions**
+  (`fastify@5.9.0`, `zod@4.4.3`, `@fastify+compress@9.0.0`). Any dependency bump
+  silently breaks test module resolution. Coverage thresholds are configured but
+  no script passes `--coverage`.
+
+**Environment note, not a repo defect:** `bun run build` fails on the audited
+machine with turbo exit 53 — `turbo.exe` cannot load
+`api-ms-win-crt-string-l1-1-0.dll` (missing VC++ redistributable). It would not
+reproduce on the Ubuntu CI runner. CLAUDE.md's advice to build per-package on
+Windows is corroborated. Also confirmed: `npx tsc` hits a decoy package here; the
+correct invocation is `node node_modules/typescript/bin/tsc`. The Windows+Node24
+vitest spawn crash noted in CLAUDE.md did **not** reproduce under Bun.
+
+**Stale artifacts:** no `.js` shadowing a `.ts` source anywhere — the actively
+harmful case is clean. Seven orphaned `.d.ts`/`.map` files remain outside any
+`src/` directory (in `packages/db/scripts/`, `scripts/`, and `vitest.workspace.js.map`),
+which is why `clean:src` never removes them.
 
 ## Operations & deployment findings
 
@@ -646,6 +734,12 @@ gateway, routing, or providers.
     process on `unhandledRejection` (R5).
 18. Stop writing to the database in the health probe (R6), and stop reporting
     mid-stream failures as `finish_reason: 'stop'` (R7).
+
+19. Fix `vitest.workspace.ts` so `bun run test` terminates, wire
+    `mcp-input-validator.test.ts` into a project, point CI at
+    `apps/ui/tsconfig.app.json`, and un-ignore `vite-env.d.ts` (B1–B4). All four
+    are small config fixes.
+20. Add tests for the billing and quota services before charging anyone (B6).
 
 **The single highest-value action:** run the documented production path once
 end-to-end — `docker-compose.prod.yml` up, write data, run the backup container,
