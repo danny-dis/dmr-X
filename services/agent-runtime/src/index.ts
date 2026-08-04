@@ -83,3 +83,10 @@ export {
   type PlannedTask,
   type PlanParseResult,
 } from './job-planner.js';
+
+export {
+  runJobPass,
+  type TaskExecutor,
+  type TaskExecutionResult,
+  type JobRunResult,
+} from './job-orchestrator.js';
