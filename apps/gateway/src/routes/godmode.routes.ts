@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { ValidationError } from '@dmr-x/core';
 import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 import { getGodmodeService, setGodmodeConfig } from '@dmr-x/godmode';
-import { serverManager } from '@dmr-x/server-manager';
+import { serverManager, getGodmodeRepoInfo } from '@dmr-x/server-manager';
 import type {
   GodmodeChatRequest,
   UltraplinianRequest,
@@ -290,10 +290,17 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Current server status (from persisted server_instances).
+  //
+  // `installed` distinguishes "never cloned" from "cloned but stopped" — the
+  // UI needs this to decide whether to offer Install (clone + deps) or Start
+  // (launch an existing checkout). Both endpoints self-heal either way
+  // (start() clones if missing), but the distinction drives what the button
+  // says and whether a fresh install shows meaningful progress.
   server.get('/godmode/server/status', async () => {
+    const installed = serverManager.isInstalled();
     const inst = serverManager.getRunningInstance();
     if (!inst) {
-      return { status: 'stopped', running: false };
+      return { status: installed ? 'stopped' : 'not_installed', running: false, installed };
     }
     let healthy = false;
     try {
@@ -301,7 +308,13 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     } catch {
       healthy = false;
     }
-    return { status: healthy ? 'running' : inst.status, running: healthy, runtime: inst.runtime, url: inst.url };
+    return {
+      status: healthy ? 'running' : inst.status,
+      running: healthy,
+      runtime: inst.runtime,
+      url: inst.url,
+      installed,
+    };
   });
 
   // Current config the proxy is pointed at.
@@ -311,6 +324,7 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       baseUrl: cfg?.baseUrl,
       hasApiKey: Boolean(cfg?.apiKey),
       openrouterConfigured: Boolean(cfg?.openrouterApiKey),
+      ...getGodmodeRepoInfo(),
     };
   });
 

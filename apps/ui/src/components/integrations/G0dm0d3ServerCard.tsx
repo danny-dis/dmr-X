@@ -19,6 +19,7 @@ import { fetchAuthenticated } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 export type GodmodeServerStatus =
+  | 'not_installed'
   | 'stopped'
   | 'installing'
   | 'running'
@@ -26,6 +27,8 @@ export type GodmodeServerStatus =
 
 interface ServerStatusResponse {
   status: GodmodeServerStatus;
+  running: boolean;
+  installed?: boolean;
   url?: string;
   runtime?: string;
   health?: { status?: string } | string;
@@ -33,15 +36,37 @@ interface ServerStatusResponse {
   containerId?: string;
 }
 
+interface ServerConfigResponse {
+  baseUrl?: string;
+  hasApiKey?: boolean;
+  openrouterConfigured?: boolean;
+  repo?: string;
+  ref?: string;
+}
+
 const STATUS_META: Record<
   GodmodeServerStatus,
   { label: string; tone: 'muted' | 'warning' | 'success' | 'danger'; dot: string }
 > = {
+  not_installed: { label: 'Not installed', tone: 'muted', dot: 'bg-fg-subtle' },
   stopped: { label: 'Stopped', tone: 'muted', dot: 'bg-fg-subtle' },
   installing: { label: 'Installing', tone: 'warning', dot: 'bg-warning animate-pulse' },
   running: { label: 'Running', tone: 'success', dot: 'bg-success' },
   error: { label: 'Error', tone: 'danger', dot: 'bg-danger' },
 };
+
+/** Shortened, human-readable form of a pinned commit SHA / branch name. */
+function shortRef(ref: string | undefined): string {
+  if (!ref) return 'unpinned';
+  return /^[0-9a-f]{40}$/i.test(ref) ? ref.slice(0, 7) : ref;
+}
+
+/** repo URL → "owner/name" for compact display. */
+function repoSlug(repo: string | undefined): string {
+  if (!repo) return 'unknown/unknown';
+  const m = repo.match(/github\.com[/:]([^/]+)\/([^/.]+?)(?:\.git)?$/);
+  return m ? `${m[1]}/${m[2]}` : repo;
+}
 
 export function G0dm0d3ServerCard() {
   const [busy, setBusy] = React.useState<null | 'install' | 'start' | 'stop'>(null);
@@ -56,9 +81,19 @@ export function G0dm0d3ServerCard() {
     { refetchInterval: 3000 }
   );
 
-  const status: GodmodeServerStatus = data?.status ?? 'stopped';
+  const { data: config } = useApiData<ServerConfigResponse>(
+    async () => {
+      const res = await fetchAuthenticated('/v1/godmode/server/config');
+      return (await res.json()) as ServerConfigResponse;
+    },
+    [],
+    { refetchInterval: false }
+  );
+
+  const status: GodmodeServerStatus = data?.status ?? 'not_installed';
   const meta = STATUS_META[status];
   const url = data?.url;
+  const notInstalled = status === 'not_installed';
 
   const runAction = React.useCallback(
     async (kind: 'install' | 'start' | 'stop') => {
@@ -102,6 +137,9 @@ export function G0dm0d3ServerCard() {
 
   const installing = status === 'installing';
   const running = status === 'running';
+  const installed = data?.installed ?? !notInstalled;
+  const repoLabel = repoSlug(config?.repo);
+  const refLabel = shortRef(config?.ref);
 
   return (
     <Card variant="accent" padding="md">
@@ -126,91 +164,108 @@ export function G0dm0d3ServerCard() {
             <strong>Heads up:</strong> Install clones and runs third-party code
             pinned to{' '}
             <code className="rounded bg-warning/15 px-1 py-0.5 font-mono">
-              github.com/elder-plinius/G0DM0D3
+              github.com/{repoLabel}
             </code>{' '}
-            (branch <code className="font-mono">main</code>, depth 1). This is
+            at commit <code className="font-mono">{refLabel}</code>. This is
             external software executed on your machine. Review the source before
             installing if you are unsure.
           </p>
         </div>
 
-        {/* Reused OpenRouter key indicator */}
-        <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2/40 px-3 py-2">
-          <div className="flex items-center gap-2">
-            <Power className="size-4 text-primary" />
-            <span className="text-xs font-medium text-fg">OpenRouter key</span>
+        {notInstalled ? (
+          /* ── Not installed yet: single clear call to action ────────────── */
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border bg-surface-2/30 px-4 py-6 text-center">
+            <Boxes className="size-8 text-fg-subtle" />
+            <div>
+              <div className="text-sm font-medium text-fg">G0DM0D3 is not installed</div>
+              <p className="mt-1 text-xs text-fg-muted">
+                Install clones the pinned source and runs <code className="font-mono">bun install</code>.
+                This can take a minute the first time.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => void runAction('install')}
+              disabled={busy !== null}
+            >
+              {busy === 'install' ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Download className="size-3" />
+              )}
+              Install G0DM0D3
+            </Button>
           </div>
-          <Badge tone="info" size="sm">
-            reused from gateway
-          </Badge>
-        </div>
-
-        {/* Server URL */}
-        <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2/40 px-3 py-2">
-          <div className="min-w-0">
-            <div className="text-xs text-fg-muted">Server URL</div>
-            {url ? (
+        ) : (
+          <>
+            {/* Reused OpenRouter key indicator */}
+            <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2/40 px-3 py-2">
               <div className="flex items-center gap-2">
-                <code className="truncate font-mono text-xs text-fg">{url}</code>
-                <button
-                  onClick={copyUrl}
-                  className="shrink-0 text-fg-muted transition-colors hover:text-fg"
-                  title="Copy URL"
-                  aria-label="Copy server URL"
-                >
-                  <Copy className="size-3.5" />
-                </button>
-                <a
-                  href={url}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="shrink-0 text-fg-muted transition-colors hover:text-fg"
-                  title="Open"
-                >
-                  <ExternalLink className="size-3.5" />
-                </a>
+                <Power className="size-4 text-primary" />
+                <span className="text-xs font-medium text-fg">OpenRouter key</span>
               </div>
-            ) : (
-              <span className="text-xs text-fg-subtle">not available yet</span>
-            )}
-          </div>
-          {copied && (
-            <Badge tone="success" size="sm">
-              Copied
-            </Badge>
-          )}
-        </div>
+              <Badge tone="info" size="sm">
+                reused from gateway
+              </Badge>
+            </div>
 
-        {/* Runtime info */}
-        {data?.runtime && (
-          <div className="text-xs text-fg-muted">
-            Runtime: <span className="font-mono text-fg">{data.runtime}</span>
-            {typeof data.health === 'object' && data.health?.status
-              ? ` · health: ${data.health.status}`
-              : ''}
-          </div>
+            {/* Server URL */}
+            <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2/40 px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-xs text-fg-muted">Server URL</div>
+                {url ? (
+                  <div className="flex items-center gap-2">
+                    <code className="truncate font-mono text-xs text-fg">{url}</code>
+                    <button
+                      onClick={copyUrl}
+                      className="shrink-0 text-fg-muted transition-colors hover:text-fg"
+                      title="Copy URL"
+                      aria-label="Copy server URL"
+                    >
+                      <Copy className="size-3.5" />
+                    </button>
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="shrink-0 text-fg-muted transition-colors hover:text-fg"
+                      title="Open"
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </a>
+                  </div>
+                ) : (
+                  <span className="text-xs text-fg-subtle">not available yet</span>
+                )}
+              </div>
+              {copied && (
+                <Badge tone="success" size="sm">
+                  Copied
+                </Badge>
+              )}
+            </div>
+
+            {/* Runtime info */}
+            {data?.runtime && (
+              <div className="text-xs text-fg-muted">
+                Runtime: <span className="font-mono text-fg">{data.runtime}</span>
+                {typeof data.health === 'object' && data.health?.status
+                  ? ` · health: ${data.health.status}`
+                  : ''}
+              </div>
+            )}
+          </>
         )}
 
         {/* Actions */}
+        {!notInstalled && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={() => void runAction('install')}
-            disabled={installing || running || busy !== null}
-          >
-            {busy === 'install' ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <Download className="size-3" />
-            )}
-            Install
-          </Button>
           <Button
             size="sm"
             variant="secondary"
             onClick={() => void runAction('start')}
-            disabled={installing || running || busy !== null}
+            disabled={!installed || installing || running || busy !== null}
           >
             {busy === 'start' ? (
               <Loader2 className="size-3 animate-spin" />
@@ -223,7 +278,7 @@ export function G0dm0d3ServerCard() {
             size="sm"
             variant="danger"
             onClick={() => void runAction('stop')}
-            disabled={status === 'stopped' || installing || busy !== null}
+            disabled={!running || installing || busy !== null}
           >
             {busy === 'stop' ? (
               <Loader2 className="size-3 animate-spin" />
@@ -233,6 +288,7 @@ export function G0dm0d3ServerCard() {
             Stop
           </Button>
         </div>
+        )}
       </CardContent>
     </Card>
   );

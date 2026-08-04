@@ -614,6 +614,28 @@ export interface ApiMcpStatus {
   tools: ApiMcpTool[];
 }
 
+/**
+ * Live status of the Needle tool pre-filter sidecar (services/needle-router).
+ * `enabled` is the settings-backed runtime toggle; `reachable` is a live
+ * probe of its `/health` endpoint; `lastAttempt` is telemetry from the most
+ * recent real filter call the gateway made (if any since last restart).
+ */
+export interface ApiNeedleStatus {
+  enabled: boolean;
+  reachable: boolean;
+  modelLoaded: boolean | null;
+  probeLatencyMs: number;
+  timeoutBudgetMs: number;
+  lastAttempt: {
+    at: string;
+    outcome: 'disabled' | 'matched' | 'no_match' | 'timeout' | 'http_error' | 'network_error' | null;
+    latencyMs: number | null;
+    error: string | null;
+    matchedCount: number | null;
+    toolCount: number | null;
+  } | null;
+}
+
 export interface ApiDashboardStats {
   // UI-friendly aliases (preferred for components)
   requests24h?: number;

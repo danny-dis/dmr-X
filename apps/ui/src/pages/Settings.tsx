@@ -36,6 +36,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitive
 import { toast } from '@/components/primitives/Toast';
 import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import type { ApiNeedleStatus } from '@/types/api';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */
@@ -68,6 +69,7 @@ interface SettingsForm {
   streamingChunkSize: number;
   workerConcurrency: number;
   requestTimeout: number;
+  needleRouterEnabled: boolean;
   // Alerts
   slackWebhookUrl: string;
   emailRecipients: string;
@@ -112,6 +114,7 @@ const DEFAULTS: SettingsForm = {
   streamingChunkSize: 64,
   workerConcurrency: 8,
   requestTimeout: 30000,
+  needleRouterEnabled: false,
   slackWebhookUrl: '',
   emailRecipients: '',
   latencyAlertThreshold: 5000,
@@ -161,6 +164,7 @@ function fromServer(s: Record<string, unknown> | null): SettingsForm {
     streamingChunkSize: num('streamingChunkSize', DEFAULTS.streamingChunkSize),
     workerConcurrency: num('workerConcurrency', DEFAULTS.workerConcurrency),
     requestTimeout: num('requestTimeout', DEFAULTS.requestTimeout),
+    needleRouterEnabled: bool('needleRouterEnabled', DEFAULTS.needleRouterEnabled),
     slackWebhookUrl: str('slackWebhookUrl', DEFAULTS.slackWebhookUrl),
     emailRecipients: str('emailRecipients', DEFAULTS.emailRecipients),
     latencyAlertThreshold: num('latencyAlertThreshold', DEFAULTS.latencyAlertThreshold),
@@ -203,6 +207,7 @@ function toServer(f: SettingsForm): Record<string, unknown> {
     streamingChunkSize: f.streamingChunkSize,
     workerConcurrency: f.workerConcurrency,
     requestTimeout: f.requestTimeout,
+    needleRouterEnabled: f.needleRouterEnabled,
     slackWebhookUrl: f.slackWebhookUrl,
     emailRecipients: f.emailRecipients,
     latencyAlertThreshold: f.latencyAlertThreshold,
@@ -231,6 +236,15 @@ export function SettingsPage() {
     [],
     { refetchInterval: 60000 }
   );
+  // Live reachability + last-run telemetry for the Needle tool pre-filter —
+  // polled independently of the settings form so the status card stays
+  // fresh (and reflects a toggle flip immediately after Save) without
+  // reloading the whole settings form.
+  const needleStatus = useApiData<ApiNeedleStatus>(
+    () => Admin.getNeedleStatus(),
+    [],
+    { refetchInterval: 15000 }
+  );
   const [form, setForm] = React.useState<SettingsForm>(DEFAULTS);
   const [saving, setSaving] = React.useState(false);
   const [resetKey, setResetKey] = React.useState(0);
@@ -248,6 +262,7 @@ export function SettingsPage() {
       await Admin.updateSettings(toServer(form));
       toast.success('Settings saved', { description: 'Configuration persisted to the gateway.' });
       await settings.refetch();
+      await needleStatus.refetch();
     } catch (e) {
       const interpreted = interpretError(e);
       toast.error(interpreted.title, { description: interpreted.description });
@@ -811,6 +826,67 @@ export function SettingsPage() {
                           className="w-48"
                         />
                       </SettingRow>
+                    </CardContent>
+                  </Card>
+
+                  <Card padding="md" className="mt-4">
+                    <CardHeader className="px-0 pt-0">
+                      <CardTitle>Needle tool pre-filter</CardTitle>
+                      <p className="text-[10px] text-fg-muted mt-0.5">
+                        Local CPU model (services/needle-router) that narrows a large tool list before
+                        it reaches the routed model. Measured single-request inference on this class of
+                        hardware runs 50-90+ seconds regardless of tool count, so it stays off by default —
+                        review the status below before enabling.
+                      </p>
+                    </CardHeader>
+                    <CardContent className="px-0 flex flex-col gap-4">
+                      <SettingRow id="needle-enabled" label="Enable Needle pre-filter" description="Applies on the next request — no restart needed">
+                        <Switch
+                          id="needle-enabled"
+                          aria-describedby="needle-enabled-description"
+                          checked={form.needleRouterEnabled}
+                          onCheckedChange={(v) => update('needleRouterEnabled', v)}
+                        />
+                      </SettingRow>
+
+                      <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-2/40 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-fg">Sidecar status</span>
+                          {needleStatus.isLoading && !needleStatus.data ? (
+                            <Badge tone="neutral" size="sm">Checking…</Badge>
+                          ) : needleStatus.data?.reachable ? (
+                            <Badge tone="success" size="sm">Reachable</Badge>
+                          ) : (
+                            <Badge tone="danger" size="sm">Unreachable</Badge>
+                          )}
+                        </div>
+                        {needleStatus.data && (
+                          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-fg-muted">
+                            <dt>Enabled</dt>
+                            <dd className="text-right text-fg">{needleStatus.data.enabled ? 'Yes' : 'No (default)'}</dd>
+                            <dt>Model loaded</dt>
+                            <dd className="text-right text-fg">
+                              {needleStatus.data.modelLoaded == null ? '—' : needleStatus.data.modelLoaded ? 'Yes' : 'No'}
+                            </dd>
+                            <dt>Health probe latency</dt>
+                            <dd className="text-right text-fg">{needleStatus.data.probeLatencyMs}ms</dd>
+                            <dt>Timeout budget</dt>
+                            <dd className="text-right text-fg">{needleStatus.data.timeoutBudgetMs}ms</dd>
+                            <dt>Last filter attempt</dt>
+                            <dd className="text-right text-fg">
+                              {needleStatus.data.lastAttempt
+                                ? `${needleStatus.data.lastAttempt.outcome} (${needleStatus.data.lastAttempt.latencyMs ?? '—'}ms)`
+                                : 'None yet this session'}
+                            </dd>
+                          </dl>
+                        )}
+                        {needleStatus.data?.lastAttempt?.outcome === 'timeout' && (
+                          <p className="text-[10px] text-warning">
+                            Last attempt exceeded the {needleStatus.data.timeoutBudgetMs}ms budget — the full
+                            tool list was used for that turn.
+                          </p>
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 </TabsContent>

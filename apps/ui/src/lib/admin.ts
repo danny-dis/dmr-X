@@ -25,6 +25,7 @@ import type {
   ApiCatalogEntry,
   ApiHealthResponse,
   ApiMcpStatus,
+  ApiNeedleStatus,
   ApiMcpTool,
   ApiMcpToolExecute,
   ApiMcpToolResult,
@@ -490,6 +491,9 @@ export const Admin = {
   getSettings: () => apiGet<Record<string, unknown>>('/admin/settings'),
   updateSettings: (body: Record<string, unknown>) =>
     apiPut<Record<string, unknown>>('/admin/settings', body),
+
+  // Needle tool pre-filter status (reachability + last-run telemetry)
+  getNeedleStatus: () => apiGet<ApiNeedleStatus>('/admin/needle/status'),
 
   // Agent Integrations
   getAgentIntegrationConfig: () =>

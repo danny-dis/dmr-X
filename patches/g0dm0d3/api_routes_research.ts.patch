@@ -1,0 +1,23 @@
+diff --git a/api/routes/research.ts b/api/routes/research.ts
+index c6a4535..f07d765 100644
+--- a/api/routes/research.ts
++++ b/api/routes/research.ts
+@@ -156,9 +156,16 @@ researchRoutes.get('/batches', async (req, res) => {
+ // ── Batch: read a single file ────────────────────────────────────────
+ // Path comes as wildcard: /v1/research/batch/metadata/batch_2024-01-01_0001.jsonl
+ 
+-researchRoutes.get('/batch/*', async (req, res) => {
++// path-to-regexp v6+ (used by Express 5.2.1, which this project pins in
++// package.json) rejects a bare `*` wildcard — it must be named (`*splat`),
++// and the captured segments arrive as an array rather than `req.params[0]`.
++// Without this, route registration THROWS at import time and crashes the
++// whole process before it can bind to a port (see patches/g0dm0d3/README.md
++// in the DMR-X repo that vendors this checkout).
++researchRoutes.get('/batch/*splat', async (req, res) => {
+   try {
+-    const filePath = req.params[0]
++    const splat = req.params.splat
++    const filePath = Array.isArray(splat) ? splat.join('/') : splat
+     if (!filePath || !filePath.endsWith('.jsonl')) {
+       res.status(400).json({ error: 'Invalid batch path. Expected: metadata/batch_*.jsonl or dataset/batch_*.jsonl' })
+       return

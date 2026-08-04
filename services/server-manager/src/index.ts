@@ -3,6 +3,7 @@ export {
   createServerManager,
   detectRuntime,
   killTree,
+  getGodmodeRepoInfo,
   ServerManagerService,
 } from './server-manager.service.js';
 export type {
@@ -11,3 +12,5 @@ export type {
   ServerInstance,
   StartOptions,
 } from './server-manager.service.js';
+export { applyGodmodePatches } from './patch-godmode.js';
+export type { GodmodePatchResult } from './patch-godmode.js';
