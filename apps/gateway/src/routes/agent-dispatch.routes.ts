@@ -70,9 +70,35 @@ export function compareCandidates(a: DispatchCandidate, b: DispatchCandidate): n
   return 0; // stable: keep the first occurrence
 }
 
+// Small, English-only stopword list for the keyword prefilter below. This is
+// not an NLP pipeline — just enough to keep short function words from adding
+// uniform noise to every candidate's score.
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'has', 'can', 'are', 'not', 'all', 'any', 'use',
+  'with', 'that', 'this', 'from', 'was', 'were', 'been', 'have', 'had',
+  'but', 'out', 'get', 'how', 'who', 'why', 'what', 'when', 'where',
+  'which', 'they', 'them', 'then', 'than', 'into', 'about', 'also',
+  'just', 'more', 'most', 'some', 'such', 'only', 'own', 'same', 'too',
+  'very', 'will', 'would', 'could', 'should', 'via',
+]);
+
+function tokenize(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+const CATEGORY_WEIGHT = 3;
+const TAG_WEIGHT = 2;
+// Keyword contribution is normalized to the fraction of distinct task
+// keywords matched (0..1) so a verbose description can't outrank a precise
+// one purely by having more text to match against. Weighted at 3 so a full
+// keyword match stays roughly comparable to a category match (also 3)
+// instead of being swamped by it.
+const KEYWORD_WEIGHT = 3;
+
 /**
  * Score an agent definition against a task + hints.
- * category match +3, each tag overlap +2, each keyword in name/description +1.
+ * category match +CATEGORY_WEIGHT, each tag overlap +TAG_WEIGHT, plus
+ * (distinct matched task keywords / distinct task keywords) * KEYWORD_WEIGHT.
  */
 export function scoreDefinition(
   def: { name: string; description?: string | null; category?: string | null; tags?: string[] | null },
@@ -84,17 +110,24 @@ export function scoreDefinition(
   const tagSet = new Set((def.tags ?? []).map((t) => t.toLowerCase()));
 
   if (category && def.category && def.category.toLowerCase() === category.toLowerCase()) {
-    score += 3;
+    score += CATEGORY_WEIGHT;
   }
   if (tags && tags.length > 0) {
     for (const t of tags) {
-      if (tagSet.has(t.toLowerCase())) score += 2;
+      if (tagSet.has(t.toLowerCase())) score += TAG_WEIGHT;
     }
   }
-  const haystack = `${def.name} ${def.description ?? ''}`.toLowerCase();
-  const keywords = task.toLowerCase().split(/\s+/).filter((k) => k.length > 2);
-  for (const kw of keywords) {
-    if (haystack.includes(kw)) score += 1;
+
+  // Whole-word matching (not substring) so e.g. "api" doesn't match inside
+  // "rapid" and "cat" doesn't match inside "concatenate". Keywords are
+  // de-duplicated so repeating a word in the task can't inflate the score.
+  const haystackTokens = new Set(tokenize(`${def.name} ${def.description ?? ''}`));
+  const keywords = Array.from(
+    new Set(tokenize(task).filter((k) => k.length > 2 && !STOPWORDS.has(k))),
+  );
+  if (keywords.length > 0) {
+    const matched = keywords.filter((kw) => haystackTokens.has(kw)).length;
+    score += (matched / keywords.length) * KEYWORD_WEIGHT;
   }
   return score;
 }
@@ -139,8 +172,15 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       matchingTagCount: number;
     };
     const candidates: Candidate[] = [];
-    for (const instance of active) {
-      const def = await agentRegistryService.getDefinition(instance.agentDefinitionId);
+    // Fetch all definitions concurrently instead of one round-trip per
+    // instance. `active` order is preserved so candidate ordering (and the
+    // stable first-occurrence tie-break in compareCandidates) is unaffected.
+    const definitions = await Promise.all(
+      active.map((instance) => agentRegistryService.getDefinition(instance.agentDefinitionId)),
+    );
+    for (let i = 0; i < active.length; i++) {
+      const instance = active[i];
+      const def = definitions[i];
       if (!def) continue;
       if (def.category) categories.add(def.category);
       (def.tags ?? []).forEach((t: string) => allTags.add(t));
