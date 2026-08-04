@@ -4526,7 +4526,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const items: any[] = json.items ?? [];
         const result = {
           total: json.total ?? items.length,
-          skills: items.map((s: any) => ({ id: s.id ?? s.name, name: s.name })),
+          skills: items.map((s: any) => ({
+            id: s.id ?? s.name,
+            name: s.name,
+            description: s.description ?? null,
+            tags: s.tags ?? [],
+          })),
         };
 
         return {
@@ -4536,6 +4541,253 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return toolError(message, 'LIST_SKILLS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_get_skill
+  //
+  // Fetches a single skill (with full content) from the gateway
+  // (GET /v1/skills/:id).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.GET_SKILL,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GET_SKILL],
+      inputSchema: {
+        id: z.string().describe('The skill id to fetch'),
+      } as any,
+      annotations: { title: 'Get Skill', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxGet(`/v1/skills/${encodeURIComponent(String(params.id))}`);
+        if (res.status === 404) {
+          return toolError('Skill not found', 'SKILL_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway skill fetch failed',
+            'GATEWAY_GET_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const result = res.json ?? {};
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'GET_SKILL_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_list_agents
+  //
+  // Lists deployed agent instances for this tenant, joined to their
+  // definition's display fields (GET /v1/agents/instances). One gateway
+  // call — the endpoint already joins in name/description/category.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.LIST_AGENTS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.LIST_AGENTS],
+      inputSchema: {
+        status: z.enum(['active', 'paused']).optional().describe('Optional status filter'),
+      } as any,
+      annotations: { title: 'List Agents', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const query = new URLSearchParams();
+        if (params.status) query.set('status', String(params.status));
+        const qs = query.toString();
+
+        const res = await dmrxGet(`/v1/agents/instances${qs ? `?${qs}` : ''}`);
+        if (!res.ok) {
+          return toolError(
+            'Gateway agent instance list failed',
+            'GATEWAY_LIST_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const items: any[] = json.items ?? [];
+        const result = {
+          total: json.total ?? items.length,
+          agents: items.map((i: any) => ({
+            instanceId: i.id,
+            status: i.status,
+            name: i.definitionName ?? i.definitionHumanName ?? null,
+            description: i.definitionDescription ?? null,
+            category: i.definitionCategory ?? null,
+          })),
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'LIST_AGENTS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_run_agent
+  //
+  // Sends a message to a specific, already-known agent instance
+  // (POST /v1/agents/:instanceId/chat). Non-streaming.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.RUN_AGENT,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.RUN_AGENT],
+      inputSchema: {
+        instanceId: z.string().describe('The agent instance id to talk to'),
+        message: z.string().describe('The user message to send'),
+        conversationId: z.string().optional().describe('Optional conversation id to continue an existing thread'),
+        maxSteps: z.number().optional().describe('Optional max agentic tool-calling steps'),
+        maxTokens: z.number().optional().describe('Optional max tokens for the response'),
+      } as any,
+      annotations: { title: 'Run Agent', readOnlyHint: false, openWorldHint: true },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxPost(
+          `/v1/agents/${encodeURIComponent(String(params.instanceId))}/chat`,
+          {
+            messages: [{ role: 'user', content: params.message }],
+            stream: false,
+            ...(params.conversationId ? { conversationId: params.conversationId } : {}),
+            ...(params.maxSteps != null ? { maxSteps: params.maxSteps } : {}),
+            ...(params.maxTokens != null ? { maxTokens: params.maxTokens } : {}),
+          }
+        );
+        if (res.status === 404) {
+          return toolError('Agent instance not found or inactive', 'AGENT_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway agent chat failed',
+            'GATEWAY_CHAT_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const result = {
+          content: json.content ?? '',
+          conversationId: json.conversationId,
+          agentName: json.agentName,
+          model: json.model,
+          usage: json.usage,
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'RUN_AGENT_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_dispatch_task
+  //
+  // Lets DMR-X pick the best-matching active agent instance for a task
+  // (POST /v1/agentic/dispatch), optionally running it in the same call.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.DISPATCH_TASK,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.DISPATCH_TASK],
+      inputSchema: {
+        task: z.string().describe('The task to dispatch, in natural language'),
+        category: z.string().optional().describe('Optional category hint to bias selection'),
+        tags: z.array(z.string()).optional().describe('Optional tags hint to bias selection'),
+        run: z.boolean().optional().default(true).describe('Whether to execute the selected agent (default true); false returns only the selection'),
+        maxTokens: z.number().optional().describe('Optional max tokens for the response when run=true'),
+      } as any,
+      annotations: { title: 'Dispatch Task', readOnlyHint: false, openWorldHint: true },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const run = params.run ?? true;
+        const res = await dmrxPost('/v1/agentic/dispatch', {
+          task: params.task,
+          ...(params.category ? { category: params.category } : {}),
+          ...(params.tags ? { tags: params.tags } : {}),
+          run,
+          stream: false,
+          ...(params.maxTokens != null ? { maxTokens: params.maxTokens } : {}),
+        });
+
+        if (res.status === 404) {
+          return toolError(
+            'No active agents available to dispatch to. Deploy an agent instance before using dmrx_dispatch_task.',
+            'NO_AGENTS_AVAILABLE',
+            requestId,
+            JSON.stringify({ error: res.json })
+          );
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway dispatch failed',
+            'GATEWAY_DISPATCH_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const result = res.json ?? {};
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'DISPATCH_TASK_ERROR', requestId);
       }
     }
   );

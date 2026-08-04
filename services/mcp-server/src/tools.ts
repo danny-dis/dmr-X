@@ -403,6 +403,11 @@ export const TOOL_NAMES = {
   // Gateway import + skill listing tools
   IMPORT_REPO: 'dmrx_import_repo',
   LIST_SKILLS: 'dmrx_list_skills',
+  GET_SKILL: 'dmrx_get_skill',
+  // Agent discovery + invocation tools
+  LIST_AGENTS: 'dmrx_list_agents',
+  RUN_AGENT: 'dmrx_run_agent',
+  DISPATCH_TASK: 'dmrx_dispatch_task',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -933,5 +938,34 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   dmrx_list_skills:
     'List skills imported into DMR-X via the gateway (GET /v1/skills). ' +
     'Supports optional free-text search, tag filter, and result limit. ' +
-    'Returns the skill names and ids. Requires a configured gateway URL and tenant API key.',
+    'Returns each skill\'s id, name, description, and tags so a caller can decide which one to load. ' +
+    'Use dmrx_get_skill afterward to fetch the full content of a chosen skill. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_get_skill:
+    'Fetch a single skill by id from the gateway (GET /v1/skills/:id), including its full content/body. ' +
+    'Use after dmrx_list_skills has identified which skill to load into context. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_list_agents:
+    'List DMR-X agent instances deployed for this tenant (GET /v1/agents/instances), so a caller can ' +
+    'discover who it can talk to before invoking one. Returns each instance\'s id, name, description, ' +
+    'and category. Use dmrx_run_agent afterward when you already know which instance to address by id; ' +
+    'use dmrx_dispatch_task instead when you do not want to pick one yourself and would rather let ' +
+    'DMR-X select the best match for a task. Requires a configured gateway URL and tenant API key.',
+  dmrx_run_agent:
+    'Send a message to a SPECIFIC, already-known DMR-X agent instance (POST /v1/agents/:instanceId/chat) ' +
+    'and get back its reply. Use this when you already know which agent you want to talk to (e.g. from ' +
+    'dmrx_list_agents, or because the caller was told the instance id) and want to continue or start a ' +
+    'conversation with it directly. If you do not know which agent is best suited for a task, use ' +
+    'dmrx_dispatch_task instead and let DMR-X choose. Returns the assistant\'s reply text, a ' +
+    'conversationId to continue the thread with further calls, and any usage/cost the gateway reports. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_dispatch_task:
+    'Describe a task in natural language and let DMR-X pick the best-matching active agent instance to ' +
+    'handle it (POST /v1/agentic/dispatch), optionally running it in the same call. Use this when you do NOT ' +
+    'already know which agent instance to address — DMR-X scores all active instances for the tenant by ' +
+    'category/tag/keyword overlap and selects the best one. Use dmrx_run_agent instead when you already ' +
+    'know the exact instance id you want to talk to. With run=true (the default) it returns which agent ' +
+    'was selected plus its output; with run=false it returns only the selection so the caller can decide ' +
+    'whether to proceed. Fails with NO_AGENTS_AVAILABLE if the tenant has no active agent instances to ' +
+    'dispatch to. Requires a configured gateway URL and tenant API key.',
 };
