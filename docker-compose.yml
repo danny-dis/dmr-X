@@ -10,11 +10,13 @@ services:
       PORT: 3000
       LOG_LEVEL: info
       DMRX_LOCAL_MODE: "false"
-      DMRX_ADMIN_API_KEY: ${DMRX_ADMIN_API_KEY}
-      DMRX_ENCRYPTION_KEY: ${DMRX_ENCRYPTION_KEY}
-      DMRX_CORS_ORIGIN: ${DMRX_CORS_ORIGIN}
+      DMRX_ADMIN_API_KEY: ${DMRX_ADMIN_API_KEY:?DMRX_ADMIN_API_KEY is required}
+      DMRX_ENCRYPTION_KEY: ${DMRX_ENCRYPTION_KEY:?DMRX_ENCRYPTION_KEY is required}
+      DMRX_CORS_ORIGIN: ${DMRX_CORS_ORIGIN:?DMRX_CORS_ORIGIN is required}
     volumes:
-      - dmr-x-data:/home/dmrx/.dmr-x
+      # The Dockerfile sets DMRX_DATA_DIR=/app/data — this is where the app
+      # actually writes the SQLite DB. Mounting elsewhere persists nothing (O1).
+      - dmr-x-data:/app/data
     restart: unless-stopped
     stop_grace_period: 30s
     deploy:

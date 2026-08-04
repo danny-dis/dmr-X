@@ -264,17 +264,25 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           V="${VERSION#v}"
-          awk -v ver="$V" '
-            /^## / {
-              if (in_section && found) exit
-              if ($0 ~ "## " ver " ") { in_section=1; found=1 }
-            }
-            in_section { print }
-          ' CHANGELOG.md > release-notes.md
+          # The changelog lives at docs/CHANGELOG.md (not repo root); a missing
+          # file must not fail the release (O9). awk exits non-zero if the file
+          # is absent, so guard the read and tolerate a non-zero exit.
+          CHANGELOG=docs/CHANGELOG.md
+          if [ -f "$CHANGELOG" ]; then
+            awk -v ver="$V" '
+              /^## / {
+                if (in_section && found) exit
+                if ($0 ~ "## v?" ver " ") { in_section=1; found=1 }
+              }
+              in_section { print }
+            ' "$CHANGELOG" > release-notes.md || true
+          else
+            : > release-notes.md
+          fi
           if [ ! -s release-notes.md ]; then
             echo "## $VERSION" > release-notes.md
             echo "" >> release-notes.md
-            echo "See [CHANGELOG.md](https://github.com/danny-dis/dmr-X/blob/$VERSION/CHANGELOG.md) for the full list of changes." >> release-notes.md
+            echo "See [CHANGELOG.md](https://github.com/danny-dis/dmr-X/blob/$VERSION/docs/CHANGELOG.md) for the full list of changes." >> release-notes.md
           fi
 
       - name: Create release
