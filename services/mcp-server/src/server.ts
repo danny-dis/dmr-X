@@ -4546,6 +4546,242 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   );
 
   // -----------------------------------------------------------------------
+  // Tool: dmrx_submit_job
+  //
+  // Submits a job to DMR-X via the gateway (POST /v1/jobs). A job is a whole
+  // outcome delegated to DMR-X and runs asynchronously, so this returns as
+  // soon as the job is accepted, NOT when the work is done.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.SUBMIT_JOB,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.SUBMIT_JOB],
+      inputSchema: {
+        brief: z.string().min(1).max(20000).describe('The job brief, describing the outcome to deliver'),
+        acceptanceCriteria: z.array(z.string()).optional().describe('Optional acceptance criteria for the job'),
+        budgetUsd: z.number().optional().describe('Optional USD budget cap for the job'),
+        budgetTokens: z.number().int().optional().describe('Optional token budget cap for the job'),
+        maxDepth: z.number().int().min(1).max(10).optional().describe('Optional maximum task decomposition depth (1-10)'),
+      } as any,
+      annotations: { title: 'Submit Job', readOnlyHint: false, openWorldHint: true },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxPost('/v1/jobs', {
+          brief: params.brief,
+          ...(params.acceptanceCriteria ? { acceptanceCriteria: params.acceptanceCriteria } : {}),
+          ...(params.budgetUsd != null ? { budgetUsd: params.budgetUsd } : {}),
+          ...(params.budgetTokens != null ? { budgetTokens: params.budgetTokens } : {}),
+          ...(params.maxDepth != null ? { maxDepth: params.maxDepth } : {}),
+          source: 'mcp',
+        });
+
+        if (!res.ok) {
+          return toolError(
+            'Gateway job submission failed',
+            'GATEWAY_JOB_SUBMIT_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const result = {
+          jobId: json.jobId ?? json.id ?? null,
+          status: json.status ?? null,
+          brief: json.brief ?? params.brief,
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'SUBMIT_JOB_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_job_status
+  //
+  // Fetches the current status of a submitted DMR-X job (GET /v1/jobs/:id).
+  // Jobs run asynchronously — poll this until the job reaches a terminal
+  // status instead of expecting dmrx_submit_job to return results.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.JOB_STATUS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.JOB_STATUS],
+      inputSchema: {
+        jobId: z.string().describe('The id of the job to check'),
+      } as any,
+      annotations: { title: 'Job Status', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxGet(`/v1/jobs/${encodeURIComponent(String(params.jobId))}`);
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job status fetch failed',
+            'GATEWAY_JOB_GET_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        // Include only fields the gateway actually returned; never invent values.
+        const result: Record<string, unknown> = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          status: json.status ?? null,
+        };
+        for (const key of ['brief', 'spentUsd', 'spentTokens', 'budgetUsd', 'budgetTokens', 'createdAt', 'updatedAt'] as const) {
+          if (json[key] !== undefined) result[key] = json[key];
+        }
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'JOB_STATUS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_job_tasks
+  //
+  // Lists the tasks a submitted DMR-X job was decomposed into
+  // (GET /v1/jobs/:id/tasks) so a caller can track async progress.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.JOB_TASKS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.JOB_TASKS],
+      inputSchema: {
+        jobId: z.string().describe('The id of the job whose tasks to list'),
+      } as any,
+      annotations: { title: 'Job Tasks', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxGet(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/tasks`);
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job tasks fetch failed',
+            'GATEWAY_JOB_TASKS_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const tasks: any[] = json.tasks ?? [];
+        const result = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          total: json.total ?? tasks.length,
+          tasks: tasks.map((t: any) => ({
+            id: t.id ?? null,
+            seq: t.seq ?? null,
+            title: t.title ?? null,
+            status: t.status ?? null,
+            dependsOn: t.dependsOn ?? null,
+            assignedInstanceId: t.assignedInstanceId ?? null,
+          })),
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'JOB_TASKS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_cancel_job
+  //
+  // Cancels an in-flight DMR-X job (POST /v1/jobs/:id/cancel).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.CANCEL_JOB,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CANCEL_JOB],
+      inputSchema: {
+        jobId: z.string().describe('The id of the job to cancel'),
+      } as any,
+      annotations: { title: 'Cancel Job', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/cancel`, {});
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job cancel failed',
+            'GATEWAY_JOB_CANCEL_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const result = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          status: json.status ?? null,
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'CANCEL_JOB_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
   // Tool: dmrx_get_skill
   //
   // Fetches a single skill (with full content) from the gateway
