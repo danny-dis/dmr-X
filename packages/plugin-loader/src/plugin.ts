@@ -36,6 +36,8 @@ export interface PluginManifest {
   transport: PluginTransportConfig;
   tools?: PluginToolDefinition[];
   permissions?: PluginPermissions;
+  /** Set when a manifest could not be read/parsed; callers should skip the plugin. */
+  error?: string;
 }
 
 export interface PluginTransportConfig {
