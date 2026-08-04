@@ -33,6 +33,12 @@ const KEYLESS_PROVIDER_NAMES: readonly string[] = PROVIDER_CATALOG.filter(
   (t) => t.envKey === '' || /_BASE_URL$/.test(t.envKey ?? ''),
 ).map((t) => t.id);
 
+/**
+ * Elo baseline for an unrated model. A model sitting exactly here has never
+ * been rated, so its Elo carries no information — see calculateQualityScore.
+ */
+const ELO_BASELINE = 1200;
+
 export class RegistryService {
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
   private modelsDevData: ModelsDevApiResponse | null = null;
@@ -172,7 +178,14 @@ export class RegistryService {
         costPerOutputToken,
         costPerImage: parseFloat(row.costPerImage) || 0,
         avgLatencyMs: row.avgLatencyMs || 1000,
-        qualityScore: this.calculateQualityScore(parseFloat(row.qualityScore) || 0.5, parseFloat(row.eloRating) || 1200),
+        qualityScore: this.calculateQualityScore(
+          parseFloat(row.qualityScore) || 0.5,
+          // Distinguish "unrated" from "rated at baseline". Coercing a missing
+          // value to 1200 hid the difference and made every model look rated.
+          row.eloRating == null || Number.isNaN(parseFloat(row.eloRating))
+            ? null
+            : parseFloat(row.eloRating),
+        ),
         maxOutputTokens: row.maxOutputTokens || undefined,
         contextLength: row.contextWindow || undefined,
         isHealthy: row.isHealthy === 1 || row.isHealthy === true,
@@ -205,7 +218,27 @@ export class RegistryService {
    * Calculate a composite quality score from the heuristic quality_score and the Elo rating.
    * Gives 40% weight to heuristic/benchmark average and 60% weight to Elo rating.
    */
-  private calculateQualityScore(heuristicScore: number, eloRating: number): number {
+  /**
+   * Blend the curated heuristic score with an Elo rating, when there is one.
+   *
+   * Elo is weighted heavily because a measured head-to-head rating beats a
+   * hand-assigned guess. But an unrated model sits at the 1200 baseline, which
+   * normalizes to exactly 0.5 and so contributes the same constant to every
+   * candidate. Blending it in that case does not add information, it removes
+   * it: the heuristic's real 0.40-0.90 spread compresses into 0.46-0.66, and
+   * a genuinely better model ends up only marginally ahead of a mediocre one.
+   * That matters wherever quality competes against cost and latency in a
+   * weighted sum, and it matters most for 'auto-smart', which ranks on quality
+   * alone.
+   *
+   * So an unrated model scores on its heuristic alone, at full spread, and
+   * only a model with a real rating gets the blend.
+   */
+  private calculateQualityScore(heuristicScore: number, eloRating: number | null): number {
+    if (eloRating === null || eloRating === ELO_BASELINE) {
+      return Math.max(0, Math.min(1, heuristicScore));
+    }
+
     // Normalize Elo (baseline 1200, range 800-1600)
     const normalizedElo = (eloRating - 800) / (1600 - 800);
     const clampedElo = Math.max(0, Math.min(1, normalizedElo));

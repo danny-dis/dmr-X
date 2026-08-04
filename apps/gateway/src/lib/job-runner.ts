@@ -7,6 +7,7 @@ import {
   type AgentSummary,
   type JobRunResult,
   type JobTask,
+  type PlannedTask,
   type TaskExecutionResult,
   type TaskExecutor,
 } from '@dmr-x/agent-runtime';
@@ -35,6 +36,19 @@ const DEFAULT_MAX_PASSES = 20;
 
 /** How many agents may be offered to the planner in one prompt. */
 const PLANNING_AGENT_LIMIT = 60;
+
+/**
+ * Models the planner will try, best first.
+ *
+ * Decomposition is the highest-leverage call in a job: a bad plan is paid for
+ * by every agent that then executes it, so the coordinator gets the strongest
+ * model rather than the cheapest. 'auto-smart' ranks candidates purely on
+ * quality; the lower tiers exist because a planning failure blocks the job
+ * entirely, and a plan from a weaker model beats no plan at all.
+ *
+ * DMRX_PLANNER_MODEL pins a specific model and disables the ladder.
+ */
+const PLANNER_MODEL_LADDER = ['auto-smart', 'auto-reasoning', 'auto'] as const;
 
 export interface GatewayCallOptions {
   gatewayUrl?: string;
@@ -257,51 +271,74 @@ export async function planJob(
 
   jobStore.updateJobStatus(tenantId, jobId, 'planning');
 
-  const completion = await callGateway(gw, 'POST', '/v1/chat/completions', {
-    model: opts.model ?? 'auto',
-    messages: [{ role: 'user', content: buildPlanPrompt(job, agents) }],
-    stream: false,
-  });
+  const prompt = buildPlanPrompt(job, agents);
 
-  if (!completion.ok) {
-    jobStore.updateJobStatus(tenantId, jobId, 'failed');
-    return { ok: false, error: `planning call failed: ${completion.status}` };
-  }
+  // Try each tier in turn. A model can fail here by erroring, by returning
+  // nothing, or by returning prose instead of JSON -- all three block the job
+  // equally, so all three fall through to the next tier rather than only
+  // transport errors doing so.
+  const models = opts.model
+    ? [opts.model]
+    : process.env.DMRX_PLANNER_MODEL
+      ? [process.env.DMRX_PLANNER_MODEL]
+      : [...PLANNER_MODEL_LADDER];
 
-  const raw = extractText(completion.body);
+  let plan: PlannedTask[] | null = null;
+  let lastError = 'no planner model produced a usable plan';
 
-  // Distinguish "the model said nothing" from "the model said something we
-  // could not read". They have different causes -- a provider error or a
-  // truncated generation versus a model ignoring the format -- and the old
-  // message covered both, which made planning failures undiagnosable.
-  if (!raw.trim()) {
-    jobStore.updateJobStatus(tenantId, jobId, 'failed');
-    logger.warn(
-      { tenantId, jobId, model: completion.body?.model, finish: completion.body?.choices?.[0]?.finish_reason },
-      'job-runner: planner returned an empty response',
-    );
-    return { ok: false, error: 'planner returned an empty response' };
-  }
+  for (const model of models) {
+    const completion = await callGateway(gw, 'POST', '/v1/chat/completions', {
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      stream: false,
+      // Ask the router for its best candidates, not its cheapest.
+      quality_target: 'frontier',
+    });
 
-  const parsed = parsePlanResponse(raw);
-  if (!parsed.ok) {
-    jobStore.updateJobStatus(tenantId, jobId, 'failed');
-    // Carry a snippet of what actually came back. Without it the only signal
-    // is "unparseable", which says nothing about how to fix it.
+    const resolved = completion.body?.model;
+    const finish = completion.body?.choices?.[0]?.finish_reason;
+
+    if (!completion.ok) {
+      lastError = `planning call failed: ${completion.status}`;
+      logger.warn({ tenantId, jobId, model, status: completion.status }, 'job-runner: planner call failed');
+      continue;
+    }
+
+    const raw = extractText(completion.body);
+
+    // An empty response and an unparseable one have different causes -- a
+    // provider error or a truncated generation, versus a model ignoring the
+    // requested format -- so they are reported separately rather than both
+    // surfacing as "could not parse plan".
+    if (!raw.trim()) {
+      lastError = 'planner returned an empty response';
+      logger.warn({ tenantId, jobId, model, resolved, finish }, 'job-runner: planner returned nothing');
+      continue;
+    }
+
+    const attempt = parsePlanResponse(raw);
+    if (attempt.ok) {
+      plan = attempt.tasks;
+      logger.info({ tenantId, jobId, model, resolved, tasks: plan.length }, 'job-runner: plan accepted');
+      break;
+    }
+
+    // Carry a snippet of what came back; "unparseable" alone says nothing
+    // about how to fix it.
     const snippet = raw.slice(0, 300).replace(/\s+/g, ' ');
+    lastError = `could not parse plan: ${attempt.error} (model said: ${snippet})`;
     logger.warn(
-      {
-        tenantId,
-        jobId,
-        model: completion.body?.model,
-        finish: completion.body?.choices?.[0]?.finish_reason,
-        length: raw.length,
-        snippet,
-      },
-      'job-runner: planner response could not be parsed',
+      { tenantId, jobId, model, resolved, finish, length: raw.length, snippet },
+      'job-runner: planner response could not be parsed, trying next tier',
     );
-    return { ok: false, error: `could not parse plan: ${parsed.error} (model said: ${snippet})` };
   }
+
+  if (!plan) {
+    jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    return { ok: false, error: lastError };
+  }
+
+  const parsed = { ok: true as const, tasks: plan };
 
   try {
     const created = materializePlan(tenantId, jobId, parsed.tasks);
