@@ -689,6 +689,21 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     // client (SDKs, LangChain, external agents) read
     // `choices[0].message.content` as undefined the moment a request hit the
     // cache. Both paths now go through the same envelope.
+    // `content` is nullable in the OpenAI schema but it is never absent, and
+    // callers rely on that: `choices[0].message.content.trim()` is ordinary
+    // client code. A reasoning model that spends its whole max_tokens budget
+    // on thinking returns a message with no content key at all — observed on
+    // gemini-3.5-flash, which came back as bare `{role:'assistant'}` with
+    // finish_reason "length" — so the key is materialised here. Null is the
+    // spec's answer for a tool-call-only turn; an empty string is the honest
+    // answer for a turn that was truncated before it produced any text.
+    const withContentKey = (message: any) => {
+      if (!message || typeof message !== 'object') return message;
+      if ('content' in message && message.content !== undefined) return message;
+      const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+      return { ...message, content: hasToolCalls ? null : '' };
+    };
+
     const toOpenAIChatCompletion = (res: any) => {
       if (res && Array.isArray(res.choices)) return res; // already converted
       return {
@@ -699,7 +714,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         choices: [
           {
             index: 0,
-            message: res?.message,
+            message: withContentKey(res?.message),
             finish_reason: res?.finishReason,
           },
         ],

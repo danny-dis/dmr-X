@@ -15,7 +15,7 @@ import { CompositeExecutor } from './decomposer/composite-executor.js';
 import { SpecialistRouter } from './decomposer/specialist-router.js';
 import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
-import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
+import { executeWithFallback, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
@@ -330,6 +330,23 @@ export class Router {
           0
         );
       }
+    }
+
+    // Drop candidates already known to be dead before anything is scored. The
+    // fallback chain has always skipped them, but selection did not, so the
+    // primary pick kept landing on a provider whose key had just returned 401
+    // and every request paid for that attempt before falling back. Keeping the
+    // pool intact when the filter would empty it matters: a cooldown is a
+    // recovery window, and a stale one must never turn into "no candidates".
+    const liveCandidates = pipelineCandidates.filter(
+      c => !isModelOnErrorCooldown(c.providerId, c.modelId),
+    );
+    if (liveCandidates.length > 0 && liveCandidates.length < pipelineCandidates.length) {
+      logger.info(
+        { skipped: pipelineCandidates.length - liveCandidates.length, remaining: liveCandidates.length },
+        'Skipped candidates on error cooldown',
+      );
+      pipelineCandidates = liveCandidates;
     }
 
     // Step 1.6: Direct model selection — if the user picked a specific model, route to it
