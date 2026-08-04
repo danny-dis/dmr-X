@@ -20,6 +20,7 @@
     "test": "bun run clean:src && bun vitest run",
     "test:unit": "bun run clean:src && bun vitest run --project unit",
     "test:e2e": "bun run clean:src && bun vitest run --project e2e",
+    "test:coverage": "bun run clean:src && bun vitest run --project unit --coverage",
     "test:watch": "bun vitest",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
@@ -51,7 +52,9 @@
   },
   "overrides": {
     "esbuild": "^0.28.1",
-    "fast-uri": "^3.1.4",
+    "fast-uri": "^3.1.5",
+    "ip-address": "^10.3.1",
+    "undici": "^6.28.0",
     "brace-expansion": "^1.1.17",
     "find-my-way": "^9.7.0",
     "@opentelemetry/propagator-jaeger": ">=2.9.0",
