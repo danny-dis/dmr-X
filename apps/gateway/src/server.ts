@@ -56,6 +56,7 @@ import { countTokensRoutes } from './routes/count-tokens.routes.js';
 import { agentRoutes } from './routes/agent.routes.js';
 import { registerSkillRoutes } from './routes/skill.routes.js';
 import { registerJobRoutes } from './routes/job.routes.js';
+import { jobQueue } from './lib/job-queue.js';
 import { agentChatRoutes } from './routes/agent-chat.routes.js';
 import { agentDispatchRoutes } from './routes/agent-dispatch.routes.js';
 import { createAgentConcurrencyGuard } from './middleware/agent-concurrency.middleware.js';
@@ -689,6 +690,23 @@ void (async () => {
     logger.info('Agent scheduler started');
   } catch (err) {
     logger.warn({ err }, 'Failed to start agent scheduler — continuing without scheduling');
+  }
+
+  // A job marked 'running' with nothing driving it was interrupted by a crash
+  // or a restart, and would otherwise sit untouched forever. Re-queue it;
+  // runJobPass reclaims any task stranded mid-flight, so it resumes rather
+  // than re-running the interrupted task. Never fatal to startup.
+  try {
+    const concurrency = Number(process.env.DMRX_JOB_CONCURRENCY);
+    if (Number.isFinite(concurrency) && concurrency > 0) {
+      jobQueue.configure({ concurrency });
+    }
+    const tenantIds = (getDb().prepare('SELECT id FROM tenants').all() as Array<{ id: string }>)
+      .map((row) => row.id);
+    const recovered = jobQueue.recoverInterrupted(tenantIds);
+    logger.info({ tenants: tenantIds.length, recovered }, 'Job queue started');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to recover interrupted jobs — continuing');
   }
 
   // SPA fallback: serve index.html for non-API GET requests.

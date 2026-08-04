@@ -268,10 +268,39 @@ export async function planJob(
     return { ok: false, error: `planning call failed: ${completion.status}` };
   }
 
-  const parsed = parsePlanResponse(extractText(completion.body));
+  const raw = extractText(completion.body);
+
+  // Distinguish "the model said nothing" from "the model said something we
+  // could not read". They have different causes -- a provider error or a
+  // truncated generation versus a model ignoring the format -- and the old
+  // message covered both, which made planning failures undiagnosable.
+  if (!raw.trim()) {
+    jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    logger.warn(
+      { tenantId, jobId, model: completion.body?.model, finish: completion.body?.choices?.[0]?.finish_reason },
+      'job-runner: planner returned an empty response',
+    );
+    return { ok: false, error: 'planner returned an empty response' };
+  }
+
+  const parsed = parsePlanResponse(raw);
   if (!parsed.ok) {
     jobStore.updateJobStatus(tenantId, jobId, 'failed');
-    return { ok: false, error: `could not parse plan: ${parsed.error}` };
+    // Carry a snippet of what actually came back. Without it the only signal
+    // is "unparseable", which says nothing about how to fix it.
+    const snippet = raw.slice(0, 300).replace(/\s+/g, ' ');
+    logger.warn(
+      {
+        tenantId,
+        jobId,
+        model: completion.body?.model,
+        finish: completion.body?.choices?.[0]?.finish_reason,
+        length: raw.length,
+        snippet,
+      },
+      'job-runner: planner response could not be parsed',
+    );
+    return { ok: false, error: `could not parse plan: ${parsed.error} (model said: ${snippet})` };
   }
 
   try {

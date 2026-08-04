@@ -8,7 +8,8 @@ import {
   type ListJobsOptions,
 } from '@dmr-x/agent-runtime';
 
-import { createTaskExecutor, driveJob, planJob } from '../lib/job-runner.js';
+import { planJob } from '../lib/job-runner.js';
+import { jobQueue } from '../lib/job-queue.js';
 
 // ---------------------------------------------------------------------------
 // Job intake routes
@@ -141,6 +142,11 @@ export function registerJobRoutes(server: FastifyInstance): void {
     const { id } = request.params as { id: string };
     // cancelJob updates WHERE id = ? AND tenant_id = ? and reads back via
     // the tenant-scoped getJob — null means not found or not owned.
+    // Drop it from the queue too, or a cancelled job still waiting for a slot
+    // would start anyway. A job already in flight stops at its next pass,
+    // since runJobPass refuses to start work for a cancelled job.
+    jobQueue.dequeue(id);
+
     const job = jobStore.cancelJob(tenant.id, id);
     if (!job) {
       return reply.code(404).send({ error: { message: 'Job not found' } });
@@ -190,9 +196,9 @@ export function registerJobRoutes(server: FastifyInstance): void {
   });
 
   // ── Run job ────────────────────────────────────────────────────────────
-  // Drive passes until the job stops progressing. Synchronous by design for
-  // now: the caller waits. A background queue is the next step, not a
-  // fire-and-forget that silently drops failures.
+  // Enqueue and return. A job runs for minutes, so holding the connection open
+  // means clients time out on work that is progressing fine, and a client that
+  // gives up leaves the run orphaned mid-task. Poll GET /jobs/:id for progress.
   server.post('/jobs/:id/run', {
     preHandler: [agentPermissions.update()],
   }, async (request, reply) => {
@@ -207,18 +213,38 @@ export function registerJobRoutes(server: FastifyInstance): void {
         error: { message: 'Job has no tasks — call POST /jobs/:id/plan first' },
       });
     }
+    if (job.status === 'cancelled' || job.status === 'delivered') {
+      return reply.code(409).send({
+        error: { message: `Job is ${job.status} and cannot be run` },
+      });
+    }
 
-    const body = (request.body ?? {}) as { maxPasses?: number };
-    const result = await driveJob(tenant.id, id, createTaskExecutor(), {
-      maxPasses: body.maxPasses,
-    });
+    const enqueued = jobQueue.enqueue(tenant.id, id);
+    if (!enqueued.accepted) {
+      // Already queued or running is a conflict, not a failure: the caller's
+      // intent is already satisfied, but silently returning 202 would suggest
+      // a second run was scheduled.
+      return reply.code(409).send({
+        error: { message: enqueued.reason ?? 'Job could not be queued' },
+        jobId: id,
+        queuePosition: enqueued.position,
+      });
+    }
 
-    return reply.send({
+    return reply.code(202).send({
       jobId: id,
-      state: result.state,
-      ranTaskIds: result.ranTaskIds,
-      reason: result.reason,
-      job: jobStore.getJob(tenant.id, id),
+      status: 'queued',
+      queuePosition: enqueued.position,
+      poll: `/v1/jobs/${id}`,
     });
+  });
+
+  // ── Queue status ───────────────────────────────────────────────────────
+  // Depth and in-flight jobs, so a caller polling a job can tell "waiting for
+  // a slot" apart from "running slowly".
+  server.get('/jobs/queue/status', {
+    preHandler: [agentPermissions.read()],
+  }, async (_request, reply) => {
+    return reply.send(jobQueue.stats());
   });
 }
