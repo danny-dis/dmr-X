@@ -1,4 +1,4 @@
-import { ProviderUnavailableError } from '@dmr-x/core';
+import { ProviderUnavailableError, ValidationError } from '@dmr-x/core';
 import { BadGatewayError, ServiceUnavailableError } from '@dmr-x/utils';
 import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, ProviderPreferences, ProviderModel } from '@dmr-x/core';
 import type { CandidateSet } from '@dmr-x/core';
@@ -252,9 +252,18 @@ export class Router {
       });
 
       if (!guardrailResult.allowed) {
-        throw new ProviderUnavailableError(
-          ['guardrail-blocked'],
-          0,
+        // Not a ProviderUnavailableError. That reported a guardrail rejection
+        // as 503 "All providers currently unavailable", which is wrong twice
+        // over: it blames an outage for a decision about the caller's own
+        // content, and 503 tells clients the request is retryable when
+        // retrying it can only fail again. Surfacing the violations lets a
+        // caller see which rule fired instead of hunting a phantom outage.
+        const reasons = guardrailResult.violations
+          .map(v => v.description)
+          .filter(Boolean);
+        throw new ValidationError(
+          `Request blocked by guardrail: ${reasons.join('; ') || 'content policy violation'}`,
+          { violations: guardrailResult.violations },
         );
       }
     }

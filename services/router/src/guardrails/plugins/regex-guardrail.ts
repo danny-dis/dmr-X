@@ -20,9 +20,42 @@ const DEFAULT_CONFIG: RegexGuardrailConfig = {
   maxContentLength: 100000,
 };
 
+/**
+ * Every real card number satisfies the Luhn checksum, and an arbitrary run of
+ * 16 digits satisfies it only about a tenth of the time. Without this check the
+ * bare `\d{16}` pattern flagged ordinary content as a credit card: a prompt as
+ * innocuous as "Compute the mean of 0.8472910384756201 and 2.0" was blocked,
+ * because a float with 16 decimal places is exactly 16 consecutive digits.
+ * Requiring the checksum keeps genuine cards caught while dropping most of
+ * those false positives.
+ */
+function passesLuhn(digits: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (d < 0 || d > 9) return false;
+    if (double) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+const CREDIT_CARD_PATTERN = /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/;
+
+/** A candidate is only a credit card if its digits also pass the checksum. */
+function looksLikeCreditCard(content: string): boolean {
+  const match = content.match(CREDIT_CARD_PATTERN);
+  if (!match) return false;
+  return passesLuhn(match[0].replace(/[\s-]/g, ''));
+}
+
 const BUILT_IN_PII_PATTERNS: Array<{ pattern: RegExp; type: string; severity: 'low' | 'medium' | 'high' }> = [
   { pattern: /\b\d{3}-\d{2}-\d{4}\b/, type: 'SSN', severity: 'high' },
-  { pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, type: 'Credit Card', severity: 'high' },
   { pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/, type: 'Email', severity: 'medium' },
   { pattern: /\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/, type: 'Phone', severity: 'medium' },
   { pattern: /\b\d{1,5}\s\w+\s(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd)\b/i, type: 'Address', severity: 'medium' },
@@ -40,7 +73,8 @@ const BUILT_IN_INJECTION_PATTERNS: Array<{ pattern: RegExp; type: string; severi
 
 const OUTPUT_PATTERNS: Array<{ pattern: RegExp; type: string; severity: 'low' | 'medium' | 'high' }> = [
   { pattern: /\b\d{3}-\d{2}-\d{4}\b/, type: 'PII in Output', severity: 'high' },
-  { pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, type: 'PII in Output', severity: 'high' },
+  // The card pattern is applied via looksLikeCreditCard() below, not here, so
+  // that a coincidental 16-digit run in a model's answer is not a violation.
   { pattern: /(?:system\s*prompt|internal\s*instructions|you\s+are\s+a)\s*[:=]/i, type: 'System Prompt Leakage', severity: 'medium' },
 ];
 
@@ -91,6 +125,17 @@ export class RegexGuardrailPlugin implements GuardrailPlugin {
           });
         }
       }
+      // Checked separately from the pattern list so the Luhn checksum can veto
+      // a match that is only coincidentally 16 digits long.
+      if (looksLikeCreditCard(content)) {
+        violations.push({
+          type: 'pii',
+          severity: 'high',
+          description: 'Detected Credit Card',
+          matchedPattern: content.match(CREDIT_CARD_PATTERN)?.[0],
+          plugin: this.name,
+        });
+      }
     }
 
     // Injection detection (input only)
@@ -118,6 +163,14 @@ export class RegexGuardrailPlugin implements GuardrailPlugin {
             plugin: this.name,
           });
         }
+      }
+      if (looksLikeCreditCard(content)) {
+        violations.push({
+          type: 'output_violation',
+          severity: 'high',
+          description: 'Detected PII in Output',
+          plugin: this.name,
+        });
       }
     }
 
