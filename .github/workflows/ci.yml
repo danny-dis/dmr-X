@@ -37,13 +37,17 @@ jobs:
             echo "=== $tsconfig ==="
             bun x tsc --noEmit -p "$tsconfig"
           done
+      - name: Typecheck UI
+        # The loop above resolves apps/ui/tsconfig.json, which is just
+        # `{"files": [], "references": [...]}` and type-checks nothing (B3).
+        # The real UI check is tsconfig.app.json via the package's own script.
+        run: bun run --cwd apps/ui typecheck
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: typecheck
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -72,13 +76,10 @@ jobs:
         run: bun run test:unit
       - name: Run MCP isolated tests
         # `mcp-policy-engine` runs here (isolated fork, coverage off).
-        # NOTE: `mcp-input-validator.test.ts` is intentionally NOT run in CI —
-        # it spins/OOMs unbounded (verified: OOMs at 2GB, times out even at
-        # 7GB/120s) due to an import-chain memory blow-up, independent of the
-        # release bump. It is quarantined in vitest.mcp.workspace.ts (excluded
-        # from `include`) until that leak is fixed; the InputValidator behavior
-        # is still covered by mcp-policy-engine and the broader unit suite.
-        # Tracked as a test-infra TODO.
+        # `mcp-input-validator` is still QUARANTINED — a `vi.mock` fix for its
+        # heap blow-up was attempted and verified NOT to work (it still OOMs,
+        # and hangs >300s even alone at a 2GB cap). See the note at the top of
+        # vitest.mcp.workspace.ts. Re-adding it hangs this job.
         run: |
           bun vitest run --workspace vitest.mcp.workspace.ts --project mcp --coverage.enabled=false
       - name: Upload coverage
@@ -166,10 +167,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [typecheck, build]
+    # Kept non-blocking ON PURPOSE. We verify the gateway *starts* and serves
+    # /healthz + the conversation routes, then run the real `tests/e2e` suites
+    # with DMRX_RUN_E2E=true (they self-gate on that env) against the live
+    # gateway — which is genuinely more than the old healthz-only smoke test.
+    #
+    # But `tests/e2e/providers.test.ts` makes real upstream calls to Google
+    # Gemini and OpenRouter, and CI has no provider secrets, so those
+    # assertions fail here every run. Until those keys are added as CI
+    # secrets (or the key-dependent cases are gated on their presence), this
+    # job reports but must not gate the build.
     continue-on-error: true
-    # E2E doesn't have access to real provider secrets in CI. We only
-    # verify the gateway *starts* and serves /healthz + the conversation
-    # routes — no upstream calls. Full E2E with providers is a manual step.
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -231,6 +239,15 @@ jobs:
           curl -sS http://127.0.0.1:3000/healthz | grep -q 'db_read'
           curl -sS http://127.0.0.1:3000/healthz | grep -q 'candidates'
           echo "Smoke tests passed"
+      - name: Run E2E suites
+        # The real `tests/e2e/*.test.ts` suites self-gate on DMRX_RUN_E2E;
+        # without it every `describe` is skipped, so the job previously only
+        # curled /healthz and never exercised the suites (O8).
+        env:
+          DMRX_RUN_E2E: 'true'
+          DMRX_GATEWAY_URL: 'http://127.0.0.1:3000'
+          DMRX_LOCAL_MODE: 'true'
+        run: bun run test:e2e
       - name: Stop gateway
         if: always()
         run: |

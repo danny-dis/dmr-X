@@ -24,6 +24,9 @@ coverage/
 **/src/**/*.js
 **/src/**/*.d.ts
 **/src/**/*.js.map
+# The UI's Vite environment types are a checked-in source file, not stale
+# emit — un-ignore so a fresh clone can typecheck (B4).
+!apps/ui/src/vite-env.d.ts
 
 # ─── Legitimate JS config files (not compiled from .ts) ────────────────────
 !apps/ui/postcss.config.js

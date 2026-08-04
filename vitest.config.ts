@@ -1,5 +1,30 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
+import { readdirSync } from 'node:fs';
+
+// Resolve a package out of Bun's `.bun` install store WITHOUT pinning a
+// version. `storeName` is the store directory prefix (Bun escapes `/` in
+// scoped names to `+`, e.g. `@fastify/compress` -> `@fastify+compress`);
+// `pkgPath` is the nested package path inside the store entry. `major`
+// optionally filters to a specific major so we keep resolving the v4 Zod
+// even when a v3 copy is also installed (the gateway runs zod 3, the
+// @dmr-x/utils barrel needs zod 4). Dependency bumps therefore resolve
+// dynamically instead of silently breaking test module resolution.
+function resolveStorePath(storeName: string, pkgPath: string, major?: string): string {
+  const storeDir = resolve(__dirname, 'node_modules/.bun');
+  const dirs = readdirSync(storeDir).filter((d) => d.startsWith(`${storeName}@`));
+  if (dirs.length === 0) {
+    throw new Error(`vitest alias: cannot find "${storeName}" in bun store at ${storeDir}`);
+  }
+  const candidates = major ? dirs.filter((d) => d.startsWith(`${storeName}@${major}.`)) : dirs;
+  if (candidates.length === 0) {
+    throw new Error(`vitest alias: no "${storeName}@${major}.*" in bun store at ${storeDir}`);
+  }
+  const chosen = [...candidates].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop()!;
+  return resolve(storeDir, chosen, 'node_modules', pkgPath);
+}
+
+const zodRoot = resolveStorePath('zod', 'zod', '4');
 
 export default defineConfig({
   resolve: {
@@ -23,11 +48,12 @@ export default defineConfig({
       '@dmr-x/router': resolve(__dirname, 'services/router/src'),
       '@dmr-x/agent-registry': resolve(__dirname, 'services/agent-registry/src'),
       '@dmr-x/agent-runtime': resolve(__dirname, 'services/agent-runtime/src'),
-      // fastify — only in apps/gateway, not hoisted to root
-      'fastify': resolve(__dirname, 'node_modules/.bun/fastify@5.9.0/node_modules/fastify'),
-      '@fastify/compress': resolve(__dirname, 'node_modules/.bun/@fastify+compress@9.0.0/node_modules/@fastify/compress'),
-      'zod': resolve(__dirname, 'node_modules/.bun/zod@4.4.3/node_modules/zod'),
-      'zod/v4': resolve(__dirname, 'node_modules/.bun/zod@4.4.3/node_modules/zod/v4'),
+      // fastify — only in apps/gateway, not hoisted to root. Versions are
+      // resolved from the store dynamically so bumps don't break resolution.
+      'fastify': resolveStorePath('fastify', 'fastify'),
+      '@fastify/compress': resolveStorePath('@fastify+compress', '@fastify/compress'),
+      'zod': zodRoot,
+      'zod/v4': resolve(zodRoot, 'v4'),
     },
   },
   test: {

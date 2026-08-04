@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// NOTE: this file is currently QUARANTINED — it is excluded from both the
+// `unit` project and the isolated `mcp` project, so it does not run anywhere.
+// The mock below was an attempt to fix its heap blow-up; it does NOT work
+// (verified — the test still OOMs, and hangs >300s alone at a 2GB cap). It is
+// kept because it is correct and harmless, not because it solved anything.
+// See the quarantine note at the top of vitest.mcp.workspace.ts.
+//
 // Mock the heavy `@dmr-x/utils` barrel. Under the isolated `mcp` vitest
 // workspace the alias resolves `@dmr-x/utils` to `packages/utils/src`
 // (the entire ~30-module barrel: tool-executor, model-result,

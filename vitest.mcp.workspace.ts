@@ -11,16 +11,50 @@
 // verbatim so the test environment (db mock setup via the alias graph)
 // stays correct.
 //
-// `mcp-input-validator.test.ts` is quarantined from CI: the `@dmr-x/utils`
-// alias resolves to the full `packages/utils/src` barrel, and loading that
-// whole graph inside the fork worker blows the heap (OOMs unbounded on the
-// ~7GB CI runner; also hangs locally). It is excluded from `include` below.
-// The InputValidator behavior is still covered by mcp-policy-engine and the
-// broader unit suite. Re-enable here only after the alias-graph memory
-// blow-up is fixed (tracked as a test-infra TODO).
+// `mcp-input-validator.test.ts` is QUARANTINED from CI. Running it under
+// vitest hangs and then dies with "Reached heap limit — JavaScript heap out
+// of memory" (~8.9GB after ~16 min).
+//
+// Finding B2 proposed fixing this by stubbing the heavy `@dmr-x/utils` barrel
+// with `vi.mock` in the test file, on the theory that transforming that graph
+// in the fork worker was what blew the heap. That stub was written and is
+// still in the test file, but it DOES NOT fix the problem — measured, not
+// assumed:
+//   - The test still OOMs with the mock in place.
+//   - It hangs >300s even when run alone in its own fork, capped at
+//     --max-old-space-size=2048, so it is not contention with
+//     `mcp-policy-engine` sharing this project's single fork either.
+//   - `InputValidator` itself is not the culprit: importing it directly under
+//     bun with the REAL (unmocked) `@dmr-x/utils` and running every input the
+//     test uses completes in ~0ms total.
+// So the blow-up is specific to vitest's worker, and the actual cause is not
+// yet identified. Re-adding this file to `include` will hang CI, not just
+// fail it. Leave it excluded until the vitest-side cause is found.
+//
+// InputValidator behavior remains covered by mcp-policy-engine and the
+// broader unit suite.
 
 import { defineWorkspace } from 'vitest/config';
 import { resolve } from 'node:path';
+import { readdirSync } from 'node:fs';
+
+// Same store-resolution helper as vitest.config.ts — kept inline so this
+// workspace stays self-contained and version bumps don't break resolution.
+function resolveStorePath(storeName: string, pkgPath: string, major?: string): string {
+  const storeDir = resolve(__dirname, 'node_modules/.bun');
+  const dirs = readdirSync(storeDir).filter((d) => d.startsWith(`${storeName}@`));
+  if (dirs.length === 0) {
+    throw new Error(`vitest alias: cannot find "${storeName}" in bun store at ${storeDir}`);
+  }
+  const candidates = major ? dirs.filter((d) => d.startsWith(`${storeName}@${major}.`)) : dirs;
+  if (candidates.length === 0) {
+    throw new Error(`vitest alias: no "${storeName}@${major}.*" in bun store at ${storeDir}`);
+  }
+  const chosen = [...candidates].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop()!;
+  return resolve(storeDir, chosen, 'node_modules', pkgPath);
+}
+
+const zodRoot = resolveStorePath('zod', 'zod', '4');
 
 export default defineWorkspace([
   {
@@ -44,16 +78,18 @@ export default defineWorkspace([
         '@dmr-x/router': resolve(__dirname, 'services/router/src'),
         '@dmr-x/agent-registry': resolve(__dirname, 'services/agent-registry/src'),
         '@dmr-x/agent-runtime': resolve(__dirname, 'services/agent-runtime/src'),
-        'fastify': resolve(__dirname, 'node_modules/.bun/fastify@5.9.0/node_modules/fastify'),
-        '@fastify/compress': resolve(__dirname, 'node_modules/.bun/@fastify+compress@9.0.0/node_modules/@fastify/compress'),
-        'zod': resolve(__dirname, 'node_modules/.bun/zod@4.4.3/node_modules/zod'),
-        'zod/v4': resolve(__dirname, 'node_modules/.bun/zod@4.4.3/node_modules/zod/v4'),
+        'fastify': resolveStorePath('fastify', 'fastify'),
+        '@fastify/compress': resolveStorePath('@fastify+compress', '@fastify/compress'),
+        'zod': zodRoot,
+        'zod/v4': resolve(zodRoot, 'v4'),
       },
     },
     test: {
       name: 'mcp',
       globals: true,
       environment: 'node',
+      // NOTE: `tests/unit/mcp-input-validator.test.ts` is deliberately absent
+      // — see the quarantine note at the top of this file. Adding it hangs CI.
       include: ['tests/unit/mcp-policy-engine.test.ts'],
       exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
       pool: 'forks',
