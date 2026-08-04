@@ -143,13 +143,41 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
    */
   server.get('/agents/instances', { preHandler: [agentPermissions.read()] }, async (request, reply) => {
     const tenant = (request as any).tenant;
-    const { status } = request.query as { status?: string };
+    const { status, limit, offset } = request.query as {
+      status?: string;
+      limit?: string;
+      offset?: string;
+    };
 
     if (status && status !== 'active' && status !== 'paused') {
       return reply.code(400).send({ error: { message: "status must be 'active' or 'paused'" } });
     }
 
-    const result = await agentRegistryService.listInstances(tenant.id, { status });
+    // Query params arrive as strings; passing one straight through as a number
+    // silently disables the limit it was meant to apply.
+    let parsedLimit: number | undefined;
+    if (limit !== undefined) {
+      parsedLimit = Number(limit);
+      if (!Number.isFinite(parsedLimit) || parsedLimit < 1) {
+        return reply.code(400).send({ error: { message: 'limit must be a positive number' } });
+      }
+      parsedLimit = Math.min(Math.floor(parsedLimit), 500);
+    }
+
+    let parsedOffset: number | undefined;
+    if (offset !== undefined) {
+      parsedOffset = Number(offset);
+      if (!Number.isFinite(parsedOffset) || parsedOffset < 0) {
+        return reply.code(400).send({ error: { message: 'offset must be a non-negative number' } });
+      }
+      parsedOffset = Math.floor(parsedOffset);
+    }
+
+    const result = await agentRegistryService.listInstances(tenant.id, {
+      status,
+      limit: parsedLimit,
+      offset: parsedOffset,
+    });
     return reply.send(result);
   });
 

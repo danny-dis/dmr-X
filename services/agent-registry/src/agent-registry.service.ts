@@ -424,7 +424,7 @@ export class AgentRegistryService {
    */
   async listInstances(
     tenantId: string,
-    opts: { status?: string } = {},
+    opts: { status?: string; limit?: number; offset?: number } = {},
   ): Promise<{ items: AgentInstanceDetail[]; total: number }> {
     const db = getDb();
     const conditions = ['i.tenant_id = ?'];
@@ -434,6 +434,16 @@ export class AgentRegistryService {
       params.push(opts.status);
     }
     const where = conditions.join(' AND ');
+
+    // Each row carries three correlated subqueries over agent_executions, so
+    // the cost of this query scales with the number of instances. A tenant with
+    // a thousand agents makes an unpaginated call take most of a second and
+    // return most of a megabyte. When a limit is given, page the rows and count
+    // separately; without one the behaviour is unchanged for existing callers.
+    const paginate = opts.limit != null;
+    const limitClause = paginate
+      ? ` LIMIT ${Math.max(1, Math.floor(opts.limit!))} OFFSET ${Math.max(0, Math.floor(opts.offset ?? 0))}`
+      : '';
 
     // LEFT JOIN on definitions: an instance whose definition was deleted still
     // has rows (agent_definitions has ON DELETE CASCADE, but a manual delete or
@@ -455,7 +465,7 @@ export class AgentRegistryService {
       FROM agent_instances i
       LEFT JOIN agent_definitions d ON d.id = i.agent_definition_id
       WHERE ${where}
-      ORDER BY i.created_at DESC
+      ORDER BY i.created_at DESC${limitClause}
     `).all(...params) as any[];
 
     const items = rows.map((r) => ({
@@ -471,7 +481,16 @@ export class AgentRegistryService {
       costCents24h: Number(r.cost_cents_24h ?? 0),
     }));
 
-    return { items, total: items.length };
+    // Without a limit every matching row is present, so items.length is the
+    // total. With one, count separately or the caller cannot page.
+    const total = paginate
+      ? Number(
+          (db.prepare(`SELECT COUNT(*) AS c FROM agent_instances i WHERE ${where}`).get(...params) as any)
+            ?.c ?? items.length,
+        )
+      : items.length;
+
+    return { items, total };
   }
 
   /**

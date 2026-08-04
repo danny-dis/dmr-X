@@ -33,6 +33,9 @@ const DEFAULT_CALL_TIMEOUT_MS = 300_000;
 /** Upper bound on passes so a mis-planned job cannot loop indefinitely. */
 const DEFAULT_MAX_PASSES = 20;
 
+/** How many agents may be offered to the planner in one prompt. */
+const PLANNING_AGENT_LIMIT = 60;
+
 export interface GatewayCallOptions {
   gatewayUrl?: string;
   apiKey?: string;
@@ -199,13 +202,30 @@ export async function planJob(
     return { ok: false, error: 'job already planned' };
   }
 
-  const instances = await callGateway(gw, 'GET', '/v1/agents/instances?status=active');
-  const agents: AgentSummary[] = (instances.body?.items ?? []).map((item: any) => ({
-    instanceId: item.id,
-    name: item.definitionHumanName ?? item.definitionName ?? item.id,
-    description: item.definitionDescription ?? undefined,
-    category: item.definitionCategory ?? undefined,
-  }));
+  // Cap the roster. Every agent listed here is serialised into the planning
+  // prompt, so an unbounded tenant (a bulk import can create hundreds) would
+  // send a vast prompt on every plan and pay for it in tokens each time.
+  const instances = await callGateway(
+    gw,
+    'GET',
+    `/v1/agents/instances?status=active&limit=${PLANNING_AGENT_LIMIT}`,
+  );
+  const agents: AgentSummary[] = (instances.body?.items ?? [])
+    .slice(0, PLANNING_AGENT_LIMIT)
+    .map((item: any) => ({
+      instanceId: item.id,
+      name: item.definitionHumanName ?? item.definitionName ?? item.id,
+      description: item.definitionDescription ?? undefined,
+      category: item.definitionCategory ?? undefined,
+    }));
+
+  const totalAgents = Number(instances.body?.total ?? agents.length);
+  if (totalAgents > agents.length) {
+    logger.warn(
+      { tenantId, jobId, totalAgents, offered: agents.length },
+      'job-runner: agent roster truncated for planning prompt',
+    );
+  }
 
   jobStore.updateJobStatus(tenantId, jobId, 'planning');
 
