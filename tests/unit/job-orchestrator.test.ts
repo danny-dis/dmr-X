@@ -44,9 +44,12 @@ beforeAll(async () => {
   }
   await initDb();
 
+  // tenants holds only (id, name, created_at, updated_at) — key hashes live in
+  // api_keys.key_hash. Inserting a non-existent api_key_hash column threw in
+  // beforeAll, which skipped all 10 tests in this file rather than failing one.
   getDb()
-    .prepare('INSERT OR IGNORE INTO tenants (id, name, api_key_hash) VALUES (?, ?, ?)')
-    .run(TENANT, 'orch-test', 'hash');
+    .prepare('INSERT OR IGNORE INTO tenants (id, name) VALUES (?, ?)')
+    .run(TENANT, 'orch-test');
 });
 
 afterAll(async () => {
