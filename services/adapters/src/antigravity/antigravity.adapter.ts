@@ -12,6 +12,7 @@ import type {
   ExecuteOptions,
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
+import { normalizeGeminiUsage } from '../cache-usage.js';
 
 // ---------------------------------------------------------------------------
 // Cloud Code types (subset needed for outbound requests)
@@ -165,11 +166,7 @@ export class AntigravityAdapter extends BaseAdapter {
             tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
           },
           usage: parsed.response?.usageMetadata
-            ? {
-                prompt_tokens: parsed.response.usageMetadata.promptTokenCount ?? 0,
-                completion_tokens: parsed.response.usageMetadata.candidatesTokenCount ?? 0,
-                total_tokens: parsed.response.usageMetadata.totalTokenCount ?? 0,
-              }
+            ? normalizeGeminiUsage(parsed.response.usageMetadata)
             : undefined,
           finishReason: this.mapFinishReason(candidate?.finishReason),
           latencyMs: Date.now() - start,
@@ -220,11 +217,7 @@ export class AntigravityAdapter extends BaseAdapter {
             tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
           },
           usage: parsed.response?.usageMetadata
-            ? {
-                prompt_tokens: parsed.response.usageMetadata.promptTokenCount ?? 0,
-                completion_tokens: parsed.response.usageMetadata.candidatesTokenCount ?? 0,
-                total_tokens: parsed.response.usageMetadata.totalTokenCount ?? 0,
-              }
+            ? normalizeGeminiUsage(parsed.response.usageMetadata)
             : undefined,
           finishReason: this.mapFinishReason(candidate?.finishReason),
           latencyMs: Date.now() - start,
@@ -346,11 +339,7 @@ export class AntigravityAdapter extends BaseAdapter {
             if (candidate?.finishReason) {
               yield {
                 type: 'done',
-                data: {
-                  prompt_tokens: parsed.response?.usageMetadata?.promptTokenCount ?? 0,
-                  completion_tokens: parsed.response?.usageMetadata?.candidatesTokenCount ?? 0,
-                  total_tokens: parsed.response?.usageMetadata?.totalTokenCount ?? 0,
-                },
+                data: normalizeGeminiUsage(parsed.response?.usageMetadata),
                 index: index++,
               } as StreamChunk;
             }

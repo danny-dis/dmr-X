@@ -14,6 +14,7 @@ import type {
   ExecuteOptions,
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
+import { normalizeOpenAIUsage } from '../cache-usage.js';
 import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 /**
@@ -440,7 +441,9 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       providerId: this.providerId,
       modelId: data.model || request.model || 'unknown',
       message: data.choices?.[0]?.message,
-      usage: data.usage,
+      // Normalize so `prompt_tokens_details.cached_tokens` lands in
+      // `cache_read_tokens` instead of riding along in the raw usage object.
+      usage: normalizeOpenAIUsage(data.usage),
       finishReason: data.choices?.[0]?.finish_reason,
       latencyMs,
     };
