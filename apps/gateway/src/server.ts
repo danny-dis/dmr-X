@@ -806,6 +806,11 @@ void (async () => {
         )
         .get(provider.id);
       if (hasActive) continue; // already keyed — don't overwrite
+      const keyTier: 'free' | 'paid' =
+        // Keyless providers are labelled free; keyed ones default to paid.
+        template.models.length > 0 && template.models.every((m) => !!m.freeTier)
+          ? 'free'
+          : 'paid';
       db.prepare(
         `INSERT INTO provider_keys (
           id, provider_id, label, tier,
@@ -815,17 +820,20 @@ void (async () => {
       ).run(
         `${provider.id}-default`,
         provider.id,
-        // Keyless providers are labelled free; keyed ones default to paid.
-        template.models.length > 0 && template.models.every((m) => !!m.freeTier)
-          ? 'free'
-          : 'paid',
+        keyTier,
         encrypt(apiKey),
       );
       // A fresh key means the provider can route — clear the poisoned
       // is_healthy=0 that a prior failed health sweep may have left behind.
+      // Also mirror the key's tier onto the denormalised `providers.tier`
+      // column (admin.routes.ts's `recomputeProviderTier` owns this column
+      // for multi-key providers, but isn't reachable from here — this is
+      // the single-key case seedEnvKeysToProviderKeys always produces, so
+      // setting it directly is equivalent and keeps the Dashboard's
+      // free/paid provider counts correct for providers seeded from .env).
       db.prepare(
-        `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`,
-      ).run(provider.id);
+        `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, tier = ?, updated_at = datetime('now') WHERE id = ?`,
+      ).run(keyTier, provider.id);
       seeded++;
       logger.info({ provider: provider.name, envKey }, 'Seeded provider key from .env');
     }

@@ -4602,9 +4602,93 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     telemetryEvents.emit('event', enriched);
   }
 
+  /**
+   * Backfill telemetry events from `request_logs` for the initial page load.
+   *
+   * `telemetryBuffer` is process-memory only (see above) and — separately —
+   * `recordTelemetryEvent` is only ever called from error/warning code paths
+   * (auth failures, routing failures, rate limits), never for an ordinary
+   * completed request. So on a fresh gateway process the Requests page's
+   * "Live stream of all requests" read an empty buffer and showed "No
+   * requests yet" / all-zero kind counters even though `request_logs` (the
+   * durable, DB-backed history CRIT-6 writes on every completed request —
+   * see telemetry-hooks.ts) had rows and the Dashboard's stat tiles
+   * (computeDashboardStats, also reading `request_logs`) showed a nonzero
+   * count. Synthesize one event per row so the two views agree, then merge
+   * with whatever the live buffer already holds.
+   */
+  function loadTelemetryHistory(limit: number): Array<Record<string, unknown>> {
+    try {
+      const db = getDb();
+      const rows = db.prepare(`
+        SELECT
+          rl.id as id,
+          rl.timestamp as timestamp,
+          rl.tenant_id as tenant_id,
+          rl.selected_model as model,
+          p.name as provider,
+          rl.latency_ms as latency_ms,
+          rl.error_code as error_code,
+          rl.fallback_used as fallback_used
+        FROM request_logs rl
+        LEFT JOIN providers p ON p.id = rl.selected_provider
+        ORDER BY rl.timestamp DESC
+        LIMIT ?
+      `).all(limit) as Array<{
+        id: string;
+        timestamp: string;
+        tenant_id: string | null;
+        model: string | null;
+        provider: string | null;
+        latency_ms: number | null;
+        error_code: string | null;
+        fallback_used: number | null;
+      }>;
+
+      return rows.map((row) => ({
+        id: `reqlog-${row.id}`,
+        timestamp: row.timestamp,
+        level: row.error_code ? 'error' : row.fallback_used ? 'warning' : 'info',
+        service: 'gateway',
+        message: row.error_code
+          ? `Request to ${row.model ?? 'unknown model'} failed: ${row.error_code}`
+          : `Request routed to ${row.model ?? 'unknown model'}${row.provider ? ` via ${row.provider}` : ''}`,
+        trace_id: null,
+        span_id: null,
+        duration: row.latency_ms,
+        metadata: {
+          kind: 'request',
+          tenant: row.tenant_id,
+          model: row.model,
+          provider: row.provider,
+        },
+        // Non-schema fields the UI's `ApiTelemetryEvent`/`normalizeTelemetryEvent`
+        // read directly (see apps/ui/src/lib/admin.ts, apps/ui/src/pages/Requests.tsx)
+        // — additive on top of the shape live `recordTelemetryEvent` rows use.
+        kind: 'request',
+        status: row.error_code ? 'error' : 'ok',
+        tenant: row.tenant_id,
+        model: row.model,
+      }));
+    } catch (err) {
+      logger.debug({ err }, 'Telemetry history backfill from request_logs failed');
+      return [];
+    }
+  }
+
   server.get('/admin/telemetry/events', async () => {
     trimTelemetryBuffer();
-    return { events: telemetryBuffer.slice(-100) };
+    // De-dupe by id (a live buffer event and a request_logs row never share
+    // one — buffer ids are `crypto.randomUUID()`, history ids are prefixed
+    // `reqlog-`) and sort newest-first so history and live events interleave
+    // correctly instead of history always trailing after live events.
+    const merged = new Map<string, Record<string, unknown>>();
+    for (const e of loadTelemetryHistory(200)) merged.set(e.id as string, e);
+    for (const e of telemetryBuffer) merged.set(e.id, e);
+    const events = Array.from(merged.values()).sort(
+      (a, b) => new Date(b.timestamp as string).getTime() - new Date(a.timestamp as string).getTime(),
+    );
+    return { events: events.slice(0, 200) };
   });
 
   // SSE stream of telemetry events. The UI's `EventSource('/admin/telemetry/stream')`

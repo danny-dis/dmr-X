@@ -452,6 +452,27 @@ export async function autoRegisterProviders(): Promise<string[]> {
         .get(existing.id) as { api_key_ref: string | null; is_healthy: number } | undefined;
       const needsRefBackfill = !!template.envKey && !exRow?.api_key_ref;
       const needsHealthReset = hasKey && Number(exRow?.is_healthy) === 0 && !needsRefBackfill;
+
+      // Tier backfill for rows seeded before this INSERT set `tier` explicitly
+      // (see the fresh-insert branch below for why the schema default alone
+      // is wrong). Only touch rows with zero rows in `provider_keys` — once an
+      // operator has added a real key, `recomputeProviderTier` (admin.routes.ts)
+      // owns this column and must not be second-guessed here.
+      const activeKeyCount = (
+        db.prepare('SELECT COUNT(*) as c FROM provider_keys WHERE provider_id = ? AND is_active = 1')
+          .get(existing.id) as { c: number } | undefined
+      )?.c ?? 0;
+      if (activeKeyCount === 0) {
+        const desiredTier: 'free' | 'paid' | 'inactive' =
+          template.envKey === '' ? 'free' : hasKey ? 'paid' : 'inactive';
+        const currentTierRow = db.prepare('SELECT tier FROM providers WHERE id = ?').get(existing.id) as
+          | { tier: string }
+          | undefined;
+        if (currentTierRow && currentTierRow.tier !== desiredTier) {
+          db.prepare(`UPDATE providers SET tier = ? WHERE id = ?`).run(desiredTier, existing.id);
+        }
+      }
+
       const currentConfig = db.prepare('SELECT config FROM providers WHERE id = ?').get(existing.id) as { config: string } | undefined;
       const cfg = JSON.parse(currentConfig?.config || '{}');
       const keyJustAdded = hasKey && template.envKey && !cfg.hasKey;
@@ -478,10 +499,26 @@ export async function autoRegisterProviders(): Promise<string[]> {
       // Create provider
       const providerId = crypto.randomUUID();
       const isActive = hasKey || template.envKey === '';
-      
+
+      // `providers.tier` defaults to 'paid' at the schema level (migration
+      // 015), which is right for a provider that genuinely needs — and has —
+      // a paid API key, but wrong for everything else this INSERT covers:
+      // it left every keyless/local template (ollama, vllm, llamacpp, …,
+      // `envKey === ''`) and every catalog entry seeded without a resolved
+      // key mis-tagged as 'paid' forever, since nothing ever revisits this
+      // row afterwards (`recomputeProviderTier` below only fires from the
+      // key-mutation admin routes, which auto-registered rows never hit).
+      // That is what made every provider in the catalog show up under
+      // "Paid Providers" on the Dashboard with Free/Mixed stuck at 0.
+      //   - keyless template (no key ever required)      -> 'free'
+      //   - key required but none resolved from env       -> 'inactive'
+      //   - key required and present                      -> 'paid'
+      const tier: 'free' | 'paid' | 'inactive' =
+        template.envKey === '' ? 'free' : hasKey ? 'paid' : 'inactive';
+
       db.prepare(
-        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, is_healthy, config)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO providers (id, name, adapter_type, base_url, api_key_ref, is_healthy, config, tier)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         providerId,
         template.id,
@@ -500,7 +537,8 @@ export async function autoRegisterProviders(): Promise<string[]> {
           category: template.category,
           region: template.region,
           description: template.description,
-        })
+        }),
+        tier,
       );
 
       // Resolve model list: static catalog OR live /v1/models discovery
