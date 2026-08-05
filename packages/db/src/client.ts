@@ -113,26 +113,45 @@ async function atomicReplace(src: string, dest: string): Promise<void> {
   }
 }
 
-// The sql.js module handle, captured at init so saveDatabase() can re-open and
-// validate what it just wrote before that file is allowed to replace the live
-// database or become the "last good" snapshot.
-let sqlJsModule: Awaited<ReturnType<typeof initSqlJs>> | null = null;
+/**
+ * Write `bytes` to `filePath` and force them onto the physical device.
+ *
+ * fs.writeFile() returns once the data is in the OS page cache, not once it is
+ * durable. The newest corruption backup on the reporting machine was 54 MB of
+ * pure NUL bytes — the file had been extended to full length but its contents
+ * never reached the disk before the process died. Without the explicit fsync
+ * that stays possible no matter how carefully the rename is sequenced.
+ */
+async function writeFileDurable(filePath: string, bytes: Buffer): Promise<void> {
+  const handle = await fs.promises.open(filePath, 'w');
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
 
 /**
- * Read `filePath` back off disk and prove it is a database we could actually
- * recover from: it must decrypt (when encrypted), carry the SQLite header, and
- * parse far enough to answer a query.
+ * Read `filePath` back off disk and prove it holds exactly `expected`.
  *
- * Writing a file is not the same as writing a *readable* file. Previously a
+ * Writing a file is not the same as writing a *recoverable* file. Previously a
  * torn or truncated write was published straight over the live database and
  * then copied to the .lastgood snapshot, so a single bad write destroyed the
  * primary copy AND every fallback at once — leaving a fresh, empty database on
  * the next boot. That is the "DMR-X starts from zero after a restart" failure.
+ *
+ * Comparing against the buffer we meant to write is both stronger and cheaper
+ * than re-parsing the database: it catches zero-fill, truncation and tearing,
+ * without pulling a multi-megabyte export back through sql.js on every save.
  */
-async function verifyPersistedFile(filePath: string, encrypted: boolean): Promise<boolean> {
+async function verifyPersistedFile(filePath: string, expected: Buffer, encrypted: boolean): Promise<boolean> {
   try {
     const raw = await fs.promises.readFile(filePath);
-    if (raw.byteLength === 0) return false;
+    if (raw.byteLength !== expected.byteLength) return false;
+    if (!raw.equals(expected)) return false;
+    // Decrypting proves the envelope is intact and the payload authenticates;
+    // the header check proves we are about to publish a real SQLite file.
     let bytes: Buffer;
     if (encrypted) {
       const { decryptBytesRaw } = await import('@dmr-x/utils');
@@ -140,15 +159,7 @@ async function verifyPersistedFile(filePath: string, encrypted: boolean): Promis
     } else {
       bytes = raw;
     }
-    if (bytes.subarray(0, 15).toString('latin1') !== 'SQLite format 3') return false;
-    if (!sqlJsModule) return true; // Header check is the best we can do pre-init.
-    const probe = new sqlJsModule.Database(bytes);
-    try {
-      probe.exec('SELECT count(*) FROM sqlite_master');
-    } finally {
-      probe.close();
-    }
-    return true;
+    return bytes.subarray(0, 15).toString('latin1') === 'SQLite format 3';
   } catch (err) {
     log.error(`Verification of persisted database failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
@@ -212,12 +223,12 @@ async function saveDatabase(): Promise<void> {
       }
       // Write to a temporary file first to ensure atomic replacement.
       // This prevents database corruption if the process crashes mid-write.
-      await fs.promises.writeFile(tmpPath, toWrite);
+      await writeFileDurable(tmpPath, toWrite);
 
       // Prove the bytes are recoverable BEFORE they are allowed anywhere near
       // the live file or the last-good snapshot. A file that fails here is
       // discarded and the existing good copy on disk is left untouched.
-      if (!(await verifyPersistedFile(tmpPath, keySet))) {
+      if (!(await verifyPersistedFile(tmpPath, toWrite, keySet))) {
         log.error('Refusing to publish an unreadable database write — keeping the existing on-disk copy');
         try { await fs.promises.unlink(tmpPath); } catch { /* best-effort */ }
         return;
@@ -272,10 +283,29 @@ async function saveDatabase(): Promise<void> {
   }
 }
 
-const SAVE_DEBOUNCE_MS = 50;
+const SAVE_DEBOUNCE_MIN_MS = 50;
+const SAVE_DEBOUNCE_MAX_MS = 2000;
+let lastSaveDurationMs = 0;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSaveResolvers: (() => void)[] = [];
 let saving = false;
+
+/**
+ * How long to coalesce writes before hitting the disk.
+ *
+ * A fixed 50 ms window assumed a save is cheap. On a real 10 MB database a
+ * durable save costs well over that, so bulk work (startup migrations, a
+ * marketplace import) queued a fresh save for practically every statement —
+ * one run was observed issuing 2217 saves, each rewriting the whole file.
+ * That write amplification is what kept a save in flight long enough to be
+ * torn by the next one.
+ *
+ * Scaling the window with how long the last save actually took keeps small
+ * databases as responsive as before while letting a large one breathe.
+ */
+function saveDebounceMs(): number {
+  return Math.min(Math.max(SAVE_DEBOUNCE_MIN_MS, lastSaveDurationMs), SAVE_DEBOUNCE_MAX_MS);
+}
 
 /**
  * Schedule a debounced save. Multiple calls within the debounce window are
@@ -294,16 +324,18 @@ function scheduleSave(): Promise<void> {
       saving = true;
       const resolvers = pendingSaveResolvers;
       pendingSaveResolvers = [];
+      const startedAt = Date.now();
       try {
         await saveDatabase();
       } finally {
+        lastSaveDurationMs = Date.now() - startedAt;
         for (const r of resolvers) r();
         saving = false;
         if (pendingSaveResolvers.length > 0 && saveTimer === null) {
           scheduleSave();
         }
       }
-    }, SAVE_DEBOUNCE_MS);
+    }, saveDebounceMs());
   });
 }
 
@@ -829,8 +861,6 @@ function cleanupStaleArtifacts(dataDir: string, keepBackups = 3): void {
 
 async function doInitDb(): Promise<DatabaseWrapper> {
   const SQL = await initSqlJs();
-  // Let saveDatabase() validate its own writes before publishing them.
-  sqlJsModule = SQL;
 
   const dataDir = process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
   fs.mkdirSync(dataDir, { recursive: true });
