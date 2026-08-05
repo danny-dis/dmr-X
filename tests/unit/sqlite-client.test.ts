@@ -59,7 +59,8 @@ describe('sqlite-client', () => {
       // 063 adds api_keys.role (agent RBAC — see agent-rbac.middleware.ts).
       // 064 adds api_keys.key_lookup_hash (indexed O(1) auth lookup).
       // 065 adds agentic_sessions (durable /agentic/chat conversations).
-      expect(row.v).toBe(65);
+      // 070 adds jobs.
+      expect(row.v).toBe(70);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

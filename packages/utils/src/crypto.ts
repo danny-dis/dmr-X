@@ -139,6 +139,51 @@ export function encryptBytes(plain: Buffer | Uint8Array): string {
 }
 
 /**
+ * Magic prefix identifying the binary (non-hex) on-disk encryption envelope.
+ * Layout: magic(8) || iv(12) || authTag(16) || ciphertext.
+ *
+ * The original format hex-encoded the envelope and persisted it as UTF-8,
+ * which doubled every write. For a multi-megabyte database that turned each
+ * debounced save into tens of megabytes of I/O, widening the window in which
+ * an interrupted write could leave a torn file on disk.
+ */
+export const DB_ENVELOPE_MAGIC = Buffer.from('DMRXENC1', 'ascii');
+
+/**
+ * Encrypt raw bytes into the binary envelope (AES-256-GCM), half the size of
+ * the hex form. Use for large payloads such as the database export.
+ */
+export function encryptBytesRaw(plain: Buffer | Uint8Array): Buffer {
+  const key = getEncryptionKey();
+  const iv = randomBytes(IV_LENGTH);
+  const cipher = createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+  return Buffer.concat([DB_ENVELOPE_MAGIC, iv, cipher.getAuthTag(), encrypted]);
+}
+
+/**
+ * Decrypt a buffer written by encryptBytesRaw(), transparently falling back to
+ * the legacy hex format so databases written by older builds still open.
+ */
+export function decryptBytesRaw(buf: Buffer): Buffer {
+  if (buf.length >= DB_ENVELOPE_MAGIC.length && buf.subarray(0, DB_ENVELOPE_MAGIC.length).equals(DB_ENVELOPE_MAGIC)) {
+    const key = getEncryptionKey();
+    const body = buf.subarray(DB_ENVELOPE_MAGIC.length);
+    if (body.length < IV_LENGTH + AUTH_TAG_LENGTH) {
+      throw new Error('Encrypted payload too short: truncated envelope.');
+    }
+    const decipher = createDecipheriv(ALGORITHM, key, body.subarray(0, IV_LENGTH), { authTagLength: AUTH_TAG_LENGTH });
+    decipher.setAuthTag(body.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH));
+    return Buffer.concat([
+      decipher.update(body.subarray(IV_LENGTH + AUTH_TAG_LENGTH)),
+      decipher.final(),
+    ]);
+  }
+  // Legacy: the envelope was hex-encoded and stored as UTF-8 text.
+  return decryptBytes(buf.toString('utf8').trim());
+}
+
+/**
  * Decrypt bytes produced by encryptBytes(). Returns a Buffer.
  * Throws if DMRX_ENCRYPTION_KEY is not configured or data is invalid.
  */
