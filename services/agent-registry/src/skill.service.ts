@@ -43,6 +43,10 @@ export interface SkillImportItem {
 
 export interface BulkImportSkillResult {
   imported: number;
+  /** Count of items skipped because a skill with the same name already exists
+   *  for the tenant — re-importing the same repository is a sync, not an
+   *  append (mirrors agentRegistryService.importAgents). */
+  skipped: number;
   errors: Array<{ file: string; error: string }>;
   skills: Array<{ id: string; name: string }>;
 }
@@ -187,10 +191,21 @@ export class SkillService {
   /**
    * Bulk-import a set of markdown skills for a tenant. Failures are collected
    * and reported but do not abort the batch.
+   *
+   * Re-running the same import (e.g. re-syncing a GitHub repo) used to hit
+   * `skills.tenant_id, skills.name`'s UNIQUE constraint for every already-
+   * imported file and report it as an error — a repository with 270 skills
+   * would produce 270 alarming "UNIQUE constraint failed" errors on the
+   * second import, even though nothing was actually wrong. A name collision
+   * is now skipped up front, matching the 'sync, not append' behavior
+   * `agentRegistryService.importAgents` already has for agents.
    */
   async bulkImportSkills(tenantId: string, items: SkillImportItem[]): Promise<BulkImportSkillResult> {
     const imported: BulkImportSkillResult['skills'] = [];
     const errors: BulkImportSkillResult['errors'] = [];
+    let skipped = 0;
+
+    const existingNames = await this.getExistingSkillNames(tenantId);
 
     for (const item of items) {
       try {
@@ -199,7 +214,12 @@ export class SkillService {
           errors.push({ file: item.externalId ?? 'inline', error: 'Failed to parse skill markdown' });
           continue;
         }
+        if (existingNames.has(parsed.name.toLowerCase())) {
+          skipped++;
+          continue;
+        }
         const skill = await this.createSkill(tenantId, parsed);
+        existingNames.add(skill.name.toLowerCase());
         imported.push({ id: skill.id, name: skill.name });
       } catch (error) {
         errors.push({
@@ -209,7 +229,15 @@ export class SkillService {
       }
     }
 
-    return { imported: imported.length, errors, skills: imported };
+    return { imported: imported.length, skipped, errors, skills: imported };
+  }
+
+  private async getExistingSkillNames(tenantId: string): Promise<Set<string>> {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT name FROM skills WHERE tenant_id = ?')
+      .all(tenantId) as Array<{ name: string }>;
+    return new Set((rows ?? []).map((r) => String(r.name).toLowerCase()));
   }
 
   /**

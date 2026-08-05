@@ -158,7 +158,7 @@ export function registerSkillRoutes(server: FastifyInstance): void {
     }
 
     if (items.length === 0) {
-      return reply.code(200).send({ imported: 0, errors: [], skills: [] });
+      return reply.code(200).send({ imported: 0, skipped: 0, errors: [], skills: [] });
     }
 
     const result = await skillService.bulkImportSkills(tenant.id, items);

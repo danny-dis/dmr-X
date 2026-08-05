@@ -450,7 +450,7 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     if (files.size === 0) {
       return reply.code(200).send({
         agents: { imported: 0, skipped: 0, errors: [], agents: [] },
-        skills: { imported: 0, errors: [], skills: [] },
+        skills: { imported: 0, skipped: 0, errors: [], skills: [] },
         artifacts: null,
       });
     }
