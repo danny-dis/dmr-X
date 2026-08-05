@@ -4,6 +4,7 @@ export {
   detectRuntime,
   killTree,
   getGodmodeRepoInfo,
+  getInstalledGodmodeRef,
   buildGodmodeNativeEnv,
   ServerManagerService,
 } from './server-manager.service.js';

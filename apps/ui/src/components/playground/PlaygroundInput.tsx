@@ -537,6 +537,14 @@ export function PlaygroundInput() {
           </div>
         </div>
         
+        {/* Auxiliary panels (settings, godmode pipeline, prompt library).
+            Scrolls on its own instead of growing the composer without bound:
+            this whole bar is `shrink-0` inside a `100dvh` `overflow-hidden`
+            column, so an expanded panel used to push the prompt textarea off
+            the bottom of the viewport — in godmode mode there was visibly
+            nowhere left to type. The input below stays outside this container
+            and is therefore always reachable. */}
+        <div className="max-h-[38vh] overflow-y-auto overscroll-contain">
         {/* Config Panel */}
         {showConfig && (
           <div className="mb-3 space-y-4 rounded-lg border border-border bg-surface-2 p-3">
@@ -719,6 +727,7 @@ export function PlaygroundInput() {
             <PromptLibrary onSelectPrompt={(prompt) => setPrompt(prompt)} />
           </div>
         )}
+        </div>
         
         {/* Input */}
         <div className="relative rounded-xl border border-border bg-surface-2 p-2 shadow-sm focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/15">

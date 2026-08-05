@@ -13,11 +13,34 @@ directly, pinned to a commit SHA via `DMRX_GODMODE_REF` (default baked into
 Pinning to a SHA rather than a branch tip means every fresh install gets
 identical G0DM0D3 source regardless of when it runs.
 
-To pull upstream changes into the fork (never automatic — this is a
-deliberate, reviewed step), run `scripts/dev/sync-godmode-fork.ps1` (or
-`.sh`), then bump `DMRX_GODMODE_REF` to the synced commit once you're happy
-with it. See that script for why a `gh repo sync` script was chosen over a
-scheduled GitHub Actions workflow living in the fork.
+`danny-dis/G0DM0D3` is a **true GitHub fork** of `elder-plinius/G0DM0D3` (its
+`parent` is set), which is what lets it be fast-forwarded with the
+`merge-upstream` API rather than maintained as a hand-pushed mirror. It carries
+no DMR-X commits — the relay changes live here as patches precisely so the fork
+can stay a clean mirror that never conflicts on sync.
+
+### How updates flow
+
+`.github/workflows/godmode-fork-sync.yml` runs nightly and:
+
+1. fast-forwards the fork from upstream `main`;
+2. clones the new fork HEAD and checks **these patches still apply** to it;
+3. opens a PR bumping `DMRX_GODMODE_REF` to that commit.
+
+Step 3 is a PR and not a push because G0DM0D3 is third-party code DMR-X spawns
+as a child process on the user's machine — a human reads the upstream diff
+before it reaches users. Step 2 is the load-bearing one: the failure mode that
+actually bites is upstream refactoring a file these patches rewrite, so
+`git apply` stops landing and godmode silently reverts to hardcoded-OpenRouter
+behaviour. A failed patch check fails the workflow and blocks the PR.
+
+`scripts/dev/sync-godmode-fork.ps1` / `.sh` do step 1 by hand — useful when you
+want the fork current without waiting for the nightly run.
+
+Existing installs never move on their own: the runtime clones a pinned SHA, and
+`cloneIfNeeded()` no-ops when the directory already exists. `GET
+/v1/godmode/server/updates` reports pinned vs installed vs fork vs upstream so
+the UI can show that drift.
 
 ## Applying — now automatic
 

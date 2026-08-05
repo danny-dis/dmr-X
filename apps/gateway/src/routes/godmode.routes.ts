@@ -10,6 +10,7 @@
  * - POST /v1/godmode/transform — Apply STM modules
  * - GET  /v1/godmode/tier — Get tier information
  * - GET  /v1/godmode/health — Health check
+ * - GET  /v1/godmode/server/updates — Pinned vs fork vs upstream commit state
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -17,7 +18,8 @@ import { z } from 'zod';
 import { ValidationError } from '@dmr-x/core';
 import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 import { getGodmodeService, setGodmodeConfig } from '@dmr-x/godmode';
-import { serverManager, getGodmodeRepoInfo } from '@dmr-x/server-manager';
+import { serverManager, getGodmodeRepoInfo, getInstalledGodmodeRef } from '@dmr-x/server-manager';
+import { checkGodmodeUpstream } from '../lib/godmode-upstream.js';
 import type {
   GodmodeChatRequest,
   UltraplinianRequest,
@@ -100,6 +102,7 @@ function replyError(err: unknown): { error: string; message: string } {
   const message = err instanceof Error ? err.message : String(err);
   return { error: 'server_operation_failed', message };
 }
+
 
 export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   const service = getGodmodeService();
@@ -314,6 +317,25 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       runtime: inst.runtime,
       url: inst.url,
       installed,
+    };
+  });
+
+  // How the installed G0DM0D3 relates to upstream elder-plinius/G0DM0D3.
+  //
+  // Always 200, even when GitHub is unreachable: the locally-known half
+  // (pinned + installed ref) is always available, and an offline gateway must
+  // still be able to tell the user what it is running. `error` in the body
+  // signals the remote half is missing and the UI degrades to "could not
+  // check". See lib/godmode-upstream.ts for the caching and failure rules.
+  server.get('/godmode/server/updates', async () => {
+    const { repo, ref, upstream } = getGodmodeRepoInfo();
+    return {
+      repo,
+      upstream,
+      pinnedRef: ref,
+      installedRef: getInstalledGodmodeRef(),
+      checkedAt: new Date().toISOString(),
+      ...(await checkGodmodeUpstream(repo, upstream, ref)),
     };
   });
 

@@ -1,21 +1,16 @@
-# Pull upstream elder-plinius/G0DM0D3 changes into our fork danny-dis/G0DM0D3.
+# Pull upstream elder-plinius/G0DM0D3 changes into our fork danny-dis/G0DM0D3,
+# by hand.
 #
-# Why a `gh repo sync` script here instead of a GitHub Actions workflow living
-# in the fork:
-#   - The fork (danny-dis/G0DM0D3) is a separate repository from DMR-X. A
-#     scheduled workflow would have to be authored and pushed there directly,
-#     outside this repo's review/commit history — changes to it wouldn't show
-#     up in a DMR-X PR diff, and DMR-X's "don't commit/push" workflow rules
-#     don't cover a second repository at all.
-#   - `gh repo sync` is one already-authenticated command (this box has `gh`
-#     signed in as danny-dis with `repo`+`workflow` scope) — no Actions
-#     minutes, no workflow YAML to maintain, no separate place to check for
-#     failures.
-#   - We control exactly when the sync happens (manually, or wired into
-#     whatever scheduler already exists on this machine, e.g. Windows Task
-#     Scheduler alongside DMR-X-Gateway.task.xml), rather than trusting GitHub
-#     Actions' scheduled-workflow reliability (minimum interval, silent
-#     disablement after 60 days of repo inactivity, etc).
+# THIS IS THE MANUAL PATH. The automatic one is
+# `.github/workflows/godmode-fork-sync.yml`, which runs nightly, additionally
+# verifies patches/g0dm0d3/ still applies to the new commit, and opens a PR
+# bumping DMRX_GODMODE_REF. That workflow lives in DMR-X rather than in the
+# fork so changes to it appear in DMR-X's own review history and the fork stays
+# a clean, DMR-X-commit-free mirror of upstream.
+#
+# Use this script when you want the fork current *now* — before the nightly
+# run, or from a box where you would rather not wait on Actions. It only does
+# the sync; it does not check the patches or touch DMRX_GODMODE_REF.
 #
 # server-manager.service.ts clones a PINNED COMMIT SHA (DMRX_GODMODE_REF), not
 # the fork's moving branch tip, so running this script never silently changes

@@ -68,6 +68,17 @@ function bunPath(): string {
  */
 const G0DM0D3_REPO = process.env.DMRX_GODMODE_REPO || 'https://github.com/danny-dis/G0DM0D3.git';
 const G0DM0D3_REF = process.env.DMRX_GODMODE_REF || 'f6301765fb90eb7b336bdf365319cd2fe44b1187';
+/**
+ * The project `G0DM0D3_REPO` is a fork of. `danny-dis/G0DM0D3` is a true
+ * GitHub fork (its `parent` is set), which is what lets
+ * `.github/workflows/godmode-fork-sync.yml` fast-forward it with the
+ * `merge-upstream` API instead of maintaining a manual mirror.
+ *
+ * Kept as a constant rather than resolved from the GitHub API at runtime so
+ * an offline gateway can still tell the user what it is tracking.
+ */
+const G0DM0D3_UPSTREAM =
+  process.env.DMRX_GODMODE_UPSTREAM || 'https://github.com/elder-plinius/G0DM0D3';
 const SERVER_TYPE = 'g0dm0d3';
 const DEFAULT_PORT = 7860;
 const CONTAINER_NAME = 'dmrx-g0dm0d3';
@@ -168,9 +179,36 @@ export function killTree(pid: number | null | undefined): void {
 }
 
 /** Repo + pinned ref the runtime clone uses — surfaced to the UI so the
- *  install warning reflects reality instead of a hardcoded stale string. */
-export function getGodmodeRepoInfo(): { repo: string; ref: string } {
-  return { repo: G0DM0D3_REPO, ref: G0DM0D3_REF };
+ *  install warning reflects reality instead of a hardcoded stale string.
+ *
+ *  `upstream` is the project the fork tracks. It is reported separately
+ *  rather than derived from `repo` because the two only coincide by
+ *  convention: pointing `DMRX_GODMODE_REPO` at a personal fork must not make
+ *  the UI claim that fork *is* upstream. */
+export function getGodmodeRepoInfo(): { repo: string; ref: string; upstream: string } {
+  return { repo: G0DM0D3_REPO, ref: G0DM0D3_REF, upstream: G0DM0D3_UPSTREAM };
+}
+
+/**
+ * The commit actually checked out on disk, or null when nothing is installed.
+ *
+ * This can legitimately differ from the pinned `G0DM0D3_REF`: `cloneIfNeeded()`
+ * is a no-op when the directory already exists, so an install created before a
+ * `DMRX_GODMODE_REF` bump keeps running the older commit until it is deleted
+ * and re-cloned. Surfacing the real HEAD is the only way the UI can tell the
+ * user that "pinned" and "running" have drifted apart.
+ */
+export function getInstalledGodmodeRef(): string | null {
+  const dir = g0dm0d3Dir();
+  if (!fs.existsSync(path.join(dir, '.git'))) return null;
+  const res = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: dir,
+    encoding: 'utf-8',
+    timeout: 5000,
+  });
+  if (res.status !== 0) return null;
+  const sha = (res.stdout ?? '').trim();
+  return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
 }
 
 /** Returns true when running inside a Docker/containerd container. */

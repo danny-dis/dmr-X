@@ -130,8 +130,9 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 | `DMRX_A2A_ENABLED` | `true` (sidecar) | No | Enable A2A agent-card + task endpoints on the MCP server. |
 | `DMRX_A2A_AGENT_URL` | `http://127.0.0.1:3100` | No | Public URL advertised in the A2A agent card. |
 | `DMRX_GODMODE_AUTOSTART` | `false` | No | When the gateway boots, start the local G0DM0D3 proxy in relay mode if it is not already healthy. **Off by default:** enabling it makes the gateway clone and execute a third-party GitHub repo at boot, so it must be opted into explicitly with `DMRX_GODMODE_AUTOSTART=true`. |
-| `DMRX_GODMODE_REPO` | `https://github.com/danny-dis/G0DM0D3.git` | No | Repo the managed G0DM0D3 server is cloned from. Defaults to DMR-X's own fork, not upstream, so `scripts/dev/sync-godmode-fork.*` controls when upstream changes reach it. |
+| `DMRX_GODMODE_REPO` | `https://github.com/danny-dis/G0DM0D3.git` | No | Repo the managed G0DM0D3 server is cloned from. Defaults to DMR-X's own fork, not upstream, so `.github/workflows/godmode-fork-sync.yml` controls when upstream changes reach it. |
 | `DMRX_GODMODE_REF` | pinned commit SHA | No | Commit SHA (or branch/tag) the clone is pinned to. Fetched directly (works for a branch, tag, or SHA), so every fresh install is byte-identical regardless of when it runs. See `patches/g0dm0d3/README.md`. |
+| `DMRX_GODMODE_UPSTREAM` | `https://github.com/elder-plinius/G0DM0D3` | No | The project `DMRX_GODMODE_REPO` is a fork of. Reported by `GET /v1/godmode/server/updates` and shown in the UI so users can see how far their pinned copy trails upstream. Only change this if you re-point `DMRX_GODMODE_REPO` at a fork of something else. **Both repos must be on github.com and use `main` as their default branch** — otherwise the update check reports "could not check" and the rest of godmode is unaffected. |
 
 **Security:** The MCP server binds to `127.0.0.1` by default. Only change to `0.0.0.0` if you need remote access, and always set `DMRX_MCP_API_KEY` when exposing externally.
 

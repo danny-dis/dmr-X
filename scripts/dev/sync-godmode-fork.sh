@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Bash counterpart of sync-godmode-fork.ps1 — see that file for the full
-# rationale (gh repo sync vs. a GitHub Actions workflow living in the fork).
+# Bash counterpart of sync-godmode-fork.ps1 — the MANUAL sync path. The
+# automatic one is .github/workflows/godmode-fork-sync.yml (nightly; also
+# verifies patches/g0dm0d3/ still applies and opens the ref-bump PR). See the
+# .ps1 for the full rationale.
 #
 # Usage: bash scripts/dev/sync-godmode-fork.sh
 set -euo pipefail

@@ -1,0 +1,299 @@
+name: G0DM0D3 fork sync
+
+# Keeps DMR-X's G0DM0D3 fork tracking upstream, and keeps the pinned commit
+# DMR-X installs moving forward — without ever silently changing what a
+# running install executes.
+#
+# Two-stage design, deliberately:
+#
+#   1. Sync `danny-dis/G0DM0D3` (a true GitHub fork of
+#      `elder-plinius/G0DM0D3` — `parent` is set, so `merge-upstream` works)
+#      from upstream `main`. This is fully automatic.
+#   2. Bumping `DMRX_GODMODE_REF` — the commit every fresh DMR-X install
+#      actually clones — is proposed as a PR, never pushed to `main`.
+#
+# Stage 2 is a PR rather than a direct commit because G0DM0D3 is third-party
+# code that DMR-X executes as a child process on the user's machine. An
+# unreviewed upstream commit reaching users without a human in the loop is a
+# supply-chain hazard; a PR gives that human a diff to look at. The workflow
+# does the tedious part (sync, patch-drift check, changelog) so the review is
+# cheap.
+#
+# This lives in DMR-X rather than as a scheduled workflow inside the fork so
+# changes to it show up in DMR-X's own review history — the fork stays a
+# clean mirror of upstream with no DMR-X-authored commits on it.
+
+on:
+  schedule:
+    # 06:20 UTC daily. Off the hour — GitHub delays cron runs scheduled on
+    # the hour under load.
+    - cron: '20 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_pr:
+        description: 'Open the ref-bump PR even if patches fail to apply'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: godmode-fork-sync
+  cancel-in-progress: false
+
+env:
+  FORK: danny-dis/G0DM0D3
+  UPSTREAM: elder-plinius/G0DM0D3
+  # The file holding the pinned default that fresh installs clone.
+  REF_FILE: services/server-manager/src/server-manager.service.ts
+
+jobs:
+  sync:
+    name: Sync fork and propose ref bump
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      # `merge-upstream` writes to the fork, which is a *different repository*
+      # from DMR-X — the job's built-in GITHUB_TOKEN is scoped to this repo
+      # only and cannot do it. A PAT with `contents: write` on the fork is
+      # required. Without it the job reports drift and stops rather than
+      # failing loudly every night.
+      - name: Check upstream drift
+        id: drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_head=$(gh api "repos/$UPSTREAM/commits/main" --jq '.sha')
+          fork_head=$(gh api "repos/$FORK/commits/main" --jq '.sha')
+          behind=$(gh api "repos/$FORK/compare/main...${UPSTREAM%%/*}:main" --jq '.behind_by')
+          echo "upstream_head=$upstream_head" >> "$GITHUB_OUTPUT"
+          echo "fork_head_before=$fork_head" >> "$GITHUB_OUTPUT"
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "Fork is $behind commit(s) behind upstream ($fork_head -> $upstream_head)"
+
+      - name: Sync fork from upstream
+        id: sync
+        if: steps.drift.outputs.behind != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GODMODE_FORK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::GODMODE_FORK_TOKEN is not set — cannot sync $FORK." \
+                 "Add a PAT with 'contents: write' on the fork, or run" \
+                 "scripts/dev/sync-godmode-fork.sh locally."
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # gh repo sync is a thin wrapper over POST /merge-upstream. Calling
+          # the API directly keeps the failure message readable (the wrapper
+          # swallows the "merge conflict" body).
+          gh api --method POST "repos/$FORK/merge-upstream" \
+            -f branch=main --jq '.message'
+          echo "synced=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve fork HEAD and current pin
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fork_head=$(gh api "repos/$FORK/commits/main" --jq '.sha')
+          # The pinned default is a plain 40-char SHA literal in the source.
+          # Matching on the const name rather than the bare SHA means a stray
+          # SHA elsewhere in the file can never be picked up by mistake.
+          pinned=$(grep -oP "G0DM0D3_REF\s*=\s*process\.env\.DMRX_GODMODE_REF\s*\|\|\s*'\K[0-9a-f]{40}" "$REF_FILE")
+          echo "fork_head=$fork_head" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          if [ "$fork_head" = "$pinned" ]; then
+            echo "needs_bump=false" >> "$GITHUB_OUTPUT"
+            echo "Pinned ref already matches fork HEAD ($pinned) — nothing to do."
+          else
+            echo "needs_bump=true" >> "$GITHUB_OUTPUT"
+            echo "Pin $pinned -> $fork_head"
+          fi
+
+      # The real risk of moving the pin is not that upstream broke something
+      # for its own users — it is that upstream refactored a file our relay
+      # patches rewrite, so `git apply` no longer lands and DMR-X's godmode
+      # silently reverts to hardcoded-OpenRouter behaviour. Verify against the
+      # actual candidate commit before proposing it.
+      - name: Verify relay patches still apply
+        id: patches
+        if: steps.refs.outputs.needs_bump == 'true'
+        env:
+          FORK_HEAD: ${{ steps.refs.outputs.fork_head }}
+        run: |
+          # -e is on: a broken clone or install must fail loudly rather than
+          # be misreported below as "the patches don't apply". `set -e` does
+          # not apply inside an `if` condition, so the patch run itself is
+          # still allowed to fail and be captured.
+          set -euo pipefail
+          # patch-godmode-cli.ts imports @dmr-x/utils, so the workspace has to
+          # be linked before it can run. Only needed on the bump path, which
+          # is why this is here rather than a top-level step.
+          bun install --frozen-lockfile
+          dir="$RUNNER_TEMP/g0dm0d3"
+          git init -q "$dir"
+          git -C "$dir" remote add origin "https://github.com/$FORK.git"
+          git -C "$dir" fetch -q --depth 1 origin "$FORK_HEAD"
+          git -C "$dir" checkout -q FETCH_HEAD
+          if bun scripts/dev/patch-godmode-cli.ts "$dir" 2>&1 | tee "$RUNNER_TEMP/patch.log"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Relay patches do NOT apply cleanly to $FORK_HEAD"
+          fi
+          # Random delimiter, not a fixed word: this log echoes content from a
+          # third-party repo, and a line that happened to equal the delimiter
+          # would close the block early and let the rest be parsed as
+          # attacker-chosen `key=value` step outputs.
+          delim="PATCHLOG_$(openssl rand -hex 16)"
+          {
+            echo "log<<$delim"
+            cat "$RUNNER_TEMP/patch.log"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open ref-bump PR
+        id: pr
+        if: >-
+          steps.refs.outputs.needs_bump == 'true' &&
+          (steps.patches.outputs.ok == 'true' || inputs.force_pr)
+        env:
+          # Prefer the PAT over the built-in GITHUB_TOKEN. Actions suppresses
+          # `pull_request` triggers for events caused by GITHUB_TOKEN (its
+          # recursion guard), so a PR opened with it would never run ci.yml —
+          # and this is precisely the PR that must not be merged unchecked.
+          # Falls back to GITHUB_TOKEN so the PR still gets opened without the
+          # secret; the body then warns that CI has to be kicked manually.
+          GH_TOKEN: ${{ secrets.GODMODE_FORK_TOKEN || github.token }}
+          HAVE_PAT: ${{ secrets.GODMODE_FORK_TOKEN != '' }}
+          FORK_HEAD: ${{ steps.refs.outputs.fork_head }}
+          PINNED: ${{ steps.refs.outputs.pinned }}
+          PATCHES_OK: ${{ steps.patches.outputs.ok }}
+          PATCH_LOG: ${{ steps.patches.outputs.log }}
+        run: |
+          set -euo pipefail
+          branch="chore/godmode-ref-${FORK_HEAD:0:7}"
+
+          # Re-running the schedule while a bump PR is still open must not
+          # spam duplicates — one branch per candidate SHA, and an existing
+          # open PR for it short-circuits.
+          if gh pr list --head "$branch" --state open --json number --jq 'length' | grep -qv '^0$'; then
+            echo "PR for $branch already open — nothing to do."
+            exit 0
+          fi
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$branch"
+
+          # Anchored on the const assignment, same as the read above.
+          perl -0pi -e "s/(G0DM0D3_REF\s*=\s*process\.env\.DMRX_GODMODE_REF\s*\|\|\s*')[0-9a-f]{40}/\${1}$FORK_HEAD/" "$REF_FILE"
+          git diff --quiet -- "$REF_FILE" && { echo "::error::ref substitution did not change $REF_FILE"; exit 1; }
+
+          compare="https://github.com/$FORK/compare/$PINNED...$FORK_HEAD"
+          if [ "$PATCHES_OK" = 'true' ]; then
+            verdict='Relay patches apply cleanly to the new commit.'
+          else
+            verdict='**Relay patches FAILED to apply.** Merging as-is breaks godmode relay mode (requests fall back to hardcoded OpenRouter). Update `patches/g0dm0d3/` in this PR before merging.'
+          fi
+
+          git commit \
+            -m "chore(godmode): pin G0DM0D3 to ${FORK_HEAD:0:7}" \
+            -m "Sync $FORK from $UPSTREAM and move DMRX_GODMODE_REF to the new fork HEAD." \
+            -m "$compare"
+          git push -u origin "$branch"
+
+          # Body is assembled into a file rather than a heredoc: a heredoc
+          # terminator must sit at column 0, which would break out of this
+          # YAML block scalar's indentation and make the workflow unparseable.
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            echo "Automated by \`.github/workflows/godmode-fork-sync.yml\`."
+            echo ""
+            echo "\`$FORK\` was synced from \`$UPSTREAM\`, and \`DMRX_GODMODE_REF\` moves to"
+            echo "the new fork HEAD. Existing installs are pinned and do **not** move"
+            echo "until this merges and they re-clone."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Old pin | \`$PINNED\` |"
+            echo "| New pin | \`$FORK_HEAD\` |"
+            echo "| Upstream diff | $compare |"
+            echo ""
+            echo "$verdict"
+            echo ""
+            echo "<details><summary>patch-godmode output</summary>"
+            echo ""
+            echo '```'
+            echo "$PATCH_LOG"
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "**Review the upstream diff before merging** — this is third-party"
+            echo "code DMR-X spawns as a child process on the user's machine."
+          } > "$body"
+
+          if [ "$HAVE_PAT" != 'true' ]; then
+            {
+              echo ""
+              echo "> **CI did not run on this PR.** It was opened with the"
+              echo "> built-in \`GITHUB_TOKEN\`, which cannot trigger workflows."
+              echo "> Close and reopen it to run CI, or set the"
+              echo "> \`GODMODE_FORK_TOKEN\` secret."
+            } >> "$body"
+          fi
+
+          url=$(gh pr create \
+            --title "chore(godmode): pin G0DM0D3 to ${FORK_HEAD:0:7}" \
+            --body-file "$body")
+          echo "Opened $url"
+
+          # Supersede earlier bump PRs. Without this, a fork that advances on
+          # several consecutive nights before anyone merges leaves a stack of
+          # open PRs each pinning a different intermediate commit — and the
+          # per-SHA branch guard above cannot catch that, since every one of
+          # them has a different head branch.
+          gh pr list --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("chore/godmode-ref-")) | .number' \
+          | while read -r num; do
+              [ -z "$num" ] && continue
+              if [ "$num" != "${url##*/}" ]; then
+                gh pr close "$num" --comment "Superseded by $url (newer fork HEAD)." || true
+              fi
+            done
+
+      - name: Fail if patches broke
+        if: steps.refs.outputs.needs_bump == 'true' && steps.patches.outputs.ok == 'false'
+        run: |
+          echo "::error::Relay patches no longer apply to ${{ steps.refs.outputs.fork_head }}." \
+               "patches/g0dm0d3/ needs updating before the pin can move."
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### G0DM0D3 fork sync"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Upstream HEAD | \`${{ steps.drift.outputs.upstream_head }}\` |"
+            echo "| Fork behind by | ${{ steps.drift.outputs.behind }} |"
+            echo "| Fork HEAD | \`${{ steps.refs.outputs.fork_head }}\` |"
+            echo "| Current pin | \`${{ steps.refs.outputs.pinned }}\` |"
+            echo "| Needs bump | ${{ steps.refs.outputs.needs_bump }} |"
+            echo "| Patches apply | ${{ steps.patches.outputs.ok || 'n/a' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
