@@ -84,6 +84,39 @@ describe('normalizeOpenAIUsage', () => {
   });
 });
 
+describe('normalizeOpenAIUsage reasoning-token reconciliation', () => {
+  it('recovers output tokens a provider reports only in total_tokens', () => {
+    // Google's OpenAI-compat endpoint leaves reasoning tokens out of
+    // completion_tokens; the total is the only place they appear.
+    const usage = normalizeOpenAIUsage({
+      prompt_tokens: 3376,
+      completion_tokens: 0,
+      total_tokens: 3388,
+    });
+
+    expect(usage.completion_tokens).toBe(12);
+    expect(usage.prompt_tokens + usage.completion_tokens).toBe(usage.total_tokens);
+  });
+
+  it('leaves a self-consistent OpenAI response untouched', () => {
+    const usage = normalizeOpenAIUsage({
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      total_tokens: 150,
+    });
+
+    expect(usage.completion_tokens).toBe(50);
+    expect(usage.total_tokens).toBe(150);
+  });
+
+  it('falls back to the reported completion when no total is given', () => {
+    const usage = normalizeOpenAIUsage({ prompt_tokens: 100, completion_tokens: 50 });
+
+    expect(usage.completion_tokens).toBe(50);
+    expect(usage.total_tokens).toBe(150);
+  });
+});
+
 describe('normalizeGeminiUsage', () => {
   it('passes promptTokenCount through and lands cachedContentTokenCount in cache_read_tokens', () => {
     const usage = normalizeGeminiUsage({
@@ -98,6 +131,20 @@ describe('normalizeGeminiUsage', () => {
     expect(usage.total_tokens).toBe(1050);
     expect(usage.cache_read_tokens).toBe(900);
     expect(usage.cache_write_tokens).toBeUndefined();
+  });
+
+  it('counts thoughtsTokenCount as output, since candidatesTokenCount excludes it', () => {
+    // Shape observed live from gemini-2.5-flash: reasoning tokens show up only
+    // in the total, so counting candidates alone reported them as zero.
+    const usage = normalizeGeminiUsage({
+      promptTokenCount: 3376,
+      candidatesTokenCount: 0,
+      thoughtsTokenCount: 12,
+      totalTokenCount: 3388,
+    });
+
+    expect(usage.completion_tokens).toBe(12);
+    expect(usage.prompt_tokens + usage.completion_tokens).toBe(usage.total_tokens);
   });
 });
 

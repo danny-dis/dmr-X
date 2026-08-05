@@ -55,14 +55,28 @@ export function normalizeAnthropicUsage(usage: unknown): TokenUsage {
 export function normalizeOpenAIUsage(usage: unknown): TokenUsage {
   const u = (usage ?? {}) as Record<string, unknown>;
   const prompt = num(u.prompt_tokens);
-  const completion = num(u.completion_tokens);
+  const reportedCompletion = num(u.completion_tokens);
   const details = (u.prompt_tokens_details ?? {}) as Record<string, unknown>;
   const cacheRead = num(details.cached_tokens);
+  const total = num(u.total_tokens);
+
+  // Reasoning tokens are billed as output but are not reported consistently:
+  // OpenAI counts them *inside* `completion_tokens`, while Google's OpenAI-compat
+  // endpoint leaves them out of it and only reflects them in `total_tokens`. A
+  // live probe against gemini-2.5-flash returned prompt 3376, completion 0,
+  // total 3388 — twelve billable tokens reported as zero.
+  //
+  // Rather than guess which convention a provider follows, reconcile against the
+  // identity every OpenAI-shaped response obeys: total = prompt + completion.
+  // When the provider omits a total this falls back to the reported figure, and
+  // when the two already agree (OpenAI's own responses) it changes nothing.
+  const completion =
+    total > prompt ? Math.max(reportedCompletion, total - prompt) : reportedCompletion;
 
   return {
     prompt_tokens: prompt,
     completion_tokens: completion,
-    total_tokens: num(u.total_tokens) || prompt + completion,
+    total_tokens: total || prompt + completion,
     ...(cacheRead > 0 ? { cache_read_tokens: cacheRead } : {}),
   };
 }
@@ -71,7 +85,13 @@ export function normalizeOpenAIUsage(usage: unknown): TokenUsage {
 export function normalizeGeminiUsage(usage: unknown): TokenUsage {
   const u = (usage ?? {}) as Record<string, unknown>;
   const prompt = num(u.promptTokenCount);
-  const completion = num(u.candidatesTokenCount);
+  // Gemini 2.5+ reports reasoning tokens in `thoughtsTokenCount`, *excluded*
+  // from `candidatesTokenCount` but included in `totalTokenCount`. Counting
+  // only candidates dropped them: a live probe came back promptTokenCount 3376,
+  // candidatesTokenCount 0, totalTokenCount 3388 — twelve billable output
+  // tokens reported as zero, and prompt + completion no longer summing to
+  // total. They are billed as output, so they belong in completion_tokens.
+  const completion = num(u.candidatesTokenCount) + num(u.thoughtsTokenCount);
   const cacheRead = num(u.cachedContentTokenCount);
 
   return {

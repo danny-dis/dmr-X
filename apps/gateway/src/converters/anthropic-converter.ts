@@ -94,7 +94,14 @@ export interface AnthropicMessagesResponse {
   model: string;
   stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | null;
   stop_sequence: string | null;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    /** Prompt tokens written to the provider's cache. Omitted when there were none. */
+    cache_creation_input_tokens?: number;
+    /** Prompt tokens served from the provider's cache. Omitted when there were none. */
+    cache_read_input_tokens?: number;
+  };
 }
 
 export type AnthropicResponseContentBlock =
@@ -463,9 +470,38 @@ export function convertUnifiedResponseToAnthropic(
     model: response.modelId,
     stop_reason: stopReason,
     stop_sequence: null,
-    usage: {
-      input_tokens: response.usage?.prompt_tokens ?? 0,
-      output_tokens: response.usage?.completion_tokens ?? 0,
-    },
+    usage: buildAnthropicUsage(response.usage),
+  };
+}
+
+/**
+ * Anthropic's wire contract splits the prompt three ways: `input_tokens` counts
+ * only the *uncached remainder*, with cache reads and writes reported beside it.
+ * Our internal `prompt_tokens` is the opposite — `normalizeAnthropicUsage` adds
+ * the cache components back in so the total is comparable across providers.
+ *
+ * Passing that total straight through as `input_tokens` therefore over-reported
+ * the billable prompt: a client pricing the response itself (the real Anthropic
+ * SDK among them) billed cache reads at full rate instead of ~0.1x, and the
+ * caching feature was invisible to anyone consuming the Anthropic-compatible
+ * API. Subtract the components back out, and emit them as their own fields.
+ *
+ * The cache fields are omitted entirely when zero, so a response from a provider
+ * that does not cache keeps exactly the two-field shape it has always had.
+ */
+function buildAnthropicUsage(
+  usage: UnifiedResponse['usage'] | undefined
+): AnthropicMessagesResponse['usage'] {
+  const cacheRead = usage?.cache_read_tokens ?? 0;
+  const cacheWrite = usage?.cache_write_tokens ?? 0;
+  const promptTotal = usage?.prompt_tokens ?? 0;
+
+  return {
+    // Clamped at zero: a provider that reports cache counts exceeding its own
+    // prompt total would otherwise produce a negative token count.
+    input_tokens: Math.max(0, promptTotal - cacheRead - cacheWrite),
+    output_tokens: usage?.completion_tokens ?? 0,
+    ...(cacheWrite > 0 ? { cache_creation_input_tokens: cacheWrite } : {}),
+    ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
   };
 }
