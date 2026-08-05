@@ -2334,6 +2334,32 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 
   {
+    id: 'tokenrouter',
+    name: 'TokenRouter',
+    category: 'hosting',
+    baseUrl: 'https://api.tokenrouter.com/v1',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    // Seed models only — TokenRouter fronts ~120 models and the rest are picked
+    // up by discoverMissingModels() from its /v1/models endpoint on startup.
+    // kimi-k3-free is listed first because it is the free tier's workhorse, and
+    // claude-fable-5 because TokenRouter is currently the only configured route
+    // to an Anthropic model that answers.
+    models: [
+      { id: 'moonshotai/kimi-k3-free', modalities: ['llm'], contextWindow: 262144, maxOutputTokens: 16384, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'reasoning'], specializations: ['general', 'code'], freeTier: { rateLimits: { rpm: 10, rpd: 500, tpm: 200000, tpd: 2000000 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
+      { id: 'moonshotai/kimi-k3', modalities: ['llm'], contextWindow: 262144, maxOutputTokens: 16384, capabilities: ['streaming', 'tool_use', 'json_mode', 'reasoning'], specializations: ['general', 'code'] },
+      { id: 'anthropic/claude-fable-5', modalities: ['llm'], contextWindow: 200000, maxOutputTokens: 64000, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision', 'prompt_caching'], specializations: ['general', 'code'] },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'TOKENROUTER_API_KEY',
+    description: 'Aggregator fronting ~120 models; reports prompt-cache and reasoning token counts',
+    region: 'global',
+    signupUrl: 'https://tokenrouter.com/',
+  },
+
+  {
     id: 'helixmind',
     name: 'HelixMind',
     category: 'hosting',
