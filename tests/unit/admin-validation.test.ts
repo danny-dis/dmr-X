@@ -110,10 +110,19 @@ const BatchAddMessagesSchema = z.object({
   messages: z.array(BatchMessageItemSchema).min(1).max(MAX_BATCH_MESSAGES),
 });
 
+// Must stay in sync with CONVERSATION_MODES in
+// apps/gateway/src/routes/conversation.routes.ts. This copy silently lagged
+// behind when 'godmode' and 'agent' were added to the Playground: the only
+// mode cases were 'chat' and 'bogus', which pass against either list, so the
+// drift went unnoticed until the Agent tab 500'd on every send.
+const PLAYGROUND_MODES = [
+  'chat', 'image', 'embed', 'tts', 'rerank', 'moderate', 'agentic', 'tool-loop', 'godmode', 'agent',
+] as const;
+
 const ListConversationsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0),
-  mode: z.enum(['chat', 'image', 'embed', 'tts', 'rerank', 'moderate', 'agentic', 'tool-loop']).optional(),
+  mode: z.enum(PLAYGROUND_MODES).optional(),
   search: z.string().min(1).max(200).optional(),
   temporary: z.union([z.literal('true'), z.literal('false')]).optional(),
 });
@@ -615,5 +624,12 @@ describe('Admin route validation: GET /conversations', () => {
   it('rejects unknown mode', async () => {
     const res = await app.inject({ method: 'GET', url: '/conversations?mode=bogus' });
     expect(res.statusCode).toBe(400);
+  });
+
+  // Every Playground mode must be filterable. 'chat' alone was not enough:
+  // the enum here lagged the route's by two values and no case noticed.
+  it.each(PLAYGROUND_MODES)('accepts mode=%s', async (mode) => {
+    const res = await app.inject({ method: 'GET', url: `/conversations?mode=${mode}` });
+    expect(res.statusCode).toBe(200);
   });
 });

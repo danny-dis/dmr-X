@@ -431,7 +431,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
   user_id TEXT,
   title TEXT,
-  mode TEXT DEFAULT 'chat',          -- chat, image, embed, tts, rerank, moderate
+  mode TEXT DEFAULT 'chat',          -- chat, image, embed, tts, rerank, moderate, agentic, tool-loop, godmode, agent
   model TEXT,
   is_temporary INTEGER DEFAULT 0,    -- 1 = don't persist to DB
   created_at TEXT DEFAULT (datetime('now')),
