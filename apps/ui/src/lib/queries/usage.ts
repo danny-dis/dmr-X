@@ -119,8 +119,11 @@ export function useFreeTierSummary() {
 export interface CostDashboard {
   period: { start: string; end: string };
   totalCost: number;
-  freeTierCost: number;
+  freeRequests: number;
+  freeTokens: number;
   paidCost: number;
+  paidRequests: number;
+  paidTokens: number;
   costSavings: number;
   savingsBasis: SavingsBasis;
   byProvider: Record<string, { cost: number; requests: number; tokens: number; freePercent: number }>;
@@ -128,13 +131,13 @@ export interface CostDashboard {
     tenantId: string;
     tenantName: string;
     totalCost: number;
-    freeTierCost: number;
+    freeRequests: number;
     paidCost: number;
     totalRequests: number;
     totalInputTokens: number;
     totalOutputTokens: number;
   }>;
-  dailyCosts: Array<{ date: string; cost: number; free_cost: number; paid_cost: number }>;
+  dailyCosts: Array<{ date: string; cost: number; paid_cost: number; avoided_cost: number }>;
 }
 
 export function useCostDashboard(days = 30, options?: PollOptions) {

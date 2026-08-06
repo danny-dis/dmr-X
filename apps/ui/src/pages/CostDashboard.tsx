@@ -101,8 +101,8 @@ export function CostDashboardPage() {
                   />
                   <StatTile
                     icon={<TrendingDown className="size-4" />}
-                    label="Free-tier cost"
-                    value={formatCurrency(dashboard.freeTierCost)}
+                    label="Free requests"
+                    value={formatNumber(dashboard.freeRequests)}
                     tone="success"
                   />
                   <StatTile
@@ -174,7 +174,7 @@ export function CostDashboardPage() {
                         <tr className="border-b border-border">
                           <th className="text-left py-2 font-medium text-fg-muted">Tenant</th>
                           <th className="text-right py-2 font-medium text-fg-muted">Total cost</th>
-                          <th className="text-right py-2 font-medium text-fg-muted">Free tier</th>
+                          <th className="text-right py-2 font-medium text-fg-muted">Free reqs</th>
                           <th className="text-right py-2 font-medium text-fg-muted">Paid</th>
                           <th className="text-right py-2 font-medium text-fg-muted">Requests</th>
                         </tr>
@@ -184,7 +184,7 @@ export function CostDashboardPage() {
                           <tr key={tenant.tenantId} className="border-b border-border last:border-0">
                             <td className="py-2 font-medium text-fg">{tenant.tenantName}</td>
                             <td className="py-2 text-right text-fg">{formatCurrency(tenant.totalCost)}</td>
-                            <td className="py-2 text-right text-success">{formatCurrency(tenant.freeTierCost)}</td>
+                            <td className="py-2 text-right text-success">{formatNumber(tenant.freeRequests)}</td>
                             <td className="py-2 text-right text-fg">{formatCurrency(tenant.paidCost)}</td>
                             <td className="py-2 text-right text-fg">{formatNumber(tenant.totalRequests)}</td>
                           </tr>
@@ -208,12 +208,12 @@ export function CostDashboardPage() {
                   <BarSeriesChart
                     data={dashboard.dailyCosts.map((day) => ({
                       date: day.date,
-                      freeCost: day.free_cost,
                       paidCost: day.paid_cost,
+                      avoidedCost: day.avoided_cost,
                     }))}
                     bars={[
-                      { key: 'freeCost', name: 'Free', color: chartColor('success') },
                       { key: 'paidCost', name: 'Paid', color: chartColor('warning') },
+                      { key: 'avoidedCost', name: 'Avoided', color: chartColor('success') },
                     ]}
                     xKey="date"
                     height={256}

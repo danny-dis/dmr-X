@@ -4249,41 +4249,73 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const days = Math.min(Math.max(parseInt(query.days ?? '30', 10) || 30, 1), 365);
     const start = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-    // Total costs
+    // Free-ness is decided by classification (model_classifications), not by
+    // cost being zero — an unpriced paid model also logs estimated_cost = 0,
+    // and `SUM(CASE WHEN cost = 0 THEN cost ...)` is identically zero anyway.
+    // Same classifier as /admin/usage/live above.
+    const IS_FREE_CASE = `
+      CASE WHEN mc.has_free_tier = 1 OR mc.verified_free = 1
+                OR mc.pricingTier IN ('free', 'free_with_limits')
+           THEN 1 ELSE 0 END`;
+
+    // Total costs, split into free/paid by classification.
     const totals = db.prepare(`
       SELECT
         SUM(estimated_cost) as total_cost,
-        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN estimated_cost ELSE 0 END) as free_cost,
         COUNT(*) as requests,
-        SUM(tokens_input + tokens_output) as tokens
-      FROM request_logs
-      WHERE timestamp > ?
+        SUM(tokens_input + tokens_output) as tokens,
+        SUM(CASE WHEN is_free THEN 1 ELSE 0 END) as free_requests,
+        SUM(CASE WHEN is_free THEN tokens_input + tokens_output ELSE 0 END) as free_tokens,
+        SUM(CASE WHEN NOT is_free THEN estimated_cost ELSE 0 END) as paid_cost,
+        SUM(CASE WHEN NOT is_free THEN 1 ELSE 0 END) as paid_requests,
+        SUM(CASE WHEN NOT is_free THEN tokens_input + tokens_output ELSE 0 END) as paid_tokens
+      FROM (
+        SELECT
+          rl.estimated_cost,
+          rl.tokens_input,
+          rl.tokens_output,
+          ${IS_FREE_CASE} AS is_free
+        FROM request_logs rl
+        LEFT JOIN model_classifications mc
+          ON mc.provider_id = rl.selected_provider
+         AND mc.model_id   = rl.selected_model
+        WHERE rl.timestamp > ?
+      )
     `).get(start) as any;
 
     // Costs by provider
     const byProvider = db.prepare(`
       SELECT
-        selected_provider as provider,
-        SUM(estimated_cost) as cost,
+        rl.selected_provider as provider,
+        SUM(rl.estimated_cost) as cost,
         COUNT(*) as requests,
-        SUM(tokens_input + tokens_output) as tokens,
-        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as free_percent
-      FROM request_logs
-      WHERE timestamp > ?
-      GROUP BY selected_provider
+        SUM(rl.tokens_input + rl.tokens_output) as tokens,
+        SUM(${IS_FREE_CASE}) * 100.0 / COUNT(*) as free_percent
+      FROM request_logs rl
+      LEFT JOIN model_classifications mc
+        ON mc.provider_id = rl.selected_provider
+       AND mc.model_id   = rl.selected_model
+      WHERE rl.timestamp > ?
+      GROUP BY rl.selected_provider
       ORDER BY cost DESC
     `).all(start) as any[];
 
-    // Costs by tenant
+    // Costs by tenant, same classification split as totals.
     const byTenant = db.prepare(`
       SELECT
-        tenant_id,
-        SUM(estimated_cost) as total_cost,
+        rl.tenant_id,
+        SUM(rl.estimated_cost) as total_cost,
         COUNT(*) as requests,
-        SUM(tokens_input + tokens_output) as tokens
-      FROM request_logs
-      WHERE timestamp > ?
-      GROUP BY tenant_id
+        SUM(rl.tokens_input) as input_tokens,
+        SUM(rl.tokens_output) as output_tokens,
+        SUM(${IS_FREE_CASE}) as free_requests,
+        SUM(CASE WHEN NOT (${IS_FREE_CASE}) THEN rl.estimated_cost ELSE 0 END) as paid_cost
+      FROM request_logs rl
+      LEFT JOIN model_classifications mc
+        ON mc.provider_id = rl.selected_provider
+       AND mc.model_id   = rl.selected_model
+      WHERE rl.timestamp > ?
+      GROUP BY rl.tenant_id
       ORDER BY total_cost DESC
       LIMIT 20
     `).all(start) as any[];
@@ -4295,39 +4327,47 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         tenantId: t.tenant_id,
         tenantName: tenant?.name ?? 'Unknown',
         totalCost: t.total_cost,
-        freeTierCost: 0,
-        paidCost: t.total_cost,
+        freeRequests: t.free_requests ?? 0,
+        paidCost: t.paid_cost ?? 0,
         totalRequests: t.requests,
-        totalInputTokens: 0,
-        totalOutputTokens: t.tokens,
+        totalInputTokens: t.input_tokens ?? 0,
+        totalOutputTokens: t.output_tokens ?? 0,
         byProvider: {},
       };
     });
 
-    // Daily costs
+    // Daily costs — real spend (`cost`) and real paid spend (`paid_cost`).
+    // The counterfactual `avoided_cost` isn't derivable from this table (it
+    // needs reference pricing) and is joined in below from computeSavings.
     const dailyCosts = db.prepare(`
       SELECT
-        DATE(timestamp) as date,
-        SUM(estimated_cost) as cost,
-        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN estimated_cost ELSE 0 END) as free_cost,
-        SUM(CASE WHEN estimated_cost > 0 THEN estimated_cost ELSE 0 END) as paid_cost
-      FROM request_logs
-      WHERE timestamp > ?
-      GROUP BY DATE(timestamp)
+        DATE(rl.timestamp) as date,
+        SUM(rl.estimated_cost) as cost,
+        SUM(CASE WHEN NOT (${IS_FREE_CASE}) THEN rl.estimated_cost ELSE 0 END) as paid_cost
+      FROM request_logs rl
+      LEFT JOIN model_classifications mc
+        ON mc.provider_id = rl.selected_provider
+       AND mc.model_id   = rl.selected_model
+      WHERE rl.timestamp > ?
+      GROUP BY DATE(rl.timestamp)
       ORDER BY date ASC
     `).all(start) as any[];
 
     // `costSavings` used to be SUM(CASE WHEN cost = 0 THEN cost ELSE 0 END),
     // which is identically zero. It now comes from the counterfactual in
     // services/savings.ts, which prices free-served tokens against the
-    // cheapest comparable paid model.
+    // cheapest comparable paid model. Reused here for `avoided_cost` per day.
     const savings = computeSavings(days);
+    const avoidedByDate = new Map(savings.daily.map((d) => [d.date, d.costAvoidedUsd]));
 
     return {
       period: { start: new Date(start), end: new Date() },
       totalCost: totals?.total_cost ?? 0,
-      freeTierCost: totals?.free_cost ?? 0,
-      paidCost: (totals?.total_cost ?? 0) - (totals?.free_cost ?? 0),
+      freeRequests: totals?.free_requests ?? 0,
+      freeTokens: totals?.free_tokens ?? 0,
+      paidCost: totals?.paid_cost ?? 0,
+      paidRequests: totals?.paid_requests ?? 0,
+      paidTokens: totals?.paid_tokens ?? 0,
       costSavings: savings.costAvoidedUsd,
       savingsBasis: savings.basis,
       byTenant: enrichedByTenant,
@@ -4337,7 +4377,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         tokens: p.tokens,
         freePercent: p.free_percent ?? 0,
       }])),
-      dailyCosts,
+      dailyCosts: dailyCosts.map((d: any) => ({
+        date: d.date,
+        cost: d.cost ?? 0,
+        paid_cost: d.paid_cost ?? 0,
+        avoided_cost: avoidedByDate.get(d.date) ?? 0,
+      })),
     };
   });
 
