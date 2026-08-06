@@ -2453,34 +2453,13 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_VIDEO_STREAM }, 'routing');
 
-        const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
-        request.stream = true;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['video'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
-        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
-        if (!adapter || !adapter.executeStream) {
-          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
-        }
-
-        const stream = adapter.executeStream(request);
-        const updates: string[] = [];
-        for await (const chunk of stream) {
-          updates.push(JSON.stringify(chunk));
-        }
-
-        const response: UnifiedResponse = {
-          modality: 'video',
-          requestId: crypto.randomUUID(),
-          providerId: plan.primary.providerId,
-          modelId: plan.primary.modelId,
-          videos: [],
-          latencyMs: 0,
-        };
-
+        // This tool never actually streamed to the MCP client — it collected
+        // the whole adapter stream in-process and returned it as one blob,
+        // while ALSO discarding the collected video data (`videos: []`
+        // below, unconditionally). Repointed to the non-streaming gateway
+        // route: same collected-result behavior for the caller, but now with
+        // the real payload instead of an empty array.
+        const response = await routeViaGateway(gatewayUrl, 'video', params as unknown as Record<string, unknown>);
         const formatted = formatVideoResponse(response);
 
         mcpLog(server, 'info', {
@@ -2492,7 +2471,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ updates, final: JSON.parse(formatted) }, null, 2),
+            // `updates` kept for output-shape compatibility with prior
+            // callers; always empty now since there is no incremental
+            // streaming through the gateway's non-streaming route.
+            text: JSON.stringify({ updates: [], final: JSON.parse(formatted) }, null, 2),
           }],
         };
       } catch (error) {
@@ -3218,45 +3200,18 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT_STREAM }, 'routing');
 
-        const request = toUnifiedRequest('llm', params as unknown as Record<string, unknown>);
-        request.stream = true;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['llm'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
-        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
-        if (!adapter || !adapter.executeStream) {
-          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
-        }
-
-        const stream = adapter.executeStream(request);
-        const chunks: string[] = [];
-        for await (const chunk of stream) {
-          if (chunk.type === 'token') {
-            const tokenChunk = chunk as { data: { content?: string } };
-            chunks.push(tokenChunk.data?.content || '');
-          }
-        }
-
-        const fullText = chunks.join('');
-        const response: UnifiedResponse = {
-          modality: 'llm',
-          requestId: crypto.randomUUID(),
-          providerId: plan.primary.providerId,
-          modelId: plan.primary.modelId,
-          message: { role: 'assistant', content: fullText },
-          latencyMs: 0,
-        };
-
+        // This tool never actually streamed to the MCP client — it drained
+        // the whole adapter stream in-process and joined the chunks into one
+        // string before returning. Repointed to the non-streaming gateway
+        // route: behavior-identical from the caller's perspective (one
+        // collected string either way), now sourced from the gateway.
+        const response = await routeViaGateway(gatewayUrl, 'llm', params as unknown as Record<string, unknown>);
         const formatted = formatChatResponse(response);
 
         mcpLog(server, 'info', {
           tool: TOOL_NAMES.CHAT_STREAM,
           provider: response.providerId,
           model: response.modelId,
-          chunkCount: chunks.length,
         }, 'routing');
 
         return {
@@ -3297,47 +3252,28 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE_STREAM }, 'routing');
 
-        const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
-        request.stream = true;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['diffusion'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
-        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
-        if (!adapter || !adapter.executeStream) {
-          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
-        }
-
-        const stream = adapter.executeStream(request);
-        const updates: string[] = [];
-        for await (const chunk of stream) {
-          updates.push(JSON.stringify(chunk));
-        }
-
-        const response: UnifiedResponse = {
-          modality: 'diffusion',
-          requestId: crypto.randomUUID(),
-          providerId: plan.primary.providerId,
-          modelId: plan.primary.modelId,
-          images: [],
-          latencyMs: 0,
-        };
-
+        // This tool never actually streamed to the MCP client — it collected
+        // the whole adapter stream in-process and returned it as one blob,
+        // while ALSO discarding the collected image data (`images: []`
+        // below, unconditionally). Repointed to the non-streaming gateway
+        // route: same collected-result behavior for the caller, but now with
+        // the real payload instead of an empty array.
+        const response = await routeViaGateway(gatewayUrl, 'diffusion', params as unknown as Record<string, unknown>);
         const formatted = formatImageResponse(response);
 
         mcpLog(server, 'info', {
           tool: TOOL_NAMES.GENERATE_IMAGE_STREAM,
           provider: response.providerId,
           model: response.modelId,
-          updateCount: updates.length,
         }, 'routing');
 
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ updates, final: JSON.parse(formatted) }, null, 2),
+            // `updates` kept for output-shape compatibility with prior
+            // callers; always empty now since there is no incremental
+            // streaming through the gateway's non-streaming route.
+            text: JSON.stringify({ updates: [], final: JSON.parse(formatted) }, null, 2),
           }],
         };
       } catch (error) {
