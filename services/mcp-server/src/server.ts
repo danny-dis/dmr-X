@@ -2028,59 +2028,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT, requestId }, 'routing');
 
-        // Reuse the gateway for routing when configured. This makes the MCP
-        // server a thin proxy to DMR-X's already-healthy candidate pool instead
-        // of maintaining its own isolated DB (which may lack provider_keys and
-        // therefore report "All providers currently unavailable"). Single source
-        // of truth for provider health + routing.
-        const gwUrl = config.gatewayUrl || process.env.DMRX_GATEWAY_URL;
-        if (gwUrl) {
-          try {
-            const gwKey = resolveGatewayKey();
-            const gwRes = await fetch(`${gwUrl}/v1/chat/completions`, {
-              method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                ...(gwKey ? { authorization: `Bearer ${gwKey}` } : {}),
-              },
-              body: JSON.stringify({
-                model: (params.model as string) || 'auto',
-                messages: params.messages,
-                max_tokens: params.max_tokens,
-                temperature: params.temperature,
-                top_p: params.top_p,
-                stream: false,
-              }),
-            });
-            const gwData: any = await gwRes.json().catch(() => ({}));
-            if (!gwRes.ok) {
-              return toolError(
-                gwData?.error?.message || `Gateway returned ${gwRes.status}`,
-                'GATEWAY_ERROR',
-                requestId,
-              );
-            }
-            const text =
-              typeof gwData?.choices?.[0]?.message?.content === 'string'
-                ? gwData.choices[0].message.content
-                : JSON.stringify(gwData);
-            return {
-              content: [{ type: 'text' as const, text }],
-              structuredContent: gwData,
-            };
-          } catch (gwErr) {
-            // Gateway unreachable — fall through to in-process routing.
-            mcpLog(server, 'warning', { tool: TOOL_NAMES.CHAT, requestId, err: String(gwErr) }, 'gateway-proxy');
-          }
-        }
-
-        const request = toUnifiedRequest('llm', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['llm'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        // Routed entirely through the gateway (single source of truth for
+        // provider health, rate-limit quota, and the diversity cap) — see
+        // routeViaGateway() for the wire-format mapping.
+        const response = await routeViaGateway(gatewayUrl, 'llm', params as unknown as Record<string, unknown>);
         const formatted = formatChatResponse(response);
 
         // Apply guardrails to response
@@ -2168,21 +2119,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE }, 'routing');
 
-        const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
-        // Pin diffusion to the dedicated pollinations-image provider. The router
-        // honors a `providerName/modelId` model prefix (scopes candidates to that
-        // provider), and the generic 'pollinations' text adapter rejects the
-        // diffusion modality — so without this pin it throws
-        // "Unsupported modality: diffusion". The PollinationsImageAdapter
-        // (providerName 'pollinations-images') handles diffusion + returns a URL.
-        const imageModel = (params.model as string) || 'flux';
-        request.model = `pollinations-images/${imageModel}`;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['diffusion'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'diffusion', params as unknown as Record<string, unknown>);
         const formatted = formatImageResponse(response);
 
         mcpLog(server, 'info', {
@@ -2236,13 +2173,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.EMBED }, 'routing');
 
-        const request = toUnifiedRequest('embedding', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['embedding'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'embedding', params as unknown as Record<string, unknown>);
         const formatted = formatEmbeddingResponse(response);
 
         mcpLog(server, 'info', {
@@ -2296,13 +2227,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.TRANSCRIBE }, 'routing');
 
-        const request = toUnifiedRequest('audio_stt', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['audio_stt'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'audio_stt', params as unknown as Record<string, unknown>);
         const formatted = formatTranscribeResponse(response);
 
         mcpLog(server, 'info', {
@@ -2356,13 +2281,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.SPEAK }, 'routing');
 
-        const request = toUnifiedRequest('audio_tts', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['audio_tts'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'audio_tts', params as unknown as Record<string, unknown>);
         const formatted = formatSpeakResponse(response);
 
         mcpLog(server, 'info', {
@@ -2416,13 +2335,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.RERANK }, 'routing');
 
-        const request = toUnifiedRequest('reranking', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['reranking'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'reranking', params as unknown as Record<string, unknown>);
         const formatted = formatRerankResponse(response);
 
         mcpLog(server, 'info', {
@@ -2486,13 +2399,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_VIDEO }, 'routing');
 
-        const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['video'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'video', params as unknown as Record<string, unknown>);
         const formatted = formatVideoResponse(response);
 
         mcpLog(server, 'info', {
@@ -2620,13 +2527,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_MUSIC }, 'routing');
 
-        const request = toUnifiedRequest('music', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['music'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'music', params as unknown as Record<string, unknown>);
         const formatted = formatMusicResponse(response);
 
         mcpLog(server, 'info', {
@@ -2680,13 +2581,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_3D }, 'routing');
 
-        const request = toUnifiedRequest('3d', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['3d'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, '3d', params as unknown as Record<string, unknown>);
         const formatted = format3DResponse(response);
 
         mcpLog(server, 'info', {
@@ -2985,7 +2880,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
         for (const call of calls) {
           try {
-            const output = await executeDMRXTool(state.router, state.adapterRegistry, call.tool, call.parameters || {});
+            const output = await executeDMRXTool(gatewayUrl, call.tool, call.parameters || {});
             results.push({ tool: call.tool, success: true, output });
           } catch (err) {
             const message = err instanceof Error ? err.message : 'Unknown error';
@@ -3508,7 +3403,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               stepTool: step.tool,
             }, 'routing');
 
-            const output = await executeDMRXTool(state.router, state.adapterRegistry, step.tool, stepParams);
+            const output = await executeDMRXTool(gatewayUrl, step.tool, stepParams);
             results.push({ step_id: step.id, tool: step.tool, success: true, output });
             stepOutputs[step.id] = output;
           } catch (err) {
@@ -4578,7 +4473,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             }
 
             // Execute the tool
-            const output = await executeDMRXTool(state.router, state.adapterRegistry, step.tool_name, stepParams);
+            const output = await executeDMRXTool(gatewayUrl, step.tool_name, stepParams);
             results.push({ step_id: step.id, tool: step.tool_name, success: true, output });
             stepOutputs[step.id] = output;
           } catch (err) {
@@ -5551,61 +5446,44 @@ function setNestedValue(obj: Record<string, unknown>, path: string, value: unkno
 }
 
 async function executeDMRXTool(
-  router: Router,
-  _adapterRegistry: AdapterRegistry,
+  gatewayUrl: string,
   toolName: string,
   params: Record<string, unknown>
 ): Promise<unknown> {
-  let modality: Modality = 'llm';
-  let path = '/v1/chat/completions';
+  let modality: Modality;
   switch (toolName) {
     case TOOL_NAMES.CHAT:
       modality = 'llm';
-      path = '/v1/chat/completions';
       break;
     case TOOL_NAMES.GENERATE_IMAGE:
       modality = 'diffusion';
-      path = '/v1/images/generations';
       break;
     case TOOL_NAMES.EMBED:
       modality = 'embedding';
-      path = '/v1/embeddings';
       break;
     case TOOL_NAMES.TRANSCRIBE:
       modality = 'audio_stt';
-      path = '/v1/audio/transcriptions';
       break;
     case TOOL_NAMES.SPEAK:
       modality = 'audio_tts';
-      path = '/v1/audio/speech';
       break;
     case TOOL_NAMES.RERANK:
       modality = 'reranking';
-      path = '/v1/rerank';
       break;
     case TOOL_NAMES.GENERATE_VIDEO:
       modality = 'video';
-      path = '/v1/video/generations';
       break;
     case TOOL_NAMES.GENERATE_MUSIC:
       modality = 'music';
-      path = '/v1/music/generations';
       break;
     case TOOL_NAMES.GENERATE_3D:
       modality = '3d';
-      path = '/v1/3d/generate';
       break;
     default:
       throw new Error(`Unsupported tool in batch: ${toolName}`);
   }
 
-  const request = toUnifiedRequest(modality, params);
-  const classifyOptions: ClassifyOptions = {
-    path,
-    qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-  };
-
-  const { response } = await router.route(request, classifyOptions);
+  const response = await routeViaGateway(gatewayUrl, modality, params);
 
   switch (modality) {
     case 'llm':
