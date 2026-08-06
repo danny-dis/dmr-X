@@ -13,13 +13,19 @@ import { Switch } from '@/components/primitives/Switch';
 import { StatTile } from '@/components/primitives/StatTile';
 import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin, FusionPanel as FusionPanelApi } from '@/lib/admin';
 import { fetchAuthenticated } from '@/lib/api';
-import type { ApiFusionPanel } from '@/lib/admin';
 import { formatNumber } from '@/lib/formatters';
+import {
+  useAddFusionSlot,
+  useCreateFusionPanel,
+  useDeleteFusionPanel,
+  useFusionPanels,
+  useRemoveFusionSlot,
+  useReorderFusionSlots,
+  useUpdateFusionPanel,
+} from '@/lib/queries/fusionPanels';
+import { useCatalog, useProviders } from '@/lib/queries/providers';
 import { cn } from '@/lib/utils';
-import type { ApiProvider, ApiCatalogEntry } from '@/types/api';
 
 // G0DM0D3 components
 import { FusionModeSelector, type FusionMode } from '@/components/fusion/FusionModeSelector';
@@ -74,19 +80,18 @@ export function FusionPanelPage() {
   const [godmodePrompt, setGodmodePrompt] = React.useState('');
   const [liveText, setLiveText] = React.useState<string | null>(null);
 
-  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
-  const catalog = useApiData<{ entries: ApiCatalogEntry[] }>(
-    () => Admin.getCatalog(),
-    [],
-    { refetchInterval: 60000 }
-  );
+  const providers = useProviders({ refetchInterval: 30000 });
+  const catalog = useCatalog({ refetchInterval: 60000 });
 
-  const panelsQuery = useApiData<ApiFusionPanel[]>(
-    () => FusionPanelApi.list(),
-    [],
-    { refetchInterval: 30000 }
-  );
+  const panelsQuery = useFusionPanels({ refetchInterval: 30000 });
   const panels = panelsQuery.data ?? [];
+
+  const createPanelMutation = useCreateFusionPanel();
+  const deletePanelMutation = useDeleteFusionPanel();
+  const updatePanelMutation = useUpdateFusionPanel();
+  const addSlotMutation = useAddFusionSlot();
+  const removeSlotMutation = useRemoveFusionSlot();
+  const reorderSlotsMutation = useReorderFusionSlots();
 
   const catalogEntries = catalog.data?.entries ?? [];
   const enabledProviders = (providers.data ?? []).filter(p => p.enabled);
@@ -112,10 +117,9 @@ export function FusionPanelPage() {
     const name = `Fusion Panel ${panels.length + 1}`;
     setCreatingPanel(true);
     try {
-      const newPanel = await FusionPanelApi.create({ name });
+      const newPanel = await createPanelMutation.mutateAsync({ name });
       setActivePanelId(newPanel.id);
       toast.success(`Created "${name}"`);
-      void panelsQuery.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -127,12 +131,11 @@ export function FusionPanelPage() {
   const deletePanel = async (id: string) => {
     setDeletingPanel(true);
     try {
-      await FusionPanelApi.delete(id);
+      await deletePanelMutation.mutateAsync(id);
       if (activePanelId === id) {
         setActivePanelId(panels.find(p => p.id !== id)?.id ?? null);
       }
       toast.success('Panel deleted');
-      void panelsQuery.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -154,7 +157,8 @@ export function FusionPanelPage() {
 
     setAddingSlot(true);
     try {
-      const newSlot = await FusionPanelApi.addSlot(activePanelId, {
+      const newSlot = await addSlotMutation.mutateAsync({
+        panelId: activePanelId,
         provider_id: provider.name,
         model_id: model.id,
         display_name: `${provider.name} / ${model.id}`,
@@ -163,7 +167,6 @@ export function FusionPanelPage() {
       setSelectedProvider('');
       setSelectedModel('');
       toast.success(`Added ${newSlot.display_name}`);
-      void panelsQuery.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -176,9 +179,8 @@ export function FusionPanelPage() {
     if (!activePanelId) return;
     setBusySlotId(slotId);
     try {
-      await FusionPanelApi.removeSlot(activePanelId, slotId);
+      await removeSlotMutation.mutateAsync({ panelId: activePanelId, slotId });
       toast.success('Slot removed');
-      void panelsQuery.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -200,9 +202,8 @@ export function FusionPanelPage() {
 
     setBusySlotId(slotId);
     try {
-      await FusionPanelApi.reorderSlots(activePanelId, currentSlots.map(s => s.id));
+      await reorderSlotsMutation.mutateAsync({ panelId: activePanelId, slotIds: currentSlots.map(s => s.id) });
       toast.success('Slot order updated');
-      void panelsQuery.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -221,9 +222,8 @@ export function FusionPanelPage() {
       const updatedSlots = slots.map(s =>
         s.id === slotId ? { ...s, is_enabled: s.is_enabled ? 0 : 1 } : s
       );
-      await FusionPanelApi.update(activePanelId, { slots: updatedSlots });
+      await updatePanelMutation.mutateAsync({ id: activePanelId, slots: updatedSlots });
       toast.success(slot.is_enabled ? 'Slot disabled' : 'Slot enabled');
-      void panelsQuery.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -237,9 +237,8 @@ export function FusionPanelPage() {
     if (!panel) return;
     setTogglingPanel(true);
     try {
-      await FusionPanelApi.update(panelId, { is_active: panel.is_active ? 0 : 1 });
+      await updatePanelMutation.mutateAsync({ id: panelId, is_active: panel.is_active ? 0 : 1 });
       toast.success(panel.is_active ? 'Panel deactivated' : 'Panel activated');
-      void panelsQuery.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
