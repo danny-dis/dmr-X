@@ -83,33 +83,87 @@ function splitFt5(sql: string): string[] {
 // the .tmp file, the second rename then throws ENOENT and crashes the process.
 
 /**
+ * Acquire a cross-process mutex backed by an exclusively-created lock file.
+ *
+ * `fs.open(path, 'wx')` is atomic at the OS level: exactly one caller across
+ * every process on the machine gets the file, everyone else sees EEXIST. That
+ * makes it safe to serialize the two independent processes (gateway + MCP
+ * server) that can both be publishing to the same `data.db(.enc)` at once —
+ * something an in-process flag can never do.
+ *
+ * A holder that crashes without releasing the lock would otherwise wedge
+ * every future save forever, so a lock file older than `staleAfterMs` is
+ * treated as abandoned and reclaimed.
+ */
+async function acquirePublishLock(lockPath: string, maxWaitMs = 10_000, staleAfterMs = 30_000): Promise<() => Promise<void>> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      const handle = await fs.promises.open(lockPath, 'wx');
+      await handle.close();
+      return async () => { try { await fs.promises.unlink(lockPath); } catch { /* best-effort */ } };
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') throw err;
+      try {
+        const st = await fs.promises.stat(lockPath);
+        if (Date.now() - st.mtimeMs > staleAfterMs) {
+          // Holder is presumed dead (crashed mid-publish). Reclaim the lock
+          // rather than wedge every future save on this machine forever.
+          try { await fs.promises.unlink(lockPath); } catch { /* another waiter may have reclaimed it first — fine */ }
+          continue;
+        }
+      } catch { /* lock vanished between EEXIST and stat — retry immediately */ }
+      if (Date.now() - start > maxWaitMs) {
+        throw new Error(`Timed out waiting for database publish lock: ${lockPath}`);
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+}
+
+/**
  * Atomically publish `src` as `dest`.
  *
  * `fs.rename` on Windows cannot replace a destination that still has an open
  * handle (live gateway flush, antivirus, search indexer) — it fails with
- * EPERM. We retry briefly (the lock is usually momentary), then fall back to
- * `copyFile` which overwrites a locked file. The destination is never deleted
- * before the new bytes are fully written, so a failed replace only leaves a
- * stray temp file — it can never truncate or zero the live database.
+ * EPERM. That handle is just as likely to be another DMR-X process (the
+ * gateway and the MCP server can both target the same data.db) as it is a
+ * transient scanner, and if two processes both fell through to a raw
+ * `copyFile` at the same moment, their writes could interleave on disk and
+ * publish a torn file — copyFile is not atomic the way rename is.
+ *
+ * A cross-process lock file makes the whole publish attempt (rename retries
+ * and, if it comes to that, the copyFile fallback) mutually exclusive across
+ * every process on the machine, so only one writer is ever touching `dest`
+ * at a time. The destination is never deleted before the new bytes are fully
+ * written, so a failed replace only leaves a stray temp file — it can never
+ * truncate or zero the live database.
  */
 async function atomicReplace(src: string, dest: string): Promise<void> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      await fs.promises.rename(src, dest);
-      return;
-    } catch (err: any) {
-      if (err?.code === 'EPERM' || err?.code === 'EBUSY') {
-        if (attempt < 4) {
-          await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
-          continue;
-        }
-        // Last resort: copyFile overwrites an in-use file on Windows.
-        await fs.promises.copyFile(src, dest);
-        try { await fs.promises.unlink(src); } catch { /* best-effort */ }
+  const release = await acquirePublishLock(`${dest}.publish.lock`);
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await fs.promises.rename(src, dest);
         return;
+      } catch (err: any) {
+        if (err?.code === 'EPERM' || err?.code === 'EBUSY') {
+          if (attempt < 4) {
+            await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+            continue;
+          }
+          // Last resort: copyFile overwrites an in-use file on Windows. Safe
+          // to do here because the lock above guarantees no other process is
+          // doing the same thing to `dest` at the same time.
+          await fs.promises.copyFile(src, dest);
+          try { await fs.promises.unlink(src); } catch { /* best-effort */ }
+          return;
+        }
+        throw err;
       }
-      throw err;
     }
+  } finally {
+    await release();
   }
 }
 
