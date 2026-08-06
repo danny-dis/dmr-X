@@ -11,16 +11,14 @@ import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter, ComfyUIAdapter } from '@dmr-x/adapters';
 import { FalAdapter, VeoAdapter, RunwayAdapter } from '@dmr-x/adapters';
 import type {
-  UnifiedRequest,
   UnifiedResponse,
   CandidateSet,
   Modality,
   QualityTarget,
   ProviderModel,
 } from '@dmr-x/core';
-import { resolveProviderSlug } from '@dmr-x/core';
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
-import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
+import { type RouterConfig } from '@dmr-x/router';
 import { HybridSearchEngine, type ToolDocument } from '@dmr-x/tool-search';
 import { getRBACEngine, type RBACConfig, type Principal } from '@dmr-x/policy';
 import { InputValidator, type InputValidatorConfig } from './guardrails/input-validator.js';
@@ -31,7 +29,7 @@ import { ToolTemplatesService, getToolTemplatesService } from './templates/tool-
 import type { AgentCardConfig } from './a2a/agent-card.js';
 import type { FederationConfig } from './federation/manager.js';
 import { logger } from '@dmr-x/utils';
-import { persistentContextStore, initDb, getDb } from '@dmr-x/db';
+import { persistentContextStore, initDb } from '@dmr-x/db';
 
 // Ensure the shared DB is initialized in this module's @dmr-x/db instance.
 // (The entry point also calls initDb, but under bun the entry and this module
@@ -192,7 +190,6 @@ export interface DMRXMcpServerConfig {
 }
 
 export interface ServerState {
-  router: Router;
   adapterRegistry: AdapterRegistry;
   candidates: CandidateSet;
   startTime: number;
@@ -256,30 +253,6 @@ function mcpLog(server: McpServer, level: LoggingLevel, data: unknown, loggerNam
  */
 const PROCESS_START_TIME = Date.now();
 let processRequestCount = 0;
-
-/** Map a modality to the API endpoint path expected by the task classifier */
-const MODALITY_TO_PATH: Record<Modality, string> = {
-  llm: '/v1/chat/completions',
-  diffusion: '/v1/images/generations',
-  embedding: '/v1/embeddings',
-  audio_tts: '/v1/audio/speech',
-  audio_stt: '/v1/audio/transcriptions',
-  audio_speech: '/v1/audio/speech',
-  audio_transcription: '/v1/audio/transcriptions',
-  audio_separation: '/v1/audio/separate',
-  audio_intelligence: '/v1/audio/diarize',
-  video: '/v1/video/generations',
-  video_analysis: '/v1/video/analyze',
-  music: '/v1/music/generations',
-  reranking: '/v1/rerank',
-  moderation: '/v1/moderations',
-  code_completion: '/v1/completions',
-  ocr: '/v1/ocr',
-  image_upscaling: '/v1/images/upscale',
-  image_inpainting: '/v1/images/inpaint',
-  vision: '/v1/vision/detect',
-  '3d': '/v1/3d/generate',
-};
 
 // ---------------------------------------------------------------------------
 // Gateway-routed modality dispatch
@@ -921,157 +894,6 @@ function resolveWithinWorkspace(userPath: string | null | undefined): string {
   }
 
   return realPath;
-}
-
-function toUnifiedRequest(
-  modality: Modality,
-  params: Record<string, unknown>
-): UnifiedRequest {
-  const request: UnifiedRequest = {
-    modality,
-    stream: false,
-    metadata: {},
-  };
-
-  // Map common fields
-  if (params.model) request.model = params.model as string;
-  if (params.user) request.user = params.user as string;
-
-  if (params.provider_preference) {
-    request.metadata.providerPreferences = {
-      order: (params.provider_preference as string[]).map(resolveProviderSlug),
-      strategy: 'direct',
-    };
-  }
-  if (params.provider_blacklist) {
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      ignore: (params.provider_blacklist as string[]).map(resolveProviderSlug),
-    };
-  }
-  if (params.latency_target) {
-    const latencyMs = typeof params.latency_target === 'number'
-      ? params.latency_target as number
-      : parseInt((params.latency_target as string).replace(/[^0-9]/g, ''), 10);
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      preferredMaxLatencyMs: latencyMs,
-    };
-  }
-  if (params.cost_target) {
-    const costPerMillion = typeof params.cost_target === 'number'
-      ? (params.cost_target as number)
-      : parseFloat((params.cost_target as string).replace(/[^0-9.]/g, ''));
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      maxPricePerMillionTokens: costPerMillion * 1_000_000,
-    };
-  }
-  if (params.local_first) {
-    const localSlugs = ['ollama', 'local'];
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      order: [
-        ...(request.metadata.providerPreferences?.order || []),
-        ...localSlugs,
-      ],
-      strategy: 'direct',
-    };
-  }
-  if (params.require_privacy) {
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      zdr: true,
-      only: [
-        ...(request.metadata.providerPreferences?.only || []),
-        ...(request.metadata.providerPreferences?.order || []),
-      ].filter((slug: string) => ['ollama', 'local', 'openai'].includes(slug)),
-      strategy: 'direct',
-    };
-  }
-  if (params.quality_target) {
-    request.metadata.qualityTarget = params.quality_target;
-  }
-
-  // Modality-specific mapping
-  switch (modality) {
-    case 'llm':
-      request.messages = params.messages as UnifiedRequest['messages'];
-      request.temperature = params.temperature as number | undefined;
-      request.max_tokens = params.max_tokens as number | undefined;
-      request.top_p = params.top_p as number | undefined;
-      request.frequency_penalty = params.frequency_penalty as number | undefined;
-      request.presence_penalty = params.presence_penalty as number | undefined;
-      request.stop = params.stop as string[] | undefined;
-      request.response_format = params.response_format as UnifiedRequest['response_format'];
-      request.seed = params.seed as number | null | undefined;
-      request.n = params.n as number | undefined;
-      request.tools = params.tools as UnifiedRequest['tools'];
-      request.tool_choice = params.tool_choice as UnifiedRequest['tool_choice'];
-      break;
-
-    case 'diffusion':
-      request.prompt = params.prompt as string;
-      request.negative_prompt = params.negative_prompt as string | undefined;
-      request.width = params.width as number | undefined;
-      request.height = params.height as number | undefined;
-      request.steps = params.steps as number | undefined;
-      request.diffusion_seed = params.seed as number | undefined;
-      request.style = params.style as string | undefined;
-      request.cfg_scale = params.cfg_scale as number | undefined;
-      request.n = params.n as number | undefined;
-      break;
-
-    case 'embedding':
-      request.input = params.input as string | string[];
-      request.dimensions = params.dimensions as number | undefined;
-      request.encoding_format = params.encoding_format as 'float' | 'base64' | undefined;
-      break;
-
-    case 'audio_stt':
-      request.audio = params.audio as string;
-      request.audio_format = params.audio_format as UnifiedRequest['audio_format'];
-      request.language = params.language as string | undefined;
-      break;
-
-    case 'audio_tts':
-      request.prompt = params.input as string;
-      request.voice = params.voice as string | undefined;
-      request.speed = params.speed as number | undefined;
-      request.format = params.format as string | undefined;
-      request.language = params.language as string | undefined;
-      break;
-
-    case 'reranking':
-      request.query = params.query as string;
-      request.documents = params.documents as string[];
-      request.top_n = params.top_n as number | undefined;
-      break;
-
-    case 'video':
-      request.prompt = params.prompt as string;
-      request.image = params.image as string | undefined;
-      request.duration = params.duration as number | undefined;
-      request.fps = params.fps as number | undefined;
-      request.aspect_ratio = params.aspect_ratio as string | undefined;
-      break;
-
-    case 'music':
-      request.prompt = params.prompt as string;
-      request.genre = params.genre as string | undefined;
-      request.duration_seconds = params.duration_seconds as number | undefined;
-      request.instruments = params.instruments as string[] | undefined;
-      break;
-
-    case '3d':
-      request.prompt = params.prompt as string | undefined;
-      request.image = params.image as string | undefined;
-      request.texture_resolution = params.texture_resolution as number | undefined;
-      request.diffusion_seed = params.seed as number | undefined;
-      break;
-  }
-
-  return request;
 }
 
 function formatChatResponse(response: UnifiedResponse): string {
@@ -1870,9 +1692,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     adaptersInitialized = true;
   };
 
-  // Create router
-  const router = new Router(config.router);
-
   // Initialize search engine for tool discovery
   const searchEngine = new HybridSearchEngine(config.toolSearch);
 
@@ -1884,7 +1703,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
   // Server state
   const state: ServerState = {
-    router,
     adapterRegistry,
     candidates: config.candidates || [],
     startTime: Date.now(),
@@ -1917,41 +1735,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // array here, which silently fell 21 tools behind the real registrations —
   // hiding every filesystem, shell, template, preset and subagent tool from
   // `/tools`, the A2A agent card, `dmrx_tool_list` and `dmrx_tool_search`.
-
-  // Wire up adapter executor for fallback
-  router.setAdapterExecutor({
-    async execute(providerId: string, modelId: string, request: UnifiedRequest) {
-      // Resolve the provider UUID to its registered adapter. The router's
-      // candidates carry provider UUIDs, but adapters are registered by their
-      // adapter_type / catalog id (e.g. "cohere"). Mirror the gateway's
-      // getAdapter: try the raw id, then fall back to providers.name.
-      let adapter = adapterRegistry.get(providerId);
-      if (!adapter) {
-        try {
-          const db = getDb();
-          const row = db.prepare('SELECT name FROM providers WHERE id = ?').get(providerId) as
-            | { name: string }
-            | undefined;
-          if (row) adapter = adapterRegistry.get(row.name);
-        } catch {
-          /* DB lookup best-effort */
-        }
-      }
-      if (!adapter) {
-        throw new Error(`Adapter not found: ${providerId}`);
-      }
-      // Override model if a specific one was selected by the router
-      if (modelId) {
-        request.model = modelId;
-      }
-      return adapter.execute(request);
-    },
-  });
-
-  // Load candidates if provided
-  if (config.candidates?.length) {
-    router.setCandidates(config.candidates);
-  }
 
   // Create MCP server
   const server = new McpServer({
@@ -2748,10 +2531,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           lastError: state.lastError,
           router: {
             candidateCount: state.candidates.length,
+            // Routing now happens entirely on the gateway (see routeViaGateway()
+            // / GatewayRouteError) — this reports the RouterConfig this MCP
+            // server was constructed with, not a live local Router instance,
+            // since none exists anymore.
             config: {
-              epsilon: state.router['config']?.epsilon ?? 0.05,
-              defaultQualityTarget: state.router['config']?.defaultQualityTarget ?? 'balanced',
-              enableDecomposition: state.router['config']?.enableDecomposition ?? false,
+              epsilon: config.router?.epsilon ?? 0.05,
+              defaultQualityTarget: config.router?.defaultQualityTarget ?? 'balanced',
+              enableDecomposition: config.router?.enableDecomposition ?? false,
             },
           },
         };
