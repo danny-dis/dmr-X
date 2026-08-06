@@ -49,6 +49,9 @@ export function loadBanditArms(sampler: ThompsonSampler): number {
       sampler.restore(row.key, row.alpha, row.beta, row.pulls, row.total_reward);
     }
     if (rows.length > 0) {
+      // What we just restored is by definition already on disk, so seed the
+      // change detector to stop the first interval tick rewriting it verbatim.
+      lastPersistedPulls = rows.reduce((sum, row) => sum + (row.pulls ?? 0), 0);
       logger.info({ arms: rows.length }, 'Restored bandit arm state from SQLite');
     }
     return rows.length;
@@ -59,13 +62,36 @@ export function loadBanditArms(sampler: ThompsonSampler): number {
 }
 
 /**
+ * Total pulls observed at the last successful save. Used to skip writes when
+ * nothing has changed.
+ *
+ * Without this, the interval below rewrites the whole database every tick
+ * even on a gateway serving zero traffic — an UPSERT of identical values
+ * still dirties the page, and `scheduleSave()` re-exports the entire file.
+ * On a ~10 MB encrypted DB that is ~30 GB of pointless writes per idle day,
+ * and write amplification is precisely what corrupted this database before.
+ * `pulls` only ever increases (see `ThompsonSampler.update`), so its sum is a
+ * sufficient change detector.
+ */
+let lastPersistedPulls = -1;
+
+/** Reset the change detector. Exposed for tests. */
+export function resetBanditPersistenceState(): void {
+  lastPersistedPulls = -1;
+}
+
+/**
  * Persist every arm's current state. Swallows errors — a bandit bookkeeping
  * failure must never take down the gateway (matches the swallow-all
  * convention already used around bandit updates in router.service.ts).
+ *
+ * A no-op when no arm has been pulled since the last save.
  */
 export function saveBanditArms(sampler: ThompsonSampler): void {
   const arms = sampler.snapshot();
   if (arms.length === 0) return;
+  const totalPulls = arms.reduce((sum, arm) => sum + (arm.pulls ?? 0), 0);
+  if (totalPulls === lastPersistedPulls) return;
   try {
     const db = getDb();
     const stmt = db.prepare(`
@@ -91,6 +117,7 @@ export function saveBanditArms(sampler: ThompsonSampler): void {
         arm.totalReward ?? 0,
       );
     }
+    lastPersistedPulls = totalPulls;
   } catch (err) {
     logger.warn({ err }, 'Failed to persist bandit arm state');
   }
