@@ -21,40 +21,27 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { formatNumber, timeAgo } from '@/lib/formatters';
+import { useCreateMemory, useDeleteMemory, useMemoryItems, useMemoryStats, useSearchMemory } from '@/lib/queries/memory';
 import type { ApiMemoryItem } from '@/types/api';
 
 export function MemoryPage() {
   const [query, setQuery] = React.useState('');
-  const items = useApiData<ApiMemoryItem[]>(
-    () => Admin.listMemory({ limit: 100 }),
-    [],
-    { refetchInterval: 30000 }
-  );
-  const stats = useApiData<{
-    total_items?: number;
-    by_namespace?: Record<string, number>;
-    by_source?: Record<string, number>;
-    oldest_item?: string;
-    newest_item?: string;
-    retention_days?: number;
-  }>(
-    () => Admin.getMemoryStats(),
-    [],
-    { refetchInterval: 60000 }
-  );
+  const items = useMemoryItems({ refetchInterval: 30000 });
+  const stats = useMemoryStats({ refetchInterval: 60000 });
+  const createMemory = useCreateMemory();
+  const deleteMemory = useDeleteMemory();
+  const searchMemory = useSearchMemory();
   const [results, setResults] = React.useState<ApiMemoryItem[] | null>(null);
   const [searchError, setSearchError] = React.useState<unknown>(null);
-  const [searching, setSearching] = React.useState(false);
+  const searching = searchMemory.isPending;
   const [open, setOpen] = React.useState(false);
   const [content, setContent] = React.useState('');
   const [tenantId, setTenantId] = React.useState('');
   const [namespace, setNamespace] = React.useState('default');
   const [source, setSource] = React.useState('');
   const [retentionDays, setRetentionDays] = React.useState('30');
-  const [submitting, setSubmitting] = React.useState(false);
+  const submitting = createMemory.isPending;
   const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
 
   const topNamespaces = React.useMemo(() => {
@@ -70,24 +57,20 @@ export function MemoryPage() {
       setSearchError(null);
       return;
     }
-    setSearching(true);
     setSearchError(null);
     try {
-      const r = await Admin.searchMemory({ query, limit: 20 });
+      const r = await searchMemory.mutateAsync(query);
       setResults(r);
     } catch (err) {
       setResults(null);
       setSearchError(err);
-    } finally {
-      setSearching(false);
     }
   };
 
   const handleCreate = async () => {
     if (!content.trim()) return;
-    setSubmitting(true);
     try {
-      await Admin.createMemory({
+      await createMemory.mutateAsync({
         content: content.trim(),
         tenantId: tenantId || undefined,
         namespace: namespace !== 'default' ? namespace : undefined,
@@ -101,21 +84,17 @@ export function MemoryPage() {
       setNamespace('default');
       setSource('');
       setRetentionDays('30');
-      void items.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setSubmitting(false);
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
-      await Admin.deleteMemory(id);
+      await deleteMemory.mutateAsync(id);
       toast.success('Memory item deleted');
       setDeleteTarget(null);
-      void items.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });

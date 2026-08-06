@@ -9,28 +9,7 @@ import { DataState } from '@/components/primitives/DataState';
 import { Input } from '@/components/primitives/Input';
 import { interpretError } from '@/components/primitives/ErrorState';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { apiGet, apiPost } from '@/lib/admin';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface MarketplaceListing {
-  id: string;
-  title: string;
-  description: string | null;
-  longDescription: string | null;
-  category: string | null;
-  tags: string[];
-  icon: string | null;
-  rating: number;
-  ratingCount: number;
-  installCount: number;
-  priceCents: number;
-  status: string;
-  createdAt: string;
-}
+import { useInstallMarketplaceItem, useMarketplace, type MarketplaceListing } from '@/lib/queries/agents';
 
 // ---------------------------------------------------------------------------
 // Listing Card
@@ -96,32 +75,22 @@ function ListingCard({ listing, onInstall, isInstalling }: { listing: Marketplac
 export function MarketplacePage() {
   const [search, setSearch] = React.useState('');
   const [category, setCategory] = React.useState('');
-  const [installing, setInstalling] = React.useState<string | null>(null);
+  const installMarketplaceItem = useInstallMarketplaceItem();
+  const installing = installMarketplaceItem.isPending ? (installMarketplaceItem.variables ?? null) : null;
 
-  const queryParams = React.useMemo(() => {
-    const params = new URLSearchParams();
-    if (search) params.set('search', search);
-    if (category) params.set('category', category);
-    params.set('limit', '50');
-    return params.toString();
-  }, [search, category]);
-
-  const { data, isLoading, error, refetch } = useApiData<{ items: MarketplaceListing[]; total: number }>(
-    () => apiGet(`/v1/marketplace?${queryParams}`),
-    [queryParams]
-  );
+  const { data, isLoading, error, refetch } = useMarketplace({
+    search: search || undefined,
+    category: category || undefined,
+    limit: 50,
+  });
 
   const handleInstall = async (id: string) => {
-    setInstalling(id);
     try {
-      await apiPost(`/v1/marketplace/${id}/install`);
+      await installMarketplaceItem.mutateAsync(id);
       toast.success('Agent installed', { description: 'The agent has been added to your workspace' });
-      refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setInstalling(null);
     }
   };
 

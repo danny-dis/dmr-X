@@ -10,9 +10,8 @@ import { DataState } from '@/components/primitives/DataState';
 import { Input } from '@/components/primitives/Input';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { timeAgo } from '@/lib/formatters';
+import { usePolicies, useUpdatePolicy } from '@/lib/queries/policies';
 import type { ApiPolicyRule } from '@/types/api';
 
 export function PoliciesPage() {
@@ -20,7 +19,8 @@ export function PoliciesPage() {
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editingPolicy, setEditingPolicy] = React.useState<ApiPolicyRule | null>(null);
   const [togglingId, setTogglingId] = React.useState<string | null>(null);
-  const policies = useApiData<ApiPolicyRule[]>(() => Admin.listPolicies(), [], { refetchInterval: 30000 });
+  const policies = usePolicies({ refetchInterval: 30000 });
+  const updatePolicy = useUpdatePolicy();
 
   const filtered = (policies.data ?? []).filter((p) =>
     query ? `${p.name} ${p.description ?? ''}`.toLowerCase().includes(query.toLowerCase()) : true
@@ -39,9 +39,8 @@ export function PoliciesPage() {
   const toggleEnabled = async (p: ApiPolicyRule, next: boolean) => {
     setTogglingId(p.id);
     try {
-      await Admin.updatePolicy(p.id, { enabled: next });
+      await updatePolicy.mutateAsync({ id: p.id, enabled: next });
       toast.success('Policy updated', { description: `${p.name} ${next ? 'enabled' : 'disabled'}` });
-      await policies.refetch();
     } catch (err) {
       toast.error('Failed to update policy', {
         description: err instanceof Error ? err.message : String(err),
