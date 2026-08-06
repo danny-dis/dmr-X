@@ -71,7 +71,7 @@ bun run lint             # Lint all packages
 
 - **TypeScript ESM** — all packages use `"type": "module"`, import with `.js` extensions in relative imports
 - **No `.ts` extensions in imports** — TypeScript resolves `.js` to `.ts` automatically
-- **Stale `.js` in source** — Bun resolves `.js` before `.ts`. If you see stale `.js`/`.d.ts`/`.js.map` files alongside `.ts` source, they are build artifacts that should be deleted. They cause the runtime to execute old code.
+- **Stale `.js` in source** — Bun resolves `.js` before `.ts`. If you see stale `.js`/`.d.ts`/`.js.map` files alongside `.ts` source, they are build artifacts that should be deleted. They cause the runtime to execute old code. Note `bun run clean:src` only walks directories literally named `src/`, so artifacts in `scripts/` and `packages/*/scripts/` survive it and must be removed by hand.
 - **Package barrels** — each package exports from `src/index.ts`
 - **No `@ts-nocheck`** — fix type errors properly
 - **Zod schemas** — use Zod for input validation on admin endpoints
@@ -150,7 +150,7 @@ When updating docs, keep them accurate to the actual codebase state. The authori
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dmr-X** (12618 symbols, 31058 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dmr-X** (12709 symbols, 31284 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
