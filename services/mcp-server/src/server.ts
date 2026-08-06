@@ -281,6 +281,452 @@ const MODALITY_TO_PATH: Record<Modality, string> = {
   '3d': '/v1/3d/generate',
 };
 
+// ---------------------------------------------------------------------------
+// Gateway-routed modality dispatch
+//
+// The MCP server no longer runs its own Router. Every inference call goes
+// through the gateway's public wire-format routes (or, for modalities with
+// no public route, the admin MCP-tool dispatcher) so the gateway stays the
+// single source of truth for provider health, in-flight rate-limit quota,
+// and the 40% provider-diversity cap (services/router/src/pipeline/
+// final-selector.ts:29-43, a module-level array that only one process can
+// meaningfully maintain). Running a second in-process Router meant both
+// processes believed they held full quota against every provider and
+// neither saw the other's traffic for diversity scoring.
+//
+// Fidelity notes (consequences of moving from an in-process Router.route()
+// call to an HTTP call against the public wire API):
+//   - The public routes don't echo back providerId or adapter-measured
+//     latency — only `model`. `providerId` is reported as the sentinel
+//     'dmrx-gateway' and `latencyMs` is this call's own round-trip time.
+//   - The routing-hint fields baked into `toUnifiedRequest`'s
+//     `metadata.providerPreferences` (provider_preference, provider_
+//     blacklist, latency_target, cost_target, local_first, require_privacy)
+//     have no carrier on the public wire contract and are dropped here.
+//     `quality_target` is the one hint with a real carrier (the
+//     `X-Quality-Target` header, read by `parseQualityTarget` on every
+//     gateway route) and is preserved.
+//   - `/v1/images/generations` has no fields for negative_prompt/steps/
+//     seed/cfg_scale (only prompt/model/n/size/style/quality); those MCP
+//     tool params are silently unusable now — pre-existing wire route
+//     limitation, not something this dispatch layer can add back.
+// ---------------------------------------------------------------------------
+
+class GatewayRouteError extends Error {
+  constructor(message: string, public readonly statusCode?: number) {
+    super(message);
+    this.name = 'GatewayRouteError';
+  }
+}
+
+function gatewayErrorMessage(json: any, status: number): string {
+  return json?.error?.message || json?.message || `Gateway returned HTTP ${status}`;
+}
+
+/** Standard JSON-in/JSON-out gateway call (chat, images, embeddings, rerank, video, 3d). */
+async function gatewayJsonCall(
+  gatewayUrl: string,
+  path: string,
+  body: unknown,
+  qualityTarget: QualityTarget,
+): Promise<{ json: any; latencyMs: number }> {
+  const start = Date.now();
+  const key = resolveGatewayKey();
+  const res = await fetch(`${gatewayUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-quality-target': qualityTarget,
+      ...(key ? { authorization: `Bearer ${key}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    // non-JSON body — leave json null, error message falls back to status text
+  }
+  if (!res.ok) {
+    throw new GatewayRouteError(gatewayErrorMessage(json, res.status), res.status);
+  }
+  return { json, latencyMs };
+}
+
+/** JSON-in/binary-out gateway call — only /v1/audio/speech returns raw bytes. */
+async function gatewayBinaryCall(
+  gatewayUrl: string,
+  path: string,
+  body: unknown,
+  qualityTarget: QualityTarget,
+): Promise<{ buffer: Buffer; contentType: string; latencyMs: number }> {
+  const start = Date.now();
+  const key = resolveGatewayKey();
+  const res = await fetch(`${gatewayUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-quality-target': qualityTarget,
+      ...(key ? { authorization: `Bearer ${key}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  const contentType = res.headers.get('content-type') || '';
+  const arrayBuffer = await res.arrayBuffer();
+  if (!res.ok) {
+    let message = `Gateway returned HTTP ${res.status}`;
+    if (contentType.includes('application/json')) {
+      try {
+        message = gatewayErrorMessage(JSON.parse(Buffer.from(arrayBuffer).toString('utf8')), res.status);
+      } catch {
+        // body claimed JSON but wasn't — keep the generic message
+      }
+    }
+    throw new GatewayRouteError(message, res.status);
+  }
+  return { buffer: Buffer.from(arrayBuffer), contentType, latencyMs };
+}
+
+/** Multipart POST — /v1/audio/transcriptions expects a file upload, not JSON. */
+async function gatewayMultipartCall(
+  gatewayUrl: string,
+  path: string,
+  fields: Record<string, string | undefined>,
+  file: { buffer: Buffer; filename: string; contentType: string },
+  qualityTarget: QualityTarget,
+): Promise<{ json: any; latencyMs: number }> {
+  const start = Date.now();
+  const key = resolveGatewayKey();
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) form.append(k, v);
+  }
+  form.append('file', new Blob([file.buffer], { type: file.contentType }), file.filename);
+  const res = await fetch(`${gatewayUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'x-quality-target': qualityTarget,
+      ...(key ? { authorization: `Bearer ${key}` } : {}),
+    },
+    body: form as any,
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    // non-JSON body
+  }
+  if (!res.ok) {
+    throw new GatewayRouteError(gatewayErrorMessage(json, res.status), res.status);
+  }
+  return { json, latencyMs };
+}
+
+/** Fetches a URL's bytes, or base64/data-URI-decodes an inline audio string. */
+async function resolveAudioBytes(audio: string): Promise<Buffer> {
+  if (/^https?:\/\//i.test(audio)) {
+    const res = await fetch(audio, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) throw new Error(`Failed to fetch audio from URL: HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  const base64 = audio.startsWith('data:') && audio.includes(',')
+    ? audio.slice(audio.indexOf(',') + 1)
+    : audio;
+  return Buffer.from(base64, 'base64');
+}
+
+const AUDIO_FORMAT_MIME: Record<string, string> = {
+  wav: 'audio/wav',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  webm: 'audio/webm',
+};
+
+const SPEECH_RESPONSE_FORMATS = new Set(['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']);
+const IMAGE_SIZES = new Set(['256x256', '512x512', '1024x1024', '1792x1024', '1024x1792']);
+
+/**
+ * Routes a single modality call through the gateway's public API and maps
+ * the wire-format response back into a UnifiedResponse, so the existing
+ * format*Response() functions (formatChatResponse, formatImageResponse, …)
+ * need no changes. See the fidelity notes in the section comment above.
+ */
+async function routeViaGateway(
+  gatewayUrl: string,
+  modality: Modality,
+  params: Record<string, unknown>,
+): Promise<UnifiedResponse> {
+  const qualityTarget = (params.quality_target as QualityTarget) || 'balanced';
+  const requestId = crypto.randomUUID();
+
+  switch (modality) {
+    case 'llm': {
+      const body = {
+        model: (params.model as string) || 'auto',
+        messages: params.messages,
+        max_tokens: params.max_tokens,
+        temperature: params.temperature,
+        top_p: params.top_p,
+        frequency_penalty: params.frequency_penalty,
+        presence_penalty: params.presence_penalty,
+        stop: params.stop,
+        response_format: params.response_format,
+        seed: params.seed,
+        n: params.n,
+        tools: params.tools,
+        tool_choice: params.tool_choice,
+        user: params.user,
+        stream: false,
+      };
+      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/chat/completions', body, qualityTarget);
+      const choice = Array.isArray(json?.choices) ? json.choices[0] : undefined;
+      return {
+        modality: 'llm',
+        requestId: json?.id || requestId,
+        providerId: 'dmrx-gateway',
+        modelId: json?.model || (params.model as string) || 'auto',
+        message: choice?.message,
+        usage: json?.usage,
+        finishReason: choice?.finish_reason,
+        latencyMs,
+        fallback: json?.dmrx_fallback,
+      };
+    }
+
+    case 'diffusion': {
+      // Pin to the dedicated pollinations-image provider via the router's
+      // `providerName/modelId` model-prefix convention (services/router/src/
+      // router.service.ts). Generic text adapters reject the diffusion
+      // modality ("Unsupported modality: diffusion") without this pin. The
+      // convention is handled by the same router.service.ts pipeline the
+      // gateway's /v1/images/generations route runs, so it still works when
+      // sent as the wire `model` field.
+      const imageModel = (params.model as string) || 'flux';
+      let size = '1024x1024';
+      const width = params.width as number | undefined;
+      const height = params.height as number | undefined;
+      if (width && height && IMAGE_SIZES.has(`${width}x${height}`)) {
+        size = `${width}x${height}`;
+      }
+      const body = {
+        model: `pollinations-images/${imageModel}`,
+        prompt: params.prompt,
+        n: params.n,
+        size,
+        style: params.style,
+        user: params.user,
+      };
+      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/images/generations', body, qualityTarget);
+      return {
+        modality: 'diffusion',
+        requestId,
+        providerId: 'dmrx-gateway',
+        modelId: imageModel,
+        images: Array.isArray(json?.data) ? json.data : [],
+        latencyMs,
+      };
+    }
+
+    case 'embedding': {
+      const body = {
+        model: (params.model as string) || 'auto',
+        input: params.input,
+        encoding_format: params.encoding_format,
+        dimensions: params.dimensions,
+        user: params.user,
+      };
+      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/embeddings', body, qualityTarget);
+      const embeddings = Array.isArray(json?.data) ? json.data.map((d: { embedding: number[] }) => d.embedding) : [];
+      return {
+        modality: 'embedding',
+        requestId,
+        providerId: 'dmrx-gateway',
+        modelId: json?.model || (params.model as string) || 'auto',
+        embeddings,
+        usage: json?.usage,
+        latencyMs,
+      };
+    }
+
+    case 'audio_stt': {
+      const audio = params.audio as string;
+      const buffer = await resolveAudioBytes(audio);
+      const audioFormat = (params.audio_format as string) || 'wav';
+      const contentType = AUDIO_FORMAT_MIME[audioFormat] || 'application/octet-stream';
+      const { json, latencyMs } = await gatewayMultipartCall(
+        gatewayUrl,
+        '/v1/audio/transcriptions',
+        {
+          model: (params.model as string) || 'auto',
+          language: params.language as string | undefined,
+          response_format: 'json',
+        },
+        { buffer, filename: `audio.${audioFormat}`, contentType },
+        qualityTarget,
+      );
+      return {
+        modality: 'audio_stt',
+        requestId,
+        providerId: 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        completion: json?.text || '',
+        latencyMs,
+      };
+    }
+
+    case 'audio_tts': {
+      const requestedFormat = (params.format as string) || 'mp3';
+      const responseFormat = SPEECH_RESPONSE_FORMATS.has(requestedFormat) ? requestedFormat : 'mp3';
+      const body = {
+        model: (params.model as string) || 'auto',
+        input: params.input,
+        voice: (params.voice as string) || 'alloy',
+        response_format: responseFormat,
+        speed: params.speed,
+      };
+      const { buffer, latencyMs } = await gatewayBinaryCall(gatewayUrl, '/v1/audio/speech', body, qualityTarget);
+      return {
+        modality: 'audio_tts',
+        requestId,
+        providerId: 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        audio: { b64_json: buffer.toString('base64'), format: responseFormat },
+        latencyMs,
+      };
+    }
+
+    case 'reranking': {
+      const body = {
+        model: params.model,
+        query: params.query,
+        documents: params.documents,
+        top_n: params.top_n,
+      };
+      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/rerank', body, qualityTarget);
+      return {
+        modality: 'reranking',
+        requestId: json?.id || requestId,
+        providerId: 'dmrx-gateway',
+        modelId: json?.model || (params.model as string) || 'auto',
+        rerankResults: Array.isArray(json?.results) ? json.results : [],
+        latencyMs,
+      };
+    }
+
+    case 'video': {
+      const body = {
+        model: params.model,
+        prompt: params.prompt,
+        image: params.image,
+        duration: params.duration,
+        fps: params.fps,
+        aspect_ratio: params.aspect_ratio,
+      };
+      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/video/generations', body, qualityTarget);
+      return {
+        modality: 'video',
+        requestId,
+        providerId: 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        videos: Array.isArray(json?.data) ? json.data : [],
+        latencyMs,
+      };
+    }
+
+    case '3d': {
+      const body = {
+        model: params.model,
+        prompt: params.prompt,
+        image: params.image,
+        texture_resolution: params.texture_resolution,
+        seed: params.seed,
+      };
+      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/3d/generate', body, qualityTarget);
+      return {
+        modality: '3d',
+        requestId,
+        providerId: 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        models3d: Array.isArray(json?.data) ? json.data : [],
+        latencyMs,
+      };
+    }
+
+    case 'music': {
+      // No public /v1/music/generations route exists on the gateway (see
+      // MODALITY_TO_PATH — that entry is only ever used as an internal
+      // classifyOptions.path hint, never dereferenced as a real URL). The
+      // only reachable path for music is the admin MCP-tool dispatcher
+      // (apps/gateway/src/routes/admin.routes.ts, POST
+      // /v1/admin/mcp/tools/execute), which maps MCP tool names 1:1 onto the
+      // gateway's own in-process router.route() call for `dmrx_generate_music`.
+      // That dispatcher needs the admin key (x-api-key), not a tenant bearer
+      // token, and its `result` is already the gateway's internal
+      // UnifiedResponse — returned close to verbatim below rather than
+      // re-synthesized from a wire format that doesn't exist for this
+      // modality.
+      return musicViaAdminDispatcher(gatewayUrl, params, qualityTarget, requestId);
+    }
+
+    default:
+      throw new Error(`routeViaGateway: unsupported modality "${modality}"`);
+  }
+}
+
+async function musicViaAdminDispatcher(
+  gatewayUrl: string,
+  params: Record<string, unknown>,
+  qualityTarget: QualityTarget,
+  fallbackRequestId: string,
+): Promise<UnifiedResponse> {
+  const adminKey = process.env.DMRX_ADMIN_API_KEY;
+  const start = Date.now();
+  const res = await fetch(`${gatewayUrl}/v1/admin/mcp/tools/execute`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-quality-target': qualityTarget,
+      ...(adminKey ? { 'x-api-key': adminKey } : {}),
+    },
+    body: JSON.stringify({
+      tool: 'dmrx_generate_music',
+      parameters: {
+        prompt: params.prompt,
+        model: params.model,
+        genre: params.genre,
+        duration_seconds: params.duration_seconds,
+        instruments: params.instruments,
+      },
+    }),
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    // non-JSON body
+  }
+  if (!res.ok || json?.success === false) {
+    throw new GatewayRouteError(json?.error || gatewayErrorMessage(json, res.status), res.status);
+  }
+  const result = json?.result || {};
+  return {
+    modality: 'music',
+    requestId: result.requestId || fallbackRequestId,
+    providerId: result.providerId || 'dmrx-gateway',
+    modelId: result.modelId || (params.model as string) || 'auto',
+    audio: result.audio,
+    latencyMs: typeof result.latencyMs === 'number' ? result.latencyMs : latencyMs,
+  };
+}
+
 function buildAdapterRegistry(): AdapterRegistry {
   const registry = new AdapterRegistry();
   registry.register(new OpenAIAdapter());
