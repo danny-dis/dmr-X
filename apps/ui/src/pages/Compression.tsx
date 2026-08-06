@@ -11,26 +11,18 @@ import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { api } from '@/lib/admin';
+import {
+  useCleanupCompressionCache,
+  useCompressionConfig,
+  useCompressionStats,
+  useUpdateCompressionConfig,
+  type CompressionConfig,
+  type CompressionStats,
+} from '@/lib/queries/compression';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */
 /* -------------------------------------------------------------------------- */
-
-interface CompressionConfig {
-  enabled: boolean;
-  proxyUrl: string;
-  apiKey?: string;
-  reversible: boolean;
-  minTokensToCompress: number;
-}
-
-interface CompressionStats {
-  totalRequests: number;
-  totalTokensSaved: number;
-  avgCompressionRatio: number;
-}
 
 const DEFAULT_CONFIG: CompressionConfig = {
   enabled: false,
@@ -40,48 +32,18 @@ const DEFAULT_CONFIG: CompressionConfig = {
 };
 
 /* -------------------------------------------------------------------------- */
-/*  API helpers                                                               */
-/* -------------------------------------------------------------------------- */
-
-async function fetchCompressionConfig(): Promise<CompressionConfig> {
-  return api<CompressionConfig>('/v1/compression/config');
-}
-
-async function updateCompressionConfig(config: Partial<CompressionConfig>): Promise<CompressionConfig> {
-  return api<CompressionConfig>('/v1/compression/config', {
-    method: 'PUT',
-    body: config,
-  });
-}
-
-async function fetchCompressionStats(): Promise<CompressionStats> {
-  return api<CompressionStats>('/v1/compression/stats');
-}
-
-async function cleanupCompressionCache(): Promise<void> {
-  await api('/v1/compression/cleanup', { method: 'POST' });
-}
-
-/* -------------------------------------------------------------------------- */
 /*  Component                                                                 */
 /* -------------------------------------------------------------------------- */
 
 export function CompressionPage() {
-  const config = useApiData<CompressionConfig>(
-    fetchCompressionConfig,
-    [],
-    { refetchInterval: 60000 }
-  );
-
-  const stats = useApiData<CompressionStats>(
-    fetchCompressionStats,
-    [],
-    { refetchInterval: 30000 }
-  );
+  const config = useCompressionConfig({ refetchInterval: 60000 });
+  const stats = useCompressionStats({ refetchInterval: 30000 });
+  const updateConfig = useUpdateCompressionConfig();
+  const cleanupCache = useCleanupCompressionCache();
 
   const [form, setForm] = React.useState<CompressionConfig>(DEFAULT_CONFIG);
-  const [saving, setSaving] = React.useState(false);
-  const [cleaning, setCleaning] = React.useState(false);
+  const saving = updateConfig.isPending;
+  const cleaning = cleanupCache.isPending;
 
   React.useEffect(() => {
     if (config.data) {
@@ -93,15 +55,11 @@ export function CompressionPage() {
     setForm((f) => ({ ...f, [key]: value }));
 
   const onSave = async () => {
-    setSaving(true);
     try {
-      await updateCompressionConfig(form);
+      await updateConfig.mutateAsync(form);
       toast.success('Compression settings saved');
-      await config.refetch();
     } catch (e) {
       toast.error('Save failed', { description: (e as Error).message });
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -111,15 +69,11 @@ export function CompressionPage() {
   };
 
   const onCleanup = async () => {
-    setCleaning(true);
     try {
-      await cleanupCompressionCache();
+      await cleanupCache.mutateAsync();
       toast.success('Cache cleaned up');
-      await stats.refetch();
     } catch (e) {
       toast.error('Cleanup failed', { description: (e as Error).message });
-    } finally {
-      setCleaning(false);
     }
   };
 

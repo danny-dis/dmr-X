@@ -21,8 +21,9 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
+import { useAgentIntegrationConfig } from '@/lib/queries/integrations';
+import { useProviders } from '@/lib/queries/providers';
 import { cn } from '@/lib/utils';
 import type { ApiProvider } from '@/types/api';
 
@@ -39,16 +40,6 @@ interface TestResult {
 interface AntigravityLoadResult {
   providers: ApiProvider[];
   geminiCli: Record<string, unknown> | null;
-}
-
-async function loadAntigravityData(): Promise<AntigravityLoadResult> {
-  const [providerList, config] = await Promise.all([
-    Admin.listProviders(),
-    Admin.getAgentIntegrationConfig(),
-  ]);
-  // Antigravity (agy) speaks Google's Cloud Code protocol, so its settings
-  // are stored under the shared "gemini-cli" integration key.
-  return { providers: providerList, geminiCli: config.geminiCli ?? null };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -82,7 +73,22 @@ function ModelStatus({
 /* -------------------------------------------------------------------------- */
 
 export function AntigravityPage() {
-  const query = useApiData<AntigravityLoadResult>(loadAntigravityData, []);
+  const providersQuery = useProviders();
+  const configQuery = useAgentIntegrationConfig();
+  // Antigravity (agy) speaks Google's Cloud Code protocol, so its settings
+  // are stored under the shared "gemini-cli" integration key.
+  const query = {
+    data:
+      providersQuery.data && configQuery.data
+        ? ({ providers: providersQuery.data, geminiCli: configQuery.data.geminiCli ?? null } satisfies AntigravityLoadResult)
+        : null,
+    isLoading: providersQuery.isLoading || configQuery.isLoading,
+    error: providersQuery.error ?? configQuery.error,
+    refetch: () => {
+      void providersQuery.refetch();
+      void configQuery.refetch();
+    },
+  };
 
   const [saving, setSaving] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
