@@ -104,10 +104,12 @@ check-db-state.ts
 sync-pollinations.ts
 debug-*.md
 
-# ─── Python (not used in this repo, but defensive) ─────────────────────────
+# ─── Python (sdks/python, plus root-level test scripts) ────────────────────
 __pycache__/
 *.pyc
 *.egg-info/
+.ruff_cache/
+.pytest_cache/
 # needle-router venv + model checkpoints (large, regenerated locally)
 services/needle-router/.venv/
 services/needle-router/checkpoints/
