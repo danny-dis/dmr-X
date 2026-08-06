@@ -10,42 +10,12 @@ import { DataState } from '@/components/primitives/DataState';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { StatTile } from '@/components/primitives/StatTile';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { chartColor } from '@/lib/chartPalette';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/formatters';
+import { useCostDashboard, type CostDashboard } from '@/lib/queries/usage';
 import { cn } from '@/lib/utils';
 
-interface CostDashboardData {
-  period: { start: string; end: string };
-  totalCost: number;
-  freeTierCost: number;
-  paidCost: number;
-  costSavings: number;
-  byTenant: Array<{
-    tenantId: string;
-    tenantName: string;
-    totalCost: number;
-    freeTierCost: number;
-    paidCost: number;
-    totalRequests: number;
-    totalOutputTokens: number;
-  }>;
-  byProvider: Record<string, {
-    cost: number;
-    requests: number;
-    tokens: number;
-    freePercent: number;
-  }>;
-  dailyCosts: Array<{
-    date: string;
-    cost: number;
-    freeCost: number;
-    paidCost: number;
-  }>;
-}
-
-function isEmptyDashboard(d: CostDashboardData): boolean {
+function isEmptyDashboard(d: CostDashboard): boolean {
   return (
     d.totalCost === 0 &&
     d.byTenant.length === 0 &&
@@ -56,11 +26,7 @@ function isEmptyDashboard(d: CostDashboardData): boolean {
 
 export function CostDashboardPage() {
   const [days, setDays] = React.useState(30);
-  const { data, isLoading, error, refetch } = useApiData<CostDashboardData>(
-    () => Admin.getCostDashboard<CostDashboardData>(days),
-    [days],
-    { refetchInterval: 60000 }
-  );
+  const { data, isLoading, error, refetch } = useCostDashboard(days, { refetchInterval: 60000 });
 
   return (
     <PageContainer>
@@ -242,8 +208,8 @@ export function CostDashboardPage() {
                   <BarSeriesChart
                     data={dashboard.dailyCosts.map((day) => ({
                       date: day.date,
-                      freeCost: day.freeCost,
-                      paidCost: day.paidCost,
+                      freeCost: day.free_cost,
+                      paidCost: day.paid_cost,
                     }))}
                     bars={[
                       { key: 'freeCost', name: 'Free', color: chartColor('success') },

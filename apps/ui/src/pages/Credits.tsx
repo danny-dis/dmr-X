@@ -11,27 +11,8 @@ import { Input } from '@/components/primitives/Input';
 import { interpretError } from '@/components/primitives/ErrorState';
 import { StatTile } from '@/components/primitives/StatTile';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { formatCurrency, formatNumber } from '@/lib/formatters';
-
-interface CreditBalance {
-  tenantId: string;
-  balanceCents: number;
-  totalTopupCents: number;
-  totalUsedCents: number;
-}
-
-interface CreditTransaction {
-  id: string;
-  tenantId: string;
-  type: 'topup' | 'usage' | 'refund' | 'adjustment';
-  amountCents: number;
-  balanceAfterCents: number;
-  description: string | null;
-  requestId: string | null;
-  createdAt: string;
-}
+import { useCreditBalance, useCreditTransactions, useTopupCredits } from '@/lib/queries/credits';
 
 const TYPE_CONFIG: Record<string, { label: string; tone: 'success' | 'danger' | 'info' | 'warning'; icon: React.ReactNode }> = {
   topup: { label: 'Top-up', tone: 'success', icon: <ArrowUpRight className="size-3" /> },
@@ -44,38 +25,24 @@ export function CreditsPage() {
   const [topupOpen, setTopupOpen] = React.useState(false);
   const [topupAmount, setTopupAmount] = React.useState('');
   const [topupDescription, setTopupDescription] = React.useState('');
-  const [isSubmitting, setIsSubmitting] = React.useState(false);
-
-  const balance = useApiData<CreditBalance>(
-    () => Admin.getCreditBalance(),
-    [],
-    { refetchInterval: 10000 }
-  );
-
-  const transactions = useApiData<{ transactions: CreditTransaction[] }>(
-    () => Admin.getCreditTransactions({ limit: 50 }),
-    [],
-    { refetchInterval: 15000 }
-  );
+  const balance = useCreditBalance(undefined, { refetchInterval: 10000 });
+  const transactions = useCreditTransactions({ limit: 50 }, { refetchInterval: 15000 });
+  const topupCredits = useTopupCredits();
+  const isSubmitting = topupCredits.isPending;
 
   const handleTopup = async () => {
     const amount = parseFloat(topupAmount);
     if (isNaN(amount) || amount <= 0) return;
 
-    setIsSubmitting(true);
     try {
-      await Admin.topupCredits(Math.round(amount * 100), topupDescription || undefined);
+      await topupCredits.mutateAsync({ amountCents: Math.round(amount * 100), description: topupDescription || undefined });
       toast.success('Credits added', { description: `${formatCurrency(amount)} added to your account` });
       setTopupOpen(false);
       setTopupAmount('');
       setTopupDescription('');
-      void balance.refetch();
-      void transactions.refetch();
     } catch (err) {
       const interpreted = interpretError(err);
       toast.error(interpreted.title, { description: interpreted.description });
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
