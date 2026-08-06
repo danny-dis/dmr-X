@@ -7,6 +7,7 @@ import { z } from 'zod';
 
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
 import { compressionService } from '../services/compression.js';
 import { semanticCacheService } from '@dmr-x/cache';
 import { hashConversation, breakStickySession } from '@dmr-x/router';
@@ -40,6 +41,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+    const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
 
     // ── auto-free → pick active model, then G0DM0D3 wrap ───────────────────
     // Gateway ranks candidates first; the top concrete model gets the godmode
@@ -251,6 +253,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         tenant: (request as any).tenant,
         freeTierStrategy: (request.headers['x-free-tier-strategy'] as string) || undefined,
         costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
+        // X-Provider-Preferences (see ../utils/provider-preferences.ts) wins
+        // over any body.metadata.providerPreferences above — it's validated
+        // input, the body spread above is not.
+        ...(providerPreferences ? { providerPreferences } : {}),
       },
     };
 
@@ -763,6 +769,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     }
     if (unifiedRequest.metadata?.freeTierStrategy) {
       reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
+    }
+    if (response?.providerId) {
+      reply.header('X-DMRX-Provider-Id', response.providerId);
     }
 
     // Announce a provider/model switch. Clients that only read headers (proxies,

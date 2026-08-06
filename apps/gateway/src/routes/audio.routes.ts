@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
 
 const SpeechRequestSchema = z.object({
   model: z.string(),
@@ -25,6 +26,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+    const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
 
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
@@ -54,6 +56,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
       metadata: {
         requestId,
         tenant: (request as any).tenant,
+        ...(providerPreferences ? { providerPreferences } : {}),
       },
     };
 
@@ -62,6 +65,9 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
         path: '/audio/speech',
         qualityTarget,
       });
+      if (response?.providerId) {
+        reply.header('X-DMRX-Provider-Id', response.providerId);
+      }
 
       if (response.audio?.b64_json) {
         const contentTypes: Record<string, string> = {
@@ -86,6 +92,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+    const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
 
     let audioBase64: string;
     let model = '';
@@ -147,6 +154,7 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
       metadata: {
         requestId,
         tenant: (request as any).tenant,
+        ...(providerPreferences ? { providerPreferences } : {}),
       },
     };
 
@@ -155,6 +163,9 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
         path: '/audio/transcriptions',
         qualityTarget,
       });
+      if (response?.providerId) {
+        reply.header('X-DMRX-Provider-Id', response.providerId);
+      }
 
       const text = response.message?.content || '';
       const result = responseFormat === 'text' ? text : { text };

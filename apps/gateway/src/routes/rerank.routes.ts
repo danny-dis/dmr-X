@@ -115,6 +115,7 @@ export async function rerankRoutes(server: FastifyInstance): Promise<void> {
       fallback: usedFallback,
     };
 
+    reply.header('X-DMRX-Provider-Id', usedFallback ? 'local-fallback' : PROVIDER_NAME);
     storeRouteCache('rerank', tenantId, body as Record<string, unknown>, result);
     reply.header('X-Cache', 'MISS');
     return result;

@@ -16,6 +16,7 @@ import type {
   Modality,
   QualityTarget,
   ProviderModel,
+  ProviderPreferences,
 } from '@dmr-x/core';
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { type RouterConfig } from '@dmr-x/router';
@@ -272,18 +273,77 @@ let processRequestCount = 0;
 //   - The public routes don't echo back providerId or adapter-measured
 //     latency — only `model`. `providerId` is reported as the sentinel
 //     'dmrx-gateway' and `latencyMs` is this call's own round-trip time.
-//   - The routing-hint fields baked into `toUnifiedRequest`'s
-//     `metadata.providerPreferences` (provider_preference, provider_
-//     blacklist, latency_target, cost_target, local_first, require_privacy)
-//     have no carrier on the public wire contract and are dropped here.
-//     `quality_target` is the one hint with a real carrier (the
-//     `X-Quality-Target` header, read by `parseQualityTarget` on every
-//     gateway route) and is preserved.
-//   - `/v1/images/generations` has no fields for negative_prompt/steps/
-//     seed/cfg_scale (only prompt/model/n/size/style/quality); those MCP
-//     tool params are silently unusable now — pre-existing wire route
-//     limitation, not something this dispatch layer can add back.
+//   - The routing-hint fields (provider_preference, provider_blacklist,
+//     latency_target, cost_target, local_first, require_privacy) DO have a
+//     carrier again: the `X-Provider-Preferences` header (JSON-encoded
+//     ProviderPreferences, see apps/gateway/src/utils/provider-preferences.ts
+//     and buildProviderPreferences() below), read by every gateway route
+//     that also reads `X-Quality-Target`, and fed into
+//     `metadata.providerPreferences` where the pipeline's
+//     `applyProviderPreferences()` (services/router/src/pipeline/
+//     pipeline.ts) enforces it — same as it did when this file ran its own
+//     Router. `require_privacy` maps to `zdr`, which the pipeline now filters
+//     on `deployment === 'self_hosted' | 'on_device'` (fail-closed: unknown
+//     deployment is excluded, not assumed safe).
+//   - `/v1/images/generations` now accepts negative_prompt/steps/seed/
+//     cfg_scale (see the `diffusion` case below and
+//     apps/gateway/src/routes/images.routes.ts).
 // ---------------------------------------------------------------------------
+
+/**
+ * Translates MCP tool routing-hint params into a `ProviderPreferences`
+ * object for the `X-Provider-Preferences` header. Mirrors the mapping the
+ * removed local-Router `toUnifiedRequest()` used to build in-process (see
+ * `git show b029981 -- services/mcp-server/src/server.ts`), with one
+ * deliberate change: `require_privacy` never sets `strategy: 'direct'`. That
+ * strategy lets router.service.ts's direct-selection shortcut pick
+ * `order[0]` without re-checking `zdr`/`only` — fine for a soft preference,
+ * not for a stated privacy constraint, so privacy always goes through the
+ * full pipeline (and its zdr filter) instead.
+ */
+function buildProviderPreferences(params: Record<string, unknown>): ProviderPreferences | undefined {
+  let prefs: ProviderPreferences | undefined;
+
+  if (params.provider_preference) {
+    prefs = { ...(prefs || {}), order: params.provider_preference as string[], strategy: 'direct' };
+  }
+  if (params.provider_blacklist) {
+    prefs = { ...(prefs || {}), ignore: params.provider_blacklist as string[] };
+  }
+  if (params.latency_target !== undefined && params.latency_target !== null) {
+    const latencyMs = typeof params.latency_target === 'number'
+      ? params.latency_target
+      : parseInt(String(params.latency_target).replace(/[^0-9]/g, ''), 10);
+    if (Number.isFinite(latencyMs)) {
+      prefs = { ...(prefs || {}), preferredMaxLatencyMs: latencyMs };
+    }
+  }
+  if (params.cost_target !== undefined && params.cost_target !== null) {
+    const costPerToken = typeof params.cost_target === 'number'
+      ? params.cost_target
+      : parseFloat(String(params.cost_target).replace(/[^0-9.]/g, ''));
+    if (Number.isFinite(costPerToken)) {
+      prefs = { ...(prefs || {}), maxPricePerMillionTokens: costPerToken * 1_000_000 };
+    }
+  }
+  if (params.local_first) {
+    prefs = {
+      ...(prefs || {}),
+      order: ['ollama', 'local', ...(prefs?.order || [])],
+      strategy: 'direct',
+    };
+  }
+  if (params.require_privacy) {
+    prefs = {
+      ...(prefs || {}),
+      zdr: true,
+      // Force off the direct-selection shortcut — see the function doc above.
+      strategy: prefs?.strategy === 'direct' ? 'auto' : prefs?.strategy,
+    };
+  }
+
+  return prefs;
+}
 
 class GatewayRouteError extends Error {
   constructor(message: string, public readonly statusCode?: number) {
@@ -296,13 +356,19 @@ function gatewayErrorMessage(json: any, status: number): string {
   return json?.error?.message || json?.message || `Gateway returned HTTP ${status}`;
 }
 
+/** Builds the `X-Provider-Preferences` header entry, or `{}` when there's nothing to carry. */
+function providerPreferencesHeader(providerPreferences: ProviderPreferences | undefined): Record<string, string> {
+  return providerPreferences ? { 'x-provider-preferences': JSON.stringify(providerPreferences) } : {};
+}
+
 /** Standard JSON-in/JSON-out gateway call (chat, images, embeddings, rerank, video, 3d). */
 async function gatewayJsonCall(
   gatewayUrl: string,
   path: string,
   body: unknown,
   qualityTarget: QualityTarget,
-): Promise<{ json: any; latencyMs: number }> {
+  providerPreferences?: ProviderPreferences,
+): Promise<{ json: any; latencyMs: number; providerId?: string }> {
   const start = Date.now();
   const key = resolveGatewayKey();
   const res = await fetch(`${gatewayUrl}${path}`, {
@@ -310,6 +376,7 @@ async function gatewayJsonCall(
     headers: {
       'content-type': 'application/json',
       'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
       ...(key ? { authorization: `Bearer ${key}` } : {}),
     },
     body: JSON.stringify(body),
@@ -325,7 +392,7 @@ async function gatewayJsonCall(
   if (!res.ok) {
     throw new GatewayRouteError(gatewayErrorMessage(json, res.status), res.status);
   }
-  return { json, latencyMs };
+  return { json, latencyMs, providerId: res.headers.get('x-dmrx-provider-id') || undefined };
 }
 
 /** JSON-in/binary-out gateway call — only /v1/audio/speech returns raw bytes. */
@@ -334,7 +401,8 @@ async function gatewayBinaryCall(
   path: string,
   body: unknown,
   qualityTarget: QualityTarget,
-): Promise<{ buffer: Buffer; contentType: string; latencyMs: number }> {
+  providerPreferences?: ProviderPreferences,
+): Promise<{ buffer: Buffer; contentType: string; latencyMs: number; providerId?: string }> {
   const start = Date.now();
   const key = resolveGatewayKey();
   const res = await fetch(`${gatewayUrl}${path}`, {
@@ -342,6 +410,7 @@ async function gatewayBinaryCall(
     headers: {
       'content-type': 'application/json',
       'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
       ...(key ? { authorization: `Bearer ${key}` } : {}),
     },
     body: JSON.stringify(body),
@@ -361,7 +430,7 @@ async function gatewayBinaryCall(
     }
     throw new GatewayRouteError(message, res.status);
   }
-  return { buffer: Buffer.from(arrayBuffer), contentType, latencyMs };
+  return { buffer: Buffer.from(arrayBuffer), contentType, latencyMs, providerId: res.headers.get('x-dmrx-provider-id') || undefined };
 }
 
 /** Multipart POST — /v1/audio/transcriptions expects a file upload, not JSON. */
@@ -371,7 +440,8 @@ async function gatewayMultipartCall(
   fields: Record<string, string | undefined>,
   file: { buffer: Buffer; filename: string; contentType: string },
   qualityTarget: QualityTarget,
-): Promise<{ json: any; latencyMs: number }> {
+  providerPreferences?: ProviderPreferences,
+): Promise<{ json: any; latencyMs: number; providerId?: string }> {
   const start = Date.now();
   const key = resolveGatewayKey();
   const form = new FormData();
@@ -383,6 +453,7 @@ async function gatewayMultipartCall(
     method: 'POST',
     headers: {
       'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
       ...(key ? { authorization: `Bearer ${key}` } : {}),
     },
     body: form as any,
@@ -398,7 +469,7 @@ async function gatewayMultipartCall(
   if (!res.ok) {
     throw new GatewayRouteError(gatewayErrorMessage(json, res.status), res.status);
   }
-  return { json, latencyMs };
+  return { json, latencyMs, providerId: res.headers.get('x-dmrx-provider-id') || undefined };
 }
 
 /** Fetches a URL's bytes, or base64/data-URI-decodes an inline audio string. */
@@ -437,6 +508,7 @@ async function routeViaGateway(
 ): Promise<UnifiedResponse> {
   const qualityTarget = (params.quality_target as QualityTarget) || 'balanced';
   const requestId = crypto.randomUUID();
+  const providerPreferences = buildProviderPreferences(params);
 
   switch (modality) {
     case 'llm': {
@@ -457,12 +529,12 @@ async function routeViaGateway(
         user: params.user,
         stream: false,
       };
-      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/chat/completions', body, qualityTarget);
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/chat/completions', body, qualityTarget, providerPreferences);
       const choice = Array.isArray(json?.choices) ? json.choices[0] : undefined;
       return {
         modality: 'llm',
         requestId: json?.id || requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: json?.model || (params.model as string) || 'auto',
         message: choice?.message,
         usage: json?.usage,
@@ -480,6 +552,14 @@ async function routeViaGateway(
       // convention is handled by the same router.service.ts pipeline the
       // gateway's /v1/images/generations route runs, so it still works when
       // sent as the wire `model` field.
+      //
+      // NOTE: this pin also means provider_preference/provider_blacklist/
+      // require_privacy have nothing to act on for diffusion — the model
+      // string already names a single provider directly, bypassing the
+      // pipeline's candidate scoring (and therefore applyProviderPreferences)
+      // the same way an explicit `model` always does elsewhere. This is a
+      // pre-existing constraint of the pollinations pin, not something this
+      // change introduces or can fix without dropping the pin.
       const imageModel = (params.model as string) || 'flux';
       let size = '1024x1024';
       const width = params.width as number | undefined;
@@ -490,16 +570,20 @@ async function routeViaGateway(
       const body = {
         model: `pollinations-images/${imageModel}`,
         prompt: params.prompt,
+        negative_prompt: params.negative_prompt,
         n: params.n,
         size,
         style: params.style,
+        steps: params.steps,
+        seed: params.seed,
+        cfg_scale: params.cfg_scale,
         user: params.user,
       };
-      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/images/generations', body, qualityTarget);
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/images/generations', body, qualityTarget, providerPreferences);
       return {
         modality: 'diffusion',
         requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: imageModel,
         images: Array.isArray(json?.data) ? json.data : [],
         latencyMs,
@@ -514,12 +598,12 @@ async function routeViaGateway(
         dimensions: params.dimensions,
         user: params.user,
       };
-      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/embeddings', body, qualityTarget);
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/embeddings', body, qualityTarget, providerPreferences);
       const embeddings = Array.isArray(json?.data) ? json.data.map((d: { embedding: number[] }) => d.embedding) : [];
       return {
         modality: 'embedding',
         requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: json?.model || (params.model as string) || 'auto',
         embeddings,
         usage: json?.usage,
@@ -532,7 +616,7 @@ async function routeViaGateway(
       const buffer = await resolveAudioBytes(audio);
       const audioFormat = (params.audio_format as string) || 'wav';
       const contentType = AUDIO_FORMAT_MIME[audioFormat] || 'application/octet-stream';
-      const { json, latencyMs } = await gatewayMultipartCall(
+      const { json, latencyMs, providerId } = await gatewayMultipartCall(
         gatewayUrl,
         '/v1/audio/transcriptions',
         {
@@ -542,11 +626,12 @@ async function routeViaGateway(
         },
         { buffer, filename: `audio.${audioFormat}`, contentType },
         qualityTarget,
+        providerPreferences,
       );
       return {
         modality: 'audio_stt',
         requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: (params.model as string) || 'auto',
         completion: json?.text || '',
         latencyMs,
@@ -563,11 +648,11 @@ async function routeViaGateway(
         response_format: responseFormat,
         speed: params.speed,
       };
-      const { buffer, latencyMs } = await gatewayBinaryCall(gatewayUrl, '/v1/audio/speech', body, qualityTarget);
+      const { buffer, latencyMs, providerId } = await gatewayBinaryCall(gatewayUrl, '/v1/audio/speech', body, qualityTarget, providerPreferences);
       return {
         modality: 'audio_tts',
         requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: (params.model as string) || 'auto',
         audio: { b64_json: buffer.toString('base64'), format: responseFormat },
         latencyMs,
@@ -575,17 +660,25 @@ async function routeViaGateway(
     }
 
     case 'reranking': {
+      // NOTE: /v1/rerank is a hardcoded Cohere-or-local-fallback handler
+      // (apps/gateway/src/routes/rerank.routes.ts) that has never run
+      // through router.route()/the scoring pipeline — this predates the
+      // Router migration entirely (git log shows rerank.routes.ts unchanged
+      // since before ccb3026/b029981). provider_preference/provider_
+      // blacklist/local_first are sent below for forward-compatibility but
+      // currently have NO effect on this modality; that is a pre-existing
+      // gap, not something this fix introduces or resolves.
       const body = {
         model: params.model,
         query: params.query,
         documents: params.documents,
         top_n: params.top_n,
       };
-      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/rerank', body, qualityTarget);
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/rerank', body, qualityTarget, providerPreferences);
       return {
         modality: 'reranking',
         requestId: json?.id || requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: json?.model || (params.model as string) || 'auto',
         rerankResults: Array.isArray(json?.results) ? json.results : [],
         latencyMs,
@@ -601,11 +694,11 @@ async function routeViaGateway(
         fps: params.fps,
         aspect_ratio: params.aspect_ratio,
       };
-      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/video/generations', body, qualityTarget);
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/video/generations', body, qualityTarget, providerPreferences);
       return {
         modality: 'video',
         requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: (params.model as string) || 'auto',
         videos: Array.isArray(json?.data) ? json.data : [],
         latencyMs,
@@ -620,11 +713,11 @@ async function routeViaGateway(
         texture_resolution: params.texture_resolution,
         seed: params.seed,
       };
-      const { json, latencyMs } = await gatewayJsonCall(gatewayUrl, '/v1/3d/generate', body, qualityTarget);
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/3d/generate', body, qualityTarget, providerPreferences);
       return {
         modality: '3d',
         requestId,
-        providerId: 'dmrx-gateway',
+        providerId: providerId || 'dmrx-gateway',
         modelId: (params.model as string) || 'auto',
         models3d: Array.isArray(json?.data) ? json.data : [],
         latencyMs,
@@ -644,7 +737,7 @@ async function routeViaGateway(
       // UnifiedResponse — returned close to verbatim below rather than
       // re-synthesized from a wire format that doesn't exist for this
       // modality.
-      return musicViaAdminDispatcher(gatewayUrl, params, qualityTarget, requestId);
+      return musicViaAdminDispatcher(gatewayUrl, params, qualityTarget, requestId, providerPreferences);
     }
 
     default:
@@ -657,6 +750,7 @@ async function musicViaAdminDispatcher(
   params: Record<string, unknown>,
   qualityTarget: QualityTarget,
   fallbackRequestId: string,
+  providerPreferences?: ProviderPreferences,
 ): Promise<UnifiedResponse> {
   const adminKey = process.env.DMRX_ADMIN_API_KEY;
   const start = Date.now();
@@ -665,6 +759,7 @@ async function musicViaAdminDispatcher(
     headers: {
       'content-type': 'application/json',
       'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
       ...(adminKey ? { 'x-api-key': adminKey } : {}),
     },
     body: JSON.stringify({

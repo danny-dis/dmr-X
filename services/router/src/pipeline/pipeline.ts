@@ -380,6 +380,19 @@ function applyProviderPreferences(
     result = result.filter((m) => !ignoredSlugs.has(resolveProviderSlug(m.providerId)));
   }
 
+  // Zero-data-retention / privacy filter. This is a hard constraint, not a
+  // soft preference: a caller setting `zdr` is asking that their data never
+  // leave infrastructure they control. Self-hosted and on-device deployments
+  // qualify; cloud deployments never do. Candidates with no `deployment` tag
+  // are excluded too (fail closed) rather than assumed safe — the alternative
+  // (treating unknown as safe, the way `preferredMaxLatencyMs` and friends
+  // treat unknown metrics) would silently leak requests to unclassified
+  // cloud providers, which is exactly the failure this flag exists to
+  // prevent.
+  if (prefs.zdr) {
+    result = result.filter((m) => m.deployment === 'self_hosted' || m.deployment === 'on_device');
+  }
+
   // Filter by max price
   if (prefs.maxPricePerMillionTokens !== undefined) {
     const maxPrice = prefs.maxPricePerMillionTokens;

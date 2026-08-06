@@ -17,6 +17,7 @@ import { Agent } from 'undici';
 import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
 import { compressionService } from '../services/compression.js';
 import { computeSavings } from '../services/savings.js';
 import { refreshAdminKey } from '../middleware/auth.middleware.js';
@@ -6309,6 +6310,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     try {
       const requestId = crypto.randomUUID();
       const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+      // Same X-Provider-Preferences carrier the public wire routes read (see
+      // ../utils/provider-preferences.ts). `parameters` below is spread onto
+      // the UnifiedRequest at its top level (matching each modality's field
+      // names), which is NOT where the router looks for routing constraints
+      // — it reads `metadata.providerPreferences` — so a raw
+      // `provider_blacklist`/`require_privacy` key inside `parameters` would
+      // land as inert clutter, not a constraint. Building it from the header
+      // instead of trusting `parameters` keeps this dispatcher's enforcement
+      // identical to the public routes'.
+      const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
+      const metadata = { requestId, ...(providerPreferences ? { providerPreferences } : {}) };
 
       // Map MCP tool names to their respective routing
       if (tool === 'dmrx_chat') {
@@ -6316,7 +6328,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'llm' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/chat/completions',
@@ -6330,7 +6342,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'embedding' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/embeddings',
@@ -6344,7 +6356,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'reranking' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/rerank',
@@ -6358,7 +6370,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'diffusion' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/images/generations',
@@ -6372,7 +6384,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'audio_stt' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/audio/transcriptions',
@@ -6386,7 +6398,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'audio_tts' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/audio/speech',
@@ -6400,7 +6412,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'video' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/video/generations',
@@ -6414,7 +6426,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'music' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/music/generations',
@@ -6428,7 +6440,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: '3d' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/3d/generate',

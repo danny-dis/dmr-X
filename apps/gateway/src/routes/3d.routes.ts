@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
 
 const Generate3DRequestSchema = z.object({
   model: z.string().optional(),
@@ -28,6 +29,7 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+    const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
 
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
@@ -49,6 +51,7 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
       metadata: {
         requestId,
         tenant: (request as any).tenant,
+        ...(providerPreferences ? { providerPreferences } : {}),
       },
     };
 
@@ -56,6 +59,9 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
       path: '/v1/3d/generate',
       qualityTarget,
     });
+    if (response?.providerId) {
+      reply.header('X-DMRX-Provider-Id', response.providerId);
+    }
 
     const result = {
       created: Math.floor(Date.now() / 1000),
