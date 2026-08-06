@@ -9,13 +9,13 @@ import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
-import type { ApiMcpAggregatedServer } from '@/types/api';
+import { useAddAggregatedServer, useAggregatedServers, useRemoveAggregatedServer } from '@/lib/queries/mcp';
 
 export function McpAggregationConfig() {
-  const serversData = useApiData<ApiMcpAggregatedServer[]>(Admin.listAggregatedServers, []);
-  const [saving, setSaving] = React.useState(false);
+  const serversData = useAggregatedServers();
+  const addServer = useAddAggregatedServer();
+  const removeServer = useRemoveAggregatedServer();
+  const saving = addServer.isPending;
   const [dialogOpen, setDialogOpen] = React.useState(false);
 
   // Add server form
@@ -42,9 +42,8 @@ export function McpAggregationConfig() {
       toast.error('ID and Name are required');
       return;
     }
-    setSaving(true);
     try {
-      await Admin.addAggregatedServer({
+      await addServer.mutateAsync({
         id: serverId,
         name: serverName,
         transport: serverTransport,
@@ -55,19 +54,15 @@ export function McpAggregationConfig() {
       toast.success('Server added');
       setDialogOpen(false);
       resetForm();
-      await serversData.refetch();
     } catch (err) {
       toast.error('Failed to add server', { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setSaving(false);
     }
   };
 
   const handleRemove = async (id: string) => {
     try {
-      await Admin.removeAggregatedServer(id);
+      await removeServer.mutateAsync(id);
       toast.success('Server removed');
-      await serversData.refetch();
     } catch (err) {
       toast.error('Failed to remove server', { description: err instanceof Error ? err.message : String(err) });
     }

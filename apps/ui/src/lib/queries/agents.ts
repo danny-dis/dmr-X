@@ -201,10 +201,37 @@ export function useSkills() {
   });
 }
 
-export function useMarketplace(query: { search?: string; category?: string; sort?: string } = {}) {
+export interface MarketplaceListing {
+  id: string;
+  title: string;
+  description: string | null;
+  longDescription: string | null;
+  category: string | null;
+  tags: string[];
+  icon: string | null;
+  rating: number;
+  ratingCount: number;
+  installCount: number;
+  priceCents: number;
+  status: string;
+  createdAt: string;
+}
+
+/** `/marketplace` is mounted under the `/v1` prefix on the gateway (see
+ * `agentRoutes` registration in server.ts) — every call here needs that
+ * prefix even though the route file itself declares bare `/marketplace`. */
+export function useMarketplace(query: { search?: string; category?: string; limit?: number } = {}) {
   return useQuery({
     queryKey: keys.agents.marketplace(query),
-    queryFn: () => api<{ items: unknown[]; total: number }>('/marketplace', { query }),
+    queryFn: () => api<{ items: MarketplaceListing[]; total: number }>('/v1/marketplace', { query }),
+  });
+}
+
+export function useInstallMarketplaceItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<{ success: boolean }>(`/v1/marketplace/${id}/install`, { method: 'POST', body: {} }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.agents.all }),
   });
 }
 

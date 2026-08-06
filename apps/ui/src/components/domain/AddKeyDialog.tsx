@@ -31,7 +31,7 @@ export interface AddKeyDialogProps {
    * Called after a successful add. The parent is expected to refetch
    * the provider list so the new key shows up immediately. We
    * deliberately don't refetch from the dialog itself — multiple
-   * drawers and pages share the same `useApiData` cache.
+   * drawers and pages share the same react-query cache entry.
    */
   onAdded?: () => void;
 }

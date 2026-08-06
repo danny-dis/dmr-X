@@ -15,6 +15,15 @@ import type { PollOptions } from './types';
 // fallback: they paint real numbers before the stream connects and keep the
 // page correct if it drops.
 
+/** Gateway health — polled by the Topbar's connection indicator. */
+export function useHealth() {
+  return useQuery({
+    queryKey: keys.health,
+    queryFn: () => Admin.health(),
+    refetchInterval: 10_000,
+  });
+}
+
 export function useDashboardStats() {
   return useQuery({
     queryKey: keys.dashboard.stats(),

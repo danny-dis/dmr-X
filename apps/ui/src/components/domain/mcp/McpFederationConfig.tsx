@@ -10,16 +10,21 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
-import type { ApiMcpFederationPeer } from '@/types/api';
+import {
+  useAddMcpFederationPeer,
+  useMcpFederationConfig,
+  useMcpFederationPeers,
+  useRemoveMcpFederationPeer,
+  useUpdateMcpFederationConfig,
+} from '@/lib/queries/mcp';
 
 export function McpFederationConfig() {
-  const config = useApiData<{ enabled: boolean; discovery: { mdns: boolean; dns: { domain: string } }; syncInterval: string }>(
-    Admin.getFederationConfig, []
-  );
-  const peersData = useApiData<{ peers: ApiMcpFederationPeer[] }>(Admin.listFederationPeers, []);
-  const [saving, setSaving] = React.useState(false);
+  const config = useMcpFederationConfig();
+  const peersData = useMcpFederationPeers();
+  const updateConfig = useUpdateMcpFederationConfig();
+  const addPeer = useAddMcpFederationPeer();
+  const removePeer = useRemoveMcpFederationPeer();
+  const saving = updateConfig.isPending || addPeer.isPending;
   const [enabled, setEnabled] = React.useState(true);
   const [mdnsEnabled, setMdnsEnabled] = React.useState(true);
   const [dnsDomain, setDnsDomain] = React.useState('');
@@ -43,9 +48,8 @@ export function McpFederationConfig() {
   }, [config.data]);
 
   const handleSave = async () => {
-    setSaving(true);
     try {
-      await Admin.updateFederationConfig({
+      await updateConfig.mutateAsync({
         enabled,
         discovery: { mdns: mdnsEnabled, dns: { domain: dnsDomain } },
         syncInterval,
@@ -53,8 +57,6 @@ export function McpFederationConfig() {
       toast.success('Federation config saved');
     } catch (err) {
       toast.error('Failed to save', { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -63,9 +65,8 @@ export function McpFederationConfig() {
       toast.error('Name and endpoint are required');
       return;
     }
-    setSaving(true);
     try {
-      await Admin.addFederationPeer({
+      await addPeer.mutateAsync({
         name: peerName,
         endpoint: peerEndpoint,
         secretRef: peerSecret || undefined,
@@ -75,19 +76,15 @@ export function McpFederationConfig() {
       setPeerName('');
       setPeerEndpoint('');
       setPeerSecret('');
-      await peersData.refetch();
     } catch (err) {
       toast.error('Failed to add peer', { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setSaving(false);
     }
   };
 
   const handleRemovePeer = async (id: string) => {
     try {
-      await Admin.removeFederationPeer(id);
+      await removePeer.mutateAsync(id);
       toast.success('Peer removed');
-      await peersData.refetch();
     } catch (err) {
       toast.error('Failed to remove peer', { description: err instanceof Error ? err.message : String(err) });
     }

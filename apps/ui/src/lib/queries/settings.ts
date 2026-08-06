@@ -24,3 +24,19 @@ export function useUpdateSettings() {
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.settings.all }),
   });
 }
+
+/** Live reachability + last-run telemetry for the Needle tool pre-filter —
+ * polled independently of the settings form so the status card stays fresh. */
+export function useNeedleStatus(options?: PollOptions) {
+  return useQuery({
+    queryKey: keys.needle.status(),
+    queryFn: () => Admin.getNeedleStatus(),
+    ...options,
+  });
+}
+
+export function useRotateAdminKey() {
+  return useMutation({
+    mutationFn: () => Admin.rotateAdminKey(),
+  });
+}
