@@ -34,39 +34,42 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill, type StatusKind } from '@/components/primitives/StatusPill';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { formatNumber, formatDuration, timeAgo } from '@/lib/formatters';
-import type { ApiWorker, ApiWorkerJob } from '@/types/api';
+import {
+  useCleanupWorkers,
+  useDrainWorker,
+  useRegisterWorker,
+  useResumeWorker,
+  useWorkerJobs,
+  useWorkers,
+} from '@/lib/queries/workers';
+import type { ApiWorker } from '@/types/api';
 
 type WorkerAction = 'start' | 'stop' | 'restart';
 
 export function WorkersPage() {
-  const workers = useApiData<ApiWorker[]>(
-    () => Admin.listWorkers(),
-    [],
-    { refetchInterval: 5000 }
-  );
+  const workers = useWorkers({ refetchInterval: 5000 });
 
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState('');
   const [type, setType] = React.useState('generic');
-  const [registering, setRegistering] = React.useState(false);
   const [selectedWorker, setSelectedWorker] = React.useState<ApiWorker | null>(null);
   const [jobsOpen, setJobsOpen] = React.useState(false);
   const [cleanupDialogOpen, setCleanupDialogOpen] = React.useState(false);
   const [cleanupDays, setCleanupDays] = React.useState(30);
-  const [cleaningUp, setCleaningUp] = React.useState(false);
   const [stopTarget, setStopTarget] = React.useState<ApiWorker | null>(null);
   // Per-row pending action, keyed by worker id — so acting on one worker
   // never disables the buttons on any other row in the table.
   const [pending, setPending] = React.useState<Record<string, WorkerAction>>({});
 
-  const jobs = useApiData<ApiWorkerJob[]>(
-    () => selectedWorker ? Admin.listWorkerJobs(selectedWorker.id) : Promise.resolve([]),
-    [selectedWorker?.id],
-    { refetchInterval: jobsOpen ? 3000 : undefined, enabled: jobsOpen && selectedWorker !== null }
-  );
+  const jobs = useWorkerJobs(selectedWorker?.id, {
+    refetchInterval: jobsOpen ? 3000 : false,
+    enabled: jobsOpen && selectedWorker !== null,
+  });
+  const registerWorker = useRegisterWorker();
+  const cleanupWorkers = useCleanupWorkers();
+  const resumeWorker = useResumeWorker();
+  const drainWorker = useDrainWorker();
 
   const setWorkerPending = (id: string, action: WorkerAction | null) => {
     setPending((p) => {
@@ -78,45 +81,36 @@ export function WorkersPage() {
   };
 
   const handleRegister = async () => {
-    setRegistering(true);
     try {
-      await Admin.registerWorker({ name, type });
+      await registerWorker.mutateAsync({ name, type });
       toast.success('Worker registered', { description: `${name} was added as a ${type} worker.` });
       setOpen(false);
       setName('');
       setType('generic');
-      void workers.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setRegistering(false);
     }
   };
 
   const handleCleanup = async () => {
-    setCleaningUp(true);
     try {
-      await Admin.cleanupWorkers(cleanupDays);
+      await cleanupWorkers.mutateAsync(cleanupDays);
       toast.success('Cleanup completed', {
         description: `Jobs and terminated workers older than ${cleanupDays} days were removed.`,
       });
       setCleanupDialogOpen(false);
-      void workers.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setCleaningUp(false);
     }
   };
 
   const handleStart = async (worker: ApiWorker) => {
     setWorkerPending(worker.id, 'start');
     try {
-      await Admin.resumeWorker(worker.id);
+      await resumeWorker.mutateAsync(worker.id);
       toast.success('Worker started', { description: worker.name ?? worker.id });
-      void workers.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -128,11 +122,10 @@ export function WorkersPage() {
   const handleStop = async (worker: ApiWorker) => {
     setWorkerPending(worker.id, 'stop');
     try {
-      await Admin.drainWorker(worker.id);
+      await drainWorker.mutateAsync(worker.id);
       toast.success('Worker stopped', {
         description: `${worker.name ?? worker.id} is draining and will finish in-flight jobs before going idle.`,
       });
-      void workers.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -144,10 +137,9 @@ export function WorkersPage() {
   const handleRestart = async (worker: ApiWorker) => {
     setWorkerPending(worker.id, 'restart');
     try {
-      await Admin.drainWorker(worker.id);
-      await Admin.resumeWorker(worker.id);
+      await drainWorker.mutateAsync(worker.id);
+      await resumeWorker.mutateAsync(worker.id);
       toast.success('Worker restarted', { description: worker.name ?? worker.id });
-      void workers.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -376,7 +368,7 @@ export function WorkersPage() {
             <DialogClose asChild>
               <Button variant="ghost">Cancel</Button>
             </DialogClose>
-            <Button onClick={handleRegister} loading={registering} disabled={!name.trim()}>
+            <Button onClick={handleRegister} loading={registerWorker.isPending} disabled={!name.trim()}>
               Register
             </Button>
           </DialogFooter>
@@ -408,7 +400,7 @@ export function WorkersPage() {
             <DialogClose asChild>
               <Button variant="ghost">Cancel</Button>
             </DialogClose>
-            <Button onClick={handleCleanup} loading={cleaningUp}>
+            <Button onClick={handleCleanup} loading={cleanupWorkers.isPending}>
               <Trash2 className="size-3" aria-hidden />
               Cleanup
             </Button>
