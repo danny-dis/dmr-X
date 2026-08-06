@@ -11,7 +11,7 @@ This page documents the stable, supported `DMRX_*` environment variables. `.env.
 | `NODE_ENV` | `development` | Production | `development` or `production` |
 | `PORT` | `3000` | No | Gateway listen port |
 | `LOG_LEVEL` | `info` | No | Logger level: `debug`, `info`, `warn`, `error` |
-| `DMRX_DATA_DIR` | `~/.dmr-x` | No | Directory for SQLite database and data files |
+| `DMRX_DATA_DIR` | `~/.dmr-x` | No | Directory for SQLite database and data files. The MCP server uses `~/.dmr-x/mcp` if this is unset. |
 | `DMRX_UI_DIR` | `apps/gateway/public` | No | Static UI directory served by the gateway |
 | `DMRX_LOCAL_MODE` | `false` | No | Skip tenant API key auth for local dev. **Never use in production.** |
 | `DMRX_ALLOW_LOCAL_MODE` | `false` | No | Permits `DMRX_LOCAL_MODE=true` in production. Used by tests/CI only. |
@@ -133,6 +133,8 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 | `DMRX_GODMODE_REPO` | `https://github.com/danny-dis/G0DM0D3.git` | No | Repo the managed G0DM0D3 server is cloned from. Defaults to DMR-X's own fork, not upstream, so `.github/workflows/godmode-fork-sync.yml` controls when upstream changes reach it. |
 | `DMRX_GODMODE_REF` | pinned commit SHA | No | Commit SHA (or branch/tag) the clone is pinned to. Fetched directly (works for a branch, tag, or SHA), so every fresh install is byte-identical regardless of when it runs. See `patches/g0dm0d3/README.md`. |
 | `DMRX_GODMODE_UPSTREAM` | `https://github.com/elder-plinius/G0DM0D3` | No | The project `DMRX_GODMODE_REPO` is a fork of. Reported by `GET /v1/godmode/server/updates` and shown in the UI so users can see how far their pinned copy trails upstream. Only change this if you re-point `DMRX_GODMODE_REPO` at a fork of something else. **Both repos must be on github.com and use `main` as their default branch** — otherwise the update check reports "could not check" and the rest of godmode is unaffected. |
+
+**Data Directory Isolation:** The MCP server uses an isolated SQLite database to avoid contending with the gateway's encrypted DB file lock. If `DMRX_DATA_DIR` is unset, the MCP server automatically uses `~/.dmr-x/mcp` as its data directory. If you set `DMRX_DATA_DIR` explicitly (e.g., in `.env`), both the gateway and MCP server will use that same directory — override this by setting `DMRX_DATA_DIR` only when running the gateway, and leaving it unset when running the MCP server separately.
 
 **Security:** The MCP server binds to `127.0.0.1` by default. Only change to `0.0.0.0` if you need remote access, and always set `DMRX_MCP_API_KEY` when exposing externally.
 
