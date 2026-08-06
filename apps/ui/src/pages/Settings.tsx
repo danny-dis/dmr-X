@@ -34,9 +34,8 @@ import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import type { ApiNeedleStatus } from '@/types/api';
+import { useNeedleStatus, useSettings, useUpdateSettings } from '@/lib/queries/settings';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */
@@ -231,43 +230,32 @@ function toServer(f: SettingsForm): Record<string, unknown> {
 /* -------------------------------------------------------------------------- */
 
 export function SettingsPage() {
-  const settings = useApiData<Record<string, unknown>>(
-    () => Admin.getSettings(),
-    [],
-    { refetchInterval: 60000 }
-  );
+  const settings = useSettings({ refetchInterval: 60000 });
   // Live reachability + last-run telemetry for the Needle tool pre-filter —
   // polled independently of the settings form so the status card stays
   // fresh (and reflects a toggle flip immediately after Save) without
   // reloading the whole settings form.
-  const needleStatus = useApiData<ApiNeedleStatus>(
-    () => Admin.getNeedleStatus(),
-    [],
-    { refetchInterval: 15000 }
-  );
+  const needleStatus = useNeedleStatus({ refetchInterval: 15000 });
+  const updateSettings = useUpdateSettings();
   const [form, setForm] = React.useState<SettingsForm>(DEFAULTS);
-  const [saving, setSaving] = React.useState(false);
+  const saving = updateSettings.isPending;
   const [resetKey, setResetKey] = React.useState(0);
 
   React.useEffect(() => {
-    setForm(fromServer(settings.data));
+    setForm(fromServer(settings.data ?? null));
   }, [settings.data, resetKey]);
 
   const update = <K extends keyof SettingsForm>(key: K, value: SettingsForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
   const onSave = async () => {
-    setSaving(true);
     try {
-      await Admin.updateSettings(toServer(form));
+      await updateSettings.mutateAsync(toServer(form));
       toast.success('Settings saved', { description: 'Configuration persisted to the gateway.' });
-      await settings.refetch();
       await needleStatus.refetch();
     } catch (e) {
       const interpreted = interpretError(e);
       toast.error(interpreted.title, { description: interpreted.description });
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -331,7 +319,7 @@ export function SettingsPage() {
     window.location.reload();
   };
 
-  const dirty = JSON.stringify(form) !== JSON.stringify(fromServer(settings.data));
+  const dirty = JSON.stringify(form) !== JSON.stringify(fromServer(settings.data ?? null));
 
   return (
     <PageContainer>

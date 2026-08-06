@@ -16,17 +16,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { formatDuration, formatNumber, timeAgo } from '@/lib/formatters';
-import type { ApiSandboxJob } from '@/types/api';
+import { useCancelSandboxJob, useSandboxJobs, useSubmitSandboxJob } from '@/lib/queries/sandbox';
 
 export function SandboxPage() {
-  const jobs = useApiData<ApiSandboxJob[]>(
-    () => Admin.listSandboxJobs(),
-    [],
-    { refetchInterval: 5000 }
-  );
+  const jobs = useSandboxJobs({ refetchInterval: 5000 });
+  const cancelJob = useCancelSandboxJob();
+  const submitJob = useSubmitSandboxJob();
 
   const [open, setOpen] = React.useState(false);
   const [cancelling, setCancelling] = React.useState<Record<string, boolean>>({});
@@ -34,14 +30,13 @@ export function SandboxPage() {
   const [language, setLanguage] = React.useState('python');
   const [code, setCode] = React.useState('');
   const [timeoutMs, setTimeoutMs] = React.useState('5000');
-  const [submitting, setSubmitting] = React.useState(false);
+  const submitting = submitJob.isPending;
 
   async function handleCancel(id: string) {
     setCancelling((prev) => ({ ...prev, [id]: true }));
     try {
-      await Admin.cancelSandbox(id);
+      await cancelJob.mutateAsync(id);
       toast.success('Job cancelled');
-      void jobs.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
@@ -55,9 +50,8 @@ export function SandboxPage() {
   }
 
   async function handleSubmit() {
-    setSubmitting(true);
     try {
-      await Admin.submitSandbox({
+      await submitJob.mutateAsync({
         language,
         code,
         timeoutMs: Number(timeoutMs),
@@ -67,12 +61,9 @@ export function SandboxPage() {
       setCode('');
       setLanguage('python');
       setTimeoutMs('5000');
-      void jobs.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setSubmitting(false);
     }
   }
 
