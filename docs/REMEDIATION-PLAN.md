@@ -395,4 +395,20 @@ commit messages). **The three type errors are gone** — both
   is what keeps it deterministic. Reproduce suspected flakes by oversubscribing
   CPU before blaming a change.
 
+### The baseline run, finally
+
+The handoff's outstanding "**Not yet done:** a clean full-suite run" is done.
+On 2026-08-06, on a quiet machine with no agents editing the tree:
+
+```
+Test Files  86 passed (86)
+     Tests  1248 passed (1248)
+  Duration  295.82s
+```
+
+Zero failures, zero skips. `tsc` clean on both the root and `apps/ui` configs;
+`bun run lint` reports 0 errors (307 warnings, all `no-unused-vars` in tests).
+Treat this as the real baseline — it is the first suite result on this tree that
+was not taken during concurrent edits.
+
 **Still open:** `apps/ui/src` has zero test files.

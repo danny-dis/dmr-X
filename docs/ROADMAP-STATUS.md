@@ -68,6 +68,10 @@ and all agent/MCP/federation routes are **registered** in `server.ts`.
 
 - Provider adapter count is **57+** (not 18). See `docs/AI_PROVIDER_REFERENCE.md`.
 - Provider catalogs are *research snapshots* (mid-2026) — verify against upstream provider docs before use.
-- Migration count: **63 SQL migrations**. Test count: **73 unit test files**, plus 4 E2E
-  files that are skipped unless `DMRX_RUN_E2E=true` (CI never sets it). `apps/ui` has
-  **no tests at all**.
+- Migration count: **64 SQL migrations**. Test count: **86 unit test files / 1248 tests**,
+  plus 4 E2E files that are skipped unless `DMRX_RUN_E2E=true` (CI never sets it).
+  `apps/ui` has **no tests at all**.
+- Last clean full-suite baseline: **2026-08-06 — 86/86 files, 1248/1248 tests passed,
+  0 failed, 0 skipped, 295s** (`bun vitest run --project unit`, quiet machine). The
+  suite is serial by design (`maxForks: 1`) and load-sensitive: if it flakes, first
+  re-run it with nothing else competing for CPU before blaming a change.
