@@ -60,7 +60,8 @@ describe('sqlite-client', () => {
       // 064 adds api_keys.key_lookup_hash (indexed O(1) auth lookup).
       // 065 adds agentic_sessions (durable /agentic/chat conversations).
       // 070 adds jobs.
-      expect(row.v).toBe(70);
+      // 071 adds bandit_arms (persisted Thompson bandit posterior).
+      expect(row.v).toBe(71);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {
