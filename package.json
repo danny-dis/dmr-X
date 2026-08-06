@@ -20,6 +20,7 @@
     "test": "bun run clean:src && bun vitest run",
     "test:unit": "bun run clean:src && bun vitest run --project unit",
     "test:e2e": "bun run clean:src && bun vitest run --project e2e",
+    "test:ui": "bun vitest run --project ui",
     "test:coverage": "bun run clean:src && bun vitest run --project unit --coverage",
     "test:watch": "bun vitest",
     "lint": "bunx eslint .",
@@ -40,6 +41,7 @@
     "typescript-eslint": "^8.18.0",
     "vite": "6.4.3",
     "vitest": "^3.2.6",
+    "@vitejs/plugin-react": "5.1.1",
     "eslint-plugin-react-hooks": "^5.1.0",
     "@types/node": "^22.9.0"
   },
