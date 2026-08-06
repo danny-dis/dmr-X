@@ -29,54 +29,24 @@ import {
 } from 'lucide-react';
 import * as React from 'react';
 
+import type { UseQueryResult } from '@tanstack/react-query';
+
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { SkeletonText } from '@/components/primitives/Skeleton';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData, type UseApiDataResult } from '@/hooks/useApiData';
-import { fetchAuthenticated } from '@/lib/api';
+import {
+  useGodmodeServerAction,
+  useGodmodeServerConfig,
+  useGodmodeServerStatus,
+  useGodmodeServerUpdates,
+  type GodmodeServerStatus,
+  type GodmodeUpdatesResponse,
+} from '@/lib/queries/godmode';
 import { cn } from '@/lib/utils';
 
-export type GodmodeServerStatus =
-  | 'not_installed'
-  | 'stopped'
-  | 'installing'
-  | 'running'
-  | 'error';
-
-interface ServerStatusResponse {
-  status: GodmodeServerStatus;
-  running: boolean;
-  installed?: boolean;
-  url?: string;
-  runtime?: string;
-  health?: { status?: string } | string;
-  pid?: number;
-  containerId?: string;
-}
-
-interface ServerConfigResponse {
-  baseUrl?: string;
-  hasApiKey?: boolean;
-  openrouterConfigured?: boolean;
-  repo?: string;
-  ref?: string;
-}
-
-/** GET /v1/godmode/server/updates — fork vs upstream sync health. */
-export interface GodmodeUpdatesResponse {
-  repo: string;
-  upstream: string;
-  pinnedRef: string;
-  installedRef: string | null;
-  forkHead: string | null;
-  upstreamHead: string | null;
-  behindUpstream: number | null;
-  pinnedIsForkHead: boolean;
-  checkedAt: string;
-  error?: string;
-}
+export type { GodmodeServerStatus, GodmodeUpdatesResponse };
 
 const STATUS_META: Record<
   GodmodeServerStatus,
@@ -167,7 +137,7 @@ const TONE_TEXT: Record<UpstreamTone, string> = {
  * error surface, and its own refresh control — inlining it made the card's
  * render impossible to follow.
  */
-function UpstreamSection({ updates }: { updates: UseApiDataResult<GodmodeUpdatesResponse> }) {
+function UpstreamSection({ updates }: { updates: UseQueryResult<GodmodeUpdatesResponse, Error> }) {
   const { data, error, isLoading, refetch } = updates;
   const [refreshing, setRefreshing] = React.useState(false);
 
@@ -269,34 +239,12 @@ export function G0dm0d3ServerCard() {
   const [busy, setBusy] = React.useState<null | 'install' | 'start' | 'stop'>(null);
   const [copied, setCopied] = React.useState(false);
 
-  const { data, refetch } = useApiData<ServerStatusResponse>(
-    async () => {
-      const res = await fetchAuthenticated('/v1/godmode/server/status');
-      return (await res.json()) as ServerStatusResponse;
-    },
-    [],
-    { refetchInterval: 3000 }
-  );
-
-  const { data: config } = useApiData<ServerConfigResponse>(
-    async () => {
-      const res = await fetchAuthenticated('/v1/godmode/server/config');
-      return (await res.json()) as ServerConfigResponse;
-    },
-    [],
-    { refetchInterval: false }
-  );
-
+  const { data } = useGodmodeServerStatus();
+  const { data: config } = useGodmodeServerConfig();
   // Deliberately NOT polled: each call costs the gateway up to three GitHub
   // API requests, and the commits it reports move at most once a night.
-  const updates = useApiData<GodmodeUpdatesResponse>(
-    async () => {
-      const res = await fetchAuthenticated('/v1/godmode/server/updates');
-      return (await res.json()) as GodmodeUpdatesResponse;
-    },
-    [],
-    { refetchInterval: false }
-  );
+  const updates = useGodmodeServerUpdates();
+  const serverAction = useGodmodeServerAction();
 
   const status: GodmodeServerStatus = data?.status ?? 'not_installed';
   const meta = STATUS_META[status];
@@ -307,21 +255,11 @@ export function G0dm0d3ServerCard() {
     async (kind: 'install' | 'start' | 'stop') => {
       setBusy(kind);
       try {
-        const res = await fetchAuthenticated(`/v1/godmode/server/${kind}`, {
-          method: 'POST',
-          body: JSON.stringify({}),
-        });
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          throw new Error(text || `Failed: ${res.status}`);
-        }
-        const json = (await res.json().catch(() => ({}))) as { message?: string; url?: string };
+        const json = await serverAction.mutateAsync(kind);
         toast.success(
           `${kind[0]!.toUpperCase()}${kind.slice(1)} complete`,
           { description: json.message ?? json.url }
         );
-        // Refresh status immediately, polling will keep it fresh.
-        void refetch();
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Request failed';
         toast.error(`Failed to ${kind}`, { description: message });
@@ -329,7 +267,7 @@ export function G0dm0d3ServerCard() {
         setBusy(null);
       }
     },
-    [refetch]
+    [serverAction]
   );
 
   // Held in a ref so the "Copied" flag can be cancelled on unmount — the card

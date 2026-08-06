@@ -10,9 +10,8 @@ import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { useAgentInstances } from '@/lib/queries/agents';
+import { useModels } from '@/lib/queries/models';
 import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 import type { ApiModel } from '@/types/api';
@@ -154,7 +153,7 @@ export function PlaygroundInput() {
 
   // Fetch only available models (from providers with active keys or keyless providers).
   // The backend filters by provider key status when available_only=true (default).
-  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: 'true' }), [], { refetchInterval: 30000 });
+  const models = useModels({ available_only: 'true' }, { refetchInterval: 30000 });
   
   const filteredModels = React.useMemo(() => {
     const all = models.data ?? [];

@@ -2,10 +2,8 @@ import { Upload, Download, Image as ImageIcon, X, Send } from 'lucide-react';
 import * as React from 'react';
 
 import { Button, Textarea } from '@/components/primitives';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { fetchAuthenticated } from '@/lib/api';
-import type { ApiModel } from '@/types/api';
+import { useModels } from '@/lib/queries/models';
 
 export function ImagesView() {
   const [prompt, setPrompt] = React.useState('');
@@ -16,11 +14,7 @@ export function ImagesView() {
   const [error, setError] = React.useState<string | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
-  const models = useApiData<ApiModel[]>(
-    () => Admin.listModels({ available_only: 'true' }) as Promise<ApiModel[]>,
-    [],
-    { refetchInterval: 30000 },
-  );
+  const models = useModels({ available_only: 'true' }, { refetchInterval: 30000 });
 
   const imageModels = React.useMemo(
     () => (models.data ?? []).filter((m) => m.modality === 'diffusion'),

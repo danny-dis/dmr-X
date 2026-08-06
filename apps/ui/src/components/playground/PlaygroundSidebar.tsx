@@ -5,10 +5,8 @@ import { ConversationItem } from './ConversationItem';
 
 import { Button } from '@/components/primitives/Button';
 import { Input } from '@/components/primitives/Input';
-import { useApiData } from '@/hooks/useApiData';
-import { api } from '@/lib/api';
+import { useConversations } from '@/lib/queries/conversations';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
-import type { Conversation } from '@/store/usePlaygroundStore';
 
 export function PlaygroundSidebar() {
   const showSidebar = usePlaygroundStore(s => s.showSidebar);
@@ -23,11 +21,7 @@ export function PlaygroundSidebar() {
   // hand-rolled Authorization header, bypassing the shared token
   // resolution (tenant token → admin token fallback) and base-URL/error
   // handling that `api()` provides everywhere else.
-  const { data: conversationsData, isLoading } = useApiData(
-    () => api<{ conversations: Conversation[] }>('/v1/conversations'),
-    [],
-    { refetchInterval: 30000 } // Refresh every 30 seconds
-  );
+  const { data: conversationsData, isLoading } = useConversations();
   
   const filteredConversations = React.useMemo(() => {
     const convs = conversationsData?.conversations || conversations;
