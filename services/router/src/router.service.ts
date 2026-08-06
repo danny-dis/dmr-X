@@ -8,7 +8,7 @@ import { keyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 
-import { ThompsonSampler } from './bandit/thompson-sampler.js';
+import { ThompsonSampler, calculateReward } from './bandit/thompson-sampler.js';
 import { ClusterScorer } from './cluster/cluster-scorer.js';
 import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
 import { CompositeExecutor } from './decomposer/composite-executor.js';
@@ -158,6 +158,69 @@ export class Router {
     return this.candidates.find(
       (c) => c.providerId === providerId && c.modelId === modelId
     );
+  }
+
+  /**
+   * Resolve the candidate that ACTUALLY served a response. `response.providerId`
+   * is the adapter/provider NAME (e.g. "google"), while candidates/plans are
+   * keyed by the DB provider UUID, so it must be resolved back to a candidate
+   * rather than compared directly — see the sticky-session comment in
+   * `routeSimple` for the failure mode this avoids.
+   */
+  private resolveServedCandidate(response: UnifiedResponse, fallbackModelId: string): ProviderModel | undefined {
+    const servedModelId = response.modelId || fallbackModelId;
+    return (
+      this.candidates.find(
+        (c) => c.modelId === servedModelId &&
+          (c.providerId === response.providerId || c.providerName === response.providerId)
+      ) ?? this.candidates.find((c) => c.modelId === servedModelId)
+    );
+  }
+
+  /**
+   * Train the Thompson sampler's posterior on this request's outcome. This is
+   * the reward loop that was previously missing entirely — every arm sat at
+   * its alpha=1/beta=1 prior forever, so selection degenerated into an argmax
+   * over the deterministic quality/cost/latency score.
+   *
+   * On success, the reward is attributed to whichever candidate ACTUALLY
+   * served the response (see `resolveServedCandidate`), not `plan.primary` —
+   * `executeWithFallback` may have recovered via a chain entry.
+   *
+   * On failure there is no response to resolve a served candidate from, so
+   * `plan.primary` (the arm the router chose) eats the penalty. This is a
+   * best-effort attribution: if fallback entries were also tried and failed,
+   * their arms are not penalized here, since `executeWithFallback` does not
+   * currently surface which chain entries were attempted with enough detail
+   * (provider *and* model) to resolve them back to candidates.
+   *
+   * Swallows all errors — a bandit bookkeeping failure must never fail the
+   * request that already succeeded or already failed for its own reason.
+   */
+  private recordBanditReward(
+    plan: RoutingPlan,
+    response: UnifiedResponse | null,
+    success: boolean,
+  ): void {
+    try {
+      const candidate = response
+        ? this.resolveServedCandidate(response, plan.primary.modelId)
+        : this.getCandidate(plan.primary.providerId, plan.primary.modelId);
+      if (!candidate) return;
+
+      const reward = calculateReward(
+        candidate.qualityScore,
+        response?.latencyMs ?? 0,
+        candidate.costPerInputToken || 0,
+        success,
+        response?.timeToFirstTokenMs != null
+          ? { firstTokenLatencyMs: response.timeToFirstTokenMs }
+          : {},
+      );
+      this.thompsonSampler.update(candidate, reward);
+    } catch (err) {
+      logger.debug({ err }, 'Failed to record Thompson sampler reward');
+    }
   }
 
   setAdapterExecutor(executor: AdapterExecutor): void {
@@ -616,10 +679,12 @@ export class Router {
           keyRotationService,
         });
         span.setAttribute('router.used_provider', res.providerId);
+        this.recordBanditReward(plan, res, true);
         return res;
       } catch (err) {
         span.recordException(err as Error);
         span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+        this.recordBanditReward(plan, null, false);
         throw err;
       } finally {
         span.end();
@@ -639,13 +704,10 @@ export class Router {
       // while candidates and plans are keyed by the DB provider UUID, so the
       // name has to be resolved back to a UUID — a raw name would be stored
       // fine but never match a candidate on the next turn, silently disabling
-      // stickiness altogether.
+      // stickiness altogether. `resolveServedCandidate` does the same
+      // resolution used to attribute the Thompson sampler reward above.
       const servedModelId = response.modelId || plan.primary.modelId;
-      const servedCandidate =
-        this.candidates.find(
-          (c) => c.modelId === servedModelId &&
-            (c.providerId === response.providerId || c.providerName === response.providerId)
-        ) ?? this.candidates.find((c) => c.modelId === servedModelId);
+      const servedCandidate = this.resolveServedCandidate(response, plan.primary.modelId);
       const servedProviderId = servedCandidate?.providerId ?? plan.primary.providerId;
 
       // Get RPM for TTL adjustment if rate limit service is available
