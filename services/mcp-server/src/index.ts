@@ -27,7 +27,8 @@
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { watchFile, readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import os from 'node:os';
+import path from 'node:path';
 
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { initDb } from '@dmr-x/db';
@@ -952,6 +953,9 @@ async function main(): Promise<void> {
   // Initialize the DB (isolated DMRX_DATA_DIR so we don't contend with the
   // gateway's encrypted DB file lock). This populates the router's candidate
   // pool and enables DB-backed tools (image generation, policy, context).
+  if (!process.env.DMRX_DATA_DIR) {
+    process.env.DMRX_DATA_DIR = path.join(os.homedir(), '.dmr-x', 'mcp');
+  }
   try {
     await initDb();
     console.log('Database initialized for MCP server.');
@@ -1087,8 +1091,8 @@ function startUpstreamLivenessWatcher(): void {
 function startConfigWatcher(): void {
   // Determine the config file path (same resolution as loadConfigFile)
   const configPath = process.env.DMRX_MCP_CONFIG
-    ? resolve(process.cwd(), process.env.DMRX_MCP_CONFIG)
-    : resolve(process.cwd(), 'dmrx-mcp.config.json');
+    ? path.resolve(process.cwd(), process.env.DMRX_MCP_CONFIG)
+    : path.resolve(process.cwd(), 'dmrx-mcp.config.json');
 
   // Track the last known set of aggregation server IDs to detect changes
   let knownServerIds = new Set<string>();
