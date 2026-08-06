@@ -256,16 +256,27 @@ persistence is silently off. No outbound client role
 
 ## P2 — UI/UX
 
-### 23. Abandoned react-query migration
-`apps/ui/src/lib/queryClient.ts:5-13` documents that `hooks/useApiData` was to be
+### 23. Abandoned react-query migration — RESOLVED 2026-08-06
+`apps/ui/src/lib/queryClient.ts:5-13` documented that `hooks/useApiData` was to be
 replaced because it "held no cache and ran one independent polling loop per call
-site". Still on `useApiData`: `Providers.tsx:38`, `FusionPanel.tsx:78`,
-`Routing.tsx:51`, `Policies.tsx:23`, `Tenants.tsx:44`, `Quota.tsx:17`,
-`Usage.tsx:34`, CostDashboard, Compression, Benchmarks, Sandbox, Workers,
-Settings, Federation, Credits, Memory, `CommandPalette.tsx:33-42`. Navigating
-Dashboard → Providers → Fusion → Routing fires four un-deduplicated
-`listProviders()` polls, none sharing the cache that already exists at
-`lib/queries/providers.ts:10-15`.
+site". Navigating Dashboard → Providers → Fusion → Routing used to fire four
+un-deduplicated `listProviders()` polls, none sharing the cache that already
+existed at `lib/queries/providers.ts:10-15`.
+
+The migration is now finished: 22 pages and 14 components moved across, three new
+query modules added (`integrations.ts`, `godmode.ts`, `conversations.ts`), and
+`hooks/useApiData.ts` deleted once it had zero callers. The only surviving
+mentions of the name are comments recording what the pre-migration behaviour was.
+
+Two latent bugs surfaced while routing everything through shared, accurately
+typed responses — both are genuine user-visible defects, not refactor fallout:
+
+- `lib/queries/agents.ts` had a pre-built `useMarketplace` pointing at
+  `/marketplace`, but agent routes mount under `/v1`, so it could never have
+  resolved. It also sent different query params than the page did.
+- `CostDashboard.tsx` read `day.freeCost`/`day.paidCost` off `dailyCosts`, while
+  `admin.routes.ts:4312-4313` selects them as `free_cost`/`paid_cost`. That chart
+  series was silently always empty.
 
 ### 24. Information architecture sprawl
 `App.tsx:120-135` defines 11 routes with no nav entry (`/usage /credits /quota
@@ -364,7 +375,7 @@ commit messages). **The three type errors are gone** — both
 | Anthropic tool calling + SSE iterator + block schema (1, 2, 6) | **COMPLETE** | `tools`/`tool_choice` forwarded in both `execute` and `executeStream` on both adapters (`anthropic.adapter.ts:106,174`, `generic-anthropic.adapter.ts:166,246`). `parseAnthropicContentBlocks` (`anthropic-tools.ts:82-106`) walks the full `content[]`, not `content[0]`. `stop_reason: 'tool_use'` → `finishReason: 'tool_calls'` at `anthropic-tools.ts:117`. A dedicated `createAnthropicSSEIterator` (`stream-normalizer.ts:129-296`) replaces the OpenAI-shaped iterator. `anthropic-messages.ts:64-129` keeps image/`tool_use`/`tool_result` blocks structured instead of `JSON.stringify`-ing them. |
 | Agent workspace durability + execute_code cwd + delegate (3, 8, 14) | **COMPLETE** | No per-call cleanup remains; `cleanupSandboxDir` (`tools.routes.ts:832`) is reachable only from the explicit session-delete route (`agent-chat.routes.ts:486`). `workspaceKeyFor` (`tools.routes.ts:811-826`) keys on `conversationId`, falling back to `requestId` only for conversation-less one-off calls, so `/resume` no longer lands in an empty workspace. `execute_code` threads the same `workspaceDir` through to `Executor.execute`, which spawns with `cwd: workspaceDir` (`executor.ts:186-196`). Item 14 (`delegate` passing no tools to subagents) is unchanged **by design** — see item 14 above, which concluded no change was required. |
 | MCP path confinement + uniform guardrails (4, 5) | **COMPLETE** | All six file tools now call `validateToolInput` + `evaluateToolPolicy` (`services/mcp-server/src/server.ts:3119,3160,3201,3245,3296,3339`). |
-| react-query migration (23) | **See item 23** | The one workstream that was still genuinely partial at handoff. |
+| react-query migration (23) | **COMPLETE** | The one workstream still genuinely partial at handoff; finished 2026-08-06. 22 pages + 14 components migrated, `hooks/useApiData.ts` deleted at zero callers. Surfaced two real bugs — see item 23. |
 | Onboarding state-awareness (25) | **COMPLETE** | `apps/ui/src/pages/Dashboard.tsx:219-280` — all three checklist steps derive from state (`hasProviders`, `hasApiKey`, `hasSentRequest`). The permanent `DISMISS_KEY` is replaced by a re-openable `COLLAPSE_KEY` chip that only hides once `setupComplete`. |
 
 ### P3 items also closed since the handoff
