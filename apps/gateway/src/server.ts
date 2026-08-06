@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, GenericAnthropicAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter, AntigravityAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
-import { Router } from '@dmr-x/router';
+import { Router, loadBanditArms, startBanditPersistence } from '@dmr-x/router';
 import { logger, decryptConfigApiKey, encrypt, decrypt, parseBodyLimit, parseTrustProxy } from '@dmr-x/utils';
 import fastifyCompress from '@fastify/compress';
 import cors from '@fastify/cors';
@@ -275,6 +275,17 @@ export async function createServer() {
       }
     }
   });
+
+  // Restore Thompson bandit arm state persisted by a previous run (see
+  // packages/db/src/migrations/071_bandit_arms.sql). Best-effort: on a
+  // fresh DB or read failure the sampler just starts from its priors.
+  loadBanditArms(router.getSampler());
+  // Persist arm state on a slow debounced interval — not on every reward
+  // update — because every SQLite write here rewrites the whole DB file
+  // (see services/router/src/bandit/persistence.ts for the reasoning).
+  // stopBanditPersistence() is invoked from the onClose hook below so a
+  // clean shutdown always flushes the latest state.
+  const stopBanditPersistence = startBanditPersistence(router.getSampler());
 
   // Make router and helpers available
   server.decorate('router', router);
@@ -750,6 +761,7 @@ void (async () => {
     }
     healthChecker.stopAll();
     contentCaptureService.stop();
+    stopBanditPersistence();
     await adapterRegistry.disposeAll();
   });
 
