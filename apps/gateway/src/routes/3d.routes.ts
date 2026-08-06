@@ -33,7 +33,9 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
 
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
-    const cached = checkRouteCache('3d', tenantId, body as Record<string, unknown>);
+    // The cache key is body-only (services/cache/src/cache.service.ts), so a
+    // providerPreferences request must not read from or write to it.
+    const cached = providerPreferences ? null : checkRouteCache('3d', tenantId, body as Record<string, unknown>);
     if (cached) {
       reply.header('X-Cache', 'HIT');
       return cached.response;
@@ -68,7 +70,9 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
       data: response.models3d || [],
     };
 
-    storeRouteCache('3d', tenantId, body as Record<string, unknown>, result);
+    if (!providerPreferences) {
+      storeRouteCache('3d', tenantId, body as Record<string, unknown>, result);
+    }
     reply.header('X-Cache', 'MISS');
     return result;
   });

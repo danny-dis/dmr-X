@@ -147,3 +147,100 @@ describe('router provider-prefix routing', () => {
     expect(calls[0].modelId).toBe('openai-fast');
   });
 });
+
+describe('sticky sessions vs. hard providerPreferences constraints', () => {
+  // A sticky pin is chosen (and health-checked) under whatever preferences —
+  // or lack of them — were in effect on an EARLIER turn of the conversation.
+  // Reusing it on a later turn without re-checking a hard exclusion
+  // constraint (zdr/only/ignore) could silently hand that turn to a provider
+  // it was just told to exclude. See router.service.ts's
+  // `hasHardProviderConstraint` guard around handleStickySession().
+  // Sticky pins live in a shared, persistent cache keyed by
+  // hashConversation(messages, model) — a real cross-process cache, not a
+  // per-test fixture — so each test below must use its own unique prompt
+  // text to avoid inheriting a pin set by a different test.
+  function makeFixedRequest(
+    prompt: string,
+    providerPreferences?: { zdr?: boolean; ignore?: string[]; only?: string[]; order?: string[] },
+  ): UnifiedRequest {
+    return {
+      modality: 'llm',
+      model: 'general-chat',
+      // Fixed content (not randomized) so both turns of one test hash to the same sticky key.
+      messages: [{ role: 'user', content: prompt }] as any,
+      stream: false,
+      metadata: providerPreferences ? { providerPreferences } : {},
+    };
+  }
+
+  // NOTE on determinism: the Router always constructs a live ThompsonSampler
+  // (services/router/src/router.service.ts's constructor — unconditional,
+  // no config knob disables it) and finalSelector consults it whenever a
+  // qualityTarget is set, independent of `epsilon`. So which candidate wins
+  // an *unconstrained* turn is not fully deterministic here, mirroring the
+  // "assert membership, not an exact pick" caveat already documented on
+  // the 'auto-smart' meta-model test above. These tests are written to hold
+  // regardless of that: each hard-constrained assertion below names the one
+  // candidate that satisfies the constraint (true no matter which candidate
+  // "won" turn 1 or whether that pick coincidentally already satisfied it),
+  // and the soft-preference test compares turn 2 against turn 1's actual
+  // pick rather than a hardcoded id.
+
+  it('does not reuse a sticky cloud pin once the conversation carries zdr', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'cloud-uuid', providerName: 'cloud-provider', modelId: 'cloud-model', qualityScore: 0.99, deployment: 'cloud' }),
+      makeCandidate({ providerId: 'local-uuid', providerName: 'local-provider', modelId: 'local-model', qualityScore: 0.1, deployment: 'self_hosted' }),
+    ];
+    const { router, calls } = makeRouter(candidates);
+    // Suffixed with a fresh run id: the sticky cache is a real, disk-backed
+    // cache (createNamespacedCache('sticky') over the project SQLite file)
+    // that outlives a single `vitest run` invocation, so a hardcoded prompt
+    // would collide with a pin left over from the previous run of this suite.
+    const prompt = `sticky-vs-zdr-fixed-prompt-${Date.now()}-${Math.random()}`;
+
+    // Turn 1: unconstrained — sets a sticky pin to whichever candidate wins.
+    await router.route(makeFixedRequest(prompt), ROUTE_OPTS);
+
+    // Turn 2: same conversation, now with a hard privacy constraint. Must
+    // land on the only zdr-eligible candidate, never the cloud one — even if
+    // turn 1 happened to pin the cloud provider.
+    const second = await router.route(makeFixedRequest(prompt, { zdr: true }), ROUTE_OPTS);
+    expect(second.plan.primary.providerId).toBe('local-uuid');
+    expect(calls[calls.length - 1].providerId).toBe('local-uuid');
+  });
+
+  it('does not reuse a sticky pin once the conversation ignores that provider', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'a-uuid', providerName: 'provider-a', modelId: 'model-a', qualityScore: 0.99 }),
+      makeCandidate({ providerId: 'b-uuid', providerName: 'provider-b', modelId: 'model-b', qualityScore: 0.5 }),
+    ];
+    const { router, calls } = makeRouter(candidates);
+    const prompt = `sticky-vs-ignore-fixed-prompt-${Date.now()}-${Math.random()}`;
+
+    await router.route(makeFixedRequest(prompt), ROUTE_OPTS);
+
+    const second = await router.route(makeFixedRequest(prompt, { ignore: ['provider-a'] }), ROUTE_OPTS);
+    expect(second.plan.primary.providerId).toBe('b-uuid');
+    expect(calls[calls.length - 1].providerId).toBe('b-uuid');
+  });
+
+  it('still uses the sticky pin for a soft preference (order) that does not exclude anything', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'a-uuid', providerName: 'provider-a', modelId: 'model-a', qualityScore: 0.99 }),
+      makeCandidate({ providerId: 'b-uuid', providerName: 'provider-b', modelId: 'model-b', qualityScore: 0.5 }),
+    ];
+    const { router, calls } = makeRouter(candidates);
+    const prompt = `sticky-vs-soft-order-fixed-prompt-${Date.now()}-${Math.random()}`;
+
+    const first = await router.route(makeFixedRequest(prompt), ROUTE_OPTS);
+    const firstPick = first.plan.primary.providerId;
+
+    // `order` alone (no zdr/only/ignore) is a soft preference — stickiness
+    // still applies, which is the whole point of a sticky session. Compare
+    // against turn 1's actual pick rather than a hardcoded id, since which
+    // candidate wins an unconstrained turn is not itself deterministic here.
+    const second = await router.route(makeFixedRequest(prompt, { order: ['provider-b'] }), ROUTE_OPTS);
+    expect(second.plan.primary.providerId).toBe(firstPick);
+    expect(calls[calls.length - 1].providerId).toBe(firstPick);
+  });
+});

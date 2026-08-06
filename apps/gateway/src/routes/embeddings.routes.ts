@@ -30,8 +30,10 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
 
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
-    const cached = checkRouteCache('embedding', tenantId, body as Record<string, unknown>,
-      (b: any) => b.encoding_format === 'base64');
+    // See images.routes.ts: the cache key is body-only, so a
+    // providerPreferences request must not read from or write to it.
+    const skipCache = (b: any) => b.encoding_format === 'base64' || !!providerPreferences;
+    const cached = checkRouteCache('embedding', tenantId, body as Record<string, unknown>, skipCache);
     if (cached) {
       reply.header('X-Cache', 'HIT');
       return cached.response;
@@ -71,8 +73,7 @@ export async function embeddingsRoutes(server: FastifyInstance): Promise<void> {
       usage: response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     };
 
-    storeRouteCache('embedding', tenantId, body as Record<string, unknown>, result,
-      { skipCache: (b: any) => b.encoding_format === 'base64' });
+    storeRouteCache('embedding', tenantId, body as Record<string, unknown>, result, { skipCache });
     reply.header('X-Cache', 'MISS');
     return result;
   });

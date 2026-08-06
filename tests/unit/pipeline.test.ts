@@ -413,6 +413,99 @@ describe('RoutingStrategy: free', () => {
   });
 });
 
+describe('providerPreferences: zdr (privacy)', () => {
+  it('filters to self_hosted/on_device candidates when zdr is set', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'ollama', modelId: 'local-llama', deployment: 'self_hosted', qualityScore: 0.5 }),
+      makeCandidate({ providerId: 'openai', modelId: 'gpt-x', deployment: 'cloud', qualityScore: 0.99 }),
+    ];
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      providerPreferences: { zdr: true },
+    });
+
+    expect(result.selected.providerId).toBe('ollama');
+    const allIds = [result.selected.modelId, ...result.chain.map(c => c.provider.modelId)];
+    expect(allIds).not.toContain('gpt-x');
+  });
+
+  it('fails closed: excludes candidates with no deployment tag', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'unclassified', modelId: 'mystery-model' }), // no `deployment` set
+    ];
+
+    await expect(
+      runPipeline({
+        taskProfile: makeTaskProfile(),
+        candidates,
+        epsilon: 0,
+        providerPreferences: { zdr: true },
+      })
+    ).rejects.toThrow(ProviderUnavailableError);
+  });
+
+  it('ignore/only still apply alongside zdr', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'ollama', modelId: 'local-llama', deployment: 'self_hosted' }),
+      makeCandidate({ providerId: 'on-device-thing', modelId: 'edge-model', deployment: 'on_device' }),
+    ];
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      providerPreferences: { zdr: true, ignore: ['ollama'] },
+    });
+
+    expect(result.selected.providerId).toBe('on-device-thing');
+  });
+});
+
+describe('providerPreferences: ignore/only/order match by providerName (slug), not just providerId', () => {
+  // Real candidates carry a DB UUID as `providerId` and the human-facing
+  // slug ("openai", "ollama", ...) as `providerName` (see
+  // services/registry/src/registry.service.ts: `p.id as "providerId"`,
+  // `p.name as "providerName"`). Every real caller (MCP tool params, the
+  // X-Provider-Preferences header) sends slugs, never UUIDs, so these
+  // filters must match against `providerName`.
+  it('ignore excludes by providerName even when providerId is a UUID', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: '6e99ca1d-6516-4a5c-96c9-0f5e7dd164e5', providerName: 'openai', modelId: 'gpt-x', qualityScore: 0.99 }),
+      makeCandidate({ providerId: 'c10f5f0c-73e0-4cb5-9ebe-28e3be362ed5', providerName: 'anthropic', modelId: 'claude-x', qualityScore: 0.9 }),
+    ];
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      providerPreferences: { ignore: ['openai'] },
+    });
+
+    expect(result.selected.modelId).toBe('claude-x');
+    const allIds = [result.selected.modelId, ...result.chain.map(c => c.provider.modelId)];
+    expect(allIds).not.toContain('gpt-x');
+  });
+
+  it('only whitelists by providerName even when providerId is a UUID', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: '6e99ca1d-6516-4a5c-96c9-0f5e7dd164e5', providerName: 'openai', modelId: 'gpt-x', qualityScore: 0.99 }),
+      makeCandidate({ providerId: 'c10f5f0c-73e0-4cb5-9ebe-28e3be362ed5', providerName: 'ollama', modelId: 'local-llama', qualityScore: 0.5 }),
+    ];
+
+    const result = await runPipeline({
+      taskProfile: makeTaskProfile(),
+      candidates,
+      epsilon: 0,
+      providerPreferences: { only: ['ollama'] },
+    });
+
+    expect(result.selected.modelId).toBe('local-llama');
+  });
+});
+
 describe('metaModelFilteredFree', () => {
   it('should skip free-tier strategy when metaModelFilteredFree is true', async () => {
     const candidates: CandidateSet = [

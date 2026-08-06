@@ -344,7 +344,19 @@ export class Router {
 
     // An explicit provider pin bypasses sticky sessions: the caller asked for
     // a specific provider, so a previously-stuck different provider must not win.
-    if (conversationHash && !modelTarget.providerName) {
+    //
+    // A hard provider-exclusion constraint (zdr/only/ignore) must too: the
+    // sticky pin was chosen (and health-checked) under whatever preferences —
+    // or lack of them — were in effect on an earlier turn, so reusing it here
+    // without re-checking those preferences could silently hand this turn to
+    // a provider the caller just told this call to exclude (e.g. a
+    // require_privacy turn reusing a cloud pin set by an earlier, unconstrained
+    // turn of the same conversation). Soft preferences (order/latency/price
+    // targets) are left alone — staying on the pinned provider is the whole
+    // point of stickiness for those.
+    const stickyPrefs = request.metadata?.providerPreferences;
+    const hasHardProviderConstraint = !!(stickyPrefs?.zdr || stickyPrefs?.only?.length || stickyPrefs?.ignore?.length);
+    if (conversationHash && !modelTarget.providerName && !hasHardProviderConstraint) {
       const stickyResult = await handleStickySession({
         request, options, candidates: this.candidates,
         adapterExecutor: this.adapterExecutor, config: this.config,

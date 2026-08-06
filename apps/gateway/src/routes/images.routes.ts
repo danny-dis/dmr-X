@@ -38,8 +38,12 @@ export async function imagesRoutes(server: FastifyInstance): Promise<void> {
 
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
-    const cached = checkRouteCache('image', tenantId, body as Record<string, unknown>,
-      (b: any) => b.response_format === 'b64_json');
+    // The cache key is body-only (services/cache/src/cache.service.ts:
+    // generateCacheKey doesn't factor in headers), so a providerPreferences
+    // request must not read from or write to it — a hit could silently
+    // return a response from a provider this call was told to exclude.
+    const skipCache = (b: any) => b.response_format === 'b64_json' || !!providerPreferences;
+    const cached = checkRouteCache('image', tenantId, body as Record<string, unknown>, skipCache);
     if (cached) {
       reply.header('X-Cache', 'HIT');
       return cached.response;
@@ -81,8 +85,7 @@ export async function imagesRoutes(server: FastifyInstance): Promise<void> {
       data: response.images || [],
     };
 
-    storeRouteCache('image', tenantId, body as Record<string, unknown>, result,
-      { skipCache: (b: any) => b.response_format === 'b64_json' });
+    storeRouteCache('image', tenantId, body as Record<string, unknown>, result, { skipCache });
     reply.header('X-Cache', 'MISS');
     return result;
   });

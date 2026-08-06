@@ -30,7 +30,9 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
 
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
-    const cached = checkRouteCache('audio_tts', tenantId, body as Record<string, unknown>);
+    // The cache key is body-only (services/cache/src/cache.service.ts), so a
+    // providerPreferences request must not read from or write to it.
+    const cached = providerPreferences ? null : checkRouteCache('audio_tts', tenantId, body as Record<string, unknown>);
     if (cached) {
       reply.header('X-Cache', 'HIT');
       const resp = cached.response as any;
@@ -75,7 +77,9 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
           flac: 'audio/flac', wav: 'audio/wav', pcm: 'audio/pcm',
         };
         reply.header('Content-Type', contentTypes[body.response_format] || 'audio/mpeg');
-        storeRouteCache('audio_tts', tenantId, body as Record<string, unknown>, response);
+        if (!providerPreferences) {
+          storeRouteCache('audio_tts', tenantId, body as Record<string, unknown>, response);
+        }
         reply.header('X-Cache', 'MISS');
         return Buffer.from(response.audio.b64_json, 'base64');
       }
@@ -132,7 +136,8 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
     const tenantId = (request as any).tenant?.id;
     const sttBody = { model, language, prompt, response_format: responseFormat, audio: audioBase64! };
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
-    const cached = checkRouteCache('audio_stt', tenantId, sttBody);
+    // See /audio/speech above: the cache key is body-only.
+    const cached = providerPreferences ? null : checkRouteCache('audio_stt', tenantId, sttBody);
     if (cached) {
       reply.header('X-Cache', 'HIT');
       const text = (cached.response as any)?.text || '';
@@ -170,7 +175,9 @@ export async function audioRoutes(server: FastifyInstance): Promise<void> {
       const text = response.message?.content || '';
       const result = responseFormat === 'text' ? text : { text };
 
-      storeRouteCache('audio_stt', tenantId, sttBody, result);
+      if (!providerPreferences) {
+        storeRouteCache('audio_stt', tenantId, sttBody, result);
+      }
       reply.header('X-Cache', 'MISS');
       if (responseFormat === 'text') {
         reply.header('Content-Type', 'text/plain');
