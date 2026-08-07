@@ -641,7 +641,8 @@ export interface ApiDashboardStats {
   requests24h?: number;
   cost24h?: number;
   avgLatencyMs?: number;
-  latencyDelta?: number;
+  /** Signed % change, last 24h avg latency vs the preceding 24h. `null`/`undefined` when there is no prior-period data to compare against — the UI must hide the delta rather than treat it as 0. */
+  latencyDelta?: number | null;
   totalProviders?: number;
   onlineProviders?: number;
   totalTokens24h?: number;
@@ -653,6 +654,7 @@ export interface ApiDashboardStats {
   total_requests?: number;
   success_rate?: number;
   avg_latency?: number;
+  latency_delta_pct?: number | null;
   token_usage?: number;
   daily_spend?: number;
   quota_remaining?: number;

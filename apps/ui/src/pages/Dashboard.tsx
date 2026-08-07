@@ -434,7 +434,7 @@ export function DashboardPage() {
                 value={formatDuration(s.avgLatencyMs ?? 0)}
                 icon={<Clock className="size-3.5" />}
                 tone="primary"
-                delta={s.latencyDelta ?? 0}
+                delta={s.latencyDelta ?? undefined}
                 deltaLabel="vs yesterday"
                 deltaTrend="down-good"
                 sparkline={latencyData.map((p) => p.p95)}
