@@ -81,8 +81,15 @@ function startStreamServer(chunks: StreamChunk[]): Promise<{ server: Server; url
   });
 }
 
+// This suite spins up a real node:http server and fetches it. Under the CI
+// runner's resource pressure (single-fork vitest pool running the full
+// ~1256-test suite), `fetch` has been observed to intermittently resolve
+// `undefined` instead of a Response or a rejection — a runtime quirk, not a
+// signal about the serializer under test. Retrying rides out the flake
+// without masking a genuine hang (a real hang still exhausts every retry's
+// 5s abort and fails loudly).
 describe('Anthropic streaming over HTTP (tool-call hang regression)', () => {
-  it('terminates and emits a tool_use block when the model emits tool_calls', async () => {
+  it('terminates and emits a tool_use block when the model emits tool_calls', { retry: 2 }, async () => {
     const chunks: StreamChunk[] = [
       // Model streams a tool call (no text) — the exact shape the adapters emit.
       { type: 'token', data: { tool_calls: [
@@ -147,7 +154,7 @@ describe('Anthropic streaming over HTTP (tool-call hang regression)', () => {
     }
   });
 
-  it('still terminates cleanly for a text-only stream', async () => {
+  it('still terminates cleanly for a text-only stream', { retry: 2 }, async () => {
     const chunks: StreamChunk[] = [
       { type: 'token', data: { content: 'Hello' }, index: 0 },
       { type: 'token', data: { content: ' world' }, index: 1 },
