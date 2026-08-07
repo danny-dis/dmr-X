@@ -10,6 +10,7 @@ import {
   type ModelsDevApiResponse,
 } from './cross-provider-pricing.js';
 import { classifyModel, type ModelClassification } from './model-classification.js';
+import { isOpenRouterVirtualModel } from './model-discovery.js';
 
 const cache = createNamespacedCache('registry');
 
@@ -140,78 +141,85 @@ export class RegistryService {
     if (modality) params.push(modality);
     const rows = db.prepare(query).all(...params);
 
-    return rows.map((row: any) => {
-      // Resolve pricing from models.dev for all providers
-      let costPerInputToken = parseFloat(row.costPerInputToken) || 0;
-      let costPerOutputToken = parseFloat(row.costPerOutputToken) || 0;
+    return rows
+      // OpenRouter's virtual routing models (openrouter/auto, openrouter/fusion,
+      // ...) are not concrete models and carry a "-1" pricing sentinel that
+      // corrupts the cost scorers — never expose them as routing candidates.
+      .filter((row: any) => !isOpenRouterVirtualModel(row.modelId))
+      .map((row: any) => {
+        // Resolve pricing from models.dev for all providers
+        let costPerInputToken = Math.max(0, parseFloat(row.costPerInputToken) || 0);
+        let costPerOutputToken = Math.max(0, parseFloat(row.costPerOutputToken) || 0);
 
-      if (this.modelsDevData) {
-        const modelsDevPrices = lookupModelPricing({
-          provider: row.providerId,
-          modelId: row.modelId,
-          modelsDevData: this.modelsDevData,
-        });
+        if (this.modelsDevData) {
+          const modelsDevPrices = lookupModelPricing({
+            provider: row.providerId,
+            modelId: row.modelId,
+            modelsDevData: this.modelsDevData,
+          });
 
-        if (modelsDevPrices) {
-          // Use models.dev pricing if available (more accurate and up-to-date)
-          if (modelsDevPrices.promptPricePerToken !== null) {
-            costPerInputToken = modelsDevPrices.promptPricePerToken;
-          }
-          if (modelsDevPrices.completionPricePerToken !== null) {
-            costPerOutputToken = modelsDevPrices.completionPricePerToken;
+          if (modelsDevPrices) {
+            // Use models.dev pricing if available (more accurate and up-to-date).
+            // Clamp to >= 0 — a negative price is a sentinel, never a real cost,
+            // and would explode every cost-based scorer.
+            if (modelsDevPrices.promptPricePerToken !== null) {
+              costPerInputToken = Math.max(0, modelsDevPrices.promptPricePerToken);
+            }
+            if (modelsDevPrices.completionPricePerToken !== null) {
+              costPerOutputToken = Math.max(0, modelsDevPrices.completionPricePerToken);
+            }
           }
         }
-      }
 
-      // Get unified pricing classification
-      const classification = classifyModel(row.providerId, row.modelId);
+        // Get unified pricing classification
+        const classification = classifyModel(row.providerId, row.modelId);
 
-      return {
-        providerId: row.providerId,
-        providerName: row.providerName,
-        modelId: row.modelId,
-        modality: row.modality,
-        intelligenceLayer: row.intelligenceLayer,
-        capabilityTier: row.capabilityTier || 'balanced',
-        capabilities: this.extractCapabilities(row),
-        costPerInputToken,
-        costPerOutputToken,
-        costPerImage: parseFloat(row.costPerImage) || 0,
-        avgLatencyMs: row.avgLatencyMs || 1000,
-        qualityScore: this.calculateQualityScore(
-          parseFloat(row.qualityScore) || 0.5,
-          // Distinguish "unrated" from "rated at baseline". Coercing a missing
-          // value to 1200 hid the difference and made every model look rated.
-          row.eloRating == null || Number.isNaN(parseFloat(row.eloRating))
-            ? null
-            : parseFloat(row.eloRating),
-        ),
-        maxOutputTokens: row.maxOutputTokens || undefined,
-        contextLength: row.contextWindow || undefined,
-        isHealthy: row.isHealthy === 1 || row.isHealthy === true,
-        subscriptionOnly: row.subscriptionOnly === 1 || row.subscriptionOnly === true,
-        pricingTier: classification?.pricingTier ?? 'unknown',
-        // 9-Dimension Taxonomy Fields
-        architectureTier: row.architectureTier || undefined,
-        taskCategories: row.taskCategories ? JSON.parse(row.taskCategories) : undefined,
-        contextTier: row.contextTier || undefined,
-        deployment: row.deployment || undefined,
-        reasoningMode: row.reasoningMode || undefined,
-        safetyTier: row.safetyTier || undefined,
-        agenticLevel: row.agenticLevel || undefined,
-        freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
-          intelligenceRank: row.intelligenceRank ?? 0,
-          speedRank: row.speedRank ?? 0,
-          monthlyTokenBudget: row.monthlyTokenBudget ?? 0,
-          rateLimits: {
-            rpm: row.rateLimitRpm ?? 0,
-            rpd: row.rateLimitRpd ?? 0,
-            tpm: row.rateLimitTpm ?? 0,
-            tpd: row.rateLimitTpd ?? 0,
-          },
-        } : undefined,
-      };
-    });
+        return {
+          providerId: row.providerId,
+          providerName: row.providerName,
+          modelId: row.modelId,
+          modality: row.modality,
+          intelligenceLayer: row.intelligenceLayer,
+          capabilityTier: row.capabilityTier || 'balanced',
+          capabilities: this.extractCapabilities(row),
+          costPerInputToken,
+          costPerOutputToken,
+          costPerImage: Math.max(0, parseFloat(row.costPerImage) || 0),
+          avgLatencyMs: row.avgLatencyMs || 1000,
+          qualityScore: this.calculateQualityScore(
+            parseFloat(row.qualityScore) || 0.5,
+            // Distinguish "unrated" from "rated at baseline". Coercing a missing
+            // value to 1200 hid the difference and made every model look rated.
+            row.eloRating == null || Number.isNaN(parseFloat(row.eloRating))
+              ? null
+              : parseFloat(row.eloRating),
+          ),
+          maxOutputTokens: row.maxOutputTokens || undefined,
+          contextLength: row.contextWindow || undefined,
+          isHealthy: row.isHealthy === 1 || row.isHealthy === true,
+          subscriptionOnly: row.subscriptionOnly === 1 || row.subscriptionOnly === true,
+          pricingTier: classification?.pricingTier ?? 'unknown',
+          // 9-Dimension Taxonomy Fields
+          architectureTier: row.architectureTier || undefined,
+          taskCategories: row.taskCategories ? JSON.parse(row.taskCategories) : undefined,
+          contextTier: row.contextTier || undefined,
+          deployment: row.deployment || undefined,
+          reasoningMode: row.reasoningMode || undefined,
+          safetyTier: row.safetyTier || undefined,
+          agenticLevel: row.agenticLevel || undefined,
+          freeTierMetadata: (row.intelligenceRank != null || row.speedRank != null) ? {
+            intelligenceRank: row.intelligenceRank ?? 0,
+            speedRank: row.speedRank ?? 0,
+            monthlyTokenBudget: row.monthlyTokenBudget ?? 0,
+            rateLimits: {
+              rpm: row.rateLimitRpm ?? 0,
+              rpd: row.rateLimitRpd ?? 0,
+              tpm: row.rateLimitTpm ?? 0,
+              tpd: row.rateLimitTpd ?? 0,
+            },
+          } : undefined,
+        };
+      });
   }
 
   /**

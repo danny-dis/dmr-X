@@ -24,6 +24,12 @@ export interface DiscoveredModel {
   specializations: string[];
   /** If true, this model is only available via OAuth subscription auth (not API key) */
   subscriptionOnly?: boolean;
+  /** Free-tier metadata carried over from the static catalog (when the /v1/models
+   *  endpoint publishes none). Kept optional so discovery-only models stay flat. */
+  rateLimits?: { rpm?: number; rpd?: number; tpm?: number; tpd?: number };
+  monthlyTokenBudget?: number;
+  intelligenceRank?: number;
+  speedRank?: number;
 }
 
 export interface ModelDiscoveryOptions {
@@ -39,6 +45,26 @@ export interface ModelDiscoveryOptions {
    * running). Set to `() => Promise.resolve(true)` to disable the probe.
    */
   isReachable?: (url: URL) => Promise<boolean>;
+}
+
+/**
+ * OpenRouter's own virtual routing models. They are not concrete models —
+ * routing to `openrouter/auto` hands the decision back to OpenRouter's
+ * server-side router, defeating DMR-X's own scoring — and they publish a
+ * "-1" pricing sentinel that corrupts every cost-based scorer. They are
+ * excluded from the candidate pool entirely.
+ */
+export const OPENROUTER_VIRTUAL_MODEL_IDS: readonly string[] = [
+  'openrouter/auto',
+  'openrouter/auto-beta',
+  'openrouter/bodybuilder',
+  'openrouter/free',
+  'openrouter/fusion',
+  'openrouter/pareto-code',
+];
+
+export function isOpenRouterVirtualModel(modelId: string): boolean {
+  return OPENROUTER_VIRTUAL_MODEL_IDS.includes(modelId);
 }
 
 const TIMEOUT_MS = 1000;
@@ -290,9 +316,14 @@ function extractPricing(raw: Record<string, unknown>): {
       ? per1M(src.output_per_1m ?? src.completion_per_1m)
       : perToken(src.output ?? src.completion);
 
+  // Clamp negative values to 0. OpenRouter publishes a "-1" sentinel for its
+  // virtual routing models (openrouter/auto, openrouter/fusion, ...), and a
+  // negative cost poisons every cost-based scorer (meta-model rankers do
+  // `1 - totalCost*1000`, the pipeline scorer normalises `1 - cost/maxCost`),
+  // giving those models an infinite "cheapest" score over every real model.
   return {
-    inputPer1M: Number.isFinite(input) ? input : 0,
-    outputPer1M: Number.isFinite(output) ? output : 0,
+    inputPer1M: Number.isFinite(input) ? Math.max(0, input) : 0,
+    outputPer1M: Number.isFinite(output) ? Math.max(0, output) : 0,
     perImage: numberOrNull(src.image ?? src.per_image) ?? 0,
   };
 }

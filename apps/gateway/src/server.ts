@@ -15,7 +15,7 @@ import fastifyMultipart from '@fastify/multipart';
 
 import { getTelemetryService, contentCaptureService, retentionService } from '@dmr-x/telemetry';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications, classifyFreeProviderModels } from '@dmr-x/registry';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, repairModelProfiles, syncClassifications, classifyFreeProviderModels } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { agentScheduler } from '@dmr-x/agent-runtime';
 import { quotaService, getRateLimitService } from '@dmr-x/quota';
@@ -976,6 +976,23 @@ void (async () => {
         }
       } catch (err) {
         logger.warn({ err }, 'Failed to enrich existing models');
+      }
+
+      // 2.75) Repair/sanitize persisted model_profiles: zero negative pricing
+      //       (OpenRouter's "-1" sentinel stored as -1000), deactivate
+      //       OpenRouter's virtual routing models, and backfill capabilities
+      //       + free-tier metadata for rows written before the discovery
+      //       pipeline carried them.
+      try {
+        const repaired = await repairModelProfiles();
+        if (repaired > 0) {
+          logger.info(
+            { count: repaired },
+            'Repaired model profiles (negative pricing, virtuals, capability/free-tier backfill)',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to repair model profiles');
       }
 
       // 3) Load all registered providers from DB and initialise adapters
