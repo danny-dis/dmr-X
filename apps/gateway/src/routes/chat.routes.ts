@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
+import { resolveServedProviderId } from '../utils/served-provider.js';
 import { compressionService } from '../services/compression.js';
 import { semanticCacheService } from '@dmr-x/cache';
 import { hashConversation, breakStickySession } from '@dmr-x/router';
@@ -810,7 +811,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     }
 
     (request as any).metrics = {
-      providerId: plan.primary.providerId,
+      providerId: resolveServedProviderId(plan, response),
       modelId: response.modelId,
       modality: unifiedRequest.modality ?? 'llm',
       tenantId: (request as any).tenant?.id,
