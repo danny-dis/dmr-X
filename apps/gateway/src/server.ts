@@ -31,6 +31,7 @@ import { authMiddleware, DEPLOYMENT_MODE } from './middleware/auth.middleware.js
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { registerSiemForwarding } from './middleware/siem-forward.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
+import { banditRoutes } from './routes/bandit.routes.js';
 import { adminRoutes, loadActiveProviderCredential, loadAllActiveProviderKeys } from './routes/admin.routes.js';
 import { mcpAdminRoutes, connectPersistedMcpServers } from './routes/mcp-admin.routes.js';
 import { a2aProxyRoutes } from './routes/a2a-proxy.routes.js';
@@ -622,6 +623,7 @@ void (async () => {
    await server.register(videoRoutes, { prefix: '/v1' });
    await server.register(threeDRoutes, { prefix: '/v1' });
    await server.register(adminRoutes, { prefix: '/v1' });
+   await server.register(banditRoutes, { prefix: '/v1' });
    // Registered after adminRoutes so the real /admin/mcp/servers surface sits
    // alongside the legacy /admin/mcp/aggregation/* file-only endpoints.
    await server.register(mcpAdminRoutes, { prefix: '/v1' });
