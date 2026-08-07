@@ -62,6 +62,24 @@ export function PlaygroundPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
+  // `currentConversationId` now survives a reload (see usePlaygroundStore's
+  // partialize), but the message transcript deliberately does not — refetch
+  // it from the server once on mount so the restored id actually comes back
+  // with its history instead of showing an empty thread under a stale id.
+  React.useEffect(() => {
+    const id = usePlaygroundStore.getState().currentConversationId;
+    if (!id) return;
+    usePlaygroundStore.getState().loadConversation(id).catch(() => {
+      // Conversation may be gone server-side (e.g. deleted, or a
+      // temporary session that was never persisted) — drop the dangling
+      // id instead of leaving the UI pointed at a dead conversation.
+      usePlaygroundStore.setState({ currentConversationId: null, messages: [] });
+    });
+    // Intentionally run once per mount — this reads the persisted id as a
+    // one-time restore, not a reactive dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="h-[calc(100dvh-64px)] overflow-hidden bg-bg">
       <div className="flex h-full min-h-0">

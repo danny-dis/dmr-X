@@ -75,6 +75,21 @@ export const createMessagesSlice: StateCreator<PlaygroundState, [], [], Messages
     const historyWithUser = [...messages, userMessage];
     set({ messages: historyWithUser });
 
+    // Persist the user turn immediately. Previously only the assistant
+    // reply was ever POSTed to `/v1/conversations/:id/messages` (see the
+    // apiPost calls at the end of `_streamToEndpoint`), so a reload — or
+    // anyone else calling loadConversation() — recreated history missing
+    // every user message even though the conversation id itself was
+    // stable. Best-effort: a failed save shouldn't block sending.
+    try {
+      await apiPost(`/v1/conversations/${conversationId}/messages`, {
+        role: 'user',
+        content,
+      });
+    } catch {
+      /* transcript stays in memory for this session */
+    }
+
     const assistantMessage = get()._createAssistantPlaceholder(conversationId!);
 
     const req = get()._buildRequest({
