@@ -19,6 +19,7 @@ import { Card } from '@/components/primitives/Card';
 import { DataState } from '@/components/primitives/DataState';
 import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
+import { Pagination } from '@/components/primitives/Pagination';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { toast } from '@/components/primitives/Toast';
@@ -45,9 +46,20 @@ import {
  */
 export function AgentsPage() {
   const [search, setSearch] = useUrlState('q', '');
+  const [page, setPage] = React.useState(1);
   const [importOpen, setImportOpen] = React.useState(false);
-  const agents = useAgents(search ? { search } : {});
+  const pageSize = 24;
+  const agents = useAgents({ ...(search ? { search } : {}), page, limit: pageSize });
   const instances = useAgentInstances();
+
+  const total = agents.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // A new search re-numbers the result set; without this, narrowing while on
+  // page 5 leaves you past the end of a shorter list, showing nothing.
+  React.useEffect(() => {
+    setPage(1);
+  }, [search]);
 
   const instancesByDefinition = React.useMemo(() => {
     const map = new Map<string, AgentInstanceDetail[]>();
@@ -126,6 +138,18 @@ export function AgentsPage() {
           </div>
         )}
       </DataState>
+
+      {total > pageSize && (
+        <div className="mt-4 border-t border-border pt-3">
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            onPageChange={setPage}
+            total={total}
+            pageSize={pageSize}
+          />
+        </div>
+      )}
     </PageContainer>
   );
 }
@@ -172,7 +196,11 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
           {instances.length === 0 ? (
             <StatusPill status="unknown" label="Not deployed" size="sm" pulse={false} />
           ) : active.length > 0 ? (
-            <StatusPill status="active" label={`${active.length} running`} size="sm" />
+            // "live" not "running": this counts instances whose status is
+            // 'active' — deployed and not paused — which says nothing about
+            // whether the agent has ever executed. The run count below is the
+            // number that tracks actual executions.
+            <StatusPill status="active" label={`${active.length} live`} size="sm" />
           ) : (
             <StatusPill status="warning" label="Paused" size="sm" pulse={false} />
           )}

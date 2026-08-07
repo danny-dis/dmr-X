@@ -121,7 +121,18 @@ export interface Skill {
 
 // ── Queries ────────────────────────────────────────────────────────────────
 
-export function useAgents(query: { search?: string; category?: string; visibility?: string } = {}) {
+// `page`/`limit` must be passed explicitly: the server defaults `limit` to 20
+// (AgentListQuerySchema), so omitting it silently caps the list at 20 rows
+// while still reporting the true `total`.
+export function useAgents(
+  query: {
+    search?: string;
+    category?: string;
+    visibility?: string;
+    page?: number;
+    limit?: number;
+  } = {}
+) {
   return useQuery({
     queryKey: keys.agents.list(query),
     queryFn: () => api<{ items: AgentDefinition[]; total: number }>('/agents', { query }),
