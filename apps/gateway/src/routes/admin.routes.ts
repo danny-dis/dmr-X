@@ -3898,6 +3898,42 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       WHERE timestamp >= date('now', 'start of day')
     `).get() as { total: number; fallbacks: number } | undefined;
 
+    // Avg-latency delta: last 24h vs the preceding 24h (a true "vs
+    // yesterday" sliding comparison, independent of calendar-day
+    // boundaries). Bug: the Dashboard has always rendered
+    // `s.latencyDelta ?? 0`, and nothing here ever computed `latencyDelta`
+    // — every request showed a fake "0.0% vs yesterday" whether or not a
+    // prior-period comparison actually existed. Both windows must have at
+    // least one logged latency for the comparison to be meaningful; with
+    // no prior-period data we return `null` so the UI hides the delta
+    // instead of rendering an indistinguishable-from-real 0%.
+    const latencyWindowRow = db.prepare(`
+      SELECT
+        AVG(CASE WHEN timestamp >= datetime('now', '-24 hours') THEN latency_ms END) as avg_last_24h,
+        COUNT(CASE WHEN timestamp >= datetime('now', '-24 hours') THEN latency_ms END) as count_last_24h,
+        AVG(CASE WHEN timestamp < datetime('now', '-24 hours') THEN latency_ms END) as avg_prev_24h,
+        COUNT(CASE WHEN timestamp < datetime('now', '-24 hours') THEN latency_ms END) as count_prev_24h
+      FROM request_logs
+      WHERE timestamp >= datetime('now', '-48 hours') AND latency_ms IS NOT NULL
+    `).get() as
+      | { avg_last_24h: number | null; count_last_24h: number; avg_prev_24h: number | null; count_prev_24h: number }
+      | undefined;
+
+    let latencyDeltaPct: number | null = null;
+    if (
+      latencyWindowRow &&
+      latencyWindowRow.count_last_24h > 0 &&
+      latencyWindowRow.count_prev_24h > 0 &&
+      latencyWindowRow.avg_prev_24h !== null &&
+      latencyWindowRow.avg_last_24h !== null &&
+      latencyWindowRow.avg_prev_24h !== 0
+    ) {
+      latencyDeltaPct =
+        Math.round(
+          ((latencyWindowRow.avg_last_24h - latencyWindowRow.avg_prev_24h) / latencyWindowRow.avg_prev_24h) * 1000,
+        ) / 10;
+    }
+
     // Actual remaining quota from allocations (compute from max_requests - used)
     const quotaRow = db.prepare(`
       SELECT COALESCE(SUM(
@@ -3925,6 +3961,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       total_requests: total,
       success_rate: total > 0 ? Math.round((success / total) * 100 * 10) / 10 : 100,
       avg_latency: Math.round(req?.avg_latency || 0),
+      latency_delta_pct: latencyDeltaPct,
       token_usage: tokenRow?.tokens || 0,
       daily_spend: tokenRow?.spend || 0,
       quota_remaining: quotaRow?.remaining ?? 0,
@@ -3939,6 +3976,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.get('/admin/dashboard/stats', async () => computeDashboardStats());
 
   // Route decisions
+  //
+  // Bug: this used to unconditionally `json_extract(rl.task_profile, '$.taskType')`,
+  // but telemetry-hooks.ts (CRIT-6 write path) stores `task_profile` as a bare
+  // modality string (e.g. "llm"), never as JSON — see `taskProfile: unifiedRequest.modality`
+  // in chat.routes.ts. `json_extract` on a non-JSON value throws "malformed JSON" in
+  // sql.js, which failed the *entire* SELECT, was swallowed by the inner try/catch
+  // below, and made this endpoint return `decisions: []` forever — the Routing page
+  // read real request_logs rows and still showed all-zero widgets. `json_valid()`
+  // guards the extraction so a plain string no longer aborts the query. Layer
+  // ("task_type") is instead resolved from `model_profiles.intelligence_layer`
+  // (brain/thinker/executor/worker/temp_worker — the same vocabulary the UI's
+  // LAYER_ORDER expects), which the JSON blob was never actually carrying anyway.
+  // `routing_plan` only ever contains `{ primary, candidates }` (see telemetry-hooks.ts
+  // ~line 161) — there is no `executionMode`/`decisionReason`/`fallbackChain` key to
+  // extract, so those are derived from real columns/JSON structure instead of a
+  // key that has never existed on any row.
   server.get('/admin/routing/decisions', async (_request, reply) => {
     try {
       const db = getDb();
@@ -3948,12 +4001,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           SELECT
             rl.id,
             rl.timestamp,
-            json_extract(rl.task_profile, '$.taskType') as task_type,
+            COALESCE(
+              mp.intelligence_layer,
+              CASE WHEN json_valid(rl.task_profile) THEN json_extract(rl.task_profile, '$.taskType') ELSE NULL END
+            ) as task_type,
             rl.selected_model,
             p.name as selected_provider,
-            json_extract(rl.routing_plan, '$.executionMode') as execution_mode,
-            json_extract(rl.routing_plan, '$.decisionReason') as decision_reason,
-            COALESCE(json_extract(rl.routing_plan, '$.fallbackChain'), '[]') as fallback_chain,
+            rl.quality_target as execution_mode,
+            CASE WHEN rl.fallback_used THEN 'fallback' ELSE NULL END as decision_reason,
+            rl.routing_plan as routing_plan_json,
             rl.latency_ms as latency,
             rl.estimated_cost as cost,
             rl.quality_score as confidence,
@@ -3964,6 +4020,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
                  ELSE 'success' END as status
           FROM request_logs rl
           LEFT JOIN providers p ON p.id = rl.selected_provider
+          LEFT JOIN model_profiles mp ON mp.provider_id = rl.selected_provider AND mp.model_id = rl.selected_model
           ORDER BY rl.timestamp DESC
           LIMIT 50
         `).all() as Array<Record<string, unknown>>;
@@ -3971,15 +4028,42 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         logger.debug({ err }, 'Route decisions query failed — request_logs may be missing columns');
         rows = [];
       }
+
+      // Provider-name lookup for resolving the UUIDs inside `routing_plan.candidates`
+      // (each candidate carries its own `providerId`, same UUID-vs-name gotcha as
+      // `selected_provider`) into the human-readable fallback chain the UI renders.
+      let providerNames: Map<string, string> | null = null;
+      const resolveProviderName = (id: string | undefined): string | undefined => {
+        if (!id) return undefined;
+        if (!providerNames) {
+          providerNames = new Map(
+            (db.prepare('SELECT id, name FROM providers').all() as Array<{ id: string; name: string }>).map(
+              (p) => [p.id, p.name],
+            ),
+          );
+        }
+        return providerNames.get(id) ?? id;
+      };
+
       const decisions = rows.map((row) => {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(row)) {
           out[k] = typeof v === 'bigint' ? Number(v) : v;
         }
-        try {
-          out.fallback_chain = typeof out.fallback_chain === 'string' ? JSON.parse(out.fallback_chain as string) : out.fallback_chain ?? [];
-        } catch {
-          out.fallback_chain = [];
+        const routingPlanJson = out.routing_plan_json;
+        delete out.routing_plan_json;
+        out.fallback_chain = [];
+        if (typeof routingPlanJson === 'string') {
+          try {
+            const plan = JSON.parse(routingPlanJson) as {
+              candidates?: Array<{ providerId?: string; modelId?: string }>;
+            };
+            out.fallback_chain = (plan.candidates ?? []).map(
+              (c) => `${resolveProviderName(c.providerId) ?? 'unknown'}/${c.modelId ?? 'unknown'}`,
+            );
+          } catch {
+            out.fallback_chain = [];
+          }
         }
         return out;
       });
