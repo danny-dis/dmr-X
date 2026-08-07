@@ -78,10 +78,10 @@ jobs:
         # `mcp-policy-engine` runs here (isolated fork, coverage off).
         # `mcp-input-validator` is still QUARANTINED — a `vi.mock` fix for its
         # heap blow-up was attempted and verified NOT to work (it still OOMs,
-        # and hangs >300s even alone at a 2GB cap). See the note at the top of
-        # vitest.mcp.workspace.ts. Re-adding it hangs this job.
+        # and hangs >300s even alone at a 2GB cap). See the note on the `mcp`
+        # project in vitest.config.ts. Re-adding it hangs this job.
         run: |
-          bun vitest run --workspace vitest.mcp.workspace.ts --project mcp --coverage.enabled=false
+          bun vitest run --project mcp --coverage.enabled=false
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
