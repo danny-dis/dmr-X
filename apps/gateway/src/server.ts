@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, GenericAnthropicAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter, AntigravityAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
-import { Router } from '@dmr-x/router';
+import { Router, loadBanditArms, startBanditPersistence } from '@dmr-x/router';
 import { logger, decryptConfigApiKey, encrypt, decrypt, parseBodyLimit, parseTrustProxy } from '@dmr-x/utils';
 import fastifyCompress from '@fastify/compress';
 import cors from '@fastify/cors';
@@ -31,6 +31,7 @@ import { authMiddleware, DEPLOYMENT_MODE } from './middleware/auth.middleware.js
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { registerSiemForwarding } from './middleware/siem-forward.middleware.js';
 import { threeDRoutes } from './routes/3d.routes.js';
+import { banditRoutes } from './routes/bandit.routes.js';
 import { adminRoutes, loadActiveProviderCredential, loadAllActiveProviderKeys } from './routes/admin.routes.js';
 import { mcpAdminRoutes, connectPersistedMcpServers } from './routes/mcp-admin.routes.js';
 import { a2aProxyRoutes } from './routes/a2a-proxy.routes.js';
@@ -55,6 +56,8 @@ import { validateRoutes } from './routes/validate.routes.js';
 import { countTokensRoutes } from './routes/count-tokens.routes.js';
 import { agentRoutes } from './routes/agent.routes.js';
 import { registerSkillRoutes } from './routes/skill.routes.js';
+import { registerJobRoutes } from './routes/job.routes.js';
+import { jobQueue } from './lib/job-queue.js';
 import { agentChatRoutes } from './routes/agent-chat.routes.js';
 import { agentDispatchRoutes } from './routes/agent-dispatch.routes.js';
 import { createAgentConcurrencyGuard } from './middleware/agent-concurrency.middleware.js';
@@ -273,6 +276,17 @@ export async function createServer() {
       }
     }
   });
+
+  // Restore Thompson bandit arm state persisted by a previous run (see
+  // packages/db/src/migrations/071_bandit_arms.sql). Best-effort: on a
+  // fresh DB or read failure the sampler just starts from its priors.
+  loadBanditArms(router.getSampler());
+  // Persist arm state on a slow debounced interval — not on every reward
+  // update — because every SQLite write here rewrites the whole DB file
+  // (see services/router/src/bandit/persistence.ts for the reasoning).
+  // stopBanditPersistence() is invoked from the onClose hook below so a
+  // clean shutdown always flushes the latest state.
+  const stopBanditPersistence = startBanditPersistence(router.getSampler());
 
   // Make router and helpers available
   server.decorate('router', router);
@@ -609,6 +623,7 @@ void (async () => {
    await server.register(videoRoutes, { prefix: '/v1' });
    await server.register(threeDRoutes, { prefix: '/v1' });
    await server.register(adminRoutes, { prefix: '/v1' });
+   await server.register(banditRoutes, { prefix: '/v1' });
    // Registered after adminRoutes so the real /admin/mcp/servers surface sits
    // alongside the legacy /admin/mcp/aggregation/* file-only endpoints.
    await server.register(mcpAdminRoutes, { prefix: '/v1' });
@@ -633,6 +648,8 @@ void (async () => {
     await server.register(agentRoutes, { prefix: '/v1' });
     logger.info('Registering route: skillRoutes');
     await server.register(registerSkillRoutes, { prefix: '/v1' });
+    logger.info('Registering route: jobRoutes');
+    await server.register(registerJobRoutes, { prefix: '/v1' });
     logger.info('Registering route: agentChatRoutes');
     await server.register(agentChatRoutes, { prefix: '/v1' });
     logger.info('Registering route: agentDispatchRoutes');
@@ -688,6 +705,23 @@ void (async () => {
     logger.warn({ err }, 'Failed to start agent scheduler — continuing without scheduling');
   }
 
+  // A job marked 'running' with nothing driving it was interrupted by a crash
+  // or a restart, and would otherwise sit untouched forever. Re-queue it;
+  // runJobPass reclaims any task stranded mid-flight, so it resumes rather
+  // than re-running the interrupted task. Never fatal to startup.
+  try {
+    const concurrency = Number(process.env.DMRX_JOB_CONCURRENCY);
+    if (Number.isFinite(concurrency) && concurrency > 0) {
+      jobQueue.configure({ concurrency });
+    }
+    const tenantIds = (getDb().prepare('SELECT id FROM tenants').all() as Array<{ id: string }>)
+      .map((row) => row.id);
+    const recovered = jobQueue.recoverInterrupted(tenantIds);
+    logger.info({ tenants: tenantIds.length, recovered }, 'Job queue started');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to recover interrupted jobs — continuing');
+  }
+
   // SPA fallback: serve index.html for non-API GET requests.
   // Pre-read index.html at startup so we catch missing UI builds early
   // and don't throw on every unknown GET path.
@@ -729,6 +763,7 @@ void (async () => {
     }
     healthChecker.stopAll();
     contentCaptureService.stop();
+    stopBanditPersistence();
     await adapterRegistry.disposeAll();
   });
 
@@ -785,6 +820,11 @@ void (async () => {
         )
         .get(provider.id);
       if (hasActive) continue; // already keyed — don't overwrite
+      const keyTier: 'free' | 'paid' =
+        // Keyless providers are labelled free; keyed ones default to paid.
+        template.models.length > 0 && template.models.every((m) => !!m.freeTier)
+          ? 'free'
+          : 'paid';
       db.prepare(
         `INSERT INTO provider_keys (
           id, provider_id, label, tier,
@@ -794,17 +834,20 @@ void (async () => {
       ).run(
         `${provider.id}-default`,
         provider.id,
-        // Keyless providers are labelled free; keyed ones default to paid.
-        template.models.length > 0 && template.models.every((m) => !!m.freeTier)
-          ? 'free'
-          : 'paid',
+        keyTier,
         encrypt(apiKey),
       );
       // A fresh key means the provider can route — clear the poisoned
       // is_healthy=0 that a prior failed health sweep may have left behind.
+      // Also mirror the key's tier onto the denormalised `providers.tier`
+      // column (admin.routes.ts's `recomputeProviderTier` owns this column
+      // for multi-key providers, but isn't reachable from here — this is
+      // the single-key case seedEnvKeysToProviderKeys always produces, so
+      // setting it directly is equivalent and keeps the Dashboard's
+      // free/paid provider counts correct for providers seeded from .env).
       db.prepare(
-        `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, updated_at = datetime('now') WHERE id = ?`,
-      ).run(provider.id);
+        `UPDATE providers SET is_healthy = 1, consecutive_failures = 0, tier = ?, updated_at = datetime('now') WHERE id = ?`,
+      ).run(keyTier, provider.id);
       seeded++;
       logger.info({ provider: provider.name, envKey }, 'Seeded provider key from .env');
     }

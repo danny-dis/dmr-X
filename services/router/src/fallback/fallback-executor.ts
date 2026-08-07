@@ -36,9 +36,23 @@ const MODEL_ERROR_TTL: Record<string, number> = {
 };
 const modelErrorCache = new Map<string, { category: string; expiresAt: number }>();
 
+/**
+ * Failure categories that are a property of the *credential*, not the model.
+ * A 401 or an exhausted account quota fails identically on every model the
+ * provider serves, so cooling one model down leaves the rest to burn fallback
+ * slots one at a time. Measured against a dead OpenRouter key: it serves six
+ * meta-models, each got tried and cooled separately, and because a request
+ * only gets a couple of fallback attempts the router surfaced intermittent
+ * "All providers failed" while healthy free candidates sat further down the
+ * chain. These categories cool the whole provider instead.
+ */
+const PROVIDER_WIDE_CATEGORIES = new Set(['auth_error', 'quota', 'insufficient_quota']);
+const providerErrorCache = new Map<string, { category: string; expiresAt: number }>();
+
 /** Reset the model error cache. Exported for testing only. */
 export function resetModelErrorCache(): void {
   modelErrorCache.clear();
+  providerErrorCache.clear();
 }
 
 export interface AdapterExecutor {
@@ -219,6 +233,11 @@ function trackModelError(providerId: string, modelId: string, category: string):
   const key = `${providerId}:${modelId}`;
   modelErrorCache.set(key, { category, expiresAt: Date.now() + ttl });
   logger.warn({ providerId, modelId, category, ttl }, 'Tracked model error — will skip for cooldown period');
+
+  if (PROVIDER_WIDE_CATEGORIES.has(category)) {
+    providerErrorCache.set(providerId, { category, expiresAt: Date.now() + ttl });
+    logger.warn({ providerId, category, ttl }, 'Tracked provider-wide error — skipping every model on this provider for the cooldown period');
+  }
 }
 
 /**
@@ -228,6 +247,15 @@ function trackModelError(providerId: string, modelId: string, category: string):
  * to be dead, which would otherwise fail with no fallback available.
  */
 export function isModelOnErrorCooldown(providerId: string, modelId: string): boolean {
+  const providerEntry = providerErrorCache.get(providerId);
+  if (providerEntry) {
+    if (Date.now() > providerEntry.expiresAt) {
+      providerErrorCache.delete(providerId);
+    } else {
+      return true;
+    }
+  }
+
   const key = `${providerId}:${modelId}`;
   const entry = modelErrorCache.get(key);
   if (!entry) return false;

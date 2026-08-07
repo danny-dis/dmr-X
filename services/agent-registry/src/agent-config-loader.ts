@@ -16,6 +16,13 @@ export interface AgentConfigFile {
   definition: AgentDefinitionCreate;
 }
 
+/**
+ * Frontmatter keys whose value is a list even when it is written without
+ * brackets. Only these are split on commas — a description or prompt line
+ * routinely contains commas and must stay a single string.
+ */
+const LIST_VALUED_KEYS = new Set(['tools', 'allowedtools', 'tags', 'skills', 'triggers']);
+
 // ---------------------------------------------------------------------------
 // YAML-like config parser (simple key: value format)
 // ---------------------------------------------------------------------------
@@ -56,6 +63,13 @@ function parseSimpleConfig(content: string): Record<string, unknown> {
         } catch {
           result[currentKey] = val.slice(1, -1).split(',').map((s) => s.trim());
         }
+      } else if (LIST_VALUED_KEYS.has(currentKey.toLowerCase()) && val.includes(',')) {
+        // Unbracketed list: `tools: Read, Write, Edit`. This is the shape
+        // Claude Code subagent frontmatter uses, and treating it as a plain
+        // string stored 68 imported agents with `allowedTools` set to a bare
+        // string. Downstream code declared `string[]` and called `.map()` on
+        // it, which threw before the agent could run at all.
+        result[currentKey] = val.split(',').map((s) => s.trim()).filter(Boolean);
       } else if (val === 'true') {
         result[currentKey] = true;
       } else if (val === 'false') {
@@ -339,6 +353,15 @@ export function parseAgentMdBatch(
 // ---------------------------------------------------------------------------
 
 /** Files that are repo metadata, never agent definitions. */
+/** Per-request timeout. Without one a stalled socket hangs the whole import. */
+const GITHUB_REQUEST_TIMEOUT_MS = 20_000;
+
+/** Parallel raw-file fetches. Enough to be fast, low enough to avoid throttling. */
+const GITHUB_FETCH_CONCURRENCY = 8;
+
+/** Upper bound on files pulled from one repository. */
+const GITHUB_MAX_FILES = 500;
+
 const SKIP_MD_FILES = new Set([
   'readme.md',
   'contributing.md',
@@ -368,10 +391,15 @@ export async function fetchGitHubRepoMdFiles(repoUrl: string): Promise<Map<strin
   const headers = {
     Accept: 'application/vnd.github+json',
     'User-Agent': 'dmr-x-agent-import',
+    // A token lifts the unauthenticated 60/hour API limit. Optional.
+    ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
   };
 
   // Resolve default branch
-  const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+  const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+    headers,
+    signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
+  });
   if (!repoRes.ok) {
     throw new Error(`GitHub API error (${repoRes.status} ${repoRes.statusText}) for ${owner}/${repo}`);
   }
@@ -381,30 +409,54 @@ export async function fetchGitHubRepoMdFiles(repoUrl: string): Promise<Map<strin
   // Recursive tree listing
   const treeRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
-    { headers },
+    { headers, signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS) },
   );
   if (!treeRes.ok) {
     throw new Error(`GitHub API error (${treeRes.status} ${treeRes.statusText}) listing tree`);
   }
   const tree = (await treeRes.json()) as { tree?: Array<{ type: string; path: string }> };
 
-  const mdPaths = (tree.tree ?? [])
+  const allMdPaths = (tree.tree ?? [])
     .filter((t) => t.type === 'blob' && t.path.toLowerCase().endsWith('.md'))
     .map((t) => t.path)
     .filter((p) => !SKIP_MD_FILES.has(p.split('/').pop()!.toLowerCase()));
 
-  for (const p of mdPaths) {
-    try {
-      const rawRes = await fetch(
-        `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${p}`,
-      );
-      if (!rawRes.ok) continue;
-      const text = await rawRes.text();
-      result.set(p, text);
-    } catch (e) {
-      logger.warn({ path: p }, 'Failed to fetch GitHub file');
-    }
+  // Bound the work. A large repo would otherwise pull thousands of files into
+  // memory and keep the caller's request open for minutes.
+  const mdPaths = allMdPaths.slice(0, GITHUB_MAX_FILES);
+  if (allMdPaths.length > GITHUB_MAX_FILES) {
+    logger.warn(
+      { owner, repo, found: allMdPaths.length, limit: GITHUB_MAX_FILES },
+      'GitHub import: repository exceeds the file limit, importing the first slice only',
+    );
   }
+
+  // Fetch with bounded concurrency. Sequentially awaiting one file at a time
+  // makes a few hundred files take minutes; unbounded parallelism gets the
+  // client throttled. Workers pull from a shared cursor.
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= mdPaths.length) return;
+      const p = mdPaths[index]!;
+      try {
+        const rawRes = await fetch(
+          `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${p}`,
+          { signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS) },
+        );
+        if (!rawRes.ok) continue;
+        result.set(p, await rawRes.text());
+      } catch {
+        // One unreachable or slow file must not fail the whole import.
+        logger.warn({ path: p }, 'Failed to fetch GitHub file');
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(GITHUB_FETCH_CONCURRENCY, mdPaths.length) }, worker),
+  );
 
   return result;
 }

@@ -2,10 +2,8 @@ import { Send, Video as VideoIcon, Clapperboard } from 'lucide-react';
 import * as React from 'react';
 
 import { Button, Input, Switch, Textarea, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { fetchAuthenticated } from '@/lib/api';
-import type { ApiModel } from '@/types/api';
+import { useModels } from '@/lib/queries/models';
 
 export function VideoView() {
   const [prompt, setPrompt] = React.useState('');
@@ -21,11 +19,9 @@ export function VideoView() {
   const [result, setResult] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
-  const models = useApiData<ApiModel[]>(
-    () => Admin.listModels({ available_only: 'true' }) as Promise<ApiModel[]>,
-    [],
-    { refetchInterval: 30000 },
-  );
+  // Unused today (no model picker wired up for video yet), kept fetching so
+  // the query is warm — matches the fetch-on-mount the useApiData version did.
+  useModels({ available_only: 'true' }, { refetchInterval: 30000 });
 
   const run = async () => {
     if (!prompt.trim() || running) return;

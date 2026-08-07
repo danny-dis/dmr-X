@@ -40,3 +40,53 @@ export {
   type RecordDataAccessInput,
   type VerifyResult,
 } from './data-access-audit.js';
+
+export {
+  JobStore,
+  jobStore,
+  type Job,
+  type JobSource,
+  type JobStatus,
+  type CreateJobInput,
+  type JobPatch,
+  type ListJobsOptions,
+  type JobTask,
+  type JobTaskStatus,
+  type CreateTaskInput,
+  type TaskPatch,
+  type AssignTaskInput,
+} from './job.store.js';
+
+export {
+  writeBoardEntry,
+  readBoard,
+  readBoardFor,
+  renderBoardForPrompt,
+  type JobBoardEntry,
+} from './job-board.js';
+
+export {
+  findCycles,
+  findMissingDependencies,
+  topologicalOrder,
+  readyTasks,
+  schedulerState,
+  type SchedulerState,
+} from './job-scheduler.js';
+
+export {
+  buildPlanPrompt,
+  parsePlanResponse,
+  validatePlan,
+  materializePlan,
+  type AgentSummary,
+  type PlannedTask,
+  type PlanParseResult,
+} from './job-planner.js';
+
+export {
+  runJobPass,
+  type TaskExecutor,
+  type TaskExecutionResult,
+  type JobRunResult,
+} from './job-orchestrator.js';

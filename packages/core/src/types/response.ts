@@ -2,9 +2,18 @@ import { Modality } from './modality.js';
 import { Message } from './request.js';
 
 export interface TokenUsage {
+  /**
+   * Full prompt size, including any tokens served from or written to the
+   * provider's prompt cache. Anthropic reports `input_tokens` as the *uncached
+   * remainder* only, so adapters must add the cache components back in.
+   */
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Prompt tokens served from the provider's cache (billed at ~0.1x input). */
+  cache_read_tokens?: number;
+  /** Prompt tokens written to the provider's cache (billed at 1.25x for 5m, 2x for 1h). */
+  cache_write_tokens?: number;
 }
 
 export interface GeneratedImage {

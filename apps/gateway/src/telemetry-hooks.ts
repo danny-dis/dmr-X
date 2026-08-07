@@ -3,6 +3,7 @@ import { trace, SpanStatusCode, SpanKind, propagation, context, type Span } from
 import { logger } from '@dmr-x/utils';
 import { getDb } from '@dmr-x/db';
 import { tracer, contentCaptureService } from '@dmr-x/telemetry';
+import { billingService } from '@dmr-x/billing';
 
 /**
  * Cached free/paid classification, keyed `providerId:modelId`.
@@ -230,6 +231,32 @@ export function registerTelemetryHooks(server: FastifyInstance, telemetry: any):
           // save will retry the export on the next batch, so a single bad
           // row is fine.
           logger.warn({ err: writeErr, requestId: request.id }, 'request_logs write failed');
+        }
+
+        // Populate `usage_records` — the billing ledger the Dashboard's
+        // "Cost (24h)" tile and request-volume chart read from. `request_logs`
+        // above is the routing/audit trail (CRIT-6); this is a separate table
+        // and `billingService.recordUsage` (services/billing/src/billing.service.ts)
+        // had no caller anywhere in the request lifecycle, so it stayed empty
+        // no matter how many requests were logged. Independent try/catch from
+        // the request_logs write above so neither can block the other, and
+        // guarded on `tenantId` being present up front — `usage_records.tenant_id`
+        // is `NOT NULL REFERENCES tenants(id)` and sql.js rejects an `undefined`
+        // binding outright, so an absent tenant skips the write instead of
+        // throwing here.
+        if (metrics.tenantId && metrics.tokens) {
+          try {
+            await billingService.recordUsage({
+              tenantId: metrics.tenantId,
+              providerId: metrics.providerId,
+              modelId: metrics.modelId,
+              inputTokens: metrics.tokens.prompt ?? 0,
+              outputTokens: metrics.tokens.completion ?? 0,
+              requestId: request.id,
+            });
+          } catch (usageErr) {
+            logger.warn({ err: usageErr, requestId: request.id }, 'usage_records write failed');
+          }
         }
 
         // Content capture: record the call event for ML-ready streaming

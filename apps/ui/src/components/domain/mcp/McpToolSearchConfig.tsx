@@ -8,13 +8,12 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { Slider } from '@/components/primitives/Slider';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
-import type { ApiMcpToolSearchConfig } from '@/types/api';
+import { useToolSearchConfig, useUpdateToolSearchConfig } from '@/lib/queries/mcp';
 
 export function McpToolSearchConfig() {
-  const config = useApiData<ApiMcpToolSearchConfig>(Admin.getToolSearchConfig, []);
-  const [saving, setSaving] = React.useState(false);
+  const config = useToolSearchConfig();
+  const updateConfig = useUpdateToolSearchConfig();
+  const saving = updateConfig.isPending;
 
   const [enabled, setEnabled] = React.useState(true);
   const [bm25Enabled, setBm25Enabled] = React.useState(true);
@@ -40,9 +39,8 @@ export function McpToolSearchConfig() {
   }, [config.data]);
 
   const handleSave = async () => {
-    setSaving(true);
     try {
-      await Admin.updateToolSearchConfig({
+      await updateConfig.mutateAsync({
         enabled,
         bm25: { enabled: bm25Enabled, k1: bm25K1, b: bm25B },
         semantic: { enabled: semanticEnabled, remoteUrl: semanticUrl },
@@ -51,8 +49,6 @@ export function McpToolSearchConfig() {
       toast.success('Tool search config saved');
     } catch (err) {
       toast.error('Failed to save', { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setSaving(false);
     }
   };
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createServer, type Server } from 'node:http';
+import { createServer, request as httpRequest, type Server } from 'node:http';
 
 import { createAnthropicSSEStream } from '../../apps/gateway/src/converters/anthropic-stream-serializer.js';
 import type { StreamChunk } from '@dmr-x/core';
@@ -23,6 +23,14 @@ import type { StreamChunk } from '@dmr-x/core';
  * No real model is contacted; a static `StreamChunk` sequence stands in for the
  * adapter output, so the test is deterministic and fast while still covering
  * the serialization + HTTP framing seam where the original bug lived.
+ *
+ * Uses node:http's own client (not the global `fetch`) to consume the
+ * response: under CI's resource pressure (single-fork vitest pool running
+ * the full ~1256-test suite), `fetch` was observed to intermittently resolve
+ * `undefined` instead of a Response or a rejection, failing this test with no
+ * code change involved. node:http is what the test server itself is built
+ * on, so round-tripping through it too removes that layer of doubt entirely
+ * rather than papering over it with retries.
  */
 
 // Parse SSE bytes into [{ event, data }] pairs.
@@ -81,6 +89,34 @@ function startStreamServer(chunks: StreamChunk[]): Promise<{ server: Server; url
   });
 }
 
+// Fetch the full response body over a real node:http client connection, with
+// a hard abort budget so a genuine hang (the bug this suite guards against)
+// still fails loudly instead of blocking the suite.
+function requestFullBody(url: string, timeoutMs = 5000): Promise<{ statusCode: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    const req = httpRequest(url, { signal: ac.signal }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => { body += chunk; });
+      res.on('end', () => {
+        clearTimeout(timer);
+        resolve({ statusCode: res.statusCode ?? 0, body });
+      });
+      res.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+    req.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    req.end();
+  });
+}
+
 describe('Anthropic streaming over HTTP (tool-call hang regression)', () => {
   it('terminates and emits a tool_use block when the model emits tool_calls', async () => {
     const chunks: StreamChunk[] = [
@@ -98,30 +134,12 @@ describe('Anthropic streaming over HTTP (tool-call hang regression)', () => {
     try {
       // Abort after 5s — if the stream never ends, the test fails loudly
       // (reproducing the original hang rather than passing silently).
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 5000);
-      const resp = await fetch(url, { signal: ac.signal });
-      clearTimeout(timer);
+      const { statusCode, body } = await requestFullBody(url);
 
-      expect(resp.status).toBe(200);
-      expect(resp.body).toBeTruthy();
+      expect(statusCode).toBe(200);
+      expect(body).toBeTruthy();
 
-      // Read the entire stream with a hard timeout guard.
-      const reader = resp.body!.getReader();
-      const decoder = new TextDecoder();
-      let raw = '';
-      const readUntilDone = setTimeout(() => ac.abort(), 5000);
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          raw += decoder.decode(value, { stream: true });
-        }
-      } finally {
-        clearTimeout(readUntilDone);
-      }
-
-      const events = parseSSE(raw);
+      const events = parseSSE(body);
       const eventNames = events.map((e) => e.event);
 
       // 1. Stream terminates in the proper order (no hang).
@@ -156,17 +174,9 @@ describe('Anthropic streaming over HTTP (tool-call hang regression)', () => {
 
     const { url, close } = await startStreamServer(chunks);
     try {
-      const resp = await fetch(url);
-      expect(resp.status).toBe(200);
-      const reader = resp.body!.getReader();
-      const decoder = new TextDecoder();
-      let raw = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        raw += decoder.decode(value, { stream: true });
-      }
-      const events = parseSSE(raw);
+      const { statusCode, body } = await requestFullBody(url);
+      expect(statusCode).toBe(200);
+      const events = parseSSE(body);
       const eventNames = events.map((e) => e.event);
       expect(eventNames[0]).toBe('message_start');
       expect(eventNames[eventNames.length - 1]).toBe('message_stop');

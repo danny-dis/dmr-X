@@ -7,13 +7,12 @@ import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
-import type { ApiMcpAuditConfig } from '@/types/api';
+import { useAuditConfig, useUpdateAuditConfig } from '@/lib/queries/mcp';
 
 export function McpAuditConfig() {
-  const config = useApiData<ApiMcpAuditConfig>(Admin.getAuditConfig, []);
-  const [saving, setSaving] = React.useState(false);
+  const config = useAuditConfig();
+  const updateConfig = useUpdateAuditConfig();
+  const saving = updateConfig.isPending;
 
   const [enabled, setEnabled] = React.useState(true);
   const [backend, setBackend] = React.useState('memory');
@@ -30,9 +29,8 @@ export function McpAuditConfig() {
   }, [config.data]);
 
   const handleSave = async () => {
-    setSaving(true);
     try {
-      await Admin.updateAuditConfig({
+      await updateConfig.mutateAsync({
         enabled,
         backend,
         retentionDays,
@@ -41,8 +39,6 @@ export function McpAuditConfig() {
       toast.success('Audit config saved');
     } catch (err) {
       toast.error('Failed to save', { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setSaving(false);
     }
   };
 

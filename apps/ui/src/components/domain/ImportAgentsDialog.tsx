@@ -35,9 +35,16 @@ const MODEL_TIERS = [
   { value: 'budget', label: 'Budget' },
 ] as const;
 
+/** Matches AgentImportResultSchema / BulkImportSkillResult on the gateway — each
+ *  failed file is reported as `{ file, error }`, never a bare string. */
+export interface ImportItemError {
+  file: string;
+  error: string;
+}
+
 export interface ImportAgentsResult {
-  agents: { imported: number; skipped: number; errors: string[]; agents: unknown[] };
-  skills: { imported: number; errors: string[]; skills: unknown[] };
+  agents: { imported: number; skipped: number; errors: ImportItemError[]; agents: unknown[] };
+  skills: { imported: number; skipped: number; errors: ImportItemError[]; skills: unknown[] };
   artifacts: { dir: string; zip: string } | null;
 }
 
@@ -315,7 +322,7 @@ export function ImportAgentsDialog({ open, onOpenChange }: ImportAgentsDialogPro
 
 function ImportSummary({ result }: { result: ImportAgentsResult }) {
   const agents = result.agents ?? { imported: 0, skipped: 0, errors: [], agents: [] };
-  const skills = result.skills ?? { imported: 0, errors: [], skills: [] };
+  const skills = result.skills ?? { imported: 0, skipped: 0, errors: [], skills: [] };
 
   const rows: Array<{ label: string; value: string; tone: 'ok' | 'muted' | 'bad' }> = [
     { label: 'Agents imported', value: String(agents.imported), tone: agents.imported > 0 ? 'ok' : 'muted' },
@@ -349,7 +356,9 @@ function ImportSummary({ result }: { result: ImportAgentsResult }) {
           <div className="text-xs font-medium text-fg">Failed definitions</div>
           <ul className="max-h-32 space-y-1 overflow-y-auto">
             {agents.errors.slice(0, 20).map((err, i) => (
-              <li key={i} className="truncate text-xs text-danger">{err}</li>
+              <li key={i} className="truncate text-xs text-danger">
+                {err.file ? `${err.file}: ${err.error}` : err.error}
+              </li>
             ))}
             {agents.errors.length > 20 && (
               <li className="text-xs text-fg-muted">…and {agents.errors.length - 20} more</li>

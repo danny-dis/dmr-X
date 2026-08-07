@@ -33,6 +33,7 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatTokens(n: number, compact = false): string {
+  if (!Number.isFinite(n)) return '—';
   if (!compact) {
     return new Intl.NumberFormat('en-US').format(n);
   }
@@ -75,18 +76,24 @@ export function timeAgo(iso: string | Date): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-export function formatTime(iso: string | Date, opts?: Intl.DateTimeFormatOptions): string {
+export function formatTime(iso: string | Date | null | undefined, opts?: Intl.DateTimeFormatOptions): string {
+  if (iso == null) return '—';
   const date = typeof iso === 'string' ? new Date(iso) : iso;
+  if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat('en-US', opts ?? { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date);
 }
 
-export function formatDate(iso: string | Date): string {
+export function formatDate(iso: string | Date | null | undefined): string {
+  if (iso == null) return '—';
   const date = typeof iso === 'string' ? new Date(iso) : iso;
+  if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
 }
 
-export function formatDateTime(iso: string | Date): string {
+export function formatDateTime(iso: string | Date | null | undefined): string {
+  if (iso == null) return '—';
   const date = typeof iso === 'string' ? new Date(iso) : iso;
+  if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',

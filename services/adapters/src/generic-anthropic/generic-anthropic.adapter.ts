@@ -14,6 +14,8 @@ import type {
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
 import { convertMessagesToAnthropic } from '../anthropic-messages.js';
+import { planPromptCache } from '../prompt-cache.js';
+import { normalizeAnthropicUsage } from '../cache-usage.js';
 import {
   toAnthropicTools,
   toAnthropicToolChoice,
@@ -150,8 +152,12 @@ export class GenericAnthropicAdapter extends BaseAdapter {
     }
 
     // Convert messages to Anthropic format, preserving tool_use/tool_result
-    // history and image blocks instead of flattening them to text.
-    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
+    // history and image blocks instead of flattening them to text. Also
+    // injects prompt-cache breakpoints when the request doesn't already
+    // carry its own -- these providers are Anthropic-compatible, so the
+    // same `cache_control` wire syntax applies.
+    const plan = planPromptCache(request);
+    const { system, messages } = convertMessagesToAnthropic(request.messages || [], plan);
 
     const body: Record<string, any> = {
       model: request.model,
@@ -161,6 +167,8 @@ export class GenericAnthropicAdapter extends BaseAdapter {
       tool_choice: toAnthropicToolChoice(request.tool_choice),
     };
 
+    // `system` may be a plain string or -- once a cache breakpoint applies --
+    // a ClaudeSystemBlockParam[]; Anthropic's wire format accepts both.
     if (system) body.system = system;
     if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.top_p !== undefined) body.top_p = request.top_p;
@@ -200,11 +208,10 @@ export class GenericAnthropicAdapter extends BaseAdapter {
         providerId: this.providerId,
         modelId: data.model || request.model,
         latencyMs,
-        usage: {
-          prompt_tokens: data.usage?.input_tokens || 0,
-          completion_tokens: data.usage?.output_tokens || 0,
-          total_tokens: (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
-        },
+        // Anthropic-compatible providers report `input_tokens` as the
+        // uncached remainder too -- normalizeAnthropicUsage adds the cache
+        // read/write components back in for a full-prompt count.
+        usage: normalizeAnthropicUsage(data.usage),
         message: {
           role: 'assistant',
           content: parsedContent.text,
@@ -229,7 +236,8 @@ export class GenericAnthropicAdapter extends BaseAdapter {
       headers['x-api-key'] = key;
     }
 
-    const { system, messages } = convertMessagesToAnthropic(request.messages || []);
+    const plan = planPromptCache(request);
+    const { system, messages } = convertMessagesToAnthropic(request.messages || [], plan);
 
     const body: Record<string, any> = {
       model: request.model,

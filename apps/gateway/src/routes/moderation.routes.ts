@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { resolveServedProviderId } from '../utils/served-provider.js';
 
 const ModerationRequestSchema = z.object({
   input: z.string().min(1),
@@ -50,7 +51,7 @@ export async function moderationRoutes(server: FastifyInstance): Promise<void> {
     }
 
     (request as any).metrics = {
-      providerId: plan.primary.providerId,
+      providerId: resolveServedProviderId(plan, response),
       modelId: response.modelId,
       modality: 'moderation',
       tenantId: (request as any).tenant?.id,

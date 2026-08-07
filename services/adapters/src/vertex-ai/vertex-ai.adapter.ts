@@ -12,6 +12,7 @@ import type {
   ExecuteOptions,
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
+import { normalizeGeminiUsage } from '../cache-usage.js';
 import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 /**
@@ -270,11 +271,10 @@ export class VertexAIAdapter extends BaseAdapter {
           })),
         } : {}),
       },
-      usage: {
-        prompt_tokens: data.usageMetadata?.promptTokenCount || 0,
-        completion_tokens: data.usageMetadata?.candidatesTokenCount || 0,
-        total_tokens: data.usageMetadata?.totalTokenCount || 0,
-      },
+      // Gemini already counts cached content inside promptTokenCount and
+      // reports the cached subset separately — the normalizer keeps the full
+      // count and records the cache read as its own field.
+      usage: normalizeGeminiUsage(data.usageMetadata),
       finishReason: candidate?.finishReason === 'STOP' ? 'stop'
         : candidate?.finishReason === 'MAX_TOKENS' ? 'length'
         : candidate?.finishReason || 'stop',

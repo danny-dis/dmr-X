@@ -90,6 +90,8 @@ export function getRegisteredToolDefinitions(names?: string[]): RegisteredToolDe
     .filter((d): d is RegisteredToolDefinition => Boolean(d));
 }
 
+export { normalizeAllowedTools } from '@dmr-x/core';
+
 /**
  * Register only an LLM-facing schema for a tool whose handler was registered
  * (via `registerToolHandler`) elsewhere. Safe to call multiple times; the last

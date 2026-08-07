@@ -11,16 +11,15 @@ import { ElevenLabsAdapter, DeepgramAdapter } from '@dmr-x/adapters';
 import { CohereAdapter, JinaAdapter, ComfyUIAdapter } from '@dmr-x/adapters';
 import { FalAdapter, VeoAdapter, RunwayAdapter } from '@dmr-x/adapters';
 import type {
-  UnifiedRequest,
   UnifiedResponse,
   CandidateSet,
   Modality,
   QualityTarget,
   ProviderModel,
+  ProviderPreferences,
 } from '@dmr-x/core';
-import { resolveProviderSlug } from '@dmr-x/core';
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
-import { Router, type RouterConfig, type ClassifyOptions } from '@dmr-x/router';
+import { type RouterConfig } from '@dmr-x/router';
 import { HybridSearchEngine, type ToolDocument } from '@dmr-x/tool-search';
 import { getRBACEngine, type RBACConfig, type Principal } from '@dmr-x/policy';
 import { InputValidator, type InputValidatorConfig } from './guardrails/input-validator.js';
@@ -31,7 +30,7 @@ import { ToolTemplatesService, getToolTemplatesService } from './templates/tool-
 import type { AgentCardConfig } from './a2a/agent-card.js';
 import type { FederationConfig } from './federation/manager.js';
 import { logger } from '@dmr-x/utils';
-import { persistentContextStore, initDb, getDb } from '@dmr-x/db';
+import { persistentContextStore, initDb } from '@dmr-x/db';
 
 // Ensure the shared DB is initialized in this module's @dmr-x/db instance.
 // (The entry point also calls initDb, but under bun the entry and this module
@@ -192,7 +191,6 @@ export interface DMRXMcpServerConfig {
 }
 
 export interface ServerState {
-  router: Router;
   adapterRegistry: AdapterRegistry;
   candidates: CandidateSet;
   startTime: number;
@@ -257,29 +255,545 @@ function mcpLog(server: McpServer, level: LoggingLevel, data: unknown, loggerNam
 const PROCESS_START_TIME = Date.now();
 let processRequestCount = 0;
 
-/** Map a modality to the API endpoint path expected by the task classifier */
-const MODALITY_TO_PATH: Record<Modality, string> = {
-  llm: '/v1/chat/completions',
-  diffusion: '/v1/images/generations',
-  embedding: '/v1/embeddings',
-  audio_tts: '/v1/audio/speech',
-  audio_stt: '/v1/audio/transcriptions',
-  audio_speech: '/v1/audio/speech',
-  audio_transcription: '/v1/audio/transcriptions',
-  audio_separation: '/v1/audio/separate',
-  audio_intelligence: '/v1/audio/diarize',
-  video: '/v1/video/generations',
-  video_analysis: '/v1/video/analyze',
-  music: '/v1/music/generations',
-  reranking: '/v1/rerank',
-  moderation: '/v1/moderations',
-  code_completion: '/v1/completions',
-  ocr: '/v1/ocr',
-  image_upscaling: '/v1/images/upscale',
-  image_inpainting: '/v1/images/inpaint',
-  vision: '/v1/vision/detect',
-  '3d': '/v1/3d/generate',
+// ---------------------------------------------------------------------------
+// Gateway-routed modality dispatch
+//
+// The MCP server no longer runs its own Router. Every inference call goes
+// through the gateway's public wire-format routes (or, for modalities with
+// no public route, the admin MCP-tool dispatcher) so the gateway stays the
+// single source of truth for provider health, in-flight rate-limit quota,
+// and the 40% provider-diversity cap (services/router/src/pipeline/
+// final-selector.ts:29-43, a module-level array that only one process can
+// meaningfully maintain). Running a second in-process Router meant both
+// processes believed they held full quota against every provider and
+// neither saw the other's traffic for diversity scoring.
+//
+// Fidelity notes (consequences of moving from an in-process Router.route()
+// call to an HTTP call against the public wire API):
+//   - The public routes don't echo back providerId or adapter-measured
+//     latency — only `model`. `providerId` is reported as the sentinel
+//     'dmrx-gateway' and `latencyMs` is this call's own round-trip time.
+//   - The routing-hint fields (provider_preference, provider_blacklist,
+//     latency_target, cost_target, local_first, require_privacy) DO have a
+//     carrier again: the `X-Provider-Preferences` header (JSON-encoded
+//     ProviderPreferences, see apps/gateway/src/utils/provider-preferences.ts
+//     and buildProviderPreferences() below), read by every gateway route
+//     that also reads `X-Quality-Target`, and fed into
+//     `metadata.providerPreferences` where the pipeline's
+//     `applyProviderPreferences()` (services/router/src/pipeline/
+//     pipeline.ts) enforces it — same as it did when this file ran its own
+//     Router. `require_privacy` maps to `zdr`, which the pipeline now filters
+//     on `deployment === 'self_hosted' | 'on_device'` (fail-closed: unknown
+//     deployment is excluded, not assumed safe).
+//   - `/v1/images/generations` now accepts negative_prompt/steps/seed/
+//     cfg_scale (see the `diffusion` case below and
+//     apps/gateway/src/routes/images.routes.ts).
+// ---------------------------------------------------------------------------
+
+/**
+ * Translates MCP tool routing-hint params into a `ProviderPreferences`
+ * object for the `X-Provider-Preferences` header. Mirrors the mapping the
+ * removed local-Router `toUnifiedRequest()` used to build in-process (see
+ * `git show b029981 -- services/mcp-server/src/server.ts`), with one
+ * deliberate change: `require_privacy` never sets `strategy: 'direct'`. That
+ * strategy lets router.service.ts's direct-selection shortcut pick
+ * `order[0]` without re-checking `zdr`/`only` — fine for a soft preference,
+ * not for a stated privacy constraint, so privacy always goes through the
+ * full pipeline (and its zdr filter) instead.
+ */
+function buildProviderPreferences(params: Record<string, unknown>): ProviderPreferences | undefined {
+  let prefs: ProviderPreferences | undefined;
+
+  if (params.provider_preference) {
+    prefs = { ...(prefs || {}), order: params.provider_preference as string[], strategy: 'direct' };
+  }
+  if (params.provider_blacklist) {
+    prefs = { ...(prefs || {}), ignore: params.provider_blacklist as string[] };
+  }
+  if (params.latency_target !== undefined && params.latency_target !== null) {
+    const latencyMs = typeof params.latency_target === 'number'
+      ? params.latency_target
+      : parseInt(String(params.latency_target).replace(/[^0-9]/g, ''), 10);
+    if (Number.isFinite(latencyMs)) {
+      prefs = { ...(prefs || {}), preferredMaxLatencyMs: latencyMs };
+    }
+  }
+  if (params.cost_target !== undefined && params.cost_target !== null) {
+    const costPerToken = typeof params.cost_target === 'number'
+      ? params.cost_target
+      : parseFloat(String(params.cost_target).replace(/[^0-9.]/g, ''));
+    if (Number.isFinite(costPerToken)) {
+      prefs = { ...(prefs || {}), maxPricePerMillionTokens: costPerToken * 1_000_000 };
+    }
+  }
+  if (params.local_first) {
+    prefs = {
+      ...(prefs || {}),
+      order: ['ollama', 'local', ...(prefs?.order || [])],
+      strategy: 'direct',
+    };
+  }
+  if (params.require_privacy) {
+    prefs = {
+      ...(prefs || {}),
+      zdr: true,
+      // Force off the direct-selection shortcut — see the function doc above.
+      strategy: prefs?.strategy === 'direct' ? 'auto' : prefs?.strategy,
+    };
+  }
+
+  return prefs;
+}
+
+class GatewayRouteError extends Error {
+  constructor(message: string, public readonly statusCode?: number) {
+    super(message);
+    this.name = 'GatewayRouteError';
+  }
+}
+
+function gatewayErrorMessage(json: any, status: number): string {
+  return json?.error?.message || json?.message || `Gateway returned HTTP ${status}`;
+}
+
+/** Builds the `X-Provider-Preferences` header entry, or `{}` when there's nothing to carry. */
+function providerPreferencesHeader(providerPreferences: ProviderPreferences | undefined): Record<string, string> {
+  return providerPreferences ? { 'x-provider-preferences': JSON.stringify(providerPreferences) } : {};
+}
+
+/** Standard JSON-in/JSON-out gateway call (chat, images, embeddings, rerank, video, 3d). */
+async function gatewayJsonCall(
+  gatewayUrl: string,
+  path: string,
+  body: unknown,
+  qualityTarget: QualityTarget,
+  providerPreferences?: ProviderPreferences,
+): Promise<{ json: any; latencyMs: number; providerId?: string }> {
+  const start = Date.now();
+  const key = resolveGatewayKey();
+  const res = await fetch(`${gatewayUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
+      ...(key ? { authorization: `Bearer ${key}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    // non-JSON body — leave json null, error message falls back to status text
+  }
+  if (!res.ok) {
+    throw new GatewayRouteError(gatewayErrorMessage(json, res.status), res.status);
+  }
+  return { json, latencyMs, providerId: res.headers.get('x-dmrx-provider-id') || undefined };
+}
+
+/** JSON-in/binary-out gateway call — only /v1/audio/speech returns raw bytes. */
+async function gatewayBinaryCall(
+  gatewayUrl: string,
+  path: string,
+  body: unknown,
+  qualityTarget: QualityTarget,
+  providerPreferences?: ProviderPreferences,
+): Promise<{ buffer: Buffer; contentType: string; latencyMs: number; providerId?: string }> {
+  const start = Date.now();
+  const key = resolveGatewayKey();
+  const res = await fetch(`${gatewayUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
+      ...(key ? { authorization: `Bearer ${key}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  const contentType = res.headers.get('content-type') || '';
+  const arrayBuffer = await res.arrayBuffer();
+  if (!res.ok) {
+    let message = `Gateway returned HTTP ${res.status}`;
+    if (contentType.includes('application/json')) {
+      try {
+        message = gatewayErrorMessage(JSON.parse(Buffer.from(arrayBuffer).toString('utf8')), res.status);
+      } catch {
+        // body claimed JSON but wasn't — keep the generic message
+      }
+    }
+    throw new GatewayRouteError(message, res.status);
+  }
+  return { buffer: Buffer.from(arrayBuffer), contentType, latencyMs, providerId: res.headers.get('x-dmrx-provider-id') || undefined };
+}
+
+/** Multipart POST — /v1/audio/transcriptions expects a file upload, not JSON. */
+async function gatewayMultipartCall(
+  gatewayUrl: string,
+  path: string,
+  fields: Record<string, string | undefined>,
+  file: { buffer: Buffer; filename: string; contentType: string },
+  qualityTarget: QualityTarget,
+  providerPreferences?: ProviderPreferences,
+): Promise<{ json: any; latencyMs: number; providerId?: string }> {
+  const start = Date.now();
+  const key = resolveGatewayKey();
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) form.append(k, v);
+  }
+  form.append('file', new Blob([file.buffer], { type: file.contentType }), file.filename);
+  const res = await fetch(`${gatewayUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
+      ...(key ? { authorization: `Bearer ${key}` } : {}),
+    },
+    body: form as any,
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    // non-JSON body
+  }
+  if (!res.ok) {
+    throw new GatewayRouteError(gatewayErrorMessage(json, res.status), res.status);
+  }
+  return { json, latencyMs, providerId: res.headers.get('x-dmrx-provider-id') || undefined };
+}
+
+/** Fetches a URL's bytes, or base64/data-URI-decodes an inline audio string. */
+async function resolveAudioBytes(audio: string): Promise<Buffer> {
+  if (/^https?:\/\//i.test(audio)) {
+    const res = await fetch(audio, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) throw new Error(`Failed to fetch audio from URL: HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  const base64 = audio.startsWith('data:') && audio.includes(',')
+    ? audio.slice(audio.indexOf(',') + 1)
+    : audio;
+  return Buffer.from(base64, 'base64');
+}
+
+const AUDIO_FORMAT_MIME: Record<string, string> = {
+  wav: 'audio/wav',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  webm: 'audio/webm',
 };
+
+const SPEECH_RESPONSE_FORMATS = new Set(['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']);
+const IMAGE_SIZES = new Set(['256x256', '512x512', '1024x1024', '1792x1024', '1024x1792']);
+
+/**
+ * Routes a single modality call through the gateway's public API and maps
+ * the wire-format response back into a UnifiedResponse, so the existing
+ * format*Response() functions (formatChatResponse, formatImageResponse, …)
+ * need no changes. See the fidelity notes in the section comment above.
+ */
+async function routeViaGateway(
+  gatewayUrl: string,
+  modality: Modality,
+  params: Record<string, unknown>,
+): Promise<UnifiedResponse> {
+  const qualityTarget = (params.quality_target as QualityTarget) || 'balanced';
+  const requestId = crypto.randomUUID();
+  const providerPreferences = buildProviderPreferences(params);
+
+  switch (modality) {
+    case 'llm': {
+      const body = {
+        model: (params.model as string) || 'auto',
+        messages: params.messages,
+        max_tokens: params.max_tokens,
+        temperature: params.temperature,
+        top_p: params.top_p,
+        frequency_penalty: params.frequency_penalty,
+        presence_penalty: params.presence_penalty,
+        stop: params.stop,
+        response_format: params.response_format,
+        seed: params.seed,
+        n: params.n,
+        tools: params.tools,
+        tool_choice: params.tool_choice,
+        user: params.user,
+        stream: false,
+      };
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/chat/completions', body, qualityTarget, providerPreferences);
+      const choice = Array.isArray(json?.choices) ? json.choices[0] : undefined;
+      return {
+        modality: 'llm',
+        requestId: json?.id || requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: json?.model || (params.model as string) || 'auto',
+        message: choice?.message,
+        usage: json?.usage,
+        finishReason: choice?.finish_reason,
+        latencyMs,
+        fallback: json?.dmrx_fallback,
+      };
+    }
+
+    case 'diffusion': {
+      // Pin to the dedicated pollinations-image provider via the router's
+      // `providerName/modelId` model-prefix convention (services/router/src/
+      // router.service.ts). Generic text adapters reject the diffusion
+      // modality ("Unsupported modality: diffusion") without this pin. The
+      // convention is handled by the same router.service.ts pipeline the
+      // gateway's /v1/images/generations route runs, so it still works when
+      // sent as the wire `model` field.
+      //
+      // NOTE: this pin also means provider_preference/provider_blacklist/
+      // require_privacy have nothing to act on for diffusion — the model
+      // string already names a single provider directly, bypassing the
+      // pipeline's candidate scoring (and therefore applyProviderPreferences)
+      // the same way an explicit `model` always does elsewhere. This is a
+      // pre-existing constraint of the pollinations pin, not something this
+      // change introduces or can fix without dropping the pin.
+      const imageModel = (params.model as string) || 'flux';
+      let size = '1024x1024';
+      const width = params.width as number | undefined;
+      const height = params.height as number | undefined;
+      if (width && height && IMAGE_SIZES.has(`${width}x${height}`)) {
+        size = `${width}x${height}`;
+      }
+      const body = {
+        model: `pollinations-images/${imageModel}`,
+        prompt: params.prompt,
+        negative_prompt: params.negative_prompt,
+        n: params.n,
+        size,
+        style: params.style,
+        steps: params.steps,
+        seed: params.seed,
+        cfg_scale: params.cfg_scale,
+        user: params.user,
+      };
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/images/generations', body, qualityTarget, providerPreferences);
+      return {
+        modality: 'diffusion',
+        requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: imageModel,
+        images: Array.isArray(json?.data) ? json.data : [],
+        latencyMs,
+      };
+    }
+
+    case 'embedding': {
+      const body = {
+        model: (params.model as string) || 'auto',
+        input: params.input,
+        encoding_format: params.encoding_format,
+        dimensions: params.dimensions,
+        user: params.user,
+      };
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/embeddings', body, qualityTarget, providerPreferences);
+      const embeddings = Array.isArray(json?.data) ? json.data.map((d: { embedding: number[] }) => d.embedding) : [];
+      return {
+        modality: 'embedding',
+        requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: json?.model || (params.model as string) || 'auto',
+        embeddings,
+        usage: json?.usage,
+        latencyMs,
+      };
+    }
+
+    case 'audio_stt': {
+      const audio = params.audio as string;
+      const buffer = await resolveAudioBytes(audio);
+      const audioFormat = (params.audio_format as string) || 'wav';
+      const contentType = AUDIO_FORMAT_MIME[audioFormat] || 'application/octet-stream';
+      const { json, latencyMs, providerId } = await gatewayMultipartCall(
+        gatewayUrl,
+        '/v1/audio/transcriptions',
+        {
+          model: (params.model as string) || 'auto',
+          language: params.language as string | undefined,
+          response_format: 'json',
+        },
+        { buffer, filename: `audio.${audioFormat}`, contentType },
+        qualityTarget,
+        providerPreferences,
+      );
+      return {
+        modality: 'audio_stt',
+        requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        completion: json?.text || '',
+        latencyMs,
+      };
+    }
+
+    case 'audio_tts': {
+      const requestedFormat = (params.format as string) || 'mp3';
+      const responseFormat = SPEECH_RESPONSE_FORMATS.has(requestedFormat) ? requestedFormat : 'mp3';
+      const body = {
+        model: (params.model as string) || 'auto',
+        input: params.input,
+        voice: (params.voice as string) || 'alloy',
+        response_format: responseFormat,
+        speed: params.speed,
+      };
+      const { buffer, latencyMs, providerId } = await gatewayBinaryCall(gatewayUrl, '/v1/audio/speech', body, qualityTarget, providerPreferences);
+      return {
+        modality: 'audio_tts',
+        requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        audio: { b64_json: buffer.toString('base64'), format: responseFormat },
+        latencyMs,
+      };
+    }
+
+    case 'reranking': {
+      // NOTE: /v1/rerank is a hardcoded Cohere-or-local-fallback handler
+      // (apps/gateway/src/routes/rerank.routes.ts) that has never run
+      // through router.route()/the scoring pipeline — this predates the
+      // Router migration entirely (git log shows rerank.routes.ts unchanged
+      // since before ccb3026/b029981). provider_preference/provider_
+      // blacklist/local_first are sent below for forward-compatibility but
+      // currently have NO effect on this modality; that is a pre-existing
+      // gap, not something this fix introduces or resolves.
+      const body = {
+        model: params.model,
+        query: params.query,
+        documents: params.documents,
+        top_n: params.top_n,
+      };
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/rerank', body, qualityTarget, providerPreferences);
+      return {
+        modality: 'reranking',
+        requestId: json?.id || requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: json?.model || (params.model as string) || 'auto',
+        rerankResults: Array.isArray(json?.results) ? json.results : [],
+        latencyMs,
+      };
+    }
+
+    case 'video': {
+      const body = {
+        model: params.model,
+        prompt: params.prompt,
+        image: params.image,
+        duration: params.duration,
+        fps: params.fps,
+        aspect_ratio: params.aspect_ratio,
+      };
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/video/generations', body, qualityTarget, providerPreferences);
+      return {
+        modality: 'video',
+        requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        videos: Array.isArray(json?.data) ? json.data : [],
+        latencyMs,
+      };
+    }
+
+    case '3d': {
+      const body = {
+        model: params.model,
+        prompt: params.prompt,
+        image: params.image,
+        texture_resolution: params.texture_resolution,
+        seed: params.seed,
+      };
+      const { json, latencyMs, providerId } = await gatewayJsonCall(gatewayUrl, '/v1/3d/generate', body, qualityTarget, providerPreferences);
+      return {
+        modality: '3d',
+        requestId,
+        providerId: providerId || 'dmrx-gateway',
+        modelId: (params.model as string) || 'auto',
+        models3d: Array.isArray(json?.data) ? json.data : [],
+        latencyMs,
+      };
+    }
+
+    case 'music': {
+      // No public /v1/music/generations route exists on the gateway (see
+      // MODALITY_TO_PATH — that entry is only ever used as an internal
+      // classifyOptions.path hint, never dereferenced as a real URL). The
+      // only reachable path for music is the admin MCP-tool dispatcher
+      // (apps/gateway/src/routes/admin.routes.ts, POST
+      // /v1/admin/mcp/tools/execute), which maps MCP tool names 1:1 onto the
+      // gateway's own in-process router.route() call for `dmrx_generate_music`.
+      // That dispatcher needs the admin key (x-api-key), not a tenant bearer
+      // token, and its `result` is already the gateway's internal
+      // UnifiedResponse — returned close to verbatim below rather than
+      // re-synthesized from a wire format that doesn't exist for this
+      // modality.
+      return musicViaAdminDispatcher(gatewayUrl, params, qualityTarget, requestId, providerPreferences);
+    }
+
+    default:
+      throw new Error(`routeViaGateway: unsupported modality "${modality}"`);
+  }
+}
+
+async function musicViaAdminDispatcher(
+  gatewayUrl: string,
+  params: Record<string, unknown>,
+  qualityTarget: QualityTarget,
+  fallbackRequestId: string,
+  providerPreferences?: ProviderPreferences,
+): Promise<UnifiedResponse> {
+  const adminKey = process.env.DMRX_ADMIN_API_KEY;
+  const start = Date.now();
+  const res = await fetch(`${gatewayUrl}/v1/admin/mcp/tools/execute`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-quality-target': qualityTarget,
+      ...providerPreferencesHeader(providerPreferences),
+      ...(adminKey ? { 'x-api-key': adminKey } : {}),
+    },
+    body: JSON.stringify({
+      tool: 'dmrx_generate_music',
+      parameters: {
+        prompt: params.prompt,
+        model: params.model,
+        genre: params.genre,
+        duration_seconds: params.duration_seconds,
+        instruments: params.instruments,
+      },
+    }),
+    signal: AbortSignal.timeout(540_000),
+  });
+  const latencyMs = Date.now() - start;
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    // non-JSON body
+  }
+  if (!res.ok || json?.success === false) {
+    throw new GatewayRouteError(json?.error || gatewayErrorMessage(json, res.status), res.status);
+  }
+  const result = json?.result || {};
+  return {
+    modality: 'music',
+    requestId: result.requestId || fallbackRequestId,
+    providerId: result.providerId || 'dmrx-gateway',
+    modelId: result.modelId || (params.model as string) || 'auto',
+    audio: result.audio,
+    latencyMs: typeof result.latencyMs === 'number' ? result.latencyMs : latencyMs,
+  };
+}
 
 function buildAdapterRegistry(): AdapterRegistry {
   const registry = new AdapterRegistry();
@@ -475,157 +989,6 @@ function resolveWithinWorkspace(userPath: string | null | undefined): string {
   }
 
   return realPath;
-}
-
-function toUnifiedRequest(
-  modality: Modality,
-  params: Record<string, unknown>
-): UnifiedRequest {
-  const request: UnifiedRequest = {
-    modality,
-    stream: false,
-    metadata: {},
-  };
-
-  // Map common fields
-  if (params.model) request.model = params.model as string;
-  if (params.user) request.user = params.user as string;
-
-  if (params.provider_preference) {
-    request.metadata.providerPreferences = {
-      order: (params.provider_preference as string[]).map(resolveProviderSlug),
-      strategy: 'direct',
-    };
-  }
-  if (params.provider_blacklist) {
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      ignore: (params.provider_blacklist as string[]).map(resolveProviderSlug),
-    };
-  }
-  if (params.latency_target) {
-    const latencyMs = typeof params.latency_target === 'number'
-      ? params.latency_target as number
-      : parseInt((params.latency_target as string).replace(/[^0-9]/g, ''), 10);
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      preferredMaxLatencyMs: latencyMs,
-    };
-  }
-  if (params.cost_target) {
-    const costPerMillion = typeof params.cost_target === 'number'
-      ? (params.cost_target as number)
-      : parseFloat((params.cost_target as string).replace(/[^0-9.]/g, ''));
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      maxPricePerMillionTokens: costPerMillion * 1_000_000,
-    };
-  }
-  if (params.local_first) {
-    const localSlugs = ['ollama', 'local'];
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      order: [
-        ...(request.metadata.providerPreferences?.order || []),
-        ...localSlugs,
-      ],
-      strategy: 'direct',
-    };
-  }
-  if (params.require_privacy) {
-    request.metadata.providerPreferences = {
-      ...(request.metadata.providerPreferences || {}),
-      zdr: true,
-      only: [
-        ...(request.metadata.providerPreferences?.only || []),
-        ...(request.metadata.providerPreferences?.order || []),
-      ].filter((slug: string) => ['ollama', 'local', 'openai'].includes(slug)),
-      strategy: 'direct',
-    };
-  }
-  if (params.quality_target) {
-    request.metadata.qualityTarget = params.quality_target;
-  }
-
-  // Modality-specific mapping
-  switch (modality) {
-    case 'llm':
-      request.messages = params.messages as UnifiedRequest['messages'];
-      request.temperature = params.temperature as number | undefined;
-      request.max_tokens = params.max_tokens as number | undefined;
-      request.top_p = params.top_p as number | undefined;
-      request.frequency_penalty = params.frequency_penalty as number | undefined;
-      request.presence_penalty = params.presence_penalty as number | undefined;
-      request.stop = params.stop as string[] | undefined;
-      request.response_format = params.response_format as UnifiedRequest['response_format'];
-      request.seed = params.seed as number | null | undefined;
-      request.n = params.n as number | undefined;
-      request.tools = params.tools as UnifiedRequest['tools'];
-      request.tool_choice = params.tool_choice as UnifiedRequest['tool_choice'];
-      break;
-
-    case 'diffusion':
-      request.prompt = params.prompt as string;
-      request.negative_prompt = params.negative_prompt as string | undefined;
-      request.width = params.width as number | undefined;
-      request.height = params.height as number | undefined;
-      request.steps = params.steps as number | undefined;
-      request.diffusion_seed = params.seed as number | undefined;
-      request.style = params.style as string | undefined;
-      request.cfg_scale = params.cfg_scale as number | undefined;
-      request.n = params.n as number | undefined;
-      break;
-
-    case 'embedding':
-      request.input = params.input as string | string[];
-      request.dimensions = params.dimensions as number | undefined;
-      request.encoding_format = params.encoding_format as 'float' | 'base64' | undefined;
-      break;
-
-    case 'audio_stt':
-      request.audio = params.audio as string;
-      request.audio_format = params.audio_format as UnifiedRequest['audio_format'];
-      request.language = params.language as string | undefined;
-      break;
-
-    case 'audio_tts':
-      request.prompt = params.input as string;
-      request.voice = params.voice as string | undefined;
-      request.speed = params.speed as number | undefined;
-      request.format = params.format as string | undefined;
-      request.language = params.language as string | undefined;
-      break;
-
-    case 'reranking':
-      request.query = params.query as string;
-      request.documents = params.documents as string[];
-      request.top_n = params.top_n as number | undefined;
-      break;
-
-    case 'video':
-      request.prompt = params.prompt as string;
-      request.image = params.image as string | undefined;
-      request.duration = params.duration as number | undefined;
-      request.fps = params.fps as number | undefined;
-      request.aspect_ratio = params.aspect_ratio as string | undefined;
-      break;
-
-    case 'music':
-      request.prompt = params.prompt as string;
-      request.genre = params.genre as string | undefined;
-      request.duration_seconds = params.duration_seconds as number | undefined;
-      request.instruments = params.instruments as string[] | undefined;
-      break;
-
-    case '3d':
-      request.prompt = params.prompt as string | undefined;
-      request.image = params.image as string | undefined;
-      request.texture_resolution = params.texture_resolution as number | undefined;
-      request.diffusion_seed = params.seed as number | undefined;
-      break;
-  }
-
-  return request;
 }
 
 function formatChatResponse(response: UnifiedResponse): string {
@@ -1424,9 +1787,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     adaptersInitialized = true;
   };
 
-  // Create router
-  const router = new Router(config.router);
-
   // Initialize search engine for tool discovery
   const searchEngine = new HybridSearchEngine(config.toolSearch);
 
@@ -1438,7 +1798,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
   // Server state
   const state: ServerState = {
-    router,
     adapterRegistry,
     candidates: config.candidates || [],
     startTime: Date.now(),
@@ -1471,41 +1830,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // array here, which silently fell 21 tools behind the real registrations —
   // hiding every filesystem, shell, template, preset and subagent tool from
   // `/tools`, the A2A agent card, `dmrx_tool_list` and `dmrx_tool_search`.
-
-  // Wire up adapter executor for fallback
-  router.setAdapterExecutor({
-    async execute(providerId: string, modelId: string, request: UnifiedRequest) {
-      // Resolve the provider UUID to its registered adapter. The router's
-      // candidates carry provider UUIDs, but adapters are registered by their
-      // adapter_type / catalog id (e.g. "cohere"). Mirror the gateway's
-      // getAdapter: try the raw id, then fall back to providers.name.
-      let adapter = adapterRegistry.get(providerId);
-      if (!adapter) {
-        try {
-          const db = getDb();
-          const row = db.prepare('SELECT name FROM providers WHERE id = ?').get(providerId) as
-            | { name: string }
-            | undefined;
-          if (row) adapter = adapterRegistry.get(row.name);
-        } catch {
-          /* DB lookup best-effort */
-        }
-      }
-      if (!adapter) {
-        throw new Error(`Adapter not found: ${providerId}`);
-      }
-      // Override model if a specific one was selected by the router
-      if (modelId) {
-        request.model = modelId;
-      }
-      return adapter.execute(request);
-    },
-  });
-
-  // Load candidates if provided
-  if (config.candidates?.length) {
-    router.setCandidates(config.candidates);
-  }
 
   // Create MCP server
   const server = new McpServer({
@@ -1582,59 +1906,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT, requestId }, 'routing');
 
-        // Reuse the gateway for routing when configured. This makes the MCP
-        // server a thin proxy to DMR-X's already-healthy candidate pool instead
-        // of maintaining its own isolated DB (which may lack provider_keys and
-        // therefore report "All providers currently unavailable"). Single source
-        // of truth for provider health + routing.
-        const gwUrl = config.gatewayUrl || process.env.DMRX_GATEWAY_URL;
-        if (gwUrl) {
-          try {
-            const gwKey = resolveGatewayKey();
-            const gwRes = await fetch(`${gwUrl}/v1/chat/completions`, {
-              method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                ...(gwKey ? { authorization: `Bearer ${gwKey}` } : {}),
-              },
-              body: JSON.stringify({
-                model: (params.model as string) || 'auto',
-                messages: params.messages,
-                max_tokens: params.max_tokens,
-                temperature: params.temperature,
-                top_p: params.top_p,
-                stream: false,
-              }),
-            });
-            const gwData: any = await gwRes.json().catch(() => ({}));
-            if (!gwRes.ok) {
-              return toolError(
-                gwData?.error?.message || `Gateway returned ${gwRes.status}`,
-                'GATEWAY_ERROR',
-                requestId,
-              );
-            }
-            const text =
-              typeof gwData?.choices?.[0]?.message?.content === 'string'
-                ? gwData.choices[0].message.content
-                : JSON.stringify(gwData);
-            return {
-              content: [{ type: 'text' as const, text }],
-              structuredContent: gwData,
-            };
-          } catch (gwErr) {
-            // Gateway unreachable — fall through to in-process routing.
-            mcpLog(server, 'warning', { tool: TOOL_NAMES.CHAT, requestId, err: String(gwErr) }, 'gateway-proxy');
-          }
-        }
-
-        const request = toUnifiedRequest('llm', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['llm'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        // Routed entirely through the gateway (single source of truth for
+        // provider health, rate-limit quota, and the diversity cap) — see
+        // routeViaGateway() for the wire-format mapping.
+        const response = await routeViaGateway(gatewayUrl, 'llm', params as unknown as Record<string, unknown>);
         const formatted = formatChatResponse(response);
 
         // Apply guardrails to response
@@ -1722,21 +1997,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE }, 'routing');
 
-        const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
-        // Pin diffusion to the dedicated pollinations-image provider. The router
-        // honors a `providerName/modelId` model prefix (scopes candidates to that
-        // provider), and the generic 'pollinations' text adapter rejects the
-        // diffusion modality — so without this pin it throws
-        // "Unsupported modality: diffusion". The PollinationsImageAdapter
-        // (providerName 'pollinations-images') handles diffusion + returns a URL.
-        const imageModel = (params.model as string) || 'flux';
-        request.model = `pollinations-images/${imageModel}`;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['diffusion'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'diffusion', params as unknown as Record<string, unknown>);
         const formatted = formatImageResponse(response);
 
         mcpLog(server, 'info', {
@@ -1790,13 +2051,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.EMBED }, 'routing');
 
-        const request = toUnifiedRequest('embedding', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['embedding'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'embedding', params as unknown as Record<string, unknown>);
         const formatted = formatEmbeddingResponse(response);
 
         mcpLog(server, 'info', {
@@ -1850,13 +2105,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.TRANSCRIBE }, 'routing');
 
-        const request = toUnifiedRequest('audio_stt', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['audio_stt'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'audio_stt', params as unknown as Record<string, unknown>);
         const formatted = formatTranscribeResponse(response);
 
         mcpLog(server, 'info', {
@@ -1910,13 +2159,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.SPEAK }, 'routing');
 
-        const request = toUnifiedRequest('audio_tts', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['audio_tts'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'audio_tts', params as unknown as Record<string, unknown>);
         const formatted = formatSpeakResponse(response);
 
         mcpLog(server, 'info', {
@@ -1970,13 +2213,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.RERANK }, 'routing');
 
-        const request = toUnifiedRequest('reranking', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['reranking'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'reranking', params as unknown as Record<string, unknown>);
         const formatted = formatRerankResponse(response);
 
         mcpLog(server, 'info', {
@@ -2040,13 +2277,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_VIDEO }, 'routing');
 
-        const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['video'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'video', params as unknown as Record<string, unknown>);
         const formatted = formatVideoResponse(response);
 
         mcpLog(server, 'info', {
@@ -2100,34 +2331,13 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_VIDEO_STREAM }, 'routing');
 
-        const request = toUnifiedRequest('video', params as unknown as Record<string, unknown>);
-        request.stream = true;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['video'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
-        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
-        if (!adapter || !adapter.executeStream) {
-          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
-        }
-
-        const stream = adapter.executeStream(request);
-        const updates: string[] = [];
-        for await (const chunk of stream) {
-          updates.push(JSON.stringify(chunk));
-        }
-
-        const response: UnifiedResponse = {
-          modality: 'video',
-          requestId: crypto.randomUUID(),
-          providerId: plan.primary.providerId,
-          modelId: plan.primary.modelId,
-          videos: [],
-          latencyMs: 0,
-        };
-
+        // This tool never actually streamed to the MCP client — it collected
+        // the whole adapter stream in-process and returned it as one blob,
+        // while ALSO discarding the collected video data (`videos: []`
+        // below, unconditionally). Repointed to the non-streaming gateway
+        // route: same collected-result behavior for the caller, but now with
+        // the real payload instead of an empty array.
+        const response = await routeViaGateway(gatewayUrl, 'video', params as unknown as Record<string, unknown>);
         const formatted = formatVideoResponse(response);
 
         mcpLog(server, 'info', {
@@ -2139,7 +2349,10 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ updates, final: JSON.parse(formatted) }, null, 2),
+            // `updates` kept for output-shape compatibility with prior
+            // callers; always empty now since there is no incremental
+            // streaming through the gateway's non-streaming route.
+            text: JSON.stringify({ updates: [], final: JSON.parse(formatted) }, null, 2),
           }],
         };
       } catch (error) {
@@ -2174,13 +2387,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_MUSIC }, 'routing');
 
-        const request = toUnifiedRequest('music', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['music'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, 'music', params as unknown as Record<string, unknown>);
         const formatted = formatMusicResponse(response);
 
         mcpLog(server, 'info', {
@@ -2234,13 +2441,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_3D }, 'routing');
 
-        const request = toUnifiedRequest('3d', params as unknown as Record<string, unknown>);
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['3d'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { response } = await router.route(request, classifyOptions);
+        const response = await routeViaGateway(gatewayUrl, '3d', params as unknown as Record<string, unknown>);
         const formatted = format3DResponse(response);
 
         mcpLog(server, 'info', {
@@ -2425,10 +2626,14 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           lastError: state.lastError,
           router: {
             candidateCount: state.candidates.length,
+            // Routing now happens entirely on the gateway (see routeViaGateway()
+            // / GatewayRouteError) — this reports the RouterConfig this MCP
+            // server was constructed with, not a live local Router instance,
+            // since none exists anymore.
             config: {
-              epsilon: state.router['config']?.epsilon ?? 0.05,
-              defaultQualityTarget: state.router['config']?.defaultQualityTarget ?? 'balanced',
-              enableDecomposition: state.router['config']?.enableDecomposition ?? false,
+              epsilon: config.router?.epsilon ?? 0.05,
+              defaultQualityTarget: config.router?.defaultQualityTarget ?? 'balanced',
+              enableDecomposition: config.router?.enableDecomposition ?? false,
             },
           },
         };
@@ -2539,7 +2744,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
         for (const call of calls) {
           try {
-            const output = await executeDMRXTool(state.router, state.adapterRegistry, call.tool, call.parameters || {});
+            const output = await executeDMRXTool(gatewayUrl, call.tool, call.parameters || {});
             results.push({ tool: call.tool, success: true, output });
           } catch (err) {
             const message = err instanceof Error ? err.message : 'Unknown error';
@@ -2877,45 +3082,18 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.CHAT_STREAM }, 'routing');
 
-        const request = toUnifiedRequest('llm', params as unknown as Record<string, unknown>);
-        request.stream = true;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['llm'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
-        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
-        if (!adapter || !adapter.executeStream) {
-          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
-        }
-
-        const stream = adapter.executeStream(request);
-        const chunks: string[] = [];
-        for await (const chunk of stream) {
-          if (chunk.type === 'token') {
-            const tokenChunk = chunk as { data: { content?: string } };
-            chunks.push(tokenChunk.data?.content || '');
-          }
-        }
-
-        const fullText = chunks.join('');
-        const response: UnifiedResponse = {
-          modality: 'llm',
-          requestId: crypto.randomUUID(),
-          providerId: plan.primary.providerId,
-          modelId: plan.primary.modelId,
-          message: { role: 'assistant', content: fullText },
-          latencyMs: 0,
-        };
-
+        // This tool never actually streamed to the MCP client — it drained
+        // the whole adapter stream in-process and joined the chunks into one
+        // string before returning. Repointed to the non-streaming gateway
+        // route: behavior-identical from the caller's perspective (one
+        // collected string either way), now sourced from the gateway.
+        const response = await routeViaGateway(gatewayUrl, 'llm', params as unknown as Record<string, unknown>);
         const formatted = formatChatResponse(response);
 
         mcpLog(server, 'info', {
           tool: TOOL_NAMES.CHAT_STREAM,
           provider: response.providerId,
           model: response.modelId,
-          chunkCount: chunks.length,
         }, 'routing');
 
         return {
@@ -2956,47 +3134,28 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         mcpLog(server, 'debug', { tool: TOOL_NAMES.GENERATE_IMAGE_STREAM }, 'routing');
 
-        const request = toUnifiedRequest('diffusion', params as unknown as Record<string, unknown>);
-        request.stream = true;
-        const classifyOptions: ClassifyOptions = {
-          path: MODALITY_TO_PATH['diffusion'],
-          qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-        };
-
-        const { plan } = await router.route(request, { ...classifyOptions, planOnly: true });
-        const adapter = state.adapterRegistry.get(plan.primary.adapterType);
-        if (!adapter || !adapter.executeStream) {
-          throw new Error(`Streaming not supported by adapter: ${plan.primary.adapterType}`);
-        }
-
-        const stream = adapter.executeStream(request);
-        const updates: string[] = [];
-        for await (const chunk of stream) {
-          updates.push(JSON.stringify(chunk));
-        }
-
-        const response: UnifiedResponse = {
-          modality: 'diffusion',
-          requestId: crypto.randomUUID(),
-          providerId: plan.primary.providerId,
-          modelId: plan.primary.modelId,
-          images: [],
-          latencyMs: 0,
-        };
-
+        // This tool never actually streamed to the MCP client — it collected
+        // the whole adapter stream in-process and returned it as one blob,
+        // while ALSO discarding the collected image data (`images: []`
+        // below, unconditionally). Repointed to the non-streaming gateway
+        // route: same collected-result behavior for the caller, but now with
+        // the real payload instead of an empty array.
+        const response = await routeViaGateway(gatewayUrl, 'diffusion', params as unknown as Record<string, unknown>);
         const formatted = formatImageResponse(response);
 
         mcpLog(server, 'info', {
           tool: TOOL_NAMES.GENERATE_IMAGE_STREAM,
           provider: response.providerId,
           model: response.modelId,
-          updateCount: updates.length,
         }, 'routing');
 
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ updates, final: JSON.parse(formatted) }, null, 2),
+            // `updates` kept for output-shape compatibility with prior
+            // callers; always empty now since there is no incremental
+            // streaming through the gateway's non-streaming route.
+            text: JSON.stringify({ updates: [], final: JSON.parse(formatted) }, null, 2),
           }],
         };
       } catch (error) {
@@ -3062,7 +3221,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
               stepTool: step.tool,
             }, 'routing');
 
-            const output = await executeDMRXTool(state.router, state.adapterRegistry, step.tool, stepParams);
+            const output = await executeDMRXTool(gatewayUrl, step.tool, stepParams);
             results.push({ step_id: step.id, tool: step.tool, success: true, output });
             stepOutputs[step.id] = output;
           } catch (err) {
@@ -4132,7 +4291,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             }
 
             // Execute the tool
-            const output = await executeDMRXTool(state.router, state.adapterRegistry, step.tool_name, stepParams);
+            const output = await executeDMRXTool(gatewayUrl, step.tool_name, stepParams);
             results.push({ step_id: step.id, tool: step.tool_name, success: true, output });
             stepOutputs[step.id] = output;
           } catch (err) {
@@ -4526,7 +4685,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         const items: any[] = json.items ?? [];
         const result = {
           total: json.total ?? items.length,
-          skills: items.map((s: any) => ({ id: s.id ?? s.name, name: s.name })),
+          skills: items.map((s: any) => ({
+            id: s.id ?? s.name,
+            name: s.name,
+            description: s.description ?? null,
+            tags: s.tags ?? [],
+          })),
         };
 
         return {
@@ -4536,6 +4700,489 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return toolError(message, 'LIST_SKILLS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_submit_job
+  //
+  // Submits a job to DMR-X via the gateway (POST /v1/jobs). A job is a whole
+  // outcome delegated to DMR-X and runs asynchronously, so this returns as
+  // soon as the job is accepted, NOT when the work is done.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.SUBMIT_JOB,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.SUBMIT_JOB],
+      inputSchema: {
+        brief: z.string().min(1).max(20000).describe('The job brief, describing the outcome to deliver'),
+        acceptanceCriteria: z.array(z.string()).optional().describe('Optional acceptance criteria for the job'),
+        budgetUsd: z.number().optional().describe('Optional USD budget cap for the job'),
+        budgetTokens: z.number().int().optional().describe('Optional token budget cap for the job'),
+        maxDepth: z.number().int().min(1).max(10).optional().describe('Optional maximum task decomposition depth (1-10)'),
+      } as any,
+      annotations: { title: 'Submit Job', readOnlyHint: false, openWorldHint: true },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxPost('/v1/jobs', {
+          brief: params.brief,
+          ...(params.acceptanceCriteria ? { acceptanceCriteria: params.acceptanceCriteria } : {}),
+          ...(params.budgetUsd != null ? { budgetUsd: params.budgetUsd } : {}),
+          ...(params.budgetTokens != null ? { budgetTokens: params.budgetTokens } : {}),
+          ...(params.maxDepth != null ? { maxDepth: params.maxDepth } : {}),
+          source: 'mcp',
+        });
+
+        if (!res.ok) {
+          return toolError(
+            'Gateway job submission failed',
+            'GATEWAY_JOB_SUBMIT_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const result = {
+          jobId: json.jobId ?? json.id ?? null,
+          status: json.status ?? null,
+          brief: json.brief ?? params.brief,
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'SUBMIT_JOB_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_job_status
+  //
+  // Fetches the current status of a submitted DMR-X job (GET /v1/jobs/:id).
+  // Jobs run asynchronously — poll this until the job reaches a terminal
+  // status instead of expecting dmrx_submit_job to return results.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.JOB_STATUS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.JOB_STATUS],
+      inputSchema: {
+        jobId: z.string().describe('The id of the job to check'),
+      } as any,
+      annotations: { title: 'Job Status', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxGet(`/v1/jobs/${encodeURIComponent(String(params.jobId))}`);
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job status fetch failed',
+            'GATEWAY_JOB_GET_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        // Include only fields the gateway actually returned; never invent values.
+        const result: Record<string, unknown> = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          status: json.status ?? null,
+        };
+        for (const key of ['brief', 'spentUsd', 'spentTokens', 'budgetUsd', 'budgetTokens', 'createdAt', 'updatedAt'] as const) {
+          if (json[key] !== undefined) result[key] = json[key];
+        }
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'JOB_STATUS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_job_tasks
+  //
+  // Lists the tasks a submitted DMR-X job was decomposed into
+  // (GET /v1/jobs/:id/tasks) so a caller can track async progress.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.JOB_TASKS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.JOB_TASKS],
+      inputSchema: {
+        jobId: z.string().describe('The id of the job whose tasks to list'),
+      } as any,
+      annotations: { title: 'Job Tasks', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxGet(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/tasks`);
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job tasks fetch failed',
+            'GATEWAY_JOB_TASKS_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const tasks: any[] = json.tasks ?? [];
+        const result = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          total: json.total ?? tasks.length,
+          tasks: tasks.map((t: any) => ({
+            id: t.id ?? null,
+            seq: t.seq ?? null,
+            title: t.title ?? null,
+            status: t.status ?? null,
+            dependsOn: t.dependsOn ?? null,
+            assignedInstanceId: t.assignedInstanceId ?? null,
+          })),
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'JOB_TASKS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_cancel_job
+  //
+  // Cancels an in-flight DMR-X job (POST /v1/jobs/:id/cancel).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.CANCEL_JOB,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.CANCEL_JOB],
+      inputSchema: {
+        jobId: z.string().describe('The id of the job to cancel'),
+      } as any,
+      annotations: { title: 'Cancel Job', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/cancel`, {});
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job cancel failed',
+            'GATEWAY_JOB_CANCEL_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const result = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          status: json.status ?? null,
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'CANCEL_JOB_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_get_skill
+  //
+  // Fetches a single skill (with full content) from the gateway
+  // (GET /v1/skills/:id).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.GET_SKILL,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.GET_SKILL],
+      inputSchema: {
+        id: z.string().describe('The skill id to fetch'),
+      } as any,
+      annotations: { title: 'Get Skill', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxGet(`/v1/skills/${encodeURIComponent(String(params.id))}`);
+        if (res.status === 404) {
+          return toolError('Skill not found', 'SKILL_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway skill fetch failed',
+            'GATEWAY_GET_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const result = res.json ?? {};
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'GET_SKILL_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_list_agents
+  //
+  // Lists deployed agent instances for this tenant, joined to their
+  // definition's display fields (GET /v1/agents/instances). One gateway
+  // call — the endpoint already joins in name/description/category.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.LIST_AGENTS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.LIST_AGENTS],
+      inputSchema: {
+        status: z.enum(['active', 'paused']).optional().describe('Optional status filter'),
+      } as any,
+      annotations: { title: 'List Agents', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const query = new URLSearchParams();
+        if (params.status) query.set('status', String(params.status));
+        const qs = query.toString();
+
+        const res = await dmrxGet(`/v1/agents/instances${qs ? `?${qs}` : ''}`);
+        if (!res.ok) {
+          return toolError(
+            'Gateway agent instance list failed',
+            'GATEWAY_LIST_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const items: any[] = json.items ?? [];
+        const result = {
+          total: json.total ?? items.length,
+          agents: items.map((i: any) => ({
+            instanceId: i.id,
+            status: i.status,
+            name: i.definitionName ?? i.definitionHumanName ?? null,
+            description: i.definitionDescription ?? null,
+            category: i.definitionCategory ?? null,
+          })),
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'LIST_AGENTS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_run_agent
+  //
+  // Sends a message to a specific, already-known agent instance
+  // (POST /v1/agents/:instanceId/chat). Non-streaming.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.RUN_AGENT,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.RUN_AGENT],
+      inputSchema: {
+        instanceId: z.string().describe('The agent instance id to talk to'),
+        message: z.string().describe('The user message to send'),
+        conversationId: z.string().optional().describe('Optional conversation id to continue an existing thread'),
+        maxSteps: z.number().optional().describe('Optional max agentic tool-calling steps'),
+        maxTokens: z.number().optional().describe('Optional max tokens for the response'),
+      } as any,
+      annotations: { title: 'Run Agent', readOnlyHint: false, openWorldHint: true },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const res = await dmrxPost(
+          `/v1/agents/${encodeURIComponent(String(params.instanceId))}/chat`,
+          {
+            messages: [{ role: 'user', content: params.message }],
+            stream: false,
+            ...(params.conversationId ? { conversationId: params.conversationId } : {}),
+            ...(params.maxSteps != null ? { maxSteps: params.maxSteps } : {}),
+            ...(params.maxTokens != null ? { maxTokens: params.maxTokens } : {}),
+          }
+        );
+        if (res.status === 404) {
+          return toolError('Agent instance not found or inactive', 'AGENT_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway agent chat failed',
+            'GATEWAY_CHAT_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const json = res.json ?? {};
+        const result = {
+          content: json.content ?? '',
+          conversationId: json.conversationId,
+          agentName: json.agentName,
+          model: json.model,
+          usage: json.usage,
+        };
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'RUN_AGENT_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_dispatch_task
+  //
+  // Lets DMR-X pick the best-matching active agent instance for a task
+  // (POST /v1/agentic/dispatch), optionally running it in the same call.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.DISPATCH_TASK,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.DISPATCH_TASK],
+      inputSchema: {
+        task: z.string().describe('The task to dispatch, in natural language'),
+        category: z.string().optional().describe('Optional category hint to bias selection'),
+        tags: z.array(z.string()).optional().describe('Optional tags hint to bias selection'),
+        run: z.boolean().optional().default(true).describe('Whether to execute the selected agent (default true); false returns only the selection'),
+        maxTokens: z.number().optional().describe('Optional max tokens for the response when run=true'),
+      } as any,
+      annotations: { title: 'Dispatch Task', readOnlyHint: false, openWorldHint: true },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+
+      try {
+        const run = params.run ?? true;
+        const res = await dmrxPost('/v1/agentic/dispatch', {
+          task: params.task,
+          ...(params.category ? { category: params.category } : {}),
+          ...(params.tags ? { tags: params.tags } : {}),
+          run,
+          stream: false,
+          ...(params.maxTokens != null ? { maxTokens: params.maxTokens } : {}),
+        });
+
+        if (res.status === 404) {
+          return toolError(
+            'No active agents available to dispatch to. Deploy an agent instance before using dmrx_dispatch_task.',
+            'NO_AGENTS_AVAILABLE',
+            requestId,
+            JSON.stringify({ error: res.json })
+          );
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway dispatch failed',
+            'GATEWAY_DISPATCH_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+
+        const result = res.json ?? {};
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'DISPATCH_TASK_ERROR', requestId);
       }
     }
   );
@@ -4617,61 +5264,44 @@ function setNestedValue(obj: Record<string, unknown>, path: string, value: unkno
 }
 
 async function executeDMRXTool(
-  router: Router,
-  _adapterRegistry: AdapterRegistry,
+  gatewayUrl: string,
   toolName: string,
   params: Record<string, unknown>
 ): Promise<unknown> {
-  let modality: Modality = 'llm';
-  let path = '/v1/chat/completions';
+  let modality: Modality;
   switch (toolName) {
     case TOOL_NAMES.CHAT:
       modality = 'llm';
-      path = '/v1/chat/completions';
       break;
     case TOOL_NAMES.GENERATE_IMAGE:
       modality = 'diffusion';
-      path = '/v1/images/generations';
       break;
     case TOOL_NAMES.EMBED:
       modality = 'embedding';
-      path = '/v1/embeddings';
       break;
     case TOOL_NAMES.TRANSCRIBE:
       modality = 'audio_stt';
-      path = '/v1/audio/transcriptions';
       break;
     case TOOL_NAMES.SPEAK:
       modality = 'audio_tts';
-      path = '/v1/audio/speech';
       break;
     case TOOL_NAMES.RERANK:
       modality = 'reranking';
-      path = '/v1/rerank';
       break;
     case TOOL_NAMES.GENERATE_VIDEO:
       modality = 'video';
-      path = '/v1/video/generations';
       break;
     case TOOL_NAMES.GENERATE_MUSIC:
       modality = 'music';
-      path = '/v1/music/generations';
       break;
     case TOOL_NAMES.GENERATE_3D:
       modality = '3d';
-      path = '/v1/3d/generate';
       break;
     default:
       throw new Error(`Unsupported tool in batch: ${toolName}`);
   }
 
-  const request = toUnifiedRequest(modality, params);
-  const classifyOptions: ClassifyOptions = {
-    path,
-    qualityTarget: (params.quality_target as QualityTarget) || 'balanced',
-  };
-
-  const { response } = await router.route(request, classifyOptions);
+  const response = await routeViaGateway(gatewayUrl, modality, params);
 
   switch (modality) {
     case 'llm':

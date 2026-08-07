@@ -8,13 +8,12 @@ import { DataState } from '@/components/primitives/DataState';
 import { Progress } from '@/components/primitives/Progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { StatTile } from '@/components/primitives/StatTile';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { formatNumber, formatCompactCurrency, formatTokens } from '@/lib/formatters';
-import type { ApiTenant, ApiQuotaState } from '@/types/api';
+import { useQuota, useTenants } from '@/lib/queries/tenants';
+import type { ApiQuotaState } from '@/types/api';
 
 export function QuotaPage() {
-  const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 15000 });
+  const tenants = useTenants({ refetchInterval: 15000 });
   const [selectedTenant, setSelectedTenant] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -23,11 +22,7 @@ export function QuotaPage() {
     }
   }, [tenants.data, selectedTenant]);
 
-  const quota = useApiData<ApiQuotaState[]>(
-    () => Admin.getQuota(selectedTenant!),
-    [selectedTenant],
-    { enabled: !!selectedTenant, refetchInterval: 8000 }
-  );
+  const quota = useQuota(selectedTenant, { refetchInterval: 8000 });
 
   return (
     <PageContainer>

@@ -1,5 +1,6 @@
 import { agentRegistryService, type AgentDefinition, type AgentInstance } from '@dmr-x/agent-registry';
 import { billingService } from '@dmr-x/billing';
+import { normalizeAllowedTools } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { agentMemoryManager } from '@dmr-x/memory';
 import { logger } from '@dmr-x/utils';
@@ -167,8 +168,9 @@ export class AgentRuntimeService {
     }
 
     // 5. Tool constraints
-    if (definition.allowedTools.length > 0) {
-      parts.push(`You have access to these tools: ${definition.allowedTools.join(', ')}. Only use the tools listed here.`);
+    const toolNames = normalizeAllowedTools(definition.allowedTools);
+    if (toolNames.length > 0) {
+      parts.push(`You have access to these tools: ${toolNames.join(', ')}. Only use the tools listed here.`);
     } else {
       parts.push('You do not have access to any tools. Respond based on your knowledge alone.');
     }

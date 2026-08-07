@@ -2,10 +2,8 @@ import { Send, Square } from 'lucide-react';
 import * as React from 'react';
 
 import { Button, Textarea } from '@/components/primitives';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { fetchAuthenticated } from '@/lib/api';
-import type { ApiModel } from '@/types/api';
+import { useModels } from '@/lib/queries/models';
 
 export function CompletionsView() {
   const [text, setText] = React.useState('');
@@ -14,11 +12,7 @@ export function CompletionsView() {
   const abortRef = React.useRef<AbortController | null>(null);
   const taRef = React.useRef<HTMLTextAreaElement>(null);
 
-  const models = useApiData<ApiModel[]>(
-    () => Admin.listModels({ available_only: 'true' }) as Promise<ApiModel[]>,
-    [],
-    { refetchInterval: 30000 },
-  );
+  const models = useModels({ available_only: 'true' }, { refetchInterval: 30000 });
 
   const llmModels = React.useMemo(
     () => (models.data ?? []).filter((m) => m.modality === 'llm'),

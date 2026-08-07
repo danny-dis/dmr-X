@@ -5,12 +5,10 @@ import { useLocation } from 'react-router';
 import { Button } from '@/components/primitives/Button';
 import { Kbd } from '@/components/primitives/Kbd';
 import { findNavItem } from '@/constants/nav';
-import { useApiData } from '@/hooks/useApiData';
 import { HealthDot } from '@/icons/Status';
-import { Admin } from '@/lib/admin';
+import { useHealth } from '@/lib/queries/dashboard';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/store/useUIStore';
-import type { ApiHealthResponse } from '@/types/api';
 
 export function Topbar() {
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
@@ -21,11 +19,7 @@ export function Topbar() {
   const setMobileMenuOpen = useUIStore((s) => s.setMobileMenuOpen);
   const location = useLocation();
   const page = findNavItem(location.pathname);
-  const { data: health, isError: healthError } = useApiData<ApiHealthResponse>(
-    () => Admin.health(),
-    [],
-    { refetchInterval: 10_000 }
-  );
+  const { data: health, isError: healthError } = useHealth();
 
   // Track browser online/offline status
   const [isOnline, setIsOnline] = React.useState(navigator.onLine);

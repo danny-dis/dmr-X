@@ -177,10 +177,17 @@ export function DashboardPage() {
     p99: p.latencyP99 ?? 0,
   }));
 
-  const modalityData = (providers.data ?? []).reduce<Record<string, number>>((acc, p) => {
-    p.capabilities?.forEach((c) => {
-      acc[c] = (acc[c] ?? 0) + 1;
-    });
+  // `ApiProvider` has never carried a `capabilities` array (providers don't
+  // declare capabilities — models do, via `model_profiles.modality`), so this
+  // used to reduce over `undefined` on every provider and always produce an
+  // empty object — the panel below permanently rendered "No capabilities
+  // detected" no matter how many providers or models existed. `models` (the
+  // same `available_only=true` list the "Available Models" tile already
+  // fetches) carries a real `modality` per row, which is also exactly what
+  // `MODALITY_TONE` above keys off of.
+  const modalityData = (models.data ?? []).reduce<Record<string, number>>((acc, m) => {
+    const modality = m.modality ?? 'unknown';
+    acc[modality] = (acc[modality] ?? 0) + 1;
     return acc;
   }, {});
 
@@ -197,7 +204,7 @@ export function DashboardPage() {
   // a beat before the real one ever gets a chance to load.
   const usageSeriesData = usage.isLoading ? undefined : usageSeries;
   const latencyChartData = usage.isLoading ? undefined : latencyData;
-  const modalityPieData = providers.isLoading ? undefined : modalityPie;
+  const modalityPieData = models.isLoading ? undefined : modalityPie;
 
   // Onboarding: a state-aware getting-started checklist, not a one-shot
   // dismissible banner. Three signals, each cheaply available from data the
@@ -427,7 +434,7 @@ export function DashboardPage() {
                 value={formatDuration(s.avgLatencyMs ?? 0)}
                 icon={<Clock className="size-3.5" />}
                 tone="primary"
-                delta={s.latencyDelta ?? 0}
+                delta={s.latencyDelta ?? undefined}
                 deltaLabel="vs yesterday"
                 deltaTrend="down-good"
                 sparkline={latencyData.map((p) => p.p95)}
@@ -561,14 +568,14 @@ export function DashboardPage() {
         <Card padding="md">
           <CardHeader className="px-0 pt-0">
             <CardTitle>Capabilities</CardTitle>
-            <p className="text-[10px] text-fg-muted">By provider capability</p>
+            <p className="text-[10px] text-fg-muted">By model modality</p>
           </CardHeader>
           <CardContent className="px-0 pb-0">
             <DataState
               data={modalityPieData}
-              isLoading={providers.isLoading}
-              error={providers.error}
-              onRetry={() => void providers.refetch()}
+              isLoading={models.isLoading}
+              error={models.error}
+              onRetry={() => void models.refetch()}
               loading={
                 <div className="h-[140px] flex items-center justify-center">
                   <Skeleton className="size-32 rounded-full" />

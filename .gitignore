@@ -24,6 +24,9 @@ coverage/
 **/src/**/*.js
 **/src/**/*.d.ts
 **/src/**/*.js.map
+# The UI's Vite environment types are a checked-in source file, not stale
+# emit — un-ignore so a fresh clone can typecheck (B4).
+!apps/ui/src/vite-env.d.ts
 
 # ─── Legitimate JS config files (not compiled from .ts) ────────────────────
 !apps/ui/postcss.config.js
@@ -101,10 +104,12 @@ check-db-state.ts
 sync-pollinations.ts
 debug-*.md
 
-# ─── Python (not used in this repo, but defensive) ─────────────────────────
+# ─── Python (sdks/python, plus root-level test scripts) ────────────────────
 __pycache__/
 *.pyc
 *.egg-info/
+.ruff_cache/
+.pytest_cache/
 # needle-router venv + model checkpoints (large, regenerated locally)
 services/needle-router/.venv/
 services/needle-router/checkpoints/

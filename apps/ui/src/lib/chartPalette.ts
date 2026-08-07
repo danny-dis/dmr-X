@@ -52,10 +52,10 @@ const FALLBACKS: Record<ChartTone, string> = {
 
 export function chartColor(tone: ChartTone): string {
   if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') {
-    return FALLBACKS[tone];
+    return FALLBACKS[tone] ?? FALLBACKS.muted;
   }
   const value = getComputedStyle(document.documentElement).getPropertyValue(TOKENS[tone]).trim();
-  return value || FALLBACKS[tone];
+  return value || (FALLBACKS[tone] ?? FALLBACKS.muted);
 }
 
 /**
@@ -75,5 +75,6 @@ export const CATEGORICAL: ChartTone[] = [
 ];
 
 export function categoricalColor(index: number): string {
-  return chartColor(CATEGORICAL[index % CATEGORICAL.length]);
+  const len = CATEGORICAL.length;
+  return chartColor(CATEGORICAL[((index % len) + len) % len]);
 }

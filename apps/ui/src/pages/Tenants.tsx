@@ -28,10 +28,9 @@ import { StatusPill } from '@/components/primitives/StatusPill';
 import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { formatCurrency, formatNumber, timeAgo } from '@/lib/formatters';
-import type { ApiTenant, ApiKey } from '@/types/api';
+import { useApiKeysForTenant, useDeleteTenant, useRevokeApiKey, useTenants, useUpdateTenant } from '@/lib/queries/tenants';
+import type { ApiKey } from '@/types/api';
 
 export function TenantsPage() {
   const [query, setQuery] = React.useState('');
@@ -41,23 +40,22 @@ export function TenantsPage() {
   const [currentPage, setCurrentPage] = React.useState(1);
   const PAGE_SIZE = 20;
 
-  const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 15000 });
+  const tenants = useTenants({ refetchInterval: 15000 });
 
-  const keys = useApiData<ApiKey[]>(
-    () => Admin.listApiKeys().then(allKeys => allKeys.filter(k => k.tenant_id === selectedTenant)),
-    [selectedTenant],
-    { enabled: !!selectedTenant, refetchInterval: 15000 }
-  );
+  const keys = useApiKeysForTenant(selectedTenant, { refetchInterval: 15000 });
+  const updateTenant = useUpdateTenant();
+  const deleteTenant = useDeleteTenant();
+  const revokeApiKey = useRevokeApiKey();
 
   const [settingsName, setSettingsName] = React.useState('');
   const [settingsEmail, setSettingsEmail] = React.useState('');
   const [settingsTier, setSettingsTier] = React.useState('free');
   const [settingsSuspended, setSettingsSuspended] = React.useState(false);
-  const [saving, setSaving] = React.useState(false);
+  const saving = updateTenant.isPending;
 
   // Tenant delete: confirmed via AlertDialog, named after the specific tenant.
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
-  const [deletingTenant, setDeletingTenant] = React.useState(false);
+  const deletingTenant = deleteTenant.isPending;
 
   // API key revoke: confirmed via AlertDialog + optimistic remove from the local list.
   const [revokeTarget, setRevokeTarget] = React.useState<ApiKey | null>(null);
@@ -108,17 +106,14 @@ export function TenantsPage() {
 
   const handleDeleteTenant = async () => {
     if (!selected) return;
-    setDeletingTenant(true);
     try {
-      await Admin.deleteTenant(selected.id);
+      await deleteTenant.mutateAsync(selected.id);
       toast.success('Tenant deleted', { description: selected.name });
       setSelectedTenant(null);
-      await tenants.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
     } finally {
-      setDeletingTenant(false);
       setDeleteDialogOpen(false);
     }
   };
@@ -133,10 +128,9 @@ export function TenantsPage() {
       return next;
     });
     try {
-      await Admin.revokeApiKey(target.id);
+      await revokeApiKey.mutateAsync(target.id);
       toast.success('API key revoked', { description: target.name });
       setRevokeTarget(null);
-      await keys.refetch();
     } catch (err) {
       // Restore on failure.
       setOptimisticallyHidden((prev) => {
@@ -151,21 +145,18 @@ export function TenantsPage() {
 
   const saveSettings = async () => {
     if (!selected) return;
-    setSaving(true);
     try {
-      await Admin.updateTenant(selected.id, {
+      await updateTenant.mutateAsync({
+        id: selected.id,
         name: settingsName,
         email: settingsEmail || undefined,
         tier: settingsTier,
         suspended: settingsSuspended,
       });
       toast.success('Tenant updated', { description: settingsName });
-      void tenants.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setSaving(false);
     }
   };
 

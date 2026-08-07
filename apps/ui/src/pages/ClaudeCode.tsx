@@ -35,9 +35,10 @@ import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
 import { formatDuration } from '@/lib/formatters';
+import { useAgentIntegrationConfig, type AgentIntegrationConfig } from '@/lib/queries/integrations';
+import { useProviders } from '@/lib/queries/providers';
 import { cn } from '@/lib/utils';
 import type { ApiModel, ApiProvider } from '@/types/api';
 
@@ -63,8 +64,6 @@ interface TestResult {
   latencyMs: number;
   error?: string;
 }
-
-type AgentIntegrationConfig = Awaited<ReturnType<typeof Admin.getAgentIntegrationConfig>>;
 
 interface LoadedData {
   providers: ApiProvider[];
@@ -375,16 +374,20 @@ function EnvVarsDialog({
 /* -------------------------------------------------------------------------- */
 
 export function ClaudeCodePage() {
-  const load = useApiData<LoadedData>(
-    async () => {
-      const [providerList, config] = await Promise.all([
-        Admin.listProviders(),
-        Admin.getAgentIntegrationConfig(),
-      ]);
-      return { providers: providerList, config };
+  const providersQuery = useProviders();
+  const configQuery = useAgentIntegrationConfig();
+  const load = {
+    data:
+      providersQuery.data && configQuery.data
+        ? ({ providers: providersQuery.data, config: configQuery.data } satisfies LoadedData)
+        : null,
+    isLoading: providersQuery.isLoading || configQuery.isLoading,
+    error: providersQuery.error ?? configQuery.error,
+    refetch: () => {
+      void providersQuery.refetch();
+      void configQuery.refetch();
     },
-    [],
-  );
+  };
   const providers = load.data?.providers ?? [];
 
   const [saving, setSaving] = React.useState(false);

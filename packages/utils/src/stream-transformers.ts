@@ -1138,6 +1138,16 @@ export function convertToClaudeMessage(response: OpenResponsesResult): ClaudeMes
     }
   }
 
+  // `cachedTokens` is a cache-READ count; it previously landed in the
+  // cache-write slot, which both overstated write cost and reported no reads
+  // at all. The two conventions also differ on what the input count means:
+  // OpenAI's `inputTokens` is the full prompt with the cached span included,
+  // while Anthropic's `input_tokens` is the uncached remainder. Subtracting
+  // keeps `input_tokens + cache_read_input_tokens` equal to the real prompt
+  // size instead of billing the cached span twice.
+  const cachedTokens = response.usage?.inputTokensDetails?.cachedTokens ?? 0;
+  const promptTokens = response.usage?.inputTokens ?? 0;
+
   return {
     id: response.id,
     type: 'message',
@@ -1147,10 +1157,12 @@ export function convertToClaudeMessage(response: OpenResponsesResult): ClaudeMes
     stop_reason: mapStopReason(response),
     stop_sequence: null,
     usage: {
-      input_tokens: response.usage?.inputTokens ?? 0,
+      input_tokens: Math.max(0, promptTokens - cachedTokens),
       output_tokens: response.usage?.outputTokens ?? 0,
-      cache_creation_input_tokens: response.usage?.inputTokensDetails?.cachedTokens ?? 0,
-      cache_read_input_tokens: 0,
+      cache_read_input_tokens: cachedTokens,
+      // OpenAI's automatic prefix caching carries no write premium and reports
+      // no write counter, so there is nothing to attribute here.
+      cache_creation_input_tokens: 0,
     },
     ...(unsupportedContent.length > 0 && {
       unsupported_content: unsupportedContent,

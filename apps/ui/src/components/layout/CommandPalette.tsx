@@ -18,11 +18,10 @@ import {
 import { Dialog, DialogContent, DialogTitle } from '@/components/primitives/Dialog';
 import { Kbd } from '@/components/primitives/Kbd';
 import { NAV_GROUPS } from '@/constants/nav';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
+import { useModels } from '@/lib/queries/models';
+import { useProviders } from '@/lib/queries/providers';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/store/useUIStore';
-import type { ApiProvider, ApiModel } from '@/types/api';
 
 export function CommandPalette() {
   const navigate = useNavigate();
@@ -30,16 +29,8 @@ export function CommandPalette() {
   const setOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const recentPages = useUIStore((s) => s.recentPages);
 
-  const providers = useApiData<ApiProvider[]>(
-    () => Admin.listProviders(),
-    [],
-    { refetchInterval: 60_000, enabled: open }
-  );
-  const models = useApiData<ApiModel[]>(
-    () => Admin.listModels(),
-    [],
-    { refetchInterval: 60_000, enabled: open }
-  );
+  const providers = useProviders({ refetchInterval: 60_000, enabled: open });
+  const models = useModels(undefined, { refetchInterval: 60_000, enabled: open });
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

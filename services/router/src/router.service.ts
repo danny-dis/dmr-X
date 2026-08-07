@@ -1,4 +1,4 @@
-import { ProviderUnavailableError } from '@dmr-x/core';
+import { ProviderUnavailableError, ValidationError } from '@dmr-x/core';
 import { BadGatewayError, ServiceUnavailableError } from '@dmr-x/utils';
 import type { UnifiedRequest, RoutingPlan, UnifiedResponse, FreeTierStrategy, ProviderPreferences, ProviderModel } from '@dmr-x/core';
 import type { CandidateSet } from '@dmr-x/core';
@@ -8,14 +8,14 @@ import { keyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 
-import { ThompsonSampler } from './bandit/thompson-sampler.js';
+import { ThompsonSampler, calculateReward } from './bandit/thompson-sampler.js';
 import { ClusterScorer } from './cluster/cluster-scorer.js';
 import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
 import { CompositeExecutor } from './decomposer/composite-executor.js';
 import { SpecialistRouter } from './decomposer/specialist-router.js';
 import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
-import { executeWithFallback, type AdapterExecutor } from './fallback/fallback-executor.js';
+import { executeWithFallback, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
@@ -160,6 +160,69 @@ export class Router {
     );
   }
 
+  /**
+   * Resolve the candidate that ACTUALLY served a response. `response.providerId`
+   * is the adapter/provider NAME (e.g. "google"), while candidates/plans are
+   * keyed by the DB provider UUID, so it must be resolved back to a candidate
+   * rather than compared directly — see the sticky-session comment in
+   * `routeSimple` for the failure mode this avoids.
+   */
+  private resolveServedCandidate(response: UnifiedResponse, fallbackModelId: string): ProviderModel | undefined {
+    const servedModelId = response.modelId || fallbackModelId;
+    return (
+      this.candidates.find(
+        (c) => c.modelId === servedModelId &&
+          (c.providerId === response.providerId || c.providerName === response.providerId)
+      ) ?? this.candidates.find((c) => c.modelId === servedModelId)
+    );
+  }
+
+  /**
+   * Train the Thompson sampler's posterior on this request's outcome. This is
+   * the reward loop that was previously missing entirely — every arm sat at
+   * its alpha=1/beta=1 prior forever, so selection degenerated into an argmax
+   * over the deterministic quality/cost/latency score.
+   *
+   * On success, the reward is attributed to whichever candidate ACTUALLY
+   * served the response (see `resolveServedCandidate`), not `plan.primary` —
+   * `executeWithFallback` may have recovered via a chain entry.
+   *
+   * On failure there is no response to resolve a served candidate from, so
+   * `plan.primary` (the arm the router chose) eats the penalty. This is a
+   * best-effort attribution: if fallback entries were also tried and failed,
+   * their arms are not penalized here, since `executeWithFallback` does not
+   * currently surface which chain entries were attempted with enough detail
+   * (provider *and* model) to resolve them back to candidates.
+   *
+   * Swallows all errors — a bandit bookkeeping failure must never fail the
+   * request that already succeeded or already failed for its own reason.
+   */
+  private recordBanditReward(
+    plan: RoutingPlan,
+    response: UnifiedResponse | null,
+    success: boolean,
+  ): void {
+    try {
+      const candidate = response
+        ? this.resolveServedCandidate(response, plan.primary.modelId)
+        : this.getCandidate(plan.primary.providerId, plan.primary.modelId);
+      if (!candidate) return;
+
+      const reward = calculateReward(
+        candidate.qualityScore,
+        response?.latencyMs ?? 0,
+        candidate.costPerInputToken || 0,
+        success,
+        response?.timeToFirstTokenMs != null
+          ? { firstTokenLatencyMs: response.timeToFirstTokenMs }
+          : {},
+      );
+      this.thompsonSampler.update(candidate, reward);
+    } catch (err) {
+      logger.debug({ err }, 'Failed to record Thompson sampler reward');
+    }
+  }
+
   setAdapterExecutor(executor: AdapterExecutor): void {
     this.adapterExecutor = executor;
     // Wire the WorkerPoolFanout opt-in: when DMRX_WORKER_POOL_FANOUT=true the
@@ -252,9 +315,18 @@ export class Router {
       });
 
       if (!guardrailResult.allowed) {
-        throw new ProviderUnavailableError(
-          ['guardrail-blocked'],
-          0,
+        // Not a ProviderUnavailableError. That reported a guardrail rejection
+        // as 503 "All providers currently unavailable", which is wrong twice
+        // over: it blames an outage for a decision about the caller's own
+        // content, and 503 tells clients the request is retryable when
+        // retrying it can only fail again. Surfacing the violations lets a
+        // caller see which rule fired instead of hunting a phantom outage.
+        const reasons = guardrailResult.violations
+          .map(v => v.description)
+          .filter(Boolean);
+        throw new ValidationError(
+          `Request blocked by guardrail: ${reasons.join('; ') || 'content policy violation'}`,
+          { violations: guardrailResult.violations },
         );
       }
     }
@@ -272,7 +344,19 @@ export class Router {
 
     // An explicit provider pin bypasses sticky sessions: the caller asked for
     // a specific provider, so a previously-stuck different provider must not win.
-    if (conversationHash && !modelTarget.providerName) {
+    //
+    // A hard provider-exclusion constraint (zdr/only/ignore) must too: the
+    // sticky pin was chosen (and health-checked) under whatever preferences —
+    // or lack of them — were in effect on an earlier turn, so reusing it here
+    // without re-checking those preferences could silently hand this turn to
+    // a provider the caller just told this call to exclude (e.g. a
+    // require_privacy turn reusing a cloud pin set by an earlier, unconstrained
+    // turn of the same conversation). Soft preferences (order/latency/price
+    // targets) are left alone — staying on the pinned provider is the whole
+    // point of stickiness for those.
+    const stickyPrefs = request.metadata?.providerPreferences;
+    const hasHardProviderConstraint = !!(stickyPrefs?.zdr || stickyPrefs?.only?.length || stickyPrefs?.ignore?.length);
+    if (conversationHash && !modelTarget.providerName && !hasHardProviderConstraint) {
       const stickyResult = await handleStickySession({
         request, options, candidates: this.candidates,
         adapterExecutor: this.adapterExecutor, config: this.config,
@@ -330,6 +414,23 @@ export class Router {
           0
         );
       }
+    }
+
+    // Drop candidates already known to be dead before anything is scored. The
+    // fallback chain has always skipped them, but selection did not, so the
+    // primary pick kept landing on a provider whose key had just returned 401
+    // and every request paid for that attempt before falling back. Keeping the
+    // pool intact when the filter would empty it matters: a cooldown is a
+    // recovery window, and a stale one must never turn into "no candidates".
+    const liveCandidates = pipelineCandidates.filter(
+      c => !isModelOnErrorCooldown(c.providerId, c.modelId),
+    );
+    if (liveCandidates.length > 0 && liveCandidates.length < pipelineCandidates.length) {
+      logger.info(
+        { skipped: pipelineCandidates.length - liveCandidates.length, remaining: liveCandidates.length },
+        'Skipped candidates on error cooldown',
+      );
+      pipelineCandidates = liveCandidates;
     }
 
     // Step 1.6: Direct model selection — if the user picked a specific model, route to it
@@ -590,10 +691,12 @@ export class Router {
           keyRotationService,
         });
         span.setAttribute('router.used_provider', res.providerId);
+        this.recordBanditReward(plan, res, true);
         return res;
       } catch (err) {
         span.recordException(err as Error);
         span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+        this.recordBanditReward(plan, null, false);
         throw err;
       } finally {
         span.end();
@@ -613,13 +716,10 @@ export class Router {
       // while candidates and plans are keyed by the DB provider UUID, so the
       // name has to be resolved back to a UUID — a raw name would be stored
       // fine but never match a candidate on the next turn, silently disabling
-      // stickiness altogether.
+      // stickiness altogether. `resolveServedCandidate` does the same
+      // resolution used to attribute the Thompson sampler reward above.
       const servedModelId = response.modelId || plan.primary.modelId;
-      const servedCandidate =
-        this.candidates.find(
-          (c) => c.modelId === servedModelId &&
-            (c.providerId === response.providerId || c.providerName === response.providerId)
-        ) ?? this.candidates.find((c) => c.modelId === servedModelId);
+      const servedCandidate = this.resolveServedCandidate(response, plan.primary.modelId);
       const servedProviderId = servedCandidate?.providerId ?? plan.primary.providerId;
 
       // Get RPM for TTL adjustment if rate limit service is available

@@ -23,9 +23,11 @@ SLO. At 99.9%, that's **43.83 minutes per 30-day window**.
 
 ### Burn rate alerts
 
-The Prometheus alert rules file already implements multi-window,
-multi-burn-rate alerts (Google SRE workbook style). Add these to
-`monitoring/prometheus-alerts.yml` for production:
+> **Not yet implemented.** `monitoring/prometheus-alerts.yml` currently contains
+> **no** multi-window burn-rate rules, despite what this page previously
+> claimed. The rules below (Google SRE workbook style) are the intended
+> implementation — add them to `monitoring/prometheus-alerts.yml` before
+> relying on error-budget alerting. (O16)
 
 ```yaml
 groups:
@@ -134,8 +136,8 @@ more than 2.0 Z-scores from its trailing 5-run average. All Critical-severity
 | **Benchmark completion rate** | ≥ 99% of all benchmark runs complete without error (timeout, judge failure, provider error) |
 | **Judge service availability** | < 1% of judge evaluation calls fail due to downstream LLM unavailability |
 
-Burn-rate alerts for benchmark completion use the existing Prometheus framework
-in `monitoring/prometheus-alerts.yml`:
+Burn-rate alerts for benchmark completion use the same `monitoring/prometheus-alerts.yml`
+framework (also **not yet implemented** — see the note under Availability):
 
 ```yaml
       # Benchmark failure rate > 5% in 1h
@@ -178,9 +180,10 @@ spend cap — that's a quota, configured per-tenant):
 
 ### Cost anomalies
 
-`DmrxCostBurnHigh` and `DmrxCostSpike` in `prometheus-alerts.yml`
-fire when the spend rate exceeds thresholds. These aren't strict
-SLOs but they protect the customer billing account.
+`DmrxCostBurnHigh` and `DmrxCostSpike` are the intended spend-rate alerts for
+`prometheus-alerts.yml` (also **not yet implemented** — see the note under
+Availability). They aren't strict SLOs but they protect the customer billing
+account.
 
 ## Reporting
 

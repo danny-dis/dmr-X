@@ -22,10 +22,14 @@ import { Input } from '@/components/primitives/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { formatDuration, timeAgo } from '@/lib/formatters';
-import type { ApiFederationNode } from '@/types/api';
+import {
+  useFederationNodes,
+  useHealthCheckFederationNode,
+  useRegisterFederationNode,
+  useSyncFederationBenchmark,
+  useUnregisterFederationNode,
+} from '@/lib/queries/federation';
 
 /** What to check when a peer can't be reached, keyed by its reported status. */
 const UNREACHABLE_HINT: Record<string, string> = {
@@ -35,53 +39,45 @@ const UNREACHABLE_HINT: Record<string, string> = {
 };
 
 export function FederationPage() {
-  const nodes = useApiData<ApiFederationNode[]>(
-    () => Admin.listFederation(),
-    [],
-    { refetchInterval: 10000 }
-  );
+  const nodes = useFederationNodes({ refetchInterval: 10000 });
+  const registerNode = useRegisterFederationNode();
+  const unregisterNode = useUnregisterFederationNode();
+  const healthCheckNode = useHealthCheckFederationNode();
+  const syncBenchmark = useSyncFederationBenchmark();
 
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [name, setName] = React.useState('');
   const [url, setUrl] = React.useState('');
   const [region, setRegion] = React.useState('');
   const [authToken, setAuthToken] = React.useState('');
-  const [submitting, setSubmitting] = React.useState(false);
+  const submitting = registerNode.isPending;
   const [removeTarget, setRemoveTarget] = React.useState<{ id: string; name: string } | null>(null);
-  const [removing, setRemoving] = React.useState(false);
+  const removing = unregisterNode.isPending;
 
   const handleRegister = async () => {
-    setSubmitting(true);
     try {
-      await Admin.registerFederation({ name, url, region: region || undefined, authToken: authToken || undefined });
+      await registerNode.mutateAsync({ name, url, region: region || undefined, authToken: authToken || undefined });
       toast.success('Federation peer registered', { description: `${name} was added and will be health-checked shortly.` });
       setDialogOpen(false);
       setName('');
       setUrl('');
       setRegion('');
       setAuthToken('');
-      void nodes.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setSubmitting(false);
     }
   };
 
   const handleRemove = async () => {
     if (!removeTarget) return;
-    setRemoving(true);
     try {
-      await Admin.unregisterFederation(removeTarget.id);
+      await unregisterNode.mutateAsync(removeTarget.id);
       toast.success('Federation peer removed', { description: `${removeTarget.name} was disconnected from cross-cluster routing.` });
       setRemoveTarget(null);
-      void nodes.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setRemoving(false);
     }
   };
 
@@ -179,9 +175,8 @@ export function FederationPage() {
                         aria-label={`Run health check for ${n.name ?? n.id}`}
                         onClick={async () => {
                           try {
-                            await Admin.healthCheckFederation(n.id);
+                            await healthCheckNode.mutateAsync(n.id);
                             toast.success('Health check complete', { description: n.name ?? n.id });
-                            void nodes.refetch();
                           } catch (err) {
                             const e = interpretError(err);
                             toast.error(e.title, { description: e.description });
@@ -196,7 +191,7 @@ export function FederationPage() {
                         aria-label={`Sync benchmark data for ${n.name ?? n.id}`}
                         onClick={async () => {
                           try {
-                            await Admin.syncFederationBenchmark(n.id);
+                            await syncBenchmark.mutateAsync(n.id);
                             toast.success('Benchmark sync started', { description: n.name ?? n.id });
                           } catch (err) {
                             const e = interpretError(err);

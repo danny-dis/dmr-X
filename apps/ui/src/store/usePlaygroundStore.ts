@@ -150,6 +150,16 @@ export const usePlaygroundStore = create<PlaygroundState>()(
         activeTab: state.activeTab,
         systemPrompt: state.systemPrompt,
         agentInstanceId: state.agentInstanceId,
+        // The active conversation's identity has to survive a reload or the
+        // next `sendMessage` finds `currentConversationId` null and mints a
+        // brand-new conversation (see createConversationsSlice.createConversation
+        // / messagesSlice.sendMessage) — every refresh "started fresh" because
+        // this field was missing from the persisted partition. The message
+        // list itself is intentionally NOT persisted (it can go stale/large
+        // and includes ephemeral fields like isStreaming/blob URLs); instead
+        // PlaygroundPage re-fetches it from the server via loadConversation()
+        // on mount using this id.
+        currentConversationId: state.currentConversationId,
       }),
     }
   )

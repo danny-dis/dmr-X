@@ -15,10 +15,9 @@ import { Slider } from '@/components/primitives/Slider';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin, api } from '@/lib/admin';
+import { api } from '@/lib/admin';
+import { useModels } from '@/lib/queries/models';
 import { cn } from '@/lib/utils';
-import type { ApiModel } from '@/types/api';
 
 const DEFAULT_MESSAGES = JSON.stringify([{ role: 'user', content: "What's the weather in Tokyo?" }], null, 2);
 
@@ -67,7 +66,7 @@ export function ToolsPage() {
   const [messagesParseError, setMessagesParseError] = React.useState<string | null>(null);
   const [toolsParseError, setToolsParseError] = React.useState<string | null>(null);
 
-  const models = useApiData<ApiModel[]>(() => Admin.listModels({ modality: 'llm' }), []);
+  const models = useModels({ modality: 'llm' });
 
   const allModelOptions = React.useMemo(() => {
     const llmModels = (models.data ?? []).map((m) => ({

@@ -7,13 +7,12 @@ import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
-import type { ApiMcpGuardrailsConfig } from '@/types/api';
+import { useGuardrailsConfig, useUpdateGuardrailsConfig } from '@/lib/queries/mcp';
 
 export function McpGuardrailsConfig() {
-  const config = useApiData<ApiMcpGuardrailsConfig>(Admin.getGuardrailsConfig, []);
-  const [saving, setSaving] = React.useState(false);
+  const config = useGuardrailsConfig();
+  const updateConfig = useUpdateGuardrailsConfig();
+  const saving = updateConfig.isPending;
 
   const [enabled, setEnabled] = React.useState(true);
   const [piiEnabled, setPiiEnabled] = React.useState(true);
@@ -43,9 +42,8 @@ export function McpGuardrailsConfig() {
   };
 
   const handleSave = async () => {
-    setSaving(true);
     try {
-      await Admin.updateGuardrailsConfig({
+      await updateConfig.mutateAsync({
         enabled,
         pii: { enabled: piiEnabled, maskChar },
         contentFilter: { enabled: contentFilterEnabled, blockedPatterns },
@@ -53,8 +51,6 @@ export function McpGuardrailsConfig() {
       toast.success('Guardrails config saved');
     } catch (err) {
       toast.error('Failed to save', { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setSaving(false);
     }
   };
 

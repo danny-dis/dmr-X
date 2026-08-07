@@ -403,6 +403,16 @@ export const TOOL_NAMES = {
   // Gateway import + skill listing tools
   IMPORT_REPO: 'dmrx_import_repo',
   LIST_SKILLS: 'dmrx_list_skills',
+  GET_SKILL: 'dmrx_get_skill',
+  // Agent discovery + invocation tools
+  LIST_AGENTS: 'dmrx_list_agents',
+  RUN_AGENT: 'dmrx_run_agent',
+  DISPATCH_TASK: 'dmrx_dispatch_task',
+  // Job submission + tracking tools
+  SUBMIT_JOB: 'dmrx_submit_job',
+  JOB_STATUS: 'dmrx_job_status',
+  JOB_TASKS: 'dmrx_job_tasks',
+  CANCEL_JOB: 'dmrx_cancel_job',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -933,5 +943,66 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   dmrx_list_skills:
     'List skills imported into DMR-X via the gateway (GET /v1/skills). ' +
     'Supports optional free-text search, tag filter, and result limit. ' +
-    'Returns the skill names and ids. Requires a configured gateway URL and tenant API key.',
+    'Returns each skill\'s id, name, description, and tags so a caller can decide which one to load. ' +
+    'Use dmrx_get_skill afterward to fetch the full content of a chosen skill. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_get_skill:
+    'Fetch a single skill by id from the gateway (GET /v1/skills/:id), including its full content/body. ' +
+    'Use after dmrx_list_skills has identified which skill to load into context. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_list_agents:
+    'List DMR-X agent instances deployed for this tenant (GET /v1/agents/instances), so a caller can ' +
+    'discover who it can talk to before invoking one. Returns each instance\'s id, name, description, ' +
+    'and category. Use dmrx_run_agent afterward when you already know which instance to address by id; ' +
+    'use dmrx_dispatch_task instead when you do not want to pick one yourself and would rather let ' +
+    'DMR-X select the best match for a task. Requires a configured gateway URL and tenant API key.',
+  dmrx_run_agent:
+    'Send a message to a SPECIFIC, already-known DMR-X agent instance (POST /v1/agents/:instanceId/chat) ' +
+    'and get back its reply. Use this when you already know which agent you want to talk to (e.g. from ' +
+    'dmrx_list_agents, or because the caller was told the instance id) and want to continue or start a ' +
+    'conversation with it directly. If you do not know which agent is best suited for a task, use ' +
+    'dmrx_dispatch_task instead and let DMR-X choose. Returns the assistant\'s reply text, a ' +
+    'conversationId to continue the thread with further calls, and any usage/cost the gateway reports. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_dispatch_task:
+    'Describe a task in natural language and let DMR-X pick the best-matching active agent instance to ' +
+    'handle it (POST /v1/agentic/dispatch), optionally running it in the same call. Use this when you do NOT ' +
+    'already know which agent instance to address — DMR-X scores all active instances for the tenant by ' +
+    'category/tag/keyword overlap and selects the best one. Use dmrx_run_agent instead when you already ' +
+    'know the exact instance id you want to talk to. With run=true (the default) it returns which agent ' +
+    'was selected plus its output; with run=false it returns only the selection so the caller can decide ' +
+    'whether to proceed. Fails with NO_AGENTS_AVAILABLE if the tenant has no active agent instances to ' +
+    'dispatch to. Requires a configured gateway URL and tenant API key.',
+  dmrx_submit_job:
+    'Submit a job to DMR-X and get back its job id (POST /v1/jobs). A job is a WHOLE OUTCOME delegated ' +
+    'to DMR-X — e.g. "implement feature X", "fix all failing tests", or "write the migration plan" — not a ' +
+    'single turn of work. Jobs run ASYNCHRONOUSLY: this tool returns as soon as the gateway has accepted the ' +
+    'job, NOT when the work is done, so do not expect any result in the response. After submitting, poll ' +
+    'dmrx_job_status (and dmrx_job_tasks for per-task progress) until the job reaches a terminal status. ' +
+    'The gateway generates the job id — do not pass one. The brief is required; acceptance criteria and ' +
+    'budget/max-depth caps are optional. Contrast with dmrx_dispatch_task, which runs a single task ' +
+    'synchronously and returns its output in the same call. Requires a configured gateway URL and tenant ' +
+    'API key.',
+  dmrx_job_status:
+    'Check the current status of an already-submitted DMR-X job (GET /v1/jobs/:id). Because jobs run ' +
+    'asynchronously, call this repeatedly (poll) to track a job submitted via dmrx_submit_job until it ' +
+    'reaches a terminal status — do not expect dmrx_submit_job itself to block or return results. Returns ' +
+    'the job id, current status, brief, spend and budget (both USD and tokens) and creation/update ' +
+    'timestamps, exactly as the gateway reports them. A job is a whole outcome delegated to DMR-X and ' +
+    'takes time, unlike dmrx_dispatch_task which runs a single task synchronously. Returns JOB_NOT_FOUND ' +
+    'if the job id does not exist. Requires a configured gateway URL and tenant API key.',
+  dmrx_job_tasks:
+    'List the individual tasks a submitted DMR-X job was decomposed into (GET /v1/jobs/:id/tasks). Use ' +
+    'after dmrx_submit_job to see how an asynchronous job is being executed — each task carries its id, ' +
+    'seq, title, status, dependsOn, and assignedInstanceId. Poll this alongside dmrx_job_status to track ' +
+    'progress of a job; a job is a whole outcome delegated to DMR-X that runs asynchronously, unlike ' +
+    'dmrx_dispatch_task which runs one task synchronously in a single call. Returns JOB_NOT_FOUND if the ' +
+    'job id does not exist. Requires a configured gateway URL and tenant API key.',
+  dmrx_cancel_job:
+    'Cancel an in-flight DMR-X job by id (POST /v1/jobs/:id/cancel). Use when a job submitted via ' +
+    'dmrx_submit_job no longer needs to run — e.g. the outcome is no longer wanted or the job is taking ' +
+    'too long. Jobs are whole outcomes that run asynchronously, so cancellation takes effect after ' +
+    'submission; the response reports the job id and its (updated) status. Returns JOB_NOT_FOUND if the ' +
+    'job id does not exist. For a single synchronous task, use dmrx_dispatch_task instead. Requires a ' +
+    'configured gateway URL and tenant API key.',
 };

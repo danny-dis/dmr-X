@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
 
 const Generate3DRequestSchema = z.object({
   model: z.string().optional(),
@@ -28,10 +29,13 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+    const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
 
     const tenantId = (request as any).tenant?.id;
     const { checkRouteCache, storeRouteCache } = await import('@dmr-x/cache');
-    const cached = checkRouteCache('3d', tenantId, body as Record<string, unknown>);
+    // The cache key is body-only (services/cache/src/cache.service.ts), so a
+    // providerPreferences request must not read from or write to it.
+    const cached = providerPreferences ? null : checkRouteCache('3d', tenantId, body as Record<string, unknown>);
     if (cached) {
       reply.header('X-Cache', 'HIT');
       return cached.response;
@@ -49,6 +53,7 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
       metadata: {
         requestId,
         tenant: (request as any).tenant,
+        ...(providerPreferences ? { providerPreferences } : {}),
       },
     };
 
@@ -56,13 +61,18 @@ export async function threeDRoutes(server: FastifyInstance): Promise<void> {
       path: '/v1/3d/generate',
       qualityTarget,
     });
+    if (response?.providerId) {
+      reply.header('X-DMRX-Provider-Id', response.providerId);
+    }
 
     const result = {
       created: Math.floor(Date.now() / 1000),
       data: response.models3d || [],
     };
 
-    storeRouteCache('3d', tenantId, body as Record<string, unknown>, result);
+    if (!providerPreferences) {
+      storeRouteCache('3d', tenantId, body as Record<string, unknown>, result);
+    }
     reply.header('X-Cache', 'MISS');
     return result;
   });

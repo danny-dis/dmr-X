@@ -13,25 +13,17 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFoo
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { chartColor } from '@/lib/chartPalette';
 import { formatCurrency, formatNumber, formatTokens } from '@/lib/formatters';
-import type { ApiBillingSummary, ApiUsagePoint, ApiTenant } from '@/types/api';
+import { useUsageHistory } from '@/lib/queries/dashboard';
+import { useBilling, useTenants } from '@/lib/queries/tenants';
+import type { ApiBillingSummary } from '@/types/api';
 
 export function UsagePage() {
   const [period, setPeriod] = React.useState<'day' | 'week' | 'month'>('day');
-  const billing = useApiData<ApiBillingSummary>(
-    () => Admin.getBilling(period),
-    [period],
-    { refetchInterval: 30000 }
-  );
-  const usage = useApiData<{ points: ApiUsagePoint[] }>(
-    () => Admin.getUsage(period === 'day' ? 'hour' : 'day'),
-    [period],
-    { refetchInterval: 15000 }
-  );
-  const tenants = useApiData<ApiTenant[]>(() => Admin.listTenants(), [], { refetchInterval: 30000 });
+  const billing = useBilling(period, { refetchInterval: 30000 });
+  const usage = useUsageHistory(period === 'day' ? 'hour' : 'day', { refetchInterval: 15000 });
+  const tenants = useTenants({ refetchInterval: 30000 });
   const [selectedInvoice, setSelectedInvoice] = React.useState<NonNullable<ApiBillingSummary['invoices']>[number] | null>(null);
 
   const series = (usage.data?.points ?? []).map((p) => ({

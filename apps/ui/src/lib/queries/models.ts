@@ -10,7 +10,10 @@ import type { ApiModel } from '@/types/api';
 // Models & classifications
 // ---------------------------------------------------------------------------
 
-export function useModels(query?: { available_only?: string }, options?: PollOptions) {
+export function useModels(
+  query?: { providerId?: string; modality?: string; available_only?: string },
+  options?: PollOptions,
+) {
   return useQuery({
     queryKey: [...keys.models.list(), query ?? {}],
     queryFn: () => Admin.listModels(query),

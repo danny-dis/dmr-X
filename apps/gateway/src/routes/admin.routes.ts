@@ -17,6 +17,7 @@ import { Agent } from 'undici';
 import { z } from 'zod';
 
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
 import { compressionService } from '../services/compression.js';
 import { computeSavings } from '../services/savings.js';
 import { refreshAdminKey } from '../middleware/auth.middleware.js';
@@ -3897,6 +3898,42 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       WHERE timestamp >= date('now', 'start of day')
     `).get() as { total: number; fallbacks: number } | undefined;
 
+    // Avg-latency delta: last 24h vs the preceding 24h (a true "vs
+    // yesterday" sliding comparison, independent of calendar-day
+    // boundaries). Bug: the Dashboard has always rendered
+    // `s.latencyDelta ?? 0`, and nothing here ever computed `latencyDelta`
+    // — every request showed a fake "0.0% vs yesterday" whether or not a
+    // prior-period comparison actually existed. Both windows must have at
+    // least one logged latency for the comparison to be meaningful; with
+    // no prior-period data we return `null` so the UI hides the delta
+    // instead of rendering an indistinguishable-from-real 0%.
+    const latencyWindowRow = db.prepare(`
+      SELECT
+        AVG(CASE WHEN timestamp >= datetime('now', '-24 hours') THEN latency_ms END) as avg_last_24h,
+        COUNT(CASE WHEN timestamp >= datetime('now', '-24 hours') THEN latency_ms END) as count_last_24h,
+        AVG(CASE WHEN timestamp < datetime('now', '-24 hours') THEN latency_ms END) as avg_prev_24h,
+        COUNT(CASE WHEN timestamp < datetime('now', '-24 hours') THEN latency_ms END) as count_prev_24h
+      FROM request_logs
+      WHERE timestamp >= datetime('now', '-48 hours') AND latency_ms IS NOT NULL
+    `).get() as
+      | { avg_last_24h: number | null; count_last_24h: number; avg_prev_24h: number | null; count_prev_24h: number }
+      | undefined;
+
+    let latencyDeltaPct: number | null = null;
+    if (
+      latencyWindowRow &&
+      latencyWindowRow.count_last_24h > 0 &&
+      latencyWindowRow.count_prev_24h > 0 &&
+      latencyWindowRow.avg_prev_24h !== null &&
+      latencyWindowRow.avg_last_24h !== null &&
+      latencyWindowRow.avg_prev_24h !== 0
+    ) {
+      latencyDeltaPct =
+        Math.round(
+          ((latencyWindowRow.avg_last_24h - latencyWindowRow.avg_prev_24h) / latencyWindowRow.avg_prev_24h) * 1000,
+        ) / 10;
+    }
+
     // Actual remaining quota from allocations (compute from max_requests - used)
     const quotaRow = db.prepare(`
       SELECT COALESCE(SUM(
@@ -3924,6 +3961,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       total_requests: total,
       success_rate: total > 0 ? Math.round((success / total) * 100 * 10) / 10 : 100,
       avg_latency: Math.round(req?.avg_latency || 0),
+      latency_delta_pct: latencyDeltaPct,
       token_usage: tokenRow?.tokens || 0,
       daily_spend: tokenRow?.spend || 0,
       quota_remaining: quotaRow?.remaining ?? 0,
@@ -3938,6 +3976,22 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.get('/admin/dashboard/stats', async () => computeDashboardStats());
 
   // Route decisions
+  //
+  // Bug: this used to unconditionally `json_extract(rl.task_profile, '$.taskType')`,
+  // but telemetry-hooks.ts (CRIT-6 write path) stores `task_profile` as a bare
+  // modality string (e.g. "llm"), never as JSON — see `taskProfile: unifiedRequest.modality`
+  // in chat.routes.ts. `json_extract` on a non-JSON value throws "malformed JSON" in
+  // sql.js, which failed the *entire* SELECT, was swallowed by the inner try/catch
+  // below, and made this endpoint return `decisions: []` forever — the Routing page
+  // read real request_logs rows and still showed all-zero widgets. `json_valid()`
+  // guards the extraction so a plain string no longer aborts the query. Layer
+  // ("task_type") is instead resolved from `model_profiles.intelligence_layer`
+  // (brain/thinker/executor/worker/temp_worker — the same vocabulary the UI's
+  // LAYER_ORDER expects), which the JSON blob was never actually carrying anyway.
+  // `routing_plan` only ever contains `{ primary, candidates }` (see telemetry-hooks.ts
+  // ~line 161) — there is no `executionMode`/`decisionReason`/`fallbackChain` key to
+  // extract, so those are derived from real columns/JSON structure instead of a
+  // key that has never existed on any row.
   server.get('/admin/routing/decisions', async (_request, reply) => {
     try {
       const db = getDb();
@@ -3947,12 +4001,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           SELECT
             rl.id,
             rl.timestamp,
-            json_extract(rl.task_profile, '$.taskType') as task_type,
+            COALESCE(
+              mp.intelligence_layer,
+              CASE WHEN json_valid(rl.task_profile) THEN json_extract(rl.task_profile, '$.taskType') ELSE NULL END
+            ) as task_type,
             rl.selected_model,
             p.name as selected_provider,
-            json_extract(rl.routing_plan, '$.executionMode') as execution_mode,
-            json_extract(rl.routing_plan, '$.decisionReason') as decision_reason,
-            COALESCE(json_extract(rl.routing_plan, '$.fallbackChain'), '[]') as fallback_chain,
+            rl.quality_target as execution_mode,
+            CASE WHEN rl.fallback_used THEN 'fallback' ELSE NULL END as decision_reason,
+            rl.routing_plan as routing_plan_json,
             rl.latency_ms as latency,
             rl.estimated_cost as cost,
             rl.quality_score as confidence,
@@ -3963,6 +4020,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
                  ELSE 'success' END as status
           FROM request_logs rl
           LEFT JOIN providers p ON p.id = rl.selected_provider
+          LEFT JOIN model_profiles mp ON mp.provider_id = rl.selected_provider AND mp.model_id = rl.selected_model
           ORDER BY rl.timestamp DESC
           LIMIT 50
         `).all() as Array<Record<string, unknown>>;
@@ -3970,15 +4028,42 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         logger.debug({ err }, 'Route decisions query failed — request_logs may be missing columns');
         rows = [];
       }
+
+      // Provider-name lookup for resolving the UUIDs inside `routing_plan.candidates`
+      // (each candidate carries its own `providerId`, same UUID-vs-name gotcha as
+      // `selected_provider`) into the human-readable fallback chain the UI renders.
+      let providerNames: Map<string, string> | null = null;
+      const resolveProviderName = (id: string | undefined): string | undefined => {
+        if (!id) return undefined;
+        if (!providerNames) {
+          providerNames = new Map(
+            (db.prepare('SELECT id, name FROM providers').all() as Array<{ id: string; name: string }>).map(
+              (p) => [p.id, p.name],
+            ),
+          );
+        }
+        return providerNames.get(id) ?? id;
+      };
+
       const decisions = rows.map((row) => {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(row)) {
           out[k] = typeof v === 'bigint' ? Number(v) : v;
         }
-        try {
-          out.fallback_chain = typeof out.fallback_chain === 'string' ? JSON.parse(out.fallback_chain as string) : out.fallback_chain ?? [];
-        } catch {
-          out.fallback_chain = [];
+        const routingPlanJson = out.routing_plan_json;
+        delete out.routing_plan_json;
+        out.fallback_chain = [];
+        if (typeof routingPlanJson === 'string') {
+          try {
+            const plan = JSON.parse(routingPlanJson) as {
+              candidates?: Array<{ providerId?: string; modelId?: string }>;
+            };
+            out.fallback_chain = (plan.candidates ?? []).map(
+              (c) => `${resolveProviderName(c.providerId) ?? 'unknown'}/${c.modelId ?? 'unknown'}`,
+            );
+          } catch {
+            out.fallback_chain = [];
+          }
         }
         return out;
       });
@@ -4249,41 +4334,73 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     const days = Math.min(Math.max(parseInt(query.days ?? '30', 10) || 30, 1), 365);
     const start = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-    // Total costs
+    // Free-ness is decided by classification (model_classifications), not by
+    // cost being zero — an unpriced paid model also logs estimated_cost = 0,
+    // and `SUM(CASE WHEN cost = 0 THEN cost ...)` is identically zero anyway.
+    // Same classifier as /admin/usage/live above.
+    const IS_FREE_CASE = `
+      CASE WHEN mc.has_free_tier = 1 OR mc.verified_free = 1
+                OR mc.pricingTier IN ('free', 'free_with_limits')
+           THEN 1 ELSE 0 END`;
+
+    // Total costs, split into free/paid by classification.
     const totals = db.prepare(`
       SELECT
         SUM(estimated_cost) as total_cost,
-        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN estimated_cost ELSE 0 END) as free_cost,
         COUNT(*) as requests,
-        SUM(tokens_input + tokens_output) as tokens
-      FROM request_logs
-      WHERE timestamp > ?
+        SUM(tokens_input + tokens_output) as tokens,
+        SUM(CASE WHEN is_free THEN 1 ELSE 0 END) as free_requests,
+        SUM(CASE WHEN is_free THEN tokens_input + tokens_output ELSE 0 END) as free_tokens,
+        SUM(CASE WHEN NOT is_free THEN estimated_cost ELSE 0 END) as paid_cost,
+        SUM(CASE WHEN NOT is_free THEN 1 ELSE 0 END) as paid_requests,
+        SUM(CASE WHEN NOT is_free THEN tokens_input + tokens_output ELSE 0 END) as paid_tokens
+      FROM (
+        SELECT
+          rl.estimated_cost,
+          rl.tokens_input,
+          rl.tokens_output,
+          ${IS_FREE_CASE} AS is_free
+        FROM request_logs rl
+        LEFT JOIN model_classifications mc
+          ON mc.provider_id = rl.selected_provider
+         AND mc.model_id   = rl.selected_model
+        WHERE rl.timestamp > ?
+      )
     `).get(start) as any;
 
     // Costs by provider
     const byProvider = db.prepare(`
       SELECT
-        selected_provider as provider,
-        SUM(estimated_cost) as cost,
+        rl.selected_provider as provider,
+        SUM(rl.estimated_cost) as cost,
         COUNT(*) as requests,
-        SUM(tokens_input + tokens_output) as tokens,
-        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as free_percent
-      FROM request_logs
-      WHERE timestamp > ?
-      GROUP BY selected_provider
+        SUM(rl.tokens_input + rl.tokens_output) as tokens,
+        SUM(${IS_FREE_CASE}) * 100.0 / COUNT(*) as free_percent
+      FROM request_logs rl
+      LEFT JOIN model_classifications mc
+        ON mc.provider_id = rl.selected_provider
+       AND mc.model_id   = rl.selected_model
+      WHERE rl.timestamp > ?
+      GROUP BY rl.selected_provider
       ORDER BY cost DESC
     `).all(start) as any[];
 
-    // Costs by tenant
+    // Costs by tenant, same classification split as totals.
     const byTenant = db.prepare(`
       SELECT
-        tenant_id,
-        SUM(estimated_cost) as total_cost,
+        rl.tenant_id,
+        SUM(rl.estimated_cost) as total_cost,
         COUNT(*) as requests,
-        SUM(tokens_input + tokens_output) as tokens
-      FROM request_logs
-      WHERE timestamp > ?
-      GROUP BY tenant_id
+        SUM(rl.tokens_input) as input_tokens,
+        SUM(rl.tokens_output) as output_tokens,
+        SUM(${IS_FREE_CASE}) as free_requests,
+        SUM(CASE WHEN NOT (${IS_FREE_CASE}) THEN rl.estimated_cost ELSE 0 END) as paid_cost
+      FROM request_logs rl
+      LEFT JOIN model_classifications mc
+        ON mc.provider_id = rl.selected_provider
+       AND mc.model_id   = rl.selected_model
+      WHERE rl.timestamp > ?
+      GROUP BY rl.tenant_id
       ORDER BY total_cost DESC
       LIMIT 20
     `).all(start) as any[];
@@ -4295,39 +4412,47 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         tenantId: t.tenant_id,
         tenantName: tenant?.name ?? 'Unknown',
         totalCost: t.total_cost,
-        freeTierCost: 0,
-        paidCost: t.total_cost,
+        freeRequests: t.free_requests ?? 0,
+        paidCost: t.paid_cost ?? 0,
         totalRequests: t.requests,
-        totalInputTokens: 0,
-        totalOutputTokens: t.tokens,
+        totalInputTokens: t.input_tokens ?? 0,
+        totalOutputTokens: t.output_tokens ?? 0,
         byProvider: {},
       };
     });
 
-    // Daily costs
+    // Daily costs — real spend (`cost`) and real paid spend (`paid_cost`).
+    // The counterfactual `avoided_cost` isn't derivable from this table (it
+    // needs reference pricing) and is joined in below from computeSavings.
     const dailyCosts = db.prepare(`
       SELECT
-        DATE(timestamp) as date,
-        SUM(estimated_cost) as cost,
-        SUM(CASE WHEN estimated_cost = 0 OR estimated_cost IS NULL THEN estimated_cost ELSE 0 END) as free_cost,
-        SUM(CASE WHEN estimated_cost > 0 THEN estimated_cost ELSE 0 END) as paid_cost
-      FROM request_logs
-      WHERE timestamp > ?
-      GROUP BY DATE(timestamp)
+        DATE(rl.timestamp) as date,
+        SUM(rl.estimated_cost) as cost,
+        SUM(CASE WHEN NOT (${IS_FREE_CASE}) THEN rl.estimated_cost ELSE 0 END) as paid_cost
+      FROM request_logs rl
+      LEFT JOIN model_classifications mc
+        ON mc.provider_id = rl.selected_provider
+       AND mc.model_id   = rl.selected_model
+      WHERE rl.timestamp > ?
+      GROUP BY DATE(rl.timestamp)
       ORDER BY date ASC
     `).all(start) as any[];
 
     // `costSavings` used to be SUM(CASE WHEN cost = 0 THEN cost ELSE 0 END),
     // which is identically zero. It now comes from the counterfactual in
     // services/savings.ts, which prices free-served tokens against the
-    // cheapest comparable paid model.
+    // cheapest comparable paid model. Reused here for `avoided_cost` per day.
     const savings = computeSavings(days);
+    const avoidedByDate = new Map(savings.daily.map((d) => [d.date, d.costAvoidedUsd]));
 
     return {
       period: { start: new Date(start), end: new Date() },
       totalCost: totals?.total_cost ?? 0,
-      freeTierCost: totals?.free_cost ?? 0,
-      paidCost: (totals?.total_cost ?? 0) - (totals?.free_cost ?? 0),
+      freeRequests: totals?.free_requests ?? 0,
+      freeTokens: totals?.free_tokens ?? 0,
+      paidCost: totals?.paid_cost ?? 0,
+      paidRequests: totals?.paid_requests ?? 0,
+      paidTokens: totals?.paid_tokens ?? 0,
       costSavings: savings.costAvoidedUsd,
       savingsBasis: savings.basis,
       byTenant: enrichedByTenant,
@@ -4337,7 +4462,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         tokens: p.tokens,
         freePercent: p.free_percent ?? 0,
       }])),
-      dailyCosts,
+      dailyCosts: dailyCosts.map((d: any) => ({
+        date: d.date,
+        cost: d.cost ?? 0,
+        paid_cost: d.paid_cost ?? 0,
+        avoided_cost: avoidedByDate.get(d.date) ?? 0,
+      })),
     };
   });
 
@@ -4602,9 +4732,93 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     telemetryEvents.emit('event', enriched);
   }
 
+  /**
+   * Backfill telemetry events from `request_logs` for the initial page load.
+   *
+   * `telemetryBuffer` is process-memory only (see above) and — separately —
+   * `recordTelemetryEvent` is only ever called from error/warning code paths
+   * (auth failures, routing failures, rate limits), never for an ordinary
+   * completed request. So on a fresh gateway process the Requests page's
+   * "Live stream of all requests" read an empty buffer and showed "No
+   * requests yet" / all-zero kind counters even though `request_logs` (the
+   * durable, DB-backed history CRIT-6 writes on every completed request —
+   * see telemetry-hooks.ts) had rows and the Dashboard's stat tiles
+   * (computeDashboardStats, also reading `request_logs`) showed a nonzero
+   * count. Synthesize one event per row so the two views agree, then merge
+   * with whatever the live buffer already holds.
+   */
+  function loadTelemetryHistory(limit: number): Array<Record<string, unknown>> {
+    try {
+      const db = getDb();
+      const rows = db.prepare(`
+        SELECT
+          rl.id as id,
+          rl.timestamp as timestamp,
+          rl.tenant_id as tenant_id,
+          rl.selected_model as model,
+          p.name as provider,
+          rl.latency_ms as latency_ms,
+          rl.error_code as error_code,
+          rl.fallback_used as fallback_used
+        FROM request_logs rl
+        LEFT JOIN providers p ON p.id = rl.selected_provider
+        ORDER BY rl.timestamp DESC
+        LIMIT ?
+      `).all(limit) as Array<{
+        id: string;
+        timestamp: string;
+        tenant_id: string | null;
+        model: string | null;
+        provider: string | null;
+        latency_ms: number | null;
+        error_code: string | null;
+        fallback_used: number | null;
+      }>;
+
+      return rows.map((row) => ({
+        id: `reqlog-${row.id}`,
+        timestamp: row.timestamp,
+        level: row.error_code ? 'error' : row.fallback_used ? 'warning' : 'info',
+        service: 'gateway',
+        message: row.error_code
+          ? `Request to ${row.model ?? 'unknown model'} failed: ${row.error_code}`
+          : `Request routed to ${row.model ?? 'unknown model'}${row.provider ? ` via ${row.provider}` : ''}`,
+        trace_id: null,
+        span_id: null,
+        duration: row.latency_ms,
+        metadata: {
+          kind: 'request',
+          tenant: row.tenant_id,
+          model: row.model,
+          provider: row.provider,
+        },
+        // Non-schema fields the UI's `ApiTelemetryEvent`/`normalizeTelemetryEvent`
+        // read directly (see apps/ui/src/lib/admin.ts, apps/ui/src/pages/Requests.tsx)
+        // — additive on top of the shape live `recordTelemetryEvent` rows use.
+        kind: 'request',
+        status: row.error_code ? 'error' : 'ok',
+        tenant: row.tenant_id,
+        model: row.model,
+      }));
+    } catch (err) {
+      logger.debug({ err }, 'Telemetry history backfill from request_logs failed');
+      return [];
+    }
+  }
+
   server.get('/admin/telemetry/events', async () => {
     trimTelemetryBuffer();
-    return { events: telemetryBuffer.slice(-100) };
+    // De-dupe by id (a live buffer event and a request_logs row never share
+    // one — buffer ids are `crypto.randomUUID()`, history ids are prefixed
+    // `reqlog-`) and sort newest-first so history and live events interleave
+    // correctly instead of history always trailing after live events.
+    const merged = new Map<string, Record<string, unknown>>();
+    for (const e of loadTelemetryHistory(200)) merged.set(e.id as string, e);
+    for (const e of telemetryBuffer) merged.set(e.id, e);
+    const events = Array.from(merged.values()).sort(
+      (a, b) => new Date(b.timestamp as string).getTime() - new Date(a.timestamp as string).getTime(),
+    );
+    return { events: events.slice(0, 200) };
   });
 
   // SSE stream of telemetry events. The UI's `EventSource('/admin/telemetry/stream')`
@@ -6180,6 +6394,17 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     try {
       const requestId = crypto.randomUUID();
       const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+      // Same X-Provider-Preferences carrier the public wire routes read (see
+      // ../utils/provider-preferences.ts). `parameters` below is spread onto
+      // the UnifiedRequest at its top level (matching each modality's field
+      // names), which is NOT where the router looks for routing constraints
+      // — it reads `metadata.providerPreferences` — so a raw
+      // `provider_blacklist`/`require_privacy` key inside `parameters` would
+      // land as inert clutter, not a constraint. Building it from the header
+      // instead of trusting `parameters` keeps this dispatcher's enforcement
+      // identical to the public routes'.
+      const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
+      const metadata = { requestId, ...(providerPreferences ? { providerPreferences } : {}) };
 
       // Map MCP tool names to their respective routing
       if (tool === 'dmrx_chat') {
@@ -6187,7 +6412,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'llm' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/chat/completions',
@@ -6201,7 +6426,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'embedding' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/embeddings',
@@ -6215,7 +6440,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'reranking' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/rerank',
@@ -6229,7 +6454,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'diffusion' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/images/generations',
@@ -6243,7 +6468,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'audio_stt' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/audio/transcriptions',
@@ -6257,7 +6482,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'audio_tts' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/audio/speech',
@@ -6271,7 +6496,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'video' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/video/generations',
@@ -6285,7 +6510,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: 'music' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/music/generations',
@@ -6299,7 +6524,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           ...parameters,
           modality: '3d' as const,
           stream: false,
-          metadata: { requestId },
+          metadata,
         };
         const { response } = await router.route(request, {
           path: '/v1/3d/generate',

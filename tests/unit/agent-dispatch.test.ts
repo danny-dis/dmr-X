@@ -25,7 +25,10 @@ describe('agent-dispatch scoring', () => {
     it('gives a category match strictly more weight than keyword hits', () => {
       const catMatch = def({ name: 'searcher', description: 'does search', category: 'search' });
       const keywordOnly = def({ name: 'searchbot', description: 'no category here', category: 'other' });
-      // catMatch: +3 category. keywordOnly: "search" appears in name=+1, "bot" maybe not a keyword.
+      // catMatch: +3 category, plus a full keyword match ("search" appears as
+      // a whole word in the description). keywordOnly: no category match, and
+      // "search" is only a substring of "searchbot" (not a whole word), so
+      // whole-word matching correctly scores it 0.
       expect(scoreDefinition(catMatch, 'search', 'search')).toBeGreaterThan(
         scoreDefinition(keywordOnly, 'search', 'search'),
       );
@@ -38,11 +41,13 @@ describe('agent-dispatch scoring', () => {
       expect(scoreDefinition(b, 'x', undefined, ['web', 'doc'])).toBe(2);
     });
 
-    it('awards +1 for each keyword hit in name or description', () => {
+    it('scores the fraction of distinct task keywords matched as whole words, times KEYWORD_WEIGHT(3)', () => {
       const d = def({ name: 'pdf extractor', description: 'parse and summarize pdf documents' });
-      // task terms: extract (matches "extractor"), pdf (name+desc), summarize (matches "summarize")
+      // task terms: "extract" does NOT match "extractor" (whole-word matching,
+      // not substring -- this is the bug-A fix), "pdf" matches, "summarize"
+      // matches. 2 of 3 distinct keywords matched -> (2/3) * 3 = 2.
       const s = scoreDefinition(d, 'extract pdf summarize');
-      expect(s).toBe(3);
+      expect(s).toBe(2);
       // No keyword overlap -> 0 (terms kept are >2 chars, none present)
       expect(scoreDefinition(def({ name: 'foo', description: 'bar baz' }), 'zzz qqq')).toBe(0);
     });
@@ -57,8 +62,45 @@ describe('agent-dispatch scoring', () => {
     it('combines category, tag and keyword contributions', () => {
       const d = def({ name: 'web scraper', description: 'fetch pages', category: 'web', tags: ['scrape', 'crawl'] });
       const s = scoreDefinition(d, 'scrape web pages', 'web', ['scrape']);
-      // +3 category, +2 tag, keyword hits for "scrape"(name), "web"(name), "pages"(desc) = +3
-      expect(s).toBe(3 + 2 + 3);
+      // +3 category, +2 tag. Keyword terms: "scrape" does NOT match "scraper"
+      // (whole-word matching, not substring), "web" matches, "pages" matches.
+      // 2 of 3 distinct keywords matched -> (2/3) * 3 = 2. Total: 3 + 2 + 2.
+      expect(s).toBe(3 + 2 + 2);
+    });
+
+    it('does not match a keyword as a substring of an unrelated word', () => {
+      // "api" must not match inside "rapid", "man" must not match inside
+      // "management", "cat" must not match inside "concatenate".
+      const d = def({ name: 'rapid management', description: 'concatenate strings' });
+      expect(scoreDefinition(d, 'api')).toBe(0);
+      expect(scoreDefinition(d, 'man')).toBe(0);
+      expect(scoreDefinition(d, 'cat')).toBe(0);
+    });
+
+    it('filters common stopwords out of task keywords', () => {
+      const d = def({ name: 'alpha', description: 'the and for has can are not' });
+      // Every task word here is a stopword; nothing survives the filter, so
+      // there is no keyword component (not a spurious match against a
+      // description that happens to contain the same stopwords).
+      expect(scoreDefinition(d, 'the and for has can')).toBe(0);
+    });
+
+    it('de-duplicates repeated task keywords instead of compounding the score', () => {
+      const d = def({ name: 'model router', description: 'routes to a model' });
+      const repeated = scoreDefinition(d, 'model model model');
+      const single = scoreDefinition(d, 'model');
+      expect(repeated).toBe(single);
+    });
+
+    it('normalizes for description length so a verbose match does not outrank a precise one', () => {
+      const precise = def({ name: 'pdf', description: 'pdf' });
+      const verbose = def({
+        name: 'pdf',
+        description: 'pdf plus a very long description with lots of unrelated filler content padding it out',
+      });
+      // Both fully match the single task keyword "pdf" -> same normalized
+      // score, regardless of how much extra text the description carries.
+      expect(scoreDefinition(precise, 'pdf')).toBe(scoreDefinition(verbose, 'pdf'));
     });
 
     it('returns 0 when no hints/keywords match', () => {

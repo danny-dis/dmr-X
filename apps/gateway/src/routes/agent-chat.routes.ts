@@ -13,7 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import crypto from 'crypto';
 
 import { writeSSE } from '../lib/sse.js';
-import { getRegisteredToolDefinitions, cleanupSandboxDir } from './tools.routes.js';
+import { getRegisteredToolDefinitions, normalizeAllowedTools, cleanupSandboxDir } from './tools.routes.js';
 import { runAgentChatLoop } from './agent-chat-loop.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 
@@ -47,9 +47,10 @@ interface AgentChatBody {
  * `allowedTools`. Returns `undefined` when the agent has no allowed tools, so
  * the model is never handed an empty tool list.
  */
-function buildAgentTools(allowedTools: string[]): any[] | undefined {
-  if (!allowedTools || allowedTools.length === 0) return undefined;
-  const defs = getRegisteredToolDefinitions(allowedTools);
+function buildAgentTools(allowedTools: unknown): any[] | undefined {
+  const names = normalizeAllowedTools(allowedTools);
+  if (names.length === 0) return undefined;
+  const defs = getRegisteredToolDefinitions(names);
   return defs.length > 0 ? defs : undefined;
 }
 
@@ -92,7 +93,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
     const definition = context.definition;
     const model = agentRuntimeService.resolveModel(definition);
-    const agentTools = definition.allowedTools;
+    const agentTools = normalizeAllowedTools(definition.allowedTools);
     const agentToolDefs = buildAgentTools(agentTools);
 
     // Acquire conversation lock. Key per-conversation (not per-instance) so
@@ -159,7 +160,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           id: definition.id,
           name: definition.name,
           tenantId: definition.tenantId,
-          allowedTools: definition.allowedTools,
+          allowedTools: agentTools,
         },
         loadedSkillIds,
         runtime: agentRuntimeService,
@@ -249,6 +250,11 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         content: result.lastResponseText,
         model,
         usage: result.finalUsage,
+        // finalUsage is only the last step. The loop accumulates across every
+        // step, and a caller metering a multi-step run (a job charging spend
+        // against a budget, say) needs the totals, not the tail.
+        totalTokens: result.totalTokensUsed,
+        costUsd: result.totalCost,
         conversationId: conversation.id,
         steps_completed: result.stepsCompleted,
         all_steps: result.allSteps,
@@ -343,14 +349,24 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       }
       const loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');
 
-      const conversation = updateState(persisted.state as ConversationState, {
-        messages: [...persisted.state.messages, ...body.messages],
-        status: 'in_progress',
+      // Keep `awaiting_approval` when the caller is answering an approval
+      // prompt. processApprovalDecisions() refuses to act on any other status,
+      // so forcing 'in_progress' here made every approval a no-op: the resume
+      // reported success, the approved tool never ran, and the unanswered
+      // tool_calls message was resent to the provider on the next turn.
+      const hasApprovalDecisions = (body.approvalDecisions?.length ?? 0) > 0;
+      const persistedState = persisted.state as ConversationState;
+      const conversation = updateState(persistedState, {
+        messages: [...persistedState.messages, ...body.messages],
+        status:
+          hasApprovalDecisions && persistedState.status === 'awaiting_approval'
+            ? 'awaiting_approval'
+            : 'in_progress',
       });
 
       const definition = context.definition;
       const model = agentRuntimeService.resolveModel(definition);
-      const agentTools = definition.allowedTools;
+      const agentTools = normalizeAllowedTools(definition.allowedTools);
       const agentToolDefs = buildAgentTools(agentTools);
 
       const result = await runAgentChatLoop({
@@ -372,7 +388,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           id: definition.id,
           name: definition.name,
           tenantId: definition.tenantId,
-          allowedTools: definition.allowedTools,
+          allowedTools: agentTools,
         },
         loadedSkillIds,
         runtime: agentRuntimeService,
@@ -423,6 +439,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         content: result.lastResponseText,
         model,
         usage: result.finalUsage,
+        totalTokens: result.totalTokensUsed,
+        costUsd: result.totalCost,
         conversationId,
         steps_completed: result.stepsCompleted,
         durationMs: Date.now() - startTime,

@@ -9,6 +9,25 @@ export { BaseAdapter } from './base.adapter.js';
 export { AdapterRegistry } from './adapter-registry.js';
 export { createOpenAISSEIterator, createAnthropicSSEIterator, createSSESerializer, formatSSEChunk } from './stream-normalizer.js';
 
+// Prompt caching
+export {
+  planPromptCache,
+  stripCacheControl,
+  minCacheableTokens,
+  estimateTokens,
+  EMPTY_PLAN,
+  LOOKBACK_WINDOW_BLOCKS,
+} from './prompt-cache.js';
+export type { PromptCachePlan } from './prompt-cache.js';
+export {
+  normalizeAnthropicUsage,
+  normalizeOpenAIUsage,
+  normalizeGeminiUsage,
+  computeCachedCost,
+  computeCacheSavings,
+} from './cache-usage.js';
+export type { CacheAwarePricing } from './cache-usage.js';
+
 // LLM Adapters
 export { OpenAIAdapter } from './openai/openai.adapter.js';
 export { AnthropicAdapter } from './anthropic/anthropic.adapter.js';

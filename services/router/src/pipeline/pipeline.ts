@@ -371,13 +371,26 @@ function applyProviderPreferences(
   // Filter by `only` list (whitelist)
   if (prefs.only && prefs.only.length > 0) {
     const allowedSlugs = new Set(prefs.only.map(resolveProviderSlug));
-    result = result.filter((m) => allowedSlugs.has(resolveProviderSlug(m.providerId)));
+    result = result.filter((m) => matchesAnyProviderSlug(m, allowedSlugs));
   }
 
   // Filter by `ignore` list (blocklist) - only if `only` is not set
   if (!prefs.only && prefs.ignore && prefs.ignore.length > 0) {
     const ignoredSlugs = new Set(prefs.ignore.map(resolveProviderSlug));
-    result = result.filter((m) => !ignoredSlugs.has(resolveProviderSlug(m.providerId)));
+    result = result.filter((m) => !matchesAnyProviderSlug(m, ignoredSlugs));
+  }
+
+  // Zero-data-retention / privacy filter. This is a hard constraint, not a
+  // soft preference: a caller setting `zdr` is asking that their data never
+  // leave infrastructure they control. Self-hosted and on-device deployments
+  // qualify; cloud deployments never do. Candidates with no `deployment` tag
+  // are excluded too (fail closed) rather than assumed safe — the alternative
+  // (treating unknown as safe, the way `preferredMaxLatencyMs` and friends
+  // treat unknown metrics) would silently leak requests to unclassified
+  // cloud providers, which is exactly the failure this flag exists to
+  // prevent.
+  if (prefs.zdr) {
+    result = result.filter((m) => m.deployment === 'self_hosted' || m.deployment === 'on_device');
   }
 
   // Filter by max price
@@ -427,6 +440,27 @@ function applyProviderPreferences(
 }
 
 /**
+ * A `ProviderPreferences.order`/`only`/`ignore` entry is a human-facing
+ * provider slug ("ollama", "openai", ...) — what every real caller (MCP
+ * tool params, the X-Provider-Preferences header) actually sends. Candidates
+ * carry that same slug as `providerName`; `providerId` is the DB row UUID
+ * (see services/registry/src/registry.service.ts: `p.id as "providerId"`,
+ * `p.name as "providerName"`). Matching only against `providerId` after
+ * slug-normalizing it — resolveProviderSlug() just lowercases/aliases,it
+ * doesn't know about UUIDs — silently matched nothing for every slug-based
+ * caller, i.e. the entire common case. Check both so a literal UUID (if
+ * anyone ever passes one) still works too.
+ */
+function matchesAnyProviderSlug(m: ProviderModel, slugs: ReadonlySet<string>): boolean {
+  return slugs.has(resolveProviderSlug(m.providerName)) || slugs.has(resolveProviderSlug(m.providerId));
+}
+
+function orderIndexOf(m: ProviderModel, orderIndex: Map<string, number>): number | undefined {
+  const byName = orderIndex.get(resolveProviderSlug(m.providerName));
+  return byName !== undefined ? byName : orderIndex.get(resolveProviderSlug(m.providerId));
+}
+
+/**
  * Re-sort scored candidates to prioritize user's preferred provider order.
  * Providers in the order list get boosted to the top while preserving relative composite scores within groups.
  */
@@ -435,8 +469,8 @@ function applyProviderOrder(scored: CandidateSet, order: string[]): CandidateSet
   const orderIndex = new Map(orderSlugs.map((slug, i) => [slug, i]));
 
   return [...scored].sort((a, b) => {
-    const aIdx = orderIndex.get(resolveProviderSlug(a.providerId));
-    const bIdx = orderIndex.get(resolveProviderSlug(b.providerId));
+    const aIdx = orderIndexOf(a, orderIndex);
+    const bIdx = orderIndexOf(b, orderIndex);
 
     // Both in order list: sort by order position
     if (aIdx !== undefined && bIdx !== undefined) return aIdx - bIdx;

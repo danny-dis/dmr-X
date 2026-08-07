@@ -99,6 +99,13 @@ export const keys = {
     tools: () => [...keys.mcp.all, 'tools'] as const,
     status: () => [...keys.mcp.all, 'status'] as const,
     config: () => [...keys.mcp.all, 'config'] as const,
+    toolSearch: () => [...keys.mcp.all, 'tool-search'] as const,
+    guardrails: () => [...keys.mcp.all, 'guardrails'] as const,
+    audit: () => [...keys.mcp.all, 'audit'] as const,
+    rbac: () => [...keys.mcp.all, 'rbac'] as const,
+    federationConfig: () => [...keys.mcp.all, 'federation-config'] as const,
+    federationPeers: () => [...keys.mcp.all, 'federation-peers'] as const,
+    aggregation: () => [...keys.mcp.all, 'aggregation'] as const,
   },
 
   a2a: {
@@ -193,5 +200,27 @@ export const keys = {
     all: ['compression'] as const,
     config: () => [...keys.compression.all, 'config'] as const,
     stats: () => [...keys.compression.all, 'stats'] as const,
+  },
+
+  integrations: {
+    all: ['integrations'] as const,
+    config: () => [...keys.integrations.all, 'config'] as const,
+  },
+
+  godmode: {
+    all: ['godmode'] as const,
+    serverStatus: () => [...keys.godmode.all, 'server-status'] as const,
+    serverConfig: () => [...keys.godmode.all, 'server-config'] as const,
+    serverUpdates: () => [...keys.godmode.all, 'server-updates'] as const,
+  },
+
+  conversations: {
+    all: ['conversations'] as const,
+    list: () => [...keys.conversations.all, 'list'] as const,
+  },
+
+  needle: {
+    all: ['needle'] as const,
+    status: () => [...keys.needle.all, 'status'] as const,
   },
 } as const;

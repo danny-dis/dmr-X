@@ -228,20 +228,21 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['llm', 'embedding', 'audio_stt', 'diffusion', 'video'],
     models: [
+      { id: 'gemini-3.6-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
       { id: 'gemini-3.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
-      { id: 'gemini-3-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-3.5-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 10 } },
+      { id: 'gemini-3-flash-preview', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
       { id: 'gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
       { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 }, sharedPool: { rpm: 30, rpd: 1500, tpm: 1000000, tpd: 50000000 } },
-      { id: 'gemini-2.5-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 10, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
+      // gemini-2.5-flash-lite removed: the API returns 404 "no longer available to new users".
       { id: 'gemini-2.0-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
       { id: 'text-embedding-004', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
       { id: 'imagen-3.0', modalities: ['diffusion'], capabilities: ['text2img'], specializations: ['creative'] },
-      { id: 'gemma-4-27b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-      { id: 'gemma-3-27b-instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-      { id: 'gemma-3-12b-instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 9 } },
-      { id: 'gemma-3-4b-instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 5, speedRank: 10 } },
-      { id: 'gemma-3-1b-instruct', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 30, rpd: 14400, tpm: 15000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 4, speedRank: 10 } },
+      // Gemma on the Gemini API: only the gemma-4 pair is served. The gemma-3-*
+      // ids are gone, and there is no "gemma-4-27b" — the real ids are below.
+      { id: 'gemma-4-31b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'gemma-4-26b-a4b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
     ],
     streaming: true,
     toolCalling: true,
@@ -320,11 +321,18 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['llm', 'embedding'],
     models: [
-      { id: 'mistral-large-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 2, outputCostPer1M: 6, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['backend_api', 'general'] },
-      { id: 'mistral-small-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.1, outputCostPer1M: 0.3, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['fast', 'cheap'] },
-      { id: 'open-mistral-7b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 60, rpd: 0, tpm: 500000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 9 } },
-      { id: 'codestral-latest', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 0.3, outputCostPer1M: 0.9, capabilities: ['streaming'], specializations: ['bulk_generation', 'backend_logic'] },
-      { id: 'pixtral-large-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 2, outputCostPer1M: 6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['ui_design', 'general'] },
+      // rpm/tpm below are the values Mistral reports in x-ratelimit-* response
+      // headers on a free ("Experiment") key — they differ sharply per model,
+      // so the router must not assume one shared limit for the provider.
+      { id: 'mistral-large-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 2, outputCostPer1M: 6, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['backend_api', 'general'], freeTier: { rateLimits: { rpm: 4, rpd: 0, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 8, speedRank: 6 } },
+      { id: 'mistral-medium-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.4, outputCostPer1M: 2, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 50, rpd: 0, tpm: 25000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 8, speedRank: 8 } },
+      { id: 'mistral-small-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.1, outputCostPer1M: 0.3, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 50, rpd: 0, tpm: 50000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'ministral-3b-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.04, outputCostPer1M: 0.04, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 750, rpd: 0, tpm: 1300000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 5, speedRank: 10 } },
+      { id: 'ministral-8b-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.1, outputCostPer1M: 0.1, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 188, rpd: 0, tpm: 625000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 6, speedRank: 9 } },
+      { id: 'ministral-14b-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.15, outputCostPer1M: 0.15, capabilities: ['tool_use', 'json_mode', 'streaming'], specializations: ['general', 'fast'], freeTier: { rateLimits: { rpm: 30, rpd: 0, tpm: 937500, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'magistral-small-latest', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.5, outputCostPer1M: 1.5, capabilities: ['tool_use', 'streaming'], specializations: ['reasoning'], freeTier: { rateLimits: { rpm: 50, rpd: 0, tpm: 50000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 8, speedRank: 6 } },
+      { id: 'codestral-latest', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 0.3, outputCostPer1M: 0.9, capabilities: ['tool_use', 'streaming'], specializations: ['bulk_generation', 'backend_logic'], freeTier: { rateLimits: { rpm: 125, rpd: 0, tpm: 625000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'devstral-latest', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 0.4, outputCostPer1M: 2, capabilities: ['tool_use', 'streaming'], specializations: ['coding', 'backend_logic'], freeTier: { rateLimits: { rpm: 50, rpd: 0, tpm: 1000000, tpd: 0 }, monthlyTokenBudget: 1000000000, intelligenceRank: 8, speedRank: 6 } },
       { id: 'mistral-embed', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
     ],
     streaming: true,
@@ -428,11 +436,17 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'custom',
     modalities: ['llm', 'embedding', 'reranking'],
     models: [
-      { id: 'command-r-plus', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 2.5, outputCostPer1M: 10, capabilities: ['tool_use', 'streaming'], specializations: ['backend_api', 'general'], freeTier: { rateLimits: { rpm: 20, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
-      { id: 'command-r', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 20, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
-      { id: 'command-r7b-12-2024', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 20, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 9 } },
-      { id: 'command-a-03-2025', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
-      { id: 'c4ai-aya-expanse-32b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['multilingual'], freeTier: { rateLimits: { rpm: 20, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
+      // A Cohere trial key is capped at 1000 API calls/MONTH (~33/day) on top of
+      // the 20 rpm limit; past that every call returns 429. rpd encodes that cap
+      // so the router stops spending a persona's month in one burst.
+      { id: 'command-a-plus-05-2026', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 2.5, outputCostPer1M: 10, capabilities: ['tool_use', 'streaming'], specializations: ['backend_api', 'general'], freeTier: { rateLimits: { rpm: 20, rpd: 33, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
+      { id: 'command-a-reasoning-08-2025', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['reasoning'], freeTier: { rateLimits: { rpm: 20, rpd: 33, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 6 } },
+      { id: 'command-r-plus-08-2024', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 2.5, outputCostPer1M: 10, capabilities: ['tool_use', 'streaming'], specializations: ['backend_api', 'general'], freeTier: { rateLimits: { rpm: 20, rpd: 33, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
+      { id: 'command-r-08-2024', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 20, rpd: 33, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'command-r7b-12-2024', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 20, rpd: 33, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 6, speedRank: 9 } },
+      { id: 'command-a-03-2025', modalities: ['llm'], contextWindow: 256000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 33, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 7 } },
+      // Rejects a tools[] payload with 400 — no tool_use capability.
+      { id: 'c4ai-aya-expanse-32b', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['multilingual'], freeTier: { rateLimits: { rpm: 20, rpd: 33, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
       { id: 'embed-english-v3.0', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
       { id: 'embed-multilingual-v3.0', modalities: ['embedding'], capabilities: ['embedding', 'multilingual'], specializations: ['embedding'] },
       { id: 'rerank-english-v3.0', modalities: ['reranking'], capabilities: ['reranking'], specializations: ['reranking'] },
@@ -1078,12 +1092,25 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     apiFormat: 'openai',
     modalities: ['llm'],
     models: [
-      { id: 'tencent/hy3:free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general', 'coding'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      // Free on the gateway (verified 200 with a live key).
+      { id: 'inclusionai/ling-3.0-flash:free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
+      { id: 'mindai/macaron-v1-tall', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
+      { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['reasoning', 'general'], freeTier: { rateLimits: { rpm: 0, rpd: 0, tpm: 0, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 6 } },
+      // Served, but billed — a keyless call returns 402 "Insufficient credits".
+      // No freeTier, so free-tier routing skips them.
+      { id: 'tencent/hy3', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.3, outputCostPer1M: 0.9, capabilities: ['streaming', 'tool_use'], specializations: ['general', 'coding'] },
+      { id: 'xiaomi/mimo-v2.5-pro', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.3, outputCostPer1M: 0.9, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
+      { id: 'xiaomi/mimo-v2.5', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.2, outputCostPer1M: 0.6, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
+      { id: 'google/gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['streaming', 'tool_use'], specializations: ['fast', 'cheap'] },
+      { id: 'minimax/minimax-m3', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.3, outputCostPer1M: 0.9, capabilities: ['streaming', 'tool_use'], specializations: ['general'] },
+      { id: 'qwen/qwen3.7-max', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.5, outputCostPer1M: 1.5, capabilities: ['streaming', 'tool_use'], specializations: ['general', 'coding'] },
+      { id: 'moonshotai/kimi-k3', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.5, outputCostPer1M: 1.5, capabilities: ['streaming', 'tool_use'], specializations: ['general', 'coding'] },
+      { id: 'z-ai/glm-5.2', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0.5, outputCostPer1M: 1.5, capabilities: ['streaming', 'tool_use'], specializations: ['general', 'coding'] },
     ],
     streaming: true,
     toolCalling: true,
     envKey: 'GITLAWB_API_KEY',
-    description: 'Self-hosted OpenGateway (gitlawb) OpenAI-compatible endpoint. Tencent Hunyuan 3 free tier.',
+    description: 'GitLawb OpenGateway, an OpenAI-compatible aggregator. Three free models (Ling 3.0 Flash, Macaron v1, Nemotron 3 Ultra); the rest need credits.',
     region: 'global',
     signupUrl: 'https://opengateway.gitlawb.com',
   },
@@ -1484,13 +1511,17 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     authMethod: 'bearer',
     apiFormat: 'openai',
     modalities: ['llm'],
-    models: [      { id: 'mimo-v2.5-free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } },
+    models: [
+      { id: 'mimo-v2.5-free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } },
       { id: 'deepseek-v4-flash-free', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 8, speedRank: 9 } },
       { id: 'nemotron-3-ultra-free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['reasoning', 'general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 9, speedRank: 6 } },
-      { id: 'north-mini-code-free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming'], specializations: ['coding'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } }
+      { id: 'north-mini-code-free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['coding'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'ling-3.0-flash-free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['fast', 'general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 9 } },
+      { id: 'laguna-s-2.1-free', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['tool_use', 'streaming'], specializations: ['general'], freeTier: { rateLimits: { rpm: 20, rpd: 200, tpm: 0, tpd: 0 }, monthlyTokenBudget: 1000000, intelligenceRank: 7, speedRank: 9 } },
     ],
     streaming: true,
-    toolCalling: false,
+    // Every free Zen model returned a real tool_calls payload when probed.
+    toolCalling: true,
     envKey: 'OPENCODE_ZEN_API_KEY',
     description: 'OpenCode Zen free gateway. Curated models including DeepSeek V4 Flash Free, MiMo-V2.5 Free, Nemotron 3 Super Free.',
     region: 'global',
@@ -2300,6 +2331,32 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'Community API, 2000+ users',
     region: 'global',
     signupUrl: 'https://kimetsu.one/',
+  },
+
+  {
+    id: 'tokenrouter',
+    name: 'TokenRouter',
+    category: 'hosting',
+    baseUrl: 'https://api.tokenrouter.com/v1',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm'],
+    // Seed models only — TokenRouter fronts ~120 models and the rest are picked
+    // up by discoverMissingModels() from its /v1/models endpoint on startup.
+    // kimi-k3-free is listed first because it is the free tier's workhorse, and
+    // claude-fable-5 because TokenRouter is currently the only configured route
+    // to an Anthropic model that answers.
+    models: [
+      { id: 'moonshotai/kimi-k3-free', modalities: ['llm'], contextWindow: 262144, maxOutputTokens: 16384, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use', 'json_mode', 'reasoning'], specializations: ['general', 'code'], freeTier: { rateLimits: { rpm: 10, rpd: 500, tpm: 200000, tpd: 2000000 }, monthlyTokenBudget: 0, intelligenceRank: 9, speedRank: 7 } },
+      { id: 'moonshotai/kimi-k3', modalities: ['llm'], contextWindow: 262144, maxOutputTokens: 16384, capabilities: ['streaming', 'tool_use', 'json_mode', 'reasoning'], specializations: ['general', 'code'] },
+      { id: 'anthropic/claude-fable-5', modalities: ['llm'], contextWindow: 200000, maxOutputTokens: 64000, capabilities: ['streaming', 'tool_use', 'json_mode', 'vision', 'prompt_caching'], specializations: ['general', 'code'] },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'TOKENROUTER_API_KEY',
+    description: 'Aggregator fronting ~120 models; reports prompt-cache and reasoning token counts',
+    region: 'global',
+    signupUrl: 'https://tokenrouter.com/',
   },
 
   {

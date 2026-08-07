@@ -8,8 +8,7 @@ import { LazyTab } from '@/components/primitives/LazyTab';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
+import { useAgentIntegrationConfig, type AgentIntegrationConfig } from '@/lib/queries/integrations';
 import { cn } from '@/lib/utils';
 
 // Lazy-load tab content for code splitting
@@ -17,13 +16,6 @@ const ClaudeCodeTab = React.lazy(() => import('@/pages/ClaudeCode').then(m => ({
 const CodexTab = React.lazy(() => import('@/pages/Codex').then(m => ({ default: m.CodexPage })));
 const AntigravityTab = React.lazy(() => import('@/pages/Antigravity').then(m => ({ default: m.AntigravityPage })));
 const OpenCodeTab = React.lazy(() => import('@/pages/OpenCode').then(m => ({ default: m.OpenCodePage })));
-
-interface AgentIntegrationConfig {
-  claudeCode: Record<string, unknown> | null;
-  codex: Record<string, unknown> | null;
-  geminiCli: Record<string, unknown> | null;
-  opencode: Record<string, unknown> | null;
-}
 
 const TOOL_META: Record<string, { label: string; description: string; icon: React.ReactNode }> = {
   'claude-code': { label: 'Claude Code', description: 'Anthropic CLI', icon: <Terminal className="size-4" /> },
@@ -48,7 +40,7 @@ function isConfigured(config: AgentIntegrationConfig): Record<string, boolean> {
 }
 
 export function AgentIntegrationsPage() {
-  const config = useApiData<AgentIntegrationConfig>(() => Admin.getAgentIntegrationConfig(), []);
+  const config = useAgentIntegrationConfig();
 
   return (
     <PageContainer>

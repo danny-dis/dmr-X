@@ -1,7 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { Admin } from '../admin';
 import { api } from '../api';
 import { keys } from '../queryClient';
+
+import type {
+  ApiMcpAggregatedServer,
+  ApiMcpAuditConfig,
+  ApiMcpFederationConfig,
+  ApiMcpFederationPeer,
+  ApiMcpGuardrailsConfig,
+  ApiMcpToolSearchConfig,
+  ApiRbacPolicy,
+} from '@/types/api';
 
 // ---------------------------------------------------------------------------
 // MCP servers
@@ -204,3 +215,177 @@ export function useDeleteMcpServer() {
     onSuccess: invalidate,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Tool search
+// ---------------------------------------------------------------------------
+
+export function useToolSearchConfig() {
+  return useQuery({
+    queryKey: keys.mcp.toolSearch(),
+    queryFn: () => Admin.getToolSearchConfig(),
+  });
+}
+
+export function useUpdateToolSearchConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ApiMcpToolSearchConfig) => Admin.updateToolSearchConfig({ ...body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp.toolSearch() }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Guardrails
+// ---------------------------------------------------------------------------
+
+export function useGuardrailsConfig() {
+  return useQuery({
+    queryKey: keys.mcp.guardrails(),
+    queryFn: () => Admin.getGuardrailsConfig(),
+  });
+}
+
+export function useUpdateGuardrailsConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ApiMcpGuardrailsConfig) => Admin.updateGuardrailsConfig({ ...body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp.guardrails() }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Audit trail
+// ---------------------------------------------------------------------------
+
+export function useAuditConfig() {
+  return useQuery({
+    queryKey: keys.mcp.audit(),
+    queryFn: () => Admin.getAuditConfig(),
+  });
+}
+
+export function useUpdateAuditConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ApiMcpAuditConfig) => Admin.updateAuditConfig({ ...body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp.audit() }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RBAC
+// ---------------------------------------------------------------------------
+
+export function useRbacPolicies() {
+  return useQuery({
+    queryKey: keys.mcp.rbac(),
+    queryFn: () => Admin.listRbacPolicies(),
+  });
+}
+
+function useRbacInvalidation() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: keys.mcp.rbac() });
+}
+
+export function useCreateRbacPolicy() {
+  const invalidate = useRbacInvalidation();
+  return useMutation({
+    mutationFn: (body: Omit<ApiRbacPolicy, 'id'> & { id?: string }) => Admin.createRbacPolicy(body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteRbacPolicy() {
+  const invalidate = useRbacInvalidation();
+  return useMutation({
+    mutationFn: (id: string) => Admin.deleteRbacPolicy(id),
+    onSuccess: invalidate,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Federation
+// ---------------------------------------------------------------------------
+
+export function useMcpFederationConfig() {
+  return useQuery({
+    queryKey: keys.mcp.federationConfig(),
+    queryFn: () => Admin.getFederationConfig(),
+  });
+}
+
+export function useUpdateMcpFederationConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) => Admin.updateFederationConfig(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp.federationConfig() }),
+  });
+}
+
+export function useMcpFederationPeers() {
+  return useQuery({
+    queryKey: keys.mcp.federationPeers(),
+    queryFn: () => Admin.listFederationPeers(),
+  });
+}
+
+function useMcpFederationPeersInvalidation() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: keys.mcp.federationPeers() });
+}
+
+export function useAddMcpFederationPeer() {
+  const invalidate = useMcpFederationPeersInvalidation();
+  return useMutation({
+    mutationFn: (body: { name: string; endpoint: string; secretRef?: string }) => Admin.addFederationPeer(body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRemoveMcpFederationPeer() {
+  const invalidate = useMcpFederationPeersInvalidation();
+  return useMutation({
+    mutationFn: (id: string) => Admin.removeFederationPeer(id),
+    onSuccess: invalidate,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Aggregation
+// ---------------------------------------------------------------------------
+
+export function useAggregatedServers() {
+  return useQuery({
+    queryKey: keys.mcp.aggregation(),
+    queryFn: () => Admin.listAggregatedServers() as Promise<ApiMcpAggregatedServer[]>,
+  });
+}
+
+function useAggregationInvalidation() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: keys.mcp.aggregation() });
+}
+
+export function useAddAggregatedServer() {
+  const invalidate = useAggregationInvalidation();
+  return useMutation({
+    mutationFn: (body: { id: string; name: string; transport: string; url?: string; command?: string; args?: string[] }) =>
+      Admin.addAggregatedServer(body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRemoveAggregatedServer() {
+  const invalidate = useAggregationInvalidation();
+  return useMutation({
+    mutationFn: (id: string) => Admin.removeAggregatedServer(id),
+    onSuccess: invalidate,
+  });
+}
+
+// Re-exported so components importing peer/server types get everything from
+// one module. `ApiMcpFederationConfig` is used only as this hook's return
+// type today.
+export type { ApiMcpFederationConfig, ApiMcpFederationPeer };

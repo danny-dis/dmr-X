@@ -83,41 +83,165 @@ function splitFt5(sql: string): string[] {
 // the .tmp file, the second rename then throws ENOENT and crashes the process.
 
 /**
- * Atomically publish `src` as `dest`.
+ * Acquire a cross-process mutex backed by an exclusively-created lock file.
  *
- * `fs.rename` on Windows cannot replace a destination that still has an open
- * handle (live gateway flush, antivirus, search indexer) — it fails with
- * EPERM. We retry briefly (the lock is usually momentary), then fall back to
- * `copyFile` which overwrites a locked file. The destination is never deleted
- * before the new bytes are fully written, so a failed replace only leaves a
- * stray temp file — it can never truncate or zero the live database.
+ * `fs.open(path, 'wx')` is atomic at the OS level: exactly one caller across
+ * every process on the machine gets the file, everyone else sees EEXIST. That
+ * makes it safe to serialize the two independent processes (gateway + MCP
+ * server) that can both be publishing to the same `data.db(.enc)` at once —
+ * something an in-process flag can never do.
+ *
+ * A holder that crashes without releasing the lock would otherwise wedge
+ * every future save forever, so a lock file older than `staleAfterMs` is
+ * treated as abandoned and reclaimed.
  */
-async function atomicReplace(src: string, dest: string): Promise<void> {
-  for (let attempt = 0; attempt < 5; attempt++) {
+async function acquirePublishLock(lockPath: string, maxWaitMs = 10_000, staleAfterMs = 30_000): Promise<() => Promise<void>> {
+  const start = Date.now();
+  for (;;) {
     try {
-      await fs.promises.rename(src, dest);
-      return;
+      const handle = await fs.promises.open(lockPath, 'wx');
+      await handle.close();
+      return async () => { try { await fs.promises.unlink(lockPath); } catch { /* best-effort */ } };
     } catch (err: any) {
-      if (err?.code === 'EPERM' || err?.code === 'EBUSY') {
-        if (attempt < 4) {
-          await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+      if (err?.code !== 'EEXIST') throw err;
+      try {
+        const st = await fs.promises.stat(lockPath);
+        if (Date.now() - st.mtimeMs > staleAfterMs) {
+          // Holder is presumed dead (crashed mid-publish). Reclaim the lock
+          // rather than wedge every future save on this machine forever.
+          try { await fs.promises.unlink(lockPath); } catch { /* another waiter may have reclaimed it first — fine */ }
           continue;
         }
-        // Last resort: copyFile overwrites an in-use file on Windows.
-        await fs.promises.copyFile(src, dest);
-        try { await fs.promises.unlink(src); } catch { /* best-effort */ }
-        return;
+      } catch { /* lock vanished between EEXIST and stat — retry immediately */ }
+      if (Date.now() - start > maxWaitMs) {
+        throw new Error(`Timed out waiting for database publish lock: ${lockPath}`);
       }
-      throw err;
+      await new Promise((r) => setTimeout(r, 25));
     }
   }
 }
 
+/**
+ * Atomically publish `src` as `dest`.
+ *
+ * `fs.rename` on Windows cannot replace a destination that still has an open
+ * handle (live gateway flush, antivirus, search indexer) — it fails with
+ * EPERM. That handle is just as likely to be another DMR-X process (the
+ * gateway and the MCP server can both target the same data.db) as it is a
+ * transient scanner, and if two processes both fell through to a raw
+ * `copyFile` at the same moment, their writes could interleave on disk and
+ * publish a torn file — copyFile is not atomic the way rename is.
+ *
+ * A cross-process lock file makes the whole publish attempt (rename retries
+ * and, if it comes to that, the copyFile fallback) mutually exclusive across
+ * every process on the machine, so only one writer is ever touching `dest`
+ * at a time. The destination is never deleted before the new bytes are fully
+ * written, so a failed replace only leaves a stray temp file — it can never
+ * truncate or zero the live database.
+ */
+async function atomicReplace(src: string, dest: string): Promise<void> {
+  const release = await acquirePublishLock(`${dest}.publish.lock`);
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await fs.promises.rename(src, dest);
+        return;
+      } catch (err: any) {
+        if (err?.code === 'EPERM' || err?.code === 'EBUSY') {
+          if (attempt < 4) {
+            await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+            continue;
+          }
+          // Last resort: copyFile overwrites an in-use file on Windows. Safe
+          // to do here because the lock above guarantees no other process is
+          // doing the same thing to `dest` at the same time.
+          await fs.promises.copyFile(src, dest);
+          try { await fs.promises.unlink(src); } catch { /* best-effort */ }
+          return;
+        }
+        throw err;
+      }
+    }
+  } finally {
+    await release();
+  }
+}
+
+/**
+ * Write `bytes` to `filePath` and force them onto the physical device.
+ *
+ * fs.writeFile() returns once the data is in the OS page cache, not once it is
+ * durable. The newest corruption backup on the reporting machine was 54 MB of
+ * pure NUL bytes — the file had been extended to full length but its contents
+ * never reached the disk before the process died. Without the explicit fsync
+ * that stays possible no matter how carefully the rename is sequenced.
+ */
+async function writeFileDurable(filePath: string, bytes: Buffer): Promise<void> {
+  const handle = await fs.promises.open(filePath, 'w');
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Read `filePath` back off disk and prove it holds exactly `expected`.
+ *
+ * Writing a file is not the same as writing a *recoverable* file. Previously a
+ * torn or truncated write was published straight over the live database and
+ * then copied to the .lastgood snapshot, so a single bad write destroyed the
+ * primary copy AND every fallback at once — leaving a fresh, empty database on
+ * the next boot. That is the "DMR-X starts from zero after a restart" failure.
+ *
+ * Comparing against the buffer we meant to write is both stronger and cheaper
+ * than re-parsing the database: it catches zero-fill, truncation and tearing,
+ * without pulling a multi-megabyte export back through sql.js on every save.
+ */
+async function verifyPersistedFile(filePath: string, expected: Buffer, encrypted: boolean): Promise<boolean> {
+  try {
+    const raw = await fs.promises.readFile(filePath);
+    if (raw.byteLength !== expected.byteLength) return false;
+    if (!raw.equals(expected)) return false;
+    // Decrypting proves the envelope is intact and the payload authenticates;
+    // the header check proves we are about to publish a real SQLite file.
+    let bytes: Buffer;
+    if (encrypted) {
+      const { decryptBytesRaw } = await import('@dmr-x/utils');
+      bytes = decryptBytesRaw(raw);
+    } else {
+      bytes = raw;
+    }
+    return bytes.subarray(0, 15).toString('latin1') === 'SQLite format 3';
+  } catch (err) {
+    log.error(`Verification of persisted database failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+// Set when startup could not open the existing database or any backup and fell
+// back to an empty one. While true, the .lastgood snapshot is left frozen so an
+// empty database cannot destroy the last recoverable copy of the user's data.
+let startedFromUnrecoverableDb = false;
+
 let saveInFlight: Promise<void> | null = null;
+let saveQueued = false;
 let tmpCounter = 0;
 async function saveDatabase(): Promise<void> {
   if (!getDbHandle() || !getDbPath()) return;
-  if (saveInFlight) return saveInFlight;
+  // Coalescing must not drop the newest state. Returning the in-flight promise
+  // meant a caller whose write landed *after* that save had already exported
+  // the database was told "saved" while its rows were never persisted. Queue a
+  // follow-up save instead, so the last writer is always flushed to disk.
+  if (saveInFlight) {
+    saveQueued = true;
+    return saveInFlight.then(() => {
+      if (!saveQueued) return;
+      saveQueued = false;
+      return saveDatabase();
+    });
+  }
   const run = (async () => {
     await fs.promises.mkdir(path.dirname(getDbPath()), { recursive: true });
     const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
@@ -140,9 +264,12 @@ async function saveDatabase(): Promise<void> {
       }
       let toWrite: Buffer;
       if (keySet) {
-        // Encrypt the on-disk database at rest (AES-256-GCM).
-        const { encryptBytes } = await import('@dmr-x/utils');
-        toWrite = Buffer.from(encryptBytes(Buffer.from(data)));
+        // Encrypt the on-disk database at rest (AES-256-GCM) using the binary
+        // envelope. The previous hex encoding doubled every write; a 26 MB
+        // database became a 52 MB write on every debounce, which is how a save
+        // stayed in flight long enough to be torn by the next one.
+        const { encryptBytesRaw } = await import('@dmr-x/utils');
+        toWrite = encryptBytesRaw(Buffer.from(data));
         // Never leave a plaintext copy behind once encryption is enabled.
         try { if (fs.existsSync(getDbPath())) await fs.promises.unlink(getDbPath()); } catch { /* best-effort */ }
       } else {
@@ -150,7 +277,16 @@ async function saveDatabase(): Promise<void> {
       }
       // Write to a temporary file first to ensure atomic replacement.
       // This prevents database corruption if the process crashes mid-write.
-      await fs.promises.writeFile(tmpPath, toWrite);
+      await writeFileDurable(tmpPath, toWrite);
+
+      // Prove the bytes are recoverable BEFORE they are allowed anywhere near
+      // the live file or the last-good snapshot. A file that fails here is
+      // discarded and the existing good copy on disk is left untouched.
+      if (!(await verifyPersistedFile(tmpPath, toWrite, keySet))) {
+        log.error('Refusing to publish an unreadable database write — keeping the existing on-disk copy');
+        try { await fs.promises.unlink(tmpPath); } catch { /* best-effort */ }
+        return;
+      }
       // Atomically publish the new file. On Windows, fs.rename over an
       // existing target fails with EPERM when the destination still has an
       // open handle (the live gateway's own flush, an antivirus scan, the
@@ -162,7 +298,25 @@ async function saveDatabase(): Promise<void> {
       // Keep a rolling "last good" copy. If the live target is ever caught
       // mid-write during the next crash, recovery prefers this complete
       // snapshot instead of falling back to a brand-new empty database.
-      try { await fs.promises.copyFile(targetPath, lastGoodPath); } catch { /* best-effort */ }
+      //
+      // The snapshot is written via a temp file and only published once its
+      // size matches the verified payload. A blind copyFile straight onto
+      // .lastgood could truncate the one remaining fallback if it were
+      // interrupted, which is exactly how every recovery candidate ended up
+      // corrupt at the same time.
+      try {
+        if (startedFromUnrecoverableDb) {
+          throw new Error('recovery pending — last-good snapshot is frozen');
+        }
+        const lgTmp = `${lastGoodPath}.tmp.${process.pid}.${tmpCounter}`;
+        await fs.promises.copyFile(targetPath, lgTmp);
+        const copied = await fs.promises.stat(lgTmp);
+        if (copied.size === toWrite.byteLength) {
+          await atomicReplace(lgTmp, lastGoodPath);
+        } else {
+          try { await fs.promises.unlink(lgTmp); } catch { /* best-effort */ }
+        }
+      } catch { /* best-effort — the primary write already succeeded */ }
     } catch (err) {
       log.error('Failed to save database:', err);
       // Best-effort cleanup of the temporary file
@@ -183,10 +337,29 @@ async function saveDatabase(): Promise<void> {
   }
 }
 
-const SAVE_DEBOUNCE_MS = 50;
+const SAVE_DEBOUNCE_MIN_MS = 50;
+const SAVE_DEBOUNCE_MAX_MS = 2000;
+let lastSaveDurationMs = 0;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSaveResolvers: (() => void)[] = [];
 let saving = false;
+
+/**
+ * How long to coalesce writes before hitting the disk.
+ *
+ * A fixed 50 ms window assumed a save is cheap. On a real 10 MB database a
+ * durable save costs well over that, so bulk work (startup migrations, a
+ * marketplace import) queued a fresh save for practically every statement —
+ * one run was observed issuing 2217 saves, each rewriting the whole file.
+ * That write amplification is what kept a save in flight long enough to be
+ * torn by the next one.
+ *
+ * Scaling the window with how long the last save actually took keeps small
+ * databases as responsive as before while letting a large one breathe.
+ */
+function saveDebounceMs(): number {
+  return Math.min(Math.max(SAVE_DEBOUNCE_MIN_MS, lastSaveDurationMs), SAVE_DEBOUNCE_MAX_MS);
+}
 
 /**
  * Schedule a debounced save. Multiple calls within the debounce window are
@@ -205,16 +378,18 @@ function scheduleSave(): Promise<void> {
       saving = true;
       const resolvers = pendingSaveResolvers;
       pendingSaveResolvers = [];
+      const startedAt = Date.now();
       try {
         await saveDatabase();
       } finally {
+        lastSaveDurationMs = Date.now() - startedAt;
         for (const r of resolvers) r();
         saving = false;
         if (pendingSaveResolvers.length > 0 && saveTimer === null) {
           scheduleSave();
         }
       }
-    }, SAVE_DEBOUNCE_MS);
+    }, saveDebounceMs());
   });
 }
 
@@ -671,12 +846,80 @@ export function initDb(): Promise<DatabaseWrapper> {
   return getInitPromise()!;
 }
 
+/**
+ * Remove save artifacts that no live process can still be using.
+ *
+ * Every interrupted save leaves its unique `.tmp.<pid>.<n>` file behind, and
+ * every failed open renames the database to `.corrupt.<ts>.bak`. Nothing ever
+ * collected them, so the data directory had grown to 2.2 GB — 1.6 GB of dead
+ * temp files and 230 MB of stale corruption backups. Temp files belonging to
+ * processes that are still alive are left alone.
+ */
+function cleanupStaleArtifacts(dataDir: string, keepBackups = 3): void {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dataDir);
+  } catch {
+    return;
+  }
+
+  let removedTmp = 0;
+  let freed = 0;
+  const tmpPattern = /\.tmp\.(\d+)\.\d+$/;
+  for (const name of entries) {
+    if (!name.startsWith('data.db')) continue;
+    const m = name.match(tmpPattern);
+    if (!m) continue;
+    const ownerPid = Number(m[1]);
+    // Never delete a temp file that a currently running process may still be
+    // writing — including our own.
+    if (ownerPid === process.pid) continue;
+    try {
+      process.kill(ownerPid, 0);
+      continue; // Process is alive; leave its temp file alone.
+    } catch {
+      // ESRCH (no such process) — the owner is gone, so this temp is orphaned.
+    }
+    const full = path.join(dataDir, name);
+    try {
+      freed += fs.statSync(full).size;
+      fs.unlinkSync(full);
+      removedTmp++;
+    } catch { /* best-effort */ }
+  }
+
+  // Keep only the newest few corruption backups; they are large and every
+  // restart after a bad write mints another one.
+  let removedBaks = 0;
+  try {
+    const baks = entries
+      .filter((f) => f.startsWith('data.db') && /\.corrupt\.\d+\.bak$/.test(f))
+      .map((f) => ({ f, m: fs.statSync(path.join(dataDir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    for (const { f } of baks.slice(keepBackups)) {
+      const full = path.join(dataDir, f);
+      try {
+        freed += fs.statSync(full).size;
+        fs.unlinkSync(full);
+        removedBaks++;
+      } catch { /* best-effort */ }
+    }
+  } catch { /* best-effort */ }
+
+  if (removedTmp || removedBaks) {
+    log.info(
+      `Cleaned ${removedTmp} orphaned temp file(s) and ${removedBaks} old corruption backup(s), freeing ${(freed / 1024 / 1024).toFixed(1)} MB`,
+    );
+  }
+}
+
 async function doInitDb(): Promise<DatabaseWrapper> {
   const SQL = await initSqlJs();
 
   const dataDir = process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
   fs.mkdirSync(dataDir, { recursive: true });
   setDbPath(path.join(dataDir, 'data.db'));
+  cleanupStaleArtifacts(dataDir);
 
   // When DMRX_ENCRYPTION_KEY is set, the on-disk DB is stored encrypted as
   // data.db.enc. Otherwise we use the plaintext data.db (dev / local mode).
@@ -686,11 +929,10 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   async function openDbFile(filePath: string): Promise<SqlJsDatabase> {
     const raw = fs.readFileSync(filePath);
     if (keySet) {
-      const { decryptBytes } = await import('@dmr-x/utils');
-      // encryptBytes() returns a hex STRING; it is persisted as UTF-8 bytes,
-      // so recover the original hex string with toString('utf8') (NOT 'hex',
-      // which would double-encode and corrupt the ciphertext).
-      return new SQL.Database(decryptBytes(raw.toString('utf8')));
+      const { decryptBytesRaw } = await import('@dmr-x/utils');
+      // Handles both the current binary envelope and the legacy hex-as-UTF-8
+      // format, so databases written by older builds still open.
+      return new SQL.Database(decryptBytesRaw(raw));
     }
     return new SQL.Database(raw);
   }
@@ -723,7 +965,7 @@ async function doInitDb(): Promise<DatabaseWrapper> {
         try {
           const lgBuf = fs.readFileSync(lastGoodPath);
           setDbHandle(keySet
-            ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(lgBuf.toString('utf8')))
+            ? new SQL.Database((await import('@dmr-x/utils')).decryptBytesRaw(lgBuf))
             : new SQL.Database(lgBuf));
           fs.copyFileSync(lastGoodPath, activeDbPath);
           log.warn(`Restored database from last-good snapshot: ${lastGoodPath}`);
@@ -732,7 +974,11 @@ async function doInitDb(): Promise<DatabaseWrapper> {
           // lastgood is also unusable — fall through to .bak candidates
         }
       }
-      try {
+      // Only fall through to dated .bak files when the last-good snapshot did
+      // not restore. Without this guard the loop below ran anyway and copied an
+      // OLDER backup over the newer snapshot that had just been recovered,
+      // silently rolling the database back.
+      if (!restored) try {
         const candidates = fs.readdirSync(dataDir)
           .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
           .map(f => ({
@@ -745,7 +991,7 @@ async function doInitDb(): Promise<DatabaseWrapper> {
           try {
             const candBuf = fs.readFileSync(path.join(dataDir, cand.name));
             setDbHandle(keySet
-              ? new SQL.Database((await import('@dmr-x/utils')).decryptBytes(candBuf.toString('utf8')))
+              ? new SQL.Database((await import('@dmr-x/utils')).decryptBytesRaw(candBuf))
               : new SQL.Database(candBuf));
             // Restore the good file back to the primary path
             fs.copyFileSync(path.join(dataDir, cand.name), activeDbPath);
@@ -759,7 +1005,18 @@ async function doInitDb(): Promise<DatabaseWrapper> {
       } catch { /* readdir failed — ignore */ }
 
       if (!restored) {
-        log.warn('No valid backup found — creating fresh database');
+        // Starting empty here means real user data (providers, keys, request
+        // history) just became unreachable. Say so unmistakably, and latch a
+        // flag so this empty database cannot go on to overwrite the .lastgood
+        // snapshot — that snapshot plus the .corrupt backups are the only
+        // remaining material for a manual recovery.
+        startedFromUnrecoverableDb = true;
+        log.error(
+          `DATA LOSS: could not open ${activeDbPath} or any backup — starting with an EMPTY database. ` +
+          `The previous file was preserved as ${backupPath}. The .lastgood snapshot will NOT be overwritten ` +
+          `while this process runs, so recovery is still possible. If DMRX_ENCRYPTION_KEY changed, restore the ` +
+          `old key and restart before doing anything else.`,
+        );
         setDbHandle(new SQL.Database());
       }
     }

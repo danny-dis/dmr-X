@@ -7,6 +7,8 @@ import { z } from 'zod';
 
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
+import { resolveServedProviderId } from '../utils/served-provider.js';
 import { compressionService } from '../services/compression.js';
 import { semanticCacheService } from '@dmr-x/cache';
 import { hashConversation, breakStickySession } from '@dmr-x/router';
@@ -40,6 +42,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+    const providerPreferences = parseProviderPreferencesHeader(request.headers['x-provider-preferences'] as string | undefined);
 
     // ── auto-free → pick active model, then G0DM0D3 wrap ───────────────────
     // Gateway ranks candidates first; the top concrete model gets the godmode
@@ -251,6 +254,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         tenant: (request as any).tenant,
         freeTierStrategy: (request.headers['x-free-tier-strategy'] as string) || undefined,
         costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
+        // X-Provider-Preferences (see ../utils/provider-preferences.ts) wins
+        // over any body.metadata.providerPreferences above — it's validated
+        // input, the body spread above is not.
+        ...(providerPreferences ? { providerPreferences } : {}),
       },
     };
 
@@ -570,7 +577,11 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               }],
               usage: { prompt_tokens: streamPromptTokens, completion_tokens: streamCompletionTokens, total_tokens: streamPromptTokens + streamCompletionTokens },
             };
-            const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined;
+            // See the non-streaming useCache below for why providerPreferences
+            // disables caching: the cache key is body-only, so storing a
+            // preference-constrained response under it could later be served
+            // to a request with different (or no) constraints.
+            const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences;
             if (useCache) {
               storeRouteCache('chat', tenantId, body as Record<string, unknown>, assembledResponse);
             }
@@ -681,7 +692,14 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined;
+    // A cached response was selected under whatever constraints (or lack of
+    // them) were in effect the first time this exact body was seen — the
+    // cache key is body-only (see services/cache/src/cache.service.ts:
+    // generateCacheKey, "Provider is NOT included"). Serving it to a request
+    // that now carries providerPreferences (order/ignore/only/zdr/...) could
+    // silently hand back a response from a provider this call was told to
+    // exclude, which is exactly the failure this fix exists to close.
+    const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences;
 
     // The cache stores the internal UnifiedResponse, but this endpoint is the
     // OpenAI-compatible surface. Returning the cached value verbatim shipped
@@ -689,6 +707,21 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     // client (SDKs, LangChain, external agents) read
     // `choices[0].message.content` as undefined the moment a request hit the
     // cache. Both paths now go through the same envelope.
+    // `content` is nullable in the OpenAI schema but it is never absent, and
+    // callers rely on that: `choices[0].message.content.trim()` is ordinary
+    // client code. A reasoning model that spends its whole max_tokens budget
+    // on thinking returns a message with no content key at all — observed on
+    // gemini-3.5-flash, which came back as bare `{role:'assistant'}` with
+    // finish_reason "length" — so the key is materialised here. Null is the
+    // spec's answer for a tool-call-only turn; an empty string is the honest
+    // answer for a turn that was truncated before it produced any text.
+    const withContentKey = (message: any) => {
+      if (!message || typeof message !== 'object') return message;
+      if ('content' in message && message.content !== undefined) return message;
+      const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+      return { ...message, content: hasToolCalls ? null : '' };
+    };
+
     const toOpenAIChatCompletion = (res: any) => {
       if (res && Array.isArray(res.choices)) return res; // already converted
       return {
@@ -699,7 +732,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         choices: [
           {
             index: 0,
-            message: res?.message,
+            message: withContentKey(res?.message),
             finish_reason: res?.finishReason,
           },
         ],
@@ -749,6 +782,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     if (unifiedRequest.metadata?.freeTierStrategy) {
       reply.header('X-Free-Tier-Strategy', String(unifiedRequest.metadata.freeTierStrategy));
     }
+    if (response?.providerId) {
+      reply.header('X-DMRX-Provider-Id', response.providerId);
+    }
 
     // Announce a provider/model switch. Clients that only read headers (proxies,
     // dashboards, curl) see it here; the same information is repeated in the
@@ -775,7 +811,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     }
 
     (request as any).metrics = {
-      providerId: plan.primary.providerId,
+      providerId: resolveServedProviderId(plan, response),
       modelId: response.modelId,
       modality: unifiedRequest.modality ?? 'llm',
       tenantId: (request as any).tenant?.id,

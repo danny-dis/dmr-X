@@ -11,11 +11,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitive
 import { DataState } from '@/components/primitives/DataState';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile } from '@/components/primitives/StatTile';
-import { useApiData } from '@/hooks/useApiData';
 import { IntelligenceBadge } from '@/icons/IntelligenceLayer';
-import { Admin } from '@/lib/admin';
 import { categoricalColor, chartColor } from '@/lib/chartPalette';
-import type { ApiRouteDecision, ApiProvider, ApiUsagePoint } from '@/types/api';
+import { useRouteDecisions, useUsageHistory } from '@/lib/queries/dashboard';
+import { useProviders } from '@/lib/queries/providers';
 
 const LAYER_ORDER = ['brain', 'thinker', 'executor', 'worker', 'temp_worker'] as const;
 
@@ -43,17 +42,9 @@ function layerChartColor(layer: (typeof LAYER_ORDER)[number]): string {
 }
 
 export function RoutingPage() {
-  const decisions = useApiData<ApiRouteDecision[]>(
-    () => Admin.listRouteDecisions({ limit: 50 }),
-    [],
-    { refetchInterval: 3000 }
-  );
-  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [], { refetchInterval: 30000 });
-  const usage = useApiData<{ points: ApiUsagePoint[] }>(
-    () => Admin.getUsage('hour'),
-    [],
-    { refetchInterval: 10000 }
-  );
+  const decisions = useRouteDecisions(50, { refetchInterval: 3000 });
+  const providers = useProviders({ refetchInterval: 30000 });
+  const usage = useUsageHistory('hour', { refetchInterval: 10000 });
 
   const byLayer = (decisions.data ?? []).reduce<Record<string, number>>((acc, d) => {
     const l = d.task_type ?? 'brain';

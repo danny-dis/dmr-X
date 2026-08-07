@@ -11,6 +11,7 @@ import type {
   ExecuteOptions,
 } from '../adapter.interface.js';
 import { BaseAdapter } from '../base.adapter.js';
+import { normalizeAnthropicUsage } from '../cache-usage.js';
 import { logger } from '@dmr-x/utils';
 
 /**
@@ -224,11 +225,23 @@ export class BedrockAdapter extends BaseAdapter {
           }],
         } : {}),
       },
-      usage: {
-        prompt_tokens: data.usage?.inputTokens || 0,
-        completion_tokens: data.usage?.outputTokens || 0,
-        total_tokens: (data.usage?.inputTokens || 0) + (data.usage?.outputTokens || 0),
-      },
+      // Converse reports the same uncached-remainder semantics as Anthropic
+      // (the cached prefix is counted separately), but in camelCase. Reshape
+      // to Anthropic's wire format so the shared normalizer adds the cache
+      // read/write components back into the prompt count.
+      //
+      // Both field spellings are accepted: Converse uses `cacheReadInputTokens`
+      // while the older InvokeModel responses use `...TokenCount`. `data.usage`
+      // is untyped, so a single wrong guess would read undefined and silently
+      // report no caching at all rather than failing.
+      usage: normalizeAnthropicUsage({
+        input_tokens: data.usage?.inputTokens,
+        output_tokens: data.usage?.outputTokens,
+        cache_read_input_tokens:
+          data.usage?.cacheReadInputTokens ?? data.usage?.cacheReadInputTokenCount,
+        cache_creation_input_tokens:
+          data.usage?.cacheWriteInputTokens ?? data.usage?.cacheWriteInputTokenCount,
+      }),
       finishReason: data.stopReason === 'end_turn' ? 'stop'
         : data.stopReason === 'max_tokens' ? 'length'
         : data.stopReason === 'tool_use' ? 'tool_calls'

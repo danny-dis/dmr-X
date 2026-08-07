@@ -25,6 +25,7 @@ import type {
   ApiCatalogEntry,
   ApiHealthResponse,
   ApiMcpStatus,
+  ApiNeedleStatus,
   ApiMcpTool,
   ApiMcpToolExecute,
   ApiMcpToolResult,
@@ -491,6 +492,9 @@ export const Admin = {
   updateSettings: (body: Record<string, unknown>) =>
     apiPut<Record<string, unknown>>('/admin/settings', body),
 
+  // Needle tool pre-filter status (reachability + last-run telemetry)
+  getNeedleStatus: () => apiGet<ApiNeedleStatus>('/admin/needle/status'),
+
   // Agent Integrations
   getAgentIntegrationConfig: () =>
     apiGet<Record<string, unknown>>('/admin/settings').then((s) => ({
@@ -654,6 +658,11 @@ function normalizeDashboard(s: any): ApiDashboardStats {
     requests24h: s.requests24h ?? s.total_requests ?? 0,
     cost24h: s.cost24h ?? s.daily_spend ?? 0,
     avgLatencyMs: s.avgLatencyMs ?? s.avg_latency ?? 0,
+    // No `?? 0` fallback here on purpose: a real 0.0% delta and "no
+    // prior-period data to compare against" must stay distinguishable, so
+    // `null`/`undefined` passes through and the UI (StatTile) hides the
+    // delta instead of rendering a fake 0.0%.
+    latencyDelta: s.latencyDelta ?? s.latency_delta_pct ?? null,
     totalTokens24h: s.totalTokens24h ?? s.token_usage ?? 0,
     totalCost24h: s.totalCost24h ?? s.daily_spend ?? 0,
     successRate: s.successRate ?? s.success_rate ?? 100,

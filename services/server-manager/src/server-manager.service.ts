@@ -19,6 +19,8 @@ import path from 'node:path';
 import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
 
+import { applyGodmodePatches } from './patch-godmode.js';
+
 /**
  * Resolve bun executable path. On Windows, uv_spawn can't find executables
  * via PATH when launched from a compiled Bun binary, so we resolve the full
@@ -46,7 +48,37 @@ function bunPath(): string {
   return _bunPath;
 }
 
-const G0DM0D3_REPO = 'https://github.com/elder-plinius/G0DM0D3.git';
+/**
+ * Repo + pinned ref for the runtime clone.
+ *
+ * Defaults to DMR-X's own fork (`danny-dis/G0DM0D3`), not upstream
+ * `elder-plinius/G0DM0D3` — the fork is where `scripts/dev/sync-godmode-fork.*`
+ * pulls upstream changes into on a schedule we control, so a `git fetch` here
+ * never lands code DMR-X hasn't had a chance to review.
+ *
+ * `DMRX_GODMODE_REF` pins to a specific commit SHA (not a moving branch tip)
+ * by default, so every fresh install gets byte-identical G0DM0D3 source
+ * regardless of when it runs — `--depth 1` of a bare branch name previously
+ * meant "whatever the fork's HEAD happens to be right now," which could
+ * silently pick up an unreviewed upstream change on the next re-clone.
+ * `cloneIfNeeded()` fetches this ref directly (works for a branch, tag, or
+ * commit SHA — not just `clone --branch`, which only accepts branch/tag
+ * names), so overriding it to a branch name for local development still
+ * works.
+ */
+const G0DM0D3_REPO = process.env.DMRX_GODMODE_REPO || 'https://github.com/danny-dis/G0DM0D3.git';
+const G0DM0D3_REF = process.env.DMRX_GODMODE_REF || 'f6301765fb90eb7b336bdf365319cd2fe44b1187';
+/**
+ * The project `G0DM0D3_REPO` is a fork of. `danny-dis/G0DM0D3` is a true
+ * GitHub fork (its `parent` is set), which is what lets
+ * `.github/workflows/godmode-fork-sync.yml` fast-forward it with the
+ * `merge-upstream` API instead of maintaining a manual mirror.
+ *
+ * Kept as a constant rather than resolved from the GitHub API at runtime so
+ * an offline gateway can still tell the user what it is tracking.
+ */
+const G0DM0D3_UPSTREAM =
+  process.env.DMRX_GODMODE_UPSTREAM || 'https://github.com/elder-plinius/G0DM0D3';
 const SERVER_TYPE = 'g0dm0d3';
 const DEFAULT_PORT = 7860;
 const CONTAINER_NAME = 'dmrx-g0dm0d3';
@@ -146,6 +178,39 @@ export function killTree(pid: number | null | undefined): void {
   }
 }
 
+/** Repo + pinned ref the runtime clone uses — surfaced to the UI so the
+ *  install warning reflects reality instead of a hardcoded stale string.
+ *
+ *  `upstream` is the project the fork tracks. It is reported separately
+ *  rather than derived from `repo` because the two only coincide by
+ *  convention: pointing `DMRX_GODMODE_REPO` at a personal fork must not make
+ *  the UI claim that fork *is* upstream. */
+export function getGodmodeRepoInfo(): { repo: string; ref: string; upstream: string } {
+  return { repo: G0DM0D3_REPO, ref: G0DM0D3_REF, upstream: G0DM0D3_UPSTREAM };
+}
+
+/**
+ * The commit actually checked out on disk, or null when nothing is installed.
+ *
+ * This can legitimately differ from the pinned `G0DM0D3_REF`: `cloneIfNeeded()`
+ * is a no-op when the directory already exists, so an install created before a
+ * `DMRX_GODMODE_REF` bump keeps running the older commit until it is deleted
+ * and re-cloned. Surfacing the real HEAD is the only way the UI can tell the
+ * user that "pinned" and "running" have drifted apart.
+ */
+export function getInstalledGodmodeRef(): string | null {
+  const dir = g0dm0d3Dir();
+  if (!fs.existsSync(path.join(dir, '.git'))) return null;
+  const res = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: dir,
+    encoding: 'utf-8',
+    timeout: 5000,
+  });
+  if (res.status !== 0) return null;
+  const sha = (res.stdout ?? '').trim();
+  return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+}
+
 /** Returns true when running inside a Docker/containerd container. */
 export function detectRuntime(): ServerRuntime {
   if (fs.existsSync('/.dockerenv')) return 'docker';
@@ -167,6 +232,12 @@ class ServerManagerService {
     return g0dm0d3Dir();
   }
 
+  /** True once the G0DM0D3 source has been cloned (independent of running state). */
+  isInstalled(): boolean {
+    const dir = g0dm0d3Dir();
+    return fs.existsSync(dir) && fs.existsSync(path.join(dir, 'package.json'));
+  }
+
   async cloneIfNeeded(): Promise<{ cloned: boolean; path: string }> {
     const dir = g0dm0d3Dir();
     if (fs.existsSync(dir)) {
@@ -174,14 +245,31 @@ class ServerManagerService {
       return { cloned: false, path: dir };
     }
     fs.mkdirSync(serversDir(), { recursive: true });
-    logger.info({ dir, repo: G0DM0D3_REPO }, 'Cloning G0DM0D3');
-    const res = spawnSync(
-      'git',
-      ['clone', '--depth', '1', G0DM0D3_REPO, dir],
-      { stdio: 'inherit' },
-    );
-    if (res.status !== 0) {
-      throw new Error(`git clone failed (exit ${res.status})`);
+    logger.info({ dir, repo: G0DM0D3_REPO, ref: G0DM0D3_REF }, 'Cloning G0DM0D3 (pinned ref)');
+    try {
+      // `git clone --branch <ref> --depth 1` only accepts branch/tag names.
+      // init + remote + `fetch --depth 1 origin <ref>` + checkout FETCH_HEAD
+      // works for a branch, tag, OR a commit SHA (GitHub allows shallow
+      // fetch of any reachable SHA on a public repo), which is what lets
+      // DMRX_GODMODE_REF default to a pinned commit instead of a moving
+      // branch tip.
+      const steps: Array<{ args: string[]; cwd?: string }> = [
+        { args: ['init', dir] },
+        { args: ['remote', 'add', 'origin', G0DM0D3_REPO], cwd: dir },
+        { args: ['fetch', '--depth', '1', 'origin', G0DM0D3_REF], cwd: dir },
+        { args: ['checkout', 'FETCH_HEAD'], cwd: dir },
+      ];
+      for (const step of steps) {
+        const res = spawnSync('git', step.args, { cwd: step.cwd, stdio: 'inherit' });
+        if (res.status !== 0) {
+          throw new Error(`git ${step.args[0]} failed (exit ${res.status})`);
+        }
+      }
+    } catch (err) {
+      // Don't leave a half-initialized dir behind — it would be mistaken
+      // for a completed clone on the next cloneIfNeeded() call.
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw err;
     }
     return { cloned: true, path: dir };
   }
@@ -195,21 +283,52 @@ class ServerManagerService {
     }
   }
 
+  /**
+   * Re-apply the DMR-X relay patches (see patch-godmode.ts). Called after
+   * every clone/install AND on every start() — not just when a fresh clone
+   * just happened — so an existing checkout that predates a patch-set change
+   * gets caught up too, on every platform and every entry point (no bash
+   * dependency, unlike the old scripts/dev/patch-g0dm0d3.sh).
+   */
+  applyPatches(): ReturnType<typeof applyGodmodePatches> {
+    return applyGodmodePatches(g0dm0d3Dir());
+  }
+
   // ── Persistence ──────────────────────────────────────────────────────────
 
   private db() {
     return getDb();
   }
 
-  async getOrCreateRow(id: string, type = SERVER_TYPE): Promise<ServerInstance | null> {
+  /**
+   * sql.js reads are synchronous under the hood — this does the real work for
+   * both getOrCreateRow() (kept async for its existing callers) and
+   * upsertRow() (which must stay synchronous: it's called fire-and-forget
+   * throughout this file, never awaited).
+   */
+  private getRowSync(id: string): ServerInstance | null {
     const row = this.db()
       .prepare('SELECT * FROM server_instances WHERE id = ?')
       .get(id) as ServerInstance | undefined;
     return row ?? null;
   }
 
+  async getOrCreateRow(id: string, type = SERVER_TYPE): Promise<ServerInstance | null> {
+    return this.getRowSync(id);
+  }
+
   upsertRow(row: Partial<ServerInstance> & { id: string }): void {
-    const existing = this.getOrCreateRow(row.id) as unknown as ServerInstance | null;
+    // BUG FIXED: this used to call the *async* getOrCreateRow() without
+    // awaiting it, then force-cast the resulting Promise to ServerInstance
+    // via `as unknown as`. A Promise object is always truthy, so `existing`
+    // was always non-null — every upsert took the UPDATE branch, and since
+    // no row had ever been INSERTed, every UPDATE silently affected zero
+    // rows. server_instances never persisted a single row through this path:
+    // status/start/stop looked like they worked (the HTTP handlers return a
+    // constructed object, not a DB read-back) but /server/status always
+    // reported "stopped" because getRunningInstance() found nothing, no
+    // matter how long the managed G0DM0D3 process had actually been running.
+    const existing = this.getRowSync(row.id);
     const ts = nowIso();
     if (!existing) {
       this.db()
@@ -311,6 +430,7 @@ class ServerManagerService {
   ): Promise<void> {
     await this.cloneIfNeeded();
     await this.installDeps();
+    this.applyPatches();
     // Ready to launch; mark stopped (not running — user must press Start).
     this.upsertRow({ id, url, runtime, status: 'stopped' });
   }
@@ -351,6 +471,7 @@ class ServerManagerService {
 
     await this.cloneIfNeeded();
     await this.installDeps();
+    this.applyPatches();
 
     this.upsertRow({
       id,
@@ -439,7 +560,8 @@ class ServerManagerService {
         'run',
         '-d',
         '--name', CONTAINER_NAME,
-        '-p', `${port}:${DEFAULT_PORT}`,
+        // Bind to loopback only: the companion must never be reachable off-host.
+        '-p', `127.0.0.1:${port}:${DEFAULT_PORT}`,
         ...runEnv,
         IMAGE_TAG,
       ],
@@ -458,25 +580,11 @@ class ServerManagerService {
     llmApiKey: string,
   ): Promise<void> {
     const dir = g0dm0d3Dir();
-    const env: Record<string, string> = {
-      ...process.env,
-      OPENROUTER_API_KEY: openrouterKey,
-      PORT: String(port),
-    };
-    // Only set GODMODE_API_KEY when non-empty AND not in relay mode. An empty
-    // string (or relay mode) turns AUTH ON (the server requires a Bearer key);
-    // leaving it UNSET disables auth in relay/local mode so the proxy can talk
-    // to the child without a shared secret. The gateway proxy injects its own
-    // key via getHeaders() when one is configured.
-    if (godmodeKey && !llmBaseUrl) env.GODMODE_API_KEY = godmodeKey;
-    if (llmBaseUrl) {
-      env.G0DM0D3_LLM_BASE_URL = llmBaseUrl;
-      env.G0DM0D3_LLM_API_KEY = llmApiKey;
-      // Signals the child it's running as DMR-X's internal relay proxy.
-      // The rate-limit middleware skips limiting in this mode (single-tenant,
-      // no external API key to protect).
-      env.GODMODE_RELAY = '1';
-    }
+    // The child ALWAYS receives the generated GODMODE_API_KEY, relay mode
+    // included. Relaying into the DMR-X provider vault without requiring a key
+    // would leave the companion's HTTP endpoint open to anyone who can reach
+    // the host (C3) — auth is never disabled.
+    const env = buildGodmodeNativeEnv({ port, openrouterKey, godmodeKey, llmBaseUrl, llmApiKey });
 
     if (isBun()) {
       // Use Bun.spawn for a managed, killable child.
@@ -549,3 +657,40 @@ export function createServerManager(): ServerManagerService {
   return new ServerManagerService();
 }
 export { ServerManagerService };
+
+/**
+ * Build the environment for a natively-spawned G0DM0D3 child process.
+ *
+ * The generated `GODMODE_API_KEY` is ALWAYS set — the child must require auth
+ * even in relay mode, where it forwards into the DMR-X gateway's provider
+ * vault (C3: it used to be omitted when relaying, leaving the child's HTTP
+ * endpoint unauthenticated). Kept as a pure, exported function so the env
+ * contract is unit-testable without spawning a process.
+ */
+export interface BuildGodmodeNativeEnvOptions {
+  /** Parent env to inherit (defaults to process.env). */
+  baseEnv?: NodeJS.ProcessEnv;
+  port: number;
+  openrouterKey: string;
+  godmodeKey: string;
+  llmBaseUrl: string;
+  llmApiKey: string;
+}
+
+export function buildGodmodeNativeEnv(opts: BuildGodmodeNativeEnvOptions): Record<string, string> {
+  const env: Record<string, string> = {
+    ...(opts.baseEnv ?? process.env),
+    OPENROUTER_API_KEY: opts.openrouterKey,
+    PORT: String(opts.port),
+  };
+  if (opts.godmodeKey) env.GODMODE_API_KEY = opts.godmodeKey;
+  if (opts.llmBaseUrl) {
+    env.G0DM0D3_LLM_BASE_URL = opts.llmBaseUrl;
+    env.G0DM0D3_LLM_API_KEY = opts.llmApiKey;
+    // Signals the child it's running as DMR-X's internal relay proxy.
+    // The rate-limit middleware skips limiting in this mode (single-tenant,
+    // no external API key to protect).
+    env.GODMODE_RELAY = '1';
+  }
+  return env;
+}

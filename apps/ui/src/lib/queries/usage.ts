@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { keys } from '../queryClient';
 
+import type { PollOptions } from './types';
+
 // ---------------------------------------------------------------------------
 // Usage, free tier and savings
 // ---------------------------------------------------------------------------
@@ -117,19 +119,32 @@ export function useFreeTierSummary() {
 export interface CostDashboard {
   period: { start: string; end: string };
   totalCost: number;
-  freeTierCost: number;
+  freeRequests: number;
+  freeTokens: number;
   paidCost: number;
+  paidRequests: number;
+  paidTokens: number;
   costSavings: number;
   savingsBasis: SavingsBasis;
   byProvider: Record<string, { cost: number; requests: number; tokens: number; freePercent: number }>;
-  byTenant: Array<{ tenantId: string; tenantName: string; totalCost: number; totalRequests: number }>;
-  dailyCosts: Array<{ date: string; cost: number; free_cost: number; paid_cost: number }>;
+  byTenant: Array<{
+    tenantId: string;
+    tenantName: string;
+    totalCost: number;
+    freeRequests: number;
+    paidCost: number;
+    totalRequests: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+  }>;
+  dailyCosts: Array<{ date: string; cost: number; paid_cost: number; avoided_cost: number }>;
 }
 
-export function useCostDashboard(days = 30) {
+export function useCostDashboard(days = 30, options?: PollOptions) {
   return useQuery({
     queryKey: keys.usage.cost(days),
     queryFn: () => api<CostDashboard>('/admin/cost/dashboard', { query: { days } }),
+    ...options,
   });
 }
 

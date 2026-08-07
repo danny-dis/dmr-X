@@ -22,85 +22,29 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin, api } from '@/lib/admin';
+import { Admin } from '@/lib/admin';
 import { chartColor } from '@/lib/chartPalette';
 import { formatDuration, formatNumber, timeAgo } from '@/lib/formatters';
+import {
+  fetchNextValidationBattle,
+  useArenaBattles,
+  useBenchmarkHistory,
+  useBenchmarkModels,
+  useLeaderboard,
+  useModelDetail,
+  usePostValidation,
+  useRunArenaBattle,
+  useRunBenchmark,
+  useRunTournament,
+  useValidations,
+  type Battle,
+  type ModelSummary,
+  type TournamentResult,
+  type ValidationBattle,
+  type ValidationRecord,
+  type ValidationStats,
+} from '@/lib/queries/benchmarks';
 import { cn } from '@/lib/utils';
-import type { ApiBenchmarkResult, ApiBenchmarkLeaderboardEntry } from '@/types/api';
-
-/* -------------------------------------------------------------------------- */
-/*  Types                                                                     */
-/* -------------------------------------------------------------------------- */
-
-interface Battle {
-  id: string;
-  benchmark_type: string;
-  run_at: string;
-  score: number;
-  model_name: string;
-  details: {
-    reasoning?: string;
-    competitor_name?: string;
-    scores?: { accuracy?: number; tone?: number };
-    elo_change?: number;
-  };
-}
-
-interface ModelSummary {
-  id: string;
-  display_name?: string;
-  model_id?: string;
-  provider_name?: string;
-  elo_rating?: number;
-}
-
-interface TournamentResult {
-  status: string;
-  completed: number;
-  totalBattles: number;
-  errors: number;
-  promptCategory?: string;
-}
-
-interface ValidationBattleModel {
-  id?: string;
-  name: string;
-  provider: string;
-}
-
-interface ValidationBattle {
-  id: string;
-  modelA: ValidationBattleModel;
-  modelB: ValidationBattleModel;
-  judgeWinner: 'A' | 'B';
-  judgeReasoning?: string;
-}
-
-interface ValidationStats {
-  total: number;
-  agreementRate: number;
-  agreedCount: number;
-}
-
-interface ValidationRecord {
-  id: string;
-  agreed: boolean;
-  judge_winner: string;
-  human_winner: string;
-  model_a_name?: string;
-  model_b_name?: string;
-  created_at?: string;
-}
-
-interface ModelDetailStats {
-  categoryScores?: Array<{ benchmark_type: string; avg_score: number; count: number }>;
-}
-
-interface ModelDetailHistory {
-  totalBattles?: number;
-  eloTrace?: Array<{ elo: number; date: string }>;
-}
 
 /* -------------------------------------------------------------------------- */
 /*  Constants                                                                 */
@@ -140,60 +84,20 @@ const DIFFICULTY_OPTIONS = [
 ];
 
 /* -------------------------------------------------------------------------- */
-/*  API helpers                                                               */
-/*                                                                             */
-/*  These endpoints have no wrapper in lib/admin.ts yet, so they call the     */
-/*  shared `api()` helper directly (same paths the old hand-rolled `fetch`    */
-/*  calls used) instead of duplicating auth-header plumbing.                 */
-/* -------------------------------------------------------------------------- */
-
-async function fetchTournament(payload: {
-  modelIds: string[];
-  category?: string;
-  difficulty?: string;
-  prompt?: string;
-}): Promise<TournamentResult> {
-  return api<TournamentResult>('/admin/benchmarks/tournament', { method: 'POST', body: payload });
-}
-
-async function fetchModelStats(modelId: string): Promise<ModelDetailStats> {
-  return api<ModelDetailStats>(`/admin/benchmarks/models/${modelId}/stats`);
-}
-
-async function fetchModelHistory(modelId: string): Promise<ModelDetailHistory> {
-  return api<ModelDetailHistory>(`/admin/benchmarks/models/${modelId}/history`);
-}
-
-async function fetchNextValidationBattle(): Promise<{ battle: ValidationBattle | null }> {
-  return api<{ battle: ValidationBattle | null }>('/admin/benchmarks/validate/next');
-}
-
-async function postValidation(body: {
-  battleId: string;
-  humanWinner: 'A' | 'B' | 'Tie';
-  reviewerId?: string;
-}): Promise<{ success: boolean; agreementRate: number }> {
-  return api<{ success: boolean; agreementRate: number }>('/admin/benchmarks/validate', {
-    method: 'POST',
-    body,
-  });
-}
-
-async function fetchValidations(): Promise<{ stats: ValidationStats | null; validations: ValidationRecord[] }> {
-  return api<{ stats: ValidationStats | null; validations: ValidationRecord[] }>('/admin/benchmarks/validations');
-}
-
-/* -------------------------------------------------------------------------- */
 /*  Component                                                                 */
 /* -------------------------------------------------------------------------- */
 
 export function BenchmarksPage() {
   const [activeTab, setActiveTab] = React.useState('leaderboard');
 
-  const leaderboard = useApiData<ApiBenchmarkLeaderboardEntry[]>(() => Admin.getLeaderboard(), [], { refetchInterval: 60000 });
-  const battles = useApiData<Battle[]>(() => Admin.getBattles(), [], { refetchInterval: 30000 });
-  const history = useApiData<ApiBenchmarkResult[]>(() => Admin.listBenchmarks(), [], { refetchInterval: 60000 });
-  const models = useApiData<ModelSummary[]>(() => Admin.getAllModels(), []);
+  const leaderboard = useLeaderboard({ refetchInterval: 60000 });
+  const battles = useArenaBattles({ refetchInterval: 30000 });
+  const history = useBenchmarkHistory({ refetchInterval: 60000 });
+  const models = useBenchmarkModels();
+  const runBenchmark = useRunBenchmark();
+  const runArenaBattle = useRunArenaBattle();
+  const runTournament = useRunTournament();
+  const postValidation = usePostValidation();
 
   const modelOptions = React.useMemo<MultiSelectOption[]>(
     () =>
@@ -211,7 +115,7 @@ export function BenchmarksPage() {
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [quickTestModels, setQuickTestModels] = React.useState<string[]>([]);
   const [quickTestCategory, setQuickTestCategory] = React.useState('');
-  const [submitting, setSubmitting] = React.useState(false);
+  const submitting = runBenchmark.isPending;
 
   // Arena dialog state
   const [arenaDialogOpen, setArenaDialogOpen] = React.useState(false);
@@ -220,21 +124,18 @@ export function BenchmarksPage() {
   const [arenaCustomPrompt, setArenaCustomPrompt] = React.useState('');
   const [arenaCategory, setArenaCategory] = React.useState('');
   const [arenaDifficulty, setArenaDifficulty] = React.useState('');
-  const [submittingArena, setSubmittingArena] = React.useState(false);
+  const submittingArena = runArenaBattle.isPending;
 
   // Validation state
   const [validationTab, setValidationTab] = React.useState<'review' | 'history'>('review');
   const [currentBattle, setCurrentBattle] = React.useState<ValidationBattle | null>(null);
   const [loadingBattle, setLoadingBattle] = React.useState(false);
   const [reviewerId, setReviewerId] = React.useState('');
-  const [verdictSubmitting, setVerdictSubmitting] = React.useState<'A' | 'B' | 'Tie' | null>(null);
-  // `enabled: false` — this is triggered on demand (tab switch / after a
-  // submission), not on mount, so DataState only ever sees it mid-flight.
-  const validation = useApiData<{ stats: ValidationStats | null; validations: ValidationRecord[] }>(
-    fetchValidations,
-    [],
-    { enabled: false }
-  );
+  const verdictSubmitting = postValidation.isPending ? (postValidation.variables?.humanWinner ?? null) : null;
+  // `enabled: false` (baked into the hook) — this is triggered on demand (tab
+  // switch / after a submission), not on mount, so DataState only ever sees
+  // it mid-flight.
+  const validation = useValidations();
 
   // Tournament state
   const [tournamentDialogOpen, setTournamentDialogOpen] = React.useState(false);
@@ -242,30 +143,18 @@ export function BenchmarksPage() {
   const [tournamentCategory, setTournamentCategory] = React.useState('');
   const [tournamentDifficulty, setTournamentDifficulty] = React.useState('');
   const [tournamentCustomPrompt, setTournamentCustomPrompt] = React.useState('');
-  const [submittingTournament, setSubmittingTournament] = React.useState(false);
+  const submittingTournament = runTournament.isPending;
   const [tournamentResults, setTournamentResults] = React.useState<TournamentResult | null>(null);
 
   // Model detail dialog state — derived from the leaderboard so it always
   // reflects the latest fetch instead of a stale click-time snapshot.
   const [detailModelId, setDetailModelId] = React.useState<string | null>(null);
   const detailModel = detailModelId ? (leaderboard.data?.find((m) => m.id === detailModelId) ?? null) : null;
-  const modelDetail = useApiData<{ stats: ModelDetailStats; history: ModelDetailHistory }>(
-    async () => {
-      if (!detailModelId) throw new Error('No model selected');
-      const [stats, hist] = await Promise.all([
-        fetchModelStats(detailModelId),
-        fetchModelHistory(detailModelId),
-      ]);
-      return { stats, history: hist };
-    },
-    [detailModelId],
-    { enabled: !!detailModelId }
-  );
+  const modelDetail = useModelDetail(detailModelId ?? undefined);
 
   const handleRunBenchmark = async () => {
-    setSubmitting(true);
     try {
-      await Admin.runBenchmark({
+      await runBenchmark.mutateAsync({
         models: quickTestModels,
         promptSet: quickTestCategory || 'default',
         concurrency: 1,
@@ -274,35 +163,28 @@ export function BenchmarksPage() {
         description: 'Running in the background — results will appear in Execution History.',
       });
       setDialogOpen(false);
-      void history.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setSubmitting(false);
     }
   };
 
   const handleRunArenaBattle = async () => {
-    setSubmittingArena(true);
     try {
-      await Admin.runArenaBattle(
-        arenaModelA,
-        arenaModelB,
-        arenaCustomPrompt || undefined,
-        arenaCategory || undefined,
-        arenaDifficulty || undefined
-      );
+      await runArenaBattle.mutateAsync({
+        modelA: arenaModelA,
+        modelB: arenaModelB,
+        prompt: arenaCustomPrompt || undefined,
+        category: arenaCategory || undefined,
+        difficulty: arenaDifficulty || undefined,
+      });
       toast.success('Arena battle started', {
         description: 'Check the Arena Battles tab shortly for the result.',
       });
       setArenaDialogOpen(false);
-      void battles.refetch();
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setSubmittingArena(false);
     }
   };
 
@@ -313,10 +195,9 @@ export function BenchmarksPage() {
       });
       return;
     }
-    setSubmittingTournament(true);
     setTournamentResults(null);
     try {
-      const result = await fetchTournament({
+      const result = await runTournament.mutateAsync({
         modelIds: selectedTournamentModels,
         category: tournamentCategory || undefined,
         difficulty: tournamentDifficulty || undefined,
@@ -327,7 +208,6 @@ export function BenchmarksPage() {
           description: `${result.completed}/${result.totalBattles} battles finished.`,
         });
         setTournamentResults(result);
-        void leaderboard.refetch();
       } else {
         toast.warning('Tournament did not finish', {
           description: 'Check the gateway logs for details, then try again.',
@@ -336,8 +216,6 @@ export function BenchmarksPage() {
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setSubmittingTournament(false);
     }
   };
 
@@ -356,9 +234,8 @@ export function BenchmarksPage() {
 
   const submitValidation = async (humanWinner: 'A' | 'B' | 'Tie') => {
     if (!currentBattle) return;
-    setVerdictSubmitting(humanWinner);
     try {
-      const result = await postValidation({
+      const result = await postValidation.mutateAsync({
         battleId: currentBattle.id,
         humanWinner,
         reviewerId: reviewerId || undefined,
@@ -367,14 +244,11 @@ export function BenchmarksPage() {
         toast.success('Validation recorded', {
           description: `Judge agreement rate is now ${result.agreementRate}%.`,
         });
-        void validation.refetch();
         void loadNextValidationBattle();
       }
     } catch (err) {
       const e = interpretError(err);
       toast.error(e.title, { description: e.description });
-    } finally {
-      setVerdictSubmitting(null);
     }
   };
 

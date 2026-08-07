@@ -10,42 +10,12 @@ import { DataState } from '@/components/primitives/DataState';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/primitives/Select';
 import { StatTile } from '@/components/primitives/StatTile';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { chartColor } from '@/lib/chartPalette';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/formatters';
+import { useCostDashboard, type CostDashboard } from '@/lib/queries/usage';
 import { cn } from '@/lib/utils';
 
-interface CostDashboardData {
-  period: { start: string; end: string };
-  totalCost: number;
-  freeTierCost: number;
-  paidCost: number;
-  costSavings: number;
-  byTenant: Array<{
-    tenantId: string;
-    tenantName: string;
-    totalCost: number;
-    freeTierCost: number;
-    paidCost: number;
-    totalRequests: number;
-    totalOutputTokens: number;
-  }>;
-  byProvider: Record<string, {
-    cost: number;
-    requests: number;
-    tokens: number;
-    freePercent: number;
-  }>;
-  dailyCosts: Array<{
-    date: string;
-    cost: number;
-    freeCost: number;
-    paidCost: number;
-  }>;
-}
-
-function isEmptyDashboard(d: CostDashboardData): boolean {
+function isEmptyDashboard(d: CostDashboard): boolean {
   return (
     d.totalCost === 0 &&
     d.byTenant.length === 0 &&
@@ -56,11 +26,7 @@ function isEmptyDashboard(d: CostDashboardData): boolean {
 
 export function CostDashboardPage() {
   const [days, setDays] = React.useState(30);
-  const { data, isLoading, error, refetch } = useApiData<CostDashboardData>(
-    () => Admin.getCostDashboard<CostDashboardData>(days),
-    [days],
-    { refetchInterval: 60000 }
-  );
+  const { data, isLoading, error, refetch } = useCostDashboard(days, { refetchInterval: 60000 });
 
   return (
     <PageContainer>
@@ -135,8 +101,8 @@ export function CostDashboardPage() {
                   />
                   <StatTile
                     icon={<TrendingDown className="size-4" />}
-                    label="Free-tier cost"
-                    value={formatCurrency(dashboard.freeTierCost)}
+                    label="Free requests"
+                    value={formatNumber(dashboard.freeRequests)}
                     tone="success"
                   />
                   <StatTile
@@ -208,7 +174,7 @@ export function CostDashboardPage() {
                         <tr className="border-b border-border">
                           <th className="text-left py-2 font-medium text-fg-muted">Tenant</th>
                           <th className="text-right py-2 font-medium text-fg-muted">Total cost</th>
-                          <th className="text-right py-2 font-medium text-fg-muted">Free tier</th>
+                          <th className="text-right py-2 font-medium text-fg-muted">Free reqs</th>
                           <th className="text-right py-2 font-medium text-fg-muted">Paid</th>
                           <th className="text-right py-2 font-medium text-fg-muted">Requests</th>
                         </tr>
@@ -218,7 +184,7 @@ export function CostDashboardPage() {
                           <tr key={tenant.tenantId} className="border-b border-border last:border-0">
                             <td className="py-2 font-medium text-fg">{tenant.tenantName}</td>
                             <td className="py-2 text-right text-fg">{formatCurrency(tenant.totalCost)}</td>
-                            <td className="py-2 text-right text-success">{formatCurrency(tenant.freeTierCost)}</td>
+                            <td className="py-2 text-right text-success">{formatNumber(tenant.freeRequests)}</td>
                             <td className="py-2 text-right text-fg">{formatCurrency(tenant.paidCost)}</td>
                             <td className="py-2 text-right text-fg">{formatNumber(tenant.totalRequests)}</td>
                           </tr>
@@ -242,12 +208,12 @@ export function CostDashboardPage() {
                   <BarSeriesChart
                     data={dashboard.dailyCosts.map((day) => ({
                       date: day.date,
-                      freeCost: day.freeCost,
-                      paidCost: day.paidCost,
+                      paidCost: day.paid_cost,
+                      avoidedCost: day.avoided_cost,
                     }))}
                     bars={[
-                      { key: 'freeCost', name: 'Free', color: chartColor('success') },
                       { key: 'paidCost', name: 'Paid', color: chartColor('warning') },
+                      { key: 'avoidedCost', name: 'Avoided', color: chartColor('success') },
                     ]}
                     xKey="date"
                     height={256}

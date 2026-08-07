@@ -343,6 +343,57 @@ describe('convertUnifiedResponseToAnthropic', () => {
     });
   });
 
+  it('reports cached prompt tokens in Anthropic wire shape, excluded from input_tokens', () => {
+    // Internal prompt_tokens is the full total; Anthropic's contract is that
+    // input_tokens counts only the uncached remainder.
+    const resp = makeUnifiedResponse({
+      usage: {
+        prompt_tokens: 1000,
+        completion_tokens: 50,
+        total_tokens: 1050,
+        cache_read_tokens: 700,
+        cache_write_tokens: 200,
+      },
+    });
+    const result = convertUnifiedResponseToAnthropic(resp);
+
+    expect(result.usage).toEqual({
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_creation_input_tokens: 200,
+      cache_read_input_tokens: 700,
+    });
+    // The three prompt components must reconstitute the original total, or a
+    // client summing them would over- or under-bill.
+    const { input_tokens, cache_creation_input_tokens, cache_read_input_tokens } = result.usage;
+    expect(
+      input_tokens + (cache_creation_input_tokens ?? 0) + (cache_read_input_tokens ?? 0)
+    ).toBe(1000);
+  });
+
+  it('omits cache fields entirely when the provider reported no caching', () => {
+    const resp = makeUnifiedResponse({
+      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+    });
+    const result = convertUnifiedResponseToAnthropic(resp);
+
+    expect(result.usage).not.toHaveProperty('cache_creation_input_tokens');
+    expect(result.usage).not.toHaveProperty('cache_read_input_tokens');
+  });
+
+  it('clamps input_tokens at zero if cache counts exceed the prompt total', () => {
+    const resp = makeUnifiedResponse({
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 5,
+        total_tokens: 105,
+        cache_read_tokens: 900,
+      },
+    });
+    const result = convertUnifiedResponseToAnthropic(resp);
+    expect(result.usage.input_tokens).toBe(0);
+  });
+
   it('should handle null finishReason', () => {
     const resp = makeUnifiedResponse({ finishReason: undefined });
     const result = convertUnifiedResponseToAnthropic(resp);

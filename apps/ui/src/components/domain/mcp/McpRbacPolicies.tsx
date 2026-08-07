@@ -9,16 +9,16 @@ import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { Switch } from '@/components/primitives/Switch';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
-import type { ApiRbacPolicy } from '@/types/api';
+import { useCreateRbacPolicy, useDeleteRbacPolicy, useRbacPolicies } from '@/lib/queries/mcp';
 
 export function McpRbacPolicies() {
   // /admin/mcp/rbac/policies only returns { policies }. The `enabled` flag
   // lives on the combined /admin/mcp/config `rbac.enabled` field, so this
   // toggle is local-only until that's wired up.
-  const config = useApiData<{ policies: ApiRbacPolicy[] }>(Admin.listRbacPolicies, []);
-  const [saving, setSaving] = React.useState(false);
+  const config = useRbacPolicies();
+  const createPolicy = useCreateRbacPolicy();
+  const deletePolicy = useDeleteRbacPolicy();
+  const saving = createPolicy.isPending;
   const [enabled, setEnabled] = React.useState(true);
   const [dialogOpen, setDialogOpen] = React.useState(false);
 
@@ -44,9 +44,8 @@ export function McpRbacPolicies() {
       toast.error('Policy name is required');
       return;
     }
-    setSaving(true);
     try {
-      await Admin.createRbacPolicy({
+      await createPolicy.mutateAsync({
         id: policyName.toLowerCase().replace(/\s+/g, '-'),
         name: policyName,
         effect: policyEffect,
@@ -57,19 +56,15 @@ export function McpRbacPolicies() {
       toast.success('Policy created');
       setDialogOpen(false);
       resetForm();
-      await config.refetch();
     } catch (err) {
       toast.error('Failed to create policy', { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setSaving(false);
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
-      await Admin.deleteRbacPolicy(id);
+      await deletePolicy.mutateAsync(id);
       toast.success('Policy deleted');
-      await config.refetch();
     } catch (err) {
       toast.error('Failed to delete policy', { description: err instanceof Error ? err.message : String(err) });
     }

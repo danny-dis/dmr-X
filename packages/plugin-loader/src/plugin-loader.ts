@@ -31,7 +31,11 @@ export class PluginLoader {
     const manifests: PluginManifest[] = [];
 
     for (const pluginDir of pluginDirs) {
-      const manifest = this.loadManifest(pluginDir);
+      const manifest = await this.loadManifest(pluginDir);
+      if (manifest.error) {
+        console.error(`Skipping plugin at ${pluginDir}: ${manifest.error}`);
+        continue;
+      }
       if (config?.enabledPlugins && !config.enabledPlugins.includes(manifest.id)) {
         continue;
       }
@@ -114,67 +118,120 @@ export class PluginLoader {
     }
   }
 
-  private loadManifest(pluginDir: string): PluginManifest {
-    // Try to load from package.json first
-    const packageJsonPath = join(pluginDir, 'package.json');
-    if (fsExistsSync(packageJsonPath)) {
-      const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-      return {
-        id: packageJson.name || 'unknown',
-        name: packageJson.description || packageJson.name || 'Unknown Plugin',
-        version: packageJson.version || '0.1.0',
-        description: packageJson.description || '',
-        transport: { type: 'stdio' }, // default
-        permissions: {
-          accessModalities: [],
-          canRegisterAdapters: false,
-          canReadCandidates: false,
-          canAccessDatabase: false
-        }
-      };
-    }
-
-    // Fallback: look for manifest.ts or manifest.js
-    const manifestPaths = [
-      join(pluginDir, 'manifest.ts'),
-      join(pluginDir, 'manifest.js'),
-      join(pluginDir, 'src', 'manifest.ts'),
-      join(pluginDir, 'src', 'manifest.js')
+  private async loadManifest(pluginDir: string): Promise<PluginManifest> {
+    // 1. Canonical manifest file (dmrx.plugin.json or manifest.json)
+    const jsonManifestPaths = [
+      join(pluginDir, 'dmrx.plugin.json'),
+      join(pluginDir, 'manifest.json'),
     ];
-
-    for (const manifestPath of manifestPaths) {
+    for (const manifestPath of jsonManifestPaths) {
       if (fsExistsSync(manifestPath)) {
-        // In a real implementation, we would dynamically import the manifest
-        // For now, return a default manifest
-        return {
-          id: 'unknown',
-          name: 'Unknown Plugin',
-          version: '0.1.0',
-          description: '',
-          transport: { type: 'stdio' },
-          permissions: {
-            accessModalities: [],
-            canRegisterAdapters: false,
-            canReadCandidates: false,
-            canAccessDatabase: false
-          }
-        };
+        try {
+          const raw = JSON.parse(readFileSync(manifestPath, 'utf8'));
+          return this.normalizeJsonManifest(raw, pluginDir);
+        } catch (error) {
+          return this.unknownManifest(pluginDir, `Failed to parse ${manifestPath}: ${(error as Error).message}`);
+        }
       }
     }
 
-    // Default manifest
+    // 2. Module manifest (manifest.ts / manifest.js) — dynamic import
+    const moduleManifestPaths = [
+      join(pluginDir, 'manifest.ts'),
+      join(pluginDir, 'manifest.js'),
+      join(pluginDir, 'src', 'manifest.ts'),
+      join(pluginDir, 'src', 'manifest.js'),
+    ];
+    for (const manifestPath of moduleManifestPaths) {
+      if (fsExistsSync(manifestPath)) {
+        try {
+          const mod = await import(manifestPath);
+          const raw = (mod as { default?: unknown }).default ?? mod;
+          return this.normalizeJsonManifest(raw, pluginDir);
+        } catch (error) {
+          return this.unknownManifest(pluginDir, `Failed to load ${manifestPath}: ${(error as Error).message}`);
+        }
+      }
+    }
+
+    // 3. Fallback: package.json identity (optionally under a "dmrx" key)
+    const packageJsonPath = join(pluginDir, 'package.json');
+    if (fsExistsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+        const dmrx = packageJson.dmrx ?? {};
+        return {
+          id: packageJson.name || 'unknown',
+          name: dmrx.name || packageJson.description || packageJson.name || 'Unknown Plugin',
+          version: packageJson.version || '0.1.0',
+          description: dmrx.description || packageJson.description || '',
+          transport: dmrx.transport ?? { type: 'stdio' },
+          tools: dmrx.tools,
+          permissions: dmrx.permissions ?? {
+            accessModalities: [],
+            canRegisterAdapters: false,
+            canReadCandidates: false,
+            canAccessDatabase: false,
+          },
+        };
+      } catch (error) {
+        return this.unknownManifest(pluginDir, `Failed to parse ${packageJsonPath}: ${(error as Error).message}`);
+      }
+    }
+
+    // 4. Nothing readable — fail with an explicit error instead of a fake manifest
+    return this.unknownManifest(pluginDir, `No manifest or package.json found at ${pluginDir}`);
+  }
+
+  private normalizeJsonManifest(raw: unknown, pluginDir: string): PluginManifest {
+    if (!raw || typeof raw !== 'object' || typeof (raw as { id?: unknown }).id !== 'string' ||
+        (raw as { id: string }).id.trim() === '') {
+      return this.unknownManifest(pluginDir, `Manifest at ${pluginDir} is missing a non-empty "id"`);
+    }
+
+    const source = raw as Record<string, any>;
+    const manifest: PluginManifest = {
+      id: source.id,
+      name: typeof source.name === 'string' ? source.name : source.id,
+      version: typeof source.version === 'string' ? source.version : '0.1.0',
+      description: typeof source.description === 'string' ? source.description : '',
+      transport: {
+        type: ['stdio', 'sse', 'http', 'embedded'].includes(source.transport?.type) ? source.transport.type : 'stdio',
+        ...(source.transport?.type === 'http' && source.transport?.http ? { http: source.transport.http } : {}),
+      },
+    };
+
+    if (Array.isArray(source.tools)) {
+      const tools = source.tools
+        .map((t: any) => ({
+          name: String(t?.name ?? ''),
+          description: String(t?.description ?? ''),
+          inputSchema: t?.inputSchema ?? {},
+        }))
+        .filter((t: { name: string }) => t.name.length > 0);
+      if (tools.length > 0) manifest.tools = tools;
+    }
+
+    if (source.permissions && typeof source.permissions === 'object') {
+      manifest.permissions = {
+        accessModalities: Array.isArray(source.permissions.accessModalities) ? source.permissions.accessModalities : [],
+        canRegisterAdapters: Boolean(source.permissions.canRegisterAdapters),
+        canReadCandidates: Boolean(source.permissions.canReadCandidates),
+        canAccessDatabase: Boolean(source.permissions.canAccessDatabase),
+      };
+    }
+
+    return manifest;
+  }
+
+  private unknownManifest(pluginDir: string, error: string): PluginManifest {
     return {
       id: 'unknown',
       name: 'Unknown Plugin',
       version: '0.1.0',
       description: '',
       transport: { type: 'stdio' },
-      permissions: {
-        accessModalities: [],
-        canRegisterAdapters: false,
-        canReadCandidates: false,
-        canAccessDatabase: false
-      }
+      error,
     };
   }
 

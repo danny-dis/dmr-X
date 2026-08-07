@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { encryptBytes, decryptBytes } from '@dmr-x/utils';
+import { encryptBytes, decryptBytes, encryptBytesRaw, decryptBytesRaw } from '@dmr-x/utils';
 import { initDb, flush, getDb } from '@dmr-x/db';
 
 const TEST_KEY = 'a'.repeat(64); // 32 bytes hex
@@ -34,6 +34,40 @@ describe('db at-rest encryption (option 2)', () => {
       const dec = decryptBytes(enc);
       expect(Buffer.compare(dec, Buffer.from(s))).toBe(0);
     }
+  });
+
+  it('round-trips bytes through the binary envelope at half the hex size', () => {
+    const samples = [
+      Buffer.from('hello world'),
+      crypto.getRandomValues(Buffer.alloc(1024)),
+      Buffer.alloc(0),
+    ];
+    for (const s of samples) {
+      const dec = decryptBytesRaw(encryptBytesRaw(s));
+      expect(Buffer.compare(dec, Buffer.from(s))).toBe(0);
+    }
+    // The hex form stored two ASCII characters per byte; the binary envelope
+    // must not, or large databases go back to doubling every write.
+    const payload = crypto.getRandomValues(Buffer.alloc(4096));
+    expect(encryptBytesRaw(payload).length).toBeLessThan(
+      Buffer.from(encryptBytes(payload), 'utf8').length * 0.6,
+    );
+  });
+
+  it('reads databases written in the legacy hex format', () => {
+    // Existing installs have a hex-encoded data.db.enc on disk. Upgrading must
+    // not orphan it — that would present as "DMR-X started from zero".
+    const payload = Buffer.from('SQLite format 3\0legacy-payload');
+    const legacyOnDisk = Buffer.from(encryptBytes(payload), 'utf8');
+    expect(Buffer.compare(decryptBytesRaw(legacyOnDisk), payload)).toBe(0);
+  });
+
+  it('rejects tampered and truncated payloads instead of returning garbage', () => {
+    const enc = encryptBytesRaw(Buffer.from('important row'));
+    const tampered = Buffer.from(enc);
+    tampered[tampered.length - 1] ^= 0xff;
+    expect(() => decryptBytesRaw(tampered)).toThrow();
+    expect(() => decryptBytesRaw(enc.subarray(0, 20))).toThrow();
   });
 
   it('writes an encrypted .enc file (not valid plaintext sqlite) and reloads', async () => {

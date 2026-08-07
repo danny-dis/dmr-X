@@ -311,18 +311,25 @@ export class AgentRegistryService {
 
   /**
    * Bulk-import agent definitions and automatically deploy an instance for
-   * each so they are ready to call immediately. On name collision the
-   * duplicate is created with an incrementing numeric suffix
-   * (e.g. "Frontend Developer", "Frontend Developer (1)"). Visibility is
-   * forced to 'public' regardless of per-definition value.
+   * each so they are ready to call immediately. Visibility is forced to
+   * 'public' regardless of per-definition value.
+   *
+   * On name collision, `onDuplicate` decides:
+   *   'skip'   (default) leave the existing agent alone and import nothing
+   *   'rename' import a copy with a numeric suffix, e.g. "Historian (1)"
+   *
+   * Skip is the default because importing a repository is normally a sync,
+   * not an append. Renaming meant re-running the same import multiplied every
+   * agent: four runs of a 271-agent repository left 1084 deployed instances.
    */
   async importAgents(
     tenantId: string,
     definitions: AgentDefinitionCreate[],
-    options: { modelTier?: string } = {},
+    options: { modelTier?: string; onDuplicate?: 'skip' | 'rename' } = {},
   ): Promise<AgentImportResult> {
     const visibility = 'public'; // forced per import policy
     const modelTier = options.modelTier ?? 'auto';
+    const onDuplicate = options.onDuplicate ?? 'skip';
     const imported: AgentImportResult['agents'] = [];
     const errors: AgentImportResult['errors'] = [];
     let skipped = 0;
@@ -336,13 +343,16 @@ export class AgentRegistryService {
           continue;
         }
 
-        // Duplicate handling: create with incrementing suffix
         let finalName = def.name;
         if (existingNames.has(finalName.toLowerCase())) {
+          if (onDuplicate === 'skip') {
+            // Genuinely skip: no definition, and no instance deployed for it.
+            skipped++;
+            continue;
+          }
           let suffix = 1;
           while (existingNames.has(`${finalName} (${suffix})`.toLowerCase())) suffix++;
           finalName = `${finalName} (${suffix})`;
-          skipped++;
         }
         existingNames.add(finalName.toLowerCase());
 
@@ -424,7 +434,7 @@ export class AgentRegistryService {
    */
   async listInstances(
     tenantId: string,
-    opts: { status?: string } = {},
+    opts: { status?: string; limit?: number; offset?: number } = {},
   ): Promise<{ items: AgentInstanceDetail[]; total: number }> {
     const db = getDb();
     const conditions = ['i.tenant_id = ?'];
@@ -434,6 +444,16 @@ export class AgentRegistryService {
       params.push(opts.status);
     }
     const where = conditions.join(' AND ');
+
+    // Each row carries three correlated subqueries over agent_executions, so
+    // the cost of this query scales with the number of instances. A tenant with
+    // a thousand agents makes an unpaginated call take most of a second and
+    // return most of a megabyte. When a limit is given, page the rows and count
+    // separately; without one the behaviour is unchanged for existing callers.
+    const paginate = opts.limit != null;
+    const limitClause = paginate
+      ? ` LIMIT ${Math.max(1, Math.floor(opts.limit!))} OFFSET ${Math.max(0, Math.floor(opts.offset ?? 0))}`
+      : '';
 
     // LEFT JOIN on definitions: an instance whose definition was deleted still
     // has rows (agent_definitions has ON DELETE CASCADE, but a manual delete or
@@ -455,7 +475,7 @@ export class AgentRegistryService {
       FROM agent_instances i
       LEFT JOIN agent_definitions d ON d.id = i.agent_definition_id
       WHERE ${where}
-      ORDER BY i.created_at DESC
+      ORDER BY i.created_at DESC${limitClause}
     `).all(...params) as any[];
 
     const items = rows.map((r) => ({
@@ -471,7 +491,16 @@ export class AgentRegistryService {
       costCents24h: Number(r.cost_cents_24h ?? 0),
     }));
 
-    return { items, total: items.length };
+    // Without a limit every matching row is present, so items.length is the
+    // total. With one, count separately or the caller cannot page.
+    const total = paginate
+      ? Number(
+          (db.prepare(`SELECT COUNT(*) AS c FROM agent_instances i WHERE ${where}`).get(...params) as any)
+            ?.c ?? items.length,
+        )
+      : items.length;
+
+    return { items, total };
   }
 
   /**

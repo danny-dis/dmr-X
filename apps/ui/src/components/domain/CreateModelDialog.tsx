@@ -14,9 +14,8 @@ import {
 import { Field, FieldLabel, FieldDescription, FieldError } from '@/components/primitives/Field';
 import { Input } from '@/components/primitives/Input';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
 import { Admin } from '@/lib/admin';
-import type { ApiProvider } from '@/types/api';
+import { useProviders } from '@/lib/queries/providers';
 
 export interface CreateModelDialogProps {
   open: boolean;
@@ -61,7 +60,7 @@ export function CreateModelDialog({ open, onOpenChange, onCreated }: CreateModel
   const [submitting, setSubmitting] = React.useState(false);
   const [errors, setErrors] = React.useState<Partial<Record<keyof FormState, string>>>({});
 
-  const providers = useApiData<ApiProvider[]>(() => Admin.listProviders(), [open], { enabled: open });
+  const providers = useProviders({ enabled: open });
 
   React.useEffect(() => {
     if (open) {

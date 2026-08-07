@@ -62,13 +62,25 @@ End-to-end connectivity tests require a running gateway:
 
 ```bash
 # Start the gateway first
-bun run dev:gateway
+DMRX_LOCAL_MODE=true bun run dev:gateway
 
-# In another terminal, run E2E tests
-DMRX_RUN_E2E=true bun run test -- tests/e2e/connectivity.test.ts
+# In another terminal, run the E2E suites
+DMRX_RUN_E2E=true bun run test:e2e
 ```
 
-E2E tests are skipped by default because they need a live gateway and valid provider keys.
+E2E tests are skipped by default because they need a live gateway and valid
+provider keys: every suite in `tests/e2e/` gates its `describe` on
+`DMRX_RUN_E2E === 'true'`, so without that env var `bun run test` still
+terminates but runs only the unit project.
+
+## Coverage
+
+Coverage thresholds are configured in `vitest.config.ts` (lines/functions/
+branches/statements). Run the unit suite with coverage:
+
+```bash
+bun run test:coverage
+```
 
 ## Running Specific Tests
 

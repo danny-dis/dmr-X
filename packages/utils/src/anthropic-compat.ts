@@ -14,13 +14,34 @@ import { convertToClaudeMessage, type ClaudeThinkingBlock } from './stream-trans
 // Anthropic SDK types (locally defined to avoid @anthropic-ai/sdk dependency)
 // ---------------------------------------------------------------------------
 
+/**
+ * A prompt-cache breakpoint. `ttl` defaults to 5 minutes; "1h" costs 2x to
+ * write instead of 1.25x, so it only pays off across more requests.
+ */
+export interface ClaudeCacheControl {
+  type: string;
+  ttl?: string;
+}
+
+/**
+ * A system prompt block. Anthropic accepts `system` as either a plain string or
+ * an array of text blocks, but only the array form can carry a cache
+ * breakpoint — and since render order is tools -> system -> messages, a
+ * breakpoint on the last system block covers the tool definitions too.
+ */
+export interface ClaudeSystemBlockParam {
+  type: 'text';
+  text: string;
+  cache_control?: ClaudeCacheControl | null;
+}
+
 /** A text content block in Anthropic message format. */
 export interface ClaudeTextBlockParam {
   type: 'text';
   /** The text content. */
   text: string;
   /** Optional cache control directive. */
-  cache_control?: { type: string } | null;
+  cache_control?: ClaudeCacheControl | null;
 }
 
 /** An image content block in Anthropic message format. */
@@ -31,7 +52,7 @@ export interface ClaudeImageBlockParam {
     | { type: 'url'; url: string }
     | { type: 'base64'; media_type: string; data: string };
   /** Optional cache control directive. */
-  cache_control?: { type: string } | null;
+  cache_control?: ClaudeCacheControl | null;
 }
 
 /** A tool_use content block emitted by an Anthropic assistant turn. */
@@ -44,7 +65,7 @@ export interface ClaudeToolUseBlockParam {
   /** Tool input as a JSON-serializable object. */
   input: Record<string, unknown>;
   /** Optional cache control directive. */
-  cache_control?: { type: string } | null;
+  cache_control?: ClaudeCacheControl | null;
 }
 
 /**
@@ -73,7 +94,7 @@ export interface ClaudeDocumentBlockParam {
     | { type: 'url'; url: string }
     | { type: 'base64'; media_type: string; data: string };
   /** Optional cache control directive. */
-  cache_control?: { type: string } | null;
+  cache_control?: ClaudeCacheControl | null;
 }
 
 /** A tool_result content block supplied by the user to report tool output. */
@@ -91,7 +112,7 @@ export interface ClaudeToolResultBlockParam {
   /** Whether the tool call resulted in an error. */
   is_error?: boolean;
   /** Optional cache control directive. */
-  cache_control?: { type: string } | null;
+  cache_control?: ClaudeCacheControl | null;
 }
 
 /** Union of all Anthropic content block types within a message. */

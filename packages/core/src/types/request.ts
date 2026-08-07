@@ -1,17 +1,37 @@
 import { Modality } from './modality.js';
 import type { ProviderPreferences } from './provider-preferences.js';
 
+/**
+ * Prompt-cache breakpoint marker, modelled on Anthropic's `cache_control`.
+ *
+ * Caching is a *prefix* match: the provider hashes the rendered prompt up to
+ * each breakpoint. Any byte change before a breakpoint invalidates it and
+ * everything after it. Render order is tools -> system -> messages, so a
+ * breakpoint on the last system block covers tools and system together.
+ */
+export interface CacheControl {
+  type: 'ephemeral';
+  /** Defaults to 5m. 1h costs 2x to write instead of 1.25x. */
+  ttl?: '5m' | '1h';
+}
+
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | ContentPart[];
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** Breakpoint applied to this message's final content block. */
+  cache_control?: CacheControl;
 }
 
 export type ContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+  | { type: 'text'; text: string; cache_control?: CacheControl }
+  | {
+      type: 'image_url';
+      image_url: { url: string; detail?: 'auto' | 'low' | 'high' };
+      cache_control?: CacheControl;
+    }
   | { type: 'input_audio'; input_audio: { data: string; format: 'wav' | 'mp3' } };
 
 export interface Tool {
@@ -21,6 +41,22 @@ export interface Tool {
     description?: string;
     parameters?: Record<string, unknown>;
   };
+  /** Breakpoint applied after this tool definition. */
+  cache_control?: CacheControl;
+}
+
+/**
+ * Gateway-level prompt-cache policy.
+ *
+ * - `auto` (default): inject breakpoints when the prefix is large enough to
+ *   cache. Gives caching to OpenAI-format callers, who have no wire syntax
+ *   for expressing it.
+ * - `explicit`: honor only caller-supplied `cache_control`, inject nothing.
+ * - `off`: strip every breakpoint before dispatch.
+ */
+export interface CachePolicy {
+  mode?: 'auto' | 'explicit' | 'off';
+  ttl?: '5m' | '1h';
 }
 
 export interface ToolCall {
@@ -144,6 +180,8 @@ export interface UnifiedRequest {
   // Common
   stream: boolean;
   user?: string;
+  /** Prompt-cache policy. Defaults to `{ mode: 'auto' }`. */
+  cache?: CachePolicy;
   metadata: Record<string, unknown> & {
     providerPreferences?: ProviderPreferences;
   };

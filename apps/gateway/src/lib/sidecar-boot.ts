@@ -5,8 +5,9 @@
  *  - MCP server (HTTP) with A2A enabled
  *  - G0DM0D3 proxy (via server-manager), already deferred from main.ts
  *
- * Both are gated by env (default on) and skip if the target is already healthy,
- * so an external always-on supervisor and gateway-managed spawn can coexist.
+ * Both are gated by env (MCP default on; G0DM0D3 default OFF — opt-in only)
+ * and skip if the target is already healthy, so an external always-on
+ * supervisor and gateway-managed spawn can coexist.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
@@ -501,12 +502,14 @@ export function stopMcpSidecar(): void {
 
 /**
  * Deferred G0DM0D3 auto-boot (relay mode). Same logic previously inline in main.ts.
- * Controlled by DMRX_GODMODE_AUTOSTART (default: true).
+ * Controlled by DMRX_GODMODE_AUTOSTART (default: false — strictly opt-in; set
+ * DMRX_GODMODE_AUTOSTART=true to enable). Auto-cloning and executing a
+ * third-party GitHub repo must never happen by default, so the default is OFF.
  */
 export async function deferGodmodeBoot(): Promise<void> {
   try {
-    if ((process.env.DMRX_GODMODE_AUTOSTART ?? 'true') === 'false') {
-      logger.info('G0DM0D3 autostart disabled (DMRX_GODMODE_AUTOSTART=false)');
+    if ((process.env.DMRX_GODMODE_AUTOSTART ?? 'false') !== 'true') {
+      logger.info('G0DM0D3 autostart disabled (set DMRX_GODMODE_AUTOSTART=true to opt in)');
       return;
     }
     logger.info('G0DM0D3 companion boot starting…');

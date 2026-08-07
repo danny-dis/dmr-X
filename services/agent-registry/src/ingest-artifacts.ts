@@ -21,6 +21,8 @@ export interface ImportAgentsWithSkillsOptions {
   modelTier?: 'auto' | 'premium' | 'budget';
   category?: string;
   source: IngestSource;
+  /** Name-collision policy. Defaults to 'skip' so re-importing is a no-op. */
+  onDuplicate?: 'skip' | 'rename';
 }
 
 export interface ImportAgentsWithSkillsResult {
@@ -89,6 +91,7 @@ export async function importAgentsWithSkills(
     parseAgentMdBatch(files, opts.category).map((a) => a.definition);
   const agents = await agentRegistryService.importAgents(tenantId, definitions, {
     modelTier: opts.modelTier,
+    onDuplicate: opts.onDuplicate,
   });
 
   // 2. Build skill items from the SAME files map

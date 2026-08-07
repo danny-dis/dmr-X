@@ -10,9 +10,8 @@ import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { Textarea } from '@/components/primitives/Textarea';
 import { toast } from '@/components/primitives/Toast';
-import { useApiData } from '@/hooks/useApiData';
-import { Admin } from '@/lib/admin';
 import { useAgentInstances } from '@/lib/queries/agents';
+import { useModels } from '@/lib/queries/models';
 import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 import type { ApiModel } from '@/types/api';
@@ -154,7 +153,7 @@ export function PlaygroundInput() {
 
   // Fetch only available models (from providers with active keys or keyless providers).
   // The backend filters by provider key status when available_only=true (default).
-  const models = useApiData<ApiModel[]>(() => Admin.listModels({ available_only: 'true' }), [], { refetchInterval: 30000 });
+  const models = useModels({ available_only: 'true' }, { refetchInterval: 30000 });
   
   const filteredModels = React.useMemo(() => {
     const all = models.data ?? [];
@@ -537,6 +536,14 @@ export function PlaygroundInput() {
           </div>
         </div>
         
+        {/* Auxiliary panels (settings, godmode pipeline, prompt library).
+            Scrolls on its own instead of growing the composer without bound:
+            this whole bar is `shrink-0` inside a `100dvh` `overflow-hidden`
+            column, so an expanded panel used to push the prompt textarea off
+            the bottom of the viewport — in godmode mode there was visibly
+            nowhere left to type. The input below stays outside this container
+            and is therefore always reachable. */}
+        <div className="max-h-[38vh] overflow-y-auto overscroll-contain">
         {/* Config Panel */}
         {showConfig && (
           <div className="mb-3 space-y-4 rounded-lg border border-border bg-surface-2 p-3">
@@ -719,6 +726,7 @@ export function PlaygroundInput() {
             <PromptLibrary onSelectPrompt={(prompt) => setPrompt(prompt)} />
           </div>
         )}
+        </div>
         
         {/* Input */}
         <div className="relative rounded-xl border border-border bg-surface-2 p-2 shadow-sm focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/15">

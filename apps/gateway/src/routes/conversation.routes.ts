@@ -5,8 +5,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 
+// Single source of truth for the Playground `mode` values, ordered to match
+// the UI's PLAYGROUND_MODE_VALUES (apps/ui/src/store/usePlaygroundStore.ts).
+// Both enums below are built from this so the three copies (this file x2 +
+// the UI union) cannot drift again.
+const CONVERSATION_MODES = ['chat', 'image', 'embed', 'tts', 'rerank', 'moderate', 'agentic', 'tool-loop', 'godmode', 'agent'] as const;
+
 const CreateConversationSchema = z.object({
-  mode: z.enum(['chat', 'image', 'embed', 'tts', 'rerank', 'moderate', 'agentic', 'tool-loop']).default('chat'),
+  mode: z.enum(CONVERSATION_MODES).default('chat'),
   model: z.string().optional(),
   isTemporary: z.boolean().optional().default(false),
 });
@@ -78,7 +84,7 @@ const BatchAddMessagesSchema = z.object({
 const ListConversationsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0),
-  mode: z.enum(['chat', 'image', 'embed', 'tts', 'rerank', 'moderate', 'agentic', 'tool-loop']).optional(),
+  mode: z.enum(CONVERSATION_MODES).optional(),
   search: z.string().min(1).max(200).optional(),
   temporary: z.union([z.literal('true'), z.literal('false')]).optional(),
 });
@@ -88,6 +94,56 @@ const ListConversationsQuerySchema = z.object({
 // that here for consistency.
 function notFound(message: string) {
   return { error: { message, type: 'not_found', code: 'not_found' } };
+}
+
+// The DB rows are snake_case (sql.js column names); the UI's Conversation
+// and Message types (apps/ui/src/store/usePlaygroundStore.ts) are
+// camelCase. Every endpoint below used to return raw rows, so fields like
+// `isTemporary`/`updatedAt`/`messageCount` and a message's `conversationId`/
+// `audioUrl`/`tokensInput`/`latencyMs`/`createdAt` were silently undefined
+// on the client (only same-named fields such as `id`/`title`/`content`/
+// `role` happened to survive) — the sidebar's "Temp" badge and relative
+// timestamps never rendered, and a restored conversation's messages lost
+// their audio/image/token/cost/latency metadata even though the text
+// content still showed.
+function mapConversationRow(row: any) {
+  if (!row) return row;
+  return {
+    id: row.id,
+    tenantId: row.tenant_id ?? undefined,
+    userId: row.user_id ?? undefined,
+    title: row.title,
+    mode: row.mode,
+    model: row.model ?? undefined,
+    isTemporary: !!row.is_temporary,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    metadata: row.metadata,
+    messageCount: row.message_count,
+  };
+}
+
+function mapMessageRow(row: any) {
+  if (!row) return row;
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    role: row.role,
+    content: row.content,
+    audioUrl: row.audio_url ?? undefined,
+    imageUrl: row.image_url ?? undefined,
+    embeddingData: row.embedding_data ?? undefined,
+    model: row.model ?? undefined,
+    provider: row.provider ?? undefined,
+    tokensInput: row.tokens_input,
+    tokensOutput: row.tokens_output,
+    cost: row.cost,
+    latencyMs: row.latency_ms,
+    routingDecision: row.routing_decision ?? undefined,
+    metadata: row.metadata,
+    createdAt: row.created_at,
+    events: row.events ? JSON.parse(row.events) : undefined,
+  };
 }
 
 // CRIT-1: Resolve the active tenant id for a request. The auth middleware
@@ -175,7 +231,7 @@ export default async function conversationRoutes(server: FastifyInstance) {
 
     const { total } = db.prepare(countSql).get(...countParams) as any;
 
-    return { conversations, total, limit, offset };
+    return { conversations: (conversations as any[]).map(mapConversationRow), total, limit, offset };
   });
 
   // Get conversation with messages
@@ -203,18 +259,20 @@ export default async function conversationRoutes(server: FastifyInstance) {
     `).all(id, tenantId) as any[];
 
     return {
-      ...conversation,
-      messages: messages.map((m) => ({
-        ...m,
-        events: m.events ? JSON.parse(m.events) : undefined,
-      })),
+      ...mapConversationRow(conversation),
+      messages: messages.map(mapMessageRow),
     };
   });
 
   // Create new conversation
-  server.post('/conversations', async (request) => {
+  server.post('/conversations', async (request, reply) => {
     const db = getDb();
-    const body = CreateConversationSchema.parse(request.body);
+    const parsed = CreateConversationSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.status(400);
+      return { error: { message: 'Invalid request', type: 'validation', code: 'invalid_conversation', details: parsed.error.errors } };
+    }
+    const body = parsed.data;
     const tenantId = tenantIdFor(request);
 
     const id = crypto.randomUUID();
@@ -226,14 +284,19 @@ export default async function conversationRoutes(server: FastifyInstance) {
 
     const conversation = db.prepare('SELECT * FROM conversations WHERE id = ? AND tenant_id = ?').get(id, tenantId);
 
-    return conversation;
+    return mapConversationRow(conversation);
   });
 
   // Update conversation
   server.put('/conversations/:id', async (request, reply) => {
     const db = getDb();
     const { id } = request.params as any;
-    const body = UpdateConversationSchema.parse(request.body);
+    const parsed = UpdateConversationSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.status(400);
+      return { error: { message: 'Invalid request', type: 'validation', code: 'invalid_update', details: parsed.error.errors } };
+    }
+    const body = parsed.data;
     const tenantId = tenantIdFor(request);
 
     const conversation = db.prepare('SELECT * FROM conversations WHERE id = ? AND tenant_id = ?').get(id, tenantId);
@@ -247,7 +310,7 @@ export default async function conversationRoutes(server: FastifyInstance) {
     }
 
     const updated = db.prepare('SELECT * FROM conversations WHERE id = ? AND tenant_id = ?').get(id, tenantId);
-    return updated;
+    return mapConversationRow(updated);
   });
 
   // Delete conversation
@@ -272,7 +335,12 @@ export default async function conversationRoutes(server: FastifyInstance) {
   server.post('/conversations/:id/messages', async (request, reply) => {
     const db = getDb();
     const { id } = request.params as any;
-    const body = AddMessageSchema.parse(request.body);
+    const parsed = AddMessageSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.status(400);
+      return { error: { message: 'Invalid request', type: 'validation', code: 'invalid_message', details: parsed.error.errors } };
+    }
+    const body = parsed.data;
     const tenantId = tenantIdFor(request);
 
     const conversation = db.prepare('SELECT * FROM conversations WHERE id = ? AND tenant_id = ?').get(id, tenantId) as any;
