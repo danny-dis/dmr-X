@@ -82,7 +82,7 @@ export interface McpConfigFile {
   externalServers?: Array<{
     id: string;
     name: string;
-    transport: 'stdio' | 'sse';
+    transport: 'stdio' | 'sse' | 'http';
     command?: string;
     args?: string[];
     url?: string;
@@ -100,7 +100,7 @@ export interface McpConfigFile {
     servers?: Array<{
       id: string;
       name: string;
-      transport: 'stdio' | 'sse';
+      transport: 'stdio' | 'sse' | 'http';
       command?: string;
       args?: string[];
       url?: string;

@@ -45,7 +45,7 @@ export interface McpCatalogEntry {
   category: McpCatalogCategory;
   /** lucide-react icon name, resolved by the UI. */
   icon: string;
-  transport: 'stdio' | 'sse';
+  transport: 'stdio' | 'sse' | 'http';
   command?: string;
   args?: string[];
   url?: string;
@@ -85,7 +85,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'GitBranch',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-git', '--repository', '{{REPO_PATH}}'],
+    args: ['-y', '@modelcontextprotocol/server-git', '{{REPO_PATH}}'],
     requiredEnv: [
       { key: 'REPO_PATH', label: 'Repository path', help: 'Absolute path to a git working tree.' },
     ],
@@ -100,7 +100,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'Github',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-github'],
+    args: ['-y', '@github/mcp-server'],
     requiredEnv: [
       {
         key: 'GITHUB_PERSONAL_ACCESS_TOKEN',
@@ -109,7 +109,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
         secret: true,
       },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/github',
+    docsUrl: 'https://github.com/github/github-mcp-server',
     official: true,
   },
   {
@@ -120,7 +120,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'Gitlab',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-gitlab'],
+    args: ['-y', '@gitlab/mcp-server'],
     requiredEnv: [
       { key: 'GITLAB_PERSONAL_ACCESS_TOKEN', label: 'Personal access token', secret: true },
       {
@@ -131,7 +131,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
         placeholder: 'https://gitlab.com/api/v4',
       },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/gitlab',
+    docsUrl: 'https://gitlab.com/gitlab-org/gitlab-mcp-server',
     official: true,
   },
   {
@@ -142,9 +142,9 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'Bug',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-sentry'],
+    args: ['-y', '@sentry/mcp-server'],
     requiredEnv: [{ key: 'SENTRY_AUTH_TOKEN', label: 'Auth token', secret: true }],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sentry',
+    docsUrl: 'https://github.com/getsentry/sentry-mcp',
     official: true,
   },
 
@@ -157,7 +157,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'Database',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-postgres', '{{DATABASE_URL}}'],
+    args: ['-y', '@henkey/postgres-mcp', '{{DATABASE_URL}}'],
     requiredEnv: [
       {
         key: 'DATABASE_URL',
@@ -167,8 +167,8 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
         placeholder: 'postgresql://user:pass@host:5432/db',
       },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/postgres',
-    official: true,
+    docsUrl: 'https://github.com/henkey/postgres-mcp',
+    official: false,
   },
   {
     id: 'sqlite',
@@ -181,7 +181,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     args: ['-y', '@modelcontextprotocol/server-sqlite', '--db-path', '{{DB_PATH}}'],
     requiredEnv: [{ key: 'DB_PATH', label: 'Database file', placeholder: './data.db' }],
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite',
-    official: true,
+    official: false,
   },
   {
     id: 'redis',
@@ -191,11 +191,24 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'Server',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-redis', '{{REDIS_URL}}'],
+    args: ['-y', '@redis/mcp-redis', '{{REDIS_URL}}'],
     requiredEnv: [
       { key: 'REDIS_URL', label: 'Redis URL', secret: true, placeholder: 'redis://localhost:6379' },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/redis',
+    docsUrl: 'https://github.com/redis/mcp-redis',
+    official: true,
+  },
+  {
+    id: 'pglite',
+    name: 'PGlite',
+    description: 'Run PostgreSQL in the browser or Node via PGlite, compiled to WASM.',
+    category: 'data',
+    icon: 'Database',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@electric-sql/pglite-mcp'],
+    requiredEnv: [],
+    docsUrl: 'https://github.com/electric-sql/pglite-mcp',
     official: true,
   },
 
@@ -208,7 +221,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'Search',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-brave-search'],
+    args: ['-y', '@brave/brave-search-mcp-server'],
     requiredEnv: [
       {
         key: 'BRAVE_API_KEY',
@@ -217,7 +230,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
         secret: true,
       },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search',
+    docsUrl: 'https://github.com/brave/brave-search-mcp-server',
     official: true,
   },
   {
@@ -234,16 +247,68 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     official: true,
   },
   {
-    id: 'puppeteer',
-    name: 'Puppeteer',
-    description: 'Drive a headless browser: navigate, click, fill forms and screenshot.',
+    id: 'context7',
+    name: 'Context7',
+    description: 'Inject up-to-date documentation for thousands of libraries into the model context.',
+    category: 'search',
+    icon: 'BookOpen',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@upstash/context7-mcp'],
+    requiredEnv: [],
+    docsUrl: 'https://github.com/upstash/context7',
+    official: true,
+  },
+  {
+    id: 'exa',
+    name: 'Exa',
+    description: 'Semantic and keyword web search over the live web, tuned for AI agents.',
+    category: 'search',
+    icon: 'Search',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'exa-mcp-server'],
+    requiredEnv: [{ key: 'EXA_API_KEY', label: 'API key', secret: true }],
+    docsUrl: 'https://github.com/exa-labs/exa-mcp-server',
+    official: true,
+  },
+  {
+    id: 'tavily',
+    name: 'Tavily',
+    description: 'Web search built for AI agents: clean, relevant results with context.',
+    category: 'search',
+    icon: 'Search',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'tavily-mcp'],
+    requiredEnv: [{ key: 'TAVILY_API_KEY', label: 'API key', secret: true }],
+    docsUrl: 'https://github.com/tavily-ai/tavily-mcp',
+    official: true,
+  },
+  {
+    id: 'playwright',
+    name: 'Playwright',
+    description: 'Drive a real browser with Playwright: navigate, click, fill forms and screenshot.',
     category: 'automation',
     icon: 'MousePointerClick',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-puppeteer'],
+    args: ['-y', '@playwright/mcp'],
     requiredEnv: [],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer',
+    docsUrl: 'https://github.com/microsoft/playwright-mcp',
+    official: true,
+  },
+  {
+    id: 'chrome-devtools',
+    name: 'Chrome DevTools',
+    description: 'Drive Chrome via the DevTools Protocol: inspect pages, evaluate JS and capture traces.',
+    category: 'automation',
+    icon: 'Chrome',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'chrome-devtools-mcp@latest'],
+    requiredEnv: [],
+    docsUrl: 'https://github.com/ChromeDevTools/chrome-devtools-mcp',
     official: true,
   },
 
@@ -256,13 +321,13 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     icon: 'MessageSquare',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-slack'],
+    args: ['-y', '@zencoderai/slack-mcp-server'],
     requiredEnv: [
       { key: 'SLACK_BOT_TOKEN', label: 'Bot token', help: 'Starts with xoxb-.', secret: true },
       { key: 'SLACK_TEAM_ID', label: 'Team ID', placeholder: 'T01234567' },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/slack',
-    official: true,
+    docsUrl: 'https://github.com/zencoderai/slack-mcp-server',
+    official: false,
   },
   {
     id: 'google-drive',
@@ -271,12 +336,16 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     category: 'productivity',
     icon: 'HardDrive',
     transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-gdrive'],
+    command: 'uvx',
+    args: ['gdrive-mcp-server'],
     requiredEnv: [
-      { key: 'GDRIVE_CREDENTIALS_PATH', label: 'Credentials JSON path', help: 'OAuth client credentials file.' },
+      {
+        key: 'GDRIVE_CREDENTIALS_PATH',
+        label: 'Credentials JSON path',
+        help: 'OAuth client credentials file. Requires uv (uvx) to be installed.',
+      },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/gdrive',
+    docsUrl: 'https://github.com/googleapis/gdrive-mcp-server',
     official: true,
   },
   {
@@ -310,6 +379,39 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     requiredEnv: [{ key: 'LINEAR_API_KEY', label: 'API key', secret: true }],
     docsUrl: 'https://linear.app/docs/mcp',
   },
+  {
+    id: 'todoist',
+    name: 'Todoist',
+    description: 'Manage Todoist tasks, projects, sections and labels.',
+    category: 'productivity',
+    icon: 'ListChecks',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@abhiz123/todoist-mcp-server'],
+    requiredEnv: [{ key: 'TODOIST_API_TOKEN', label: 'API token', secret: true }],
+    docsUrl: 'https://github.com/abhiz123/todoist-mcp-server',
+    official: false,
+  },
+  {
+    id: 'figma',
+    name: 'Figma',
+    description: 'Inspect Figma files, frames, components and styles from a project.',
+    category: 'productivity',
+    icon: 'Figma',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'figma-developer-mcp', '--figma-api-key={{FIGMA_API_KEY}}'],
+    requiredEnv: [
+      {
+        key: 'FIGMA_API_KEY',
+        label: 'Personal access token',
+        secret: true,
+        help: 'Figma → Settings → Security → Personal access tokens.',
+      },
+    ],
+    docsUrl: 'https://github.com/figma/figma-developer-mcp',
+    official: true,
+  },
 
   // ── Cloud ───────────────────────────────────────────────────────────────
   {
@@ -326,8 +428,8 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
       { key: 'AWS_SECRET_ACCESS_KEY', label: 'Secret access key', secret: true },
       { key: 'AWS_REGION', label: 'Region', placeholder: 'us-east-1' },
     ],
-    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/aws-kb-retrieval-server',
-    official: true,
+    docsUrl: 'https://github.com/modelcontextprotocol/servers-archived/tree/main/src/aws-kb-retrieval-server',
+    official: false,
   },
   {
     id: 'cloudflare',
@@ -374,6 +476,44 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     args: ['-y', 'docker-mcp'],
     requiredEnv: [],
     docsUrl: 'https://github.com/QuantGeekDev/docker-mcp',
+  },
+  {
+    id: 'stripe',
+    name: 'Stripe',
+    description: 'Query and manage Stripe customers, payments, products and subscriptions.',
+    category: 'cloud',
+    icon: 'CreditCard',
+    transport: 'http',
+    url: 'https://mcp.stripe.com',
+    requiredEnv: [
+      {
+        key: 'STRIPE_API_KEY',
+        label: 'Restricted API key',
+        secret: true,
+        help: 'dashboard.stripe.com → API keys → create restricted key. Sent as a Bearer token.',
+      },
+    ],
+    docsUrl: 'https://docs.stripe.com/mcp',
+    official: true,
+  },
+  {
+    id: 'supabase',
+    name: 'Supabase',
+    description: 'Inspect and manage a Supabase project: tables, functions, storage and auth.',
+    category: 'cloud',
+    icon: 'Server',
+    transport: 'http',
+    url: 'https://mcp.supabase.com/mcp',
+    requiredEnv: [
+      {
+        key: 'SUPABASE_ACCESS_TOKEN',
+        label: 'Access token',
+        secret: true,
+        help: 'Personal access token starting with sbp_. Sent as a Bearer token.',
+      },
+    ],
+    docsUrl: 'https://supabase.com/docs/guides/mcp',
+    official: true,
   },
 
   // ── Memory ──────────────────────────────────────────────────────────────

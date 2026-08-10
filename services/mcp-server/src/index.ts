@@ -33,7 +33,7 @@ import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { initDb } from '@dmr-x/db';
 import { registryService, autoRegisterProviders } from '@dmr-x/registry';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { setLastRequestHeaders } from './tenant-key.js';
 
 import {
@@ -355,7 +355,7 @@ interface BuiltConfig {
  * external MCP server management (add/remove without restart).
  */
 interface LiveServerHandle {
-  server: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer;
+  server: import('@modelcontextprotocol/server').McpServer;
   state: import('./server.js').ServerState;
 }
 
@@ -468,7 +468,7 @@ async function buildConfig(): Promise<BuiltConfig> {
       (s): s is MCPServerConfig =>
         typeof s.id === 'string' &&
         typeof s.name === 'string' &&
-        (s.transport === 'stdio' || s.transport === 'sse')
+        (s.transport === 'stdio' || s.transport === 'sse' || s.transport === 'http')
     );
   }
   // Then fall back to externalServers (legacy)
@@ -477,7 +477,7 @@ async function buildConfig(): Promise<BuiltConfig> {
       (s): s is MCPServerConfig =>
         typeof s.id === 'string' &&
         typeof s.name === 'string' &&
-        (s.transport === 'stdio' || s.transport === 'sse')
+        (s.transport === 'stdio' || s.transport === 'sse' || s.transport === 'http')
     );
   }
   // Then fall back to env var
@@ -596,7 +596,7 @@ async function startStdio(config: DMRXMcpServerConfig): Promise<void> {
 
 async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   // Dynamically import to avoid pulling in HTTP deps for stdio-only usage
-  const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
+  const { SSEServerTransport } = await import('@modelcontextprotocol/server-legacy/sse');
   const http = await import('node:http');
   const { handleA2ARoutes } = await import('./a2a/handler.js');
 
@@ -754,7 +754,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 }
 
 async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
-  const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
+  const { NodeStreamableHTTPServerTransport } = await import('@modelcontextprotocol/node');
   const http = await import('node:http');
   const { handleA2ARoutes } = await import('./a2a/handler.js');
 
@@ -775,7 +775,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
 
-  const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof StreamableHTTPServerTransport> }>();
+  const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof NodeStreamableHTTPServerTransport> }>();
 
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
@@ -829,7 +829,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
         // Ensure subagent tools are registered before connect so tools/list
         // reflects them for the Streamable HTTP transport.
         await ready;
-        const transport = new StreamableHTTPServerTransport({
+        const transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid: string) => {
             sessions.set(sid, { server, transport });

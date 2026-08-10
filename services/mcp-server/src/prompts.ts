@@ -5,20 +5,20 @@
  * UI elements in MCP clients. They guide LLM behavior for common tasks.
  */
 
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { z } from 'zod/v4';
 
 // The MCP SDK types each prompt arg as
-// `ZodType<string, ZodTypeDef, string> | ZodOptional<...>`. Zod 3.23's
+// `ZodType<string, ZodTypeDef, string> | ZodOptional<...>`. Zod 4's
 // ZodString / ZodOptional<ZodString> add `~standard` and `~validate` props
-// that newer zod versions don't, so direct assignment fails structurally.
-// `toPromptArgs()` re-projects the schema object to the SDK's expected shape
-// in one cast. Each call site still goes through zod's runtime validators.
+// that the SDK's `PromptArgsRawShape` inference can't always match, so
+// `toPromptArgs()` re-projects the schema object to the expected shape in one
+// cast. Each call site still goes through zod's runtime validators.
 const toPromptArgs = <T extends Record<string, unknown>>(args: T): any => args;
 
-// `registerPrompt` is a typed wrapper around `server.prompt` that lets us
-// pass a callback with destructured args without the SDK's strict
-// `PromptArgsRawShape` inference tripping over the zod 3.23 mismatch.
+// `registerPrompt` is a typed wrapper around `server.registerPrompt` that lets
+// us pass a callback with destructured args without the SDK's strict
+// `PromptArgsRawShape` inference tripping over the zod version mismatch.
 function registerPrompt<A extends Record<string, unknown>, R>(
   server: McpServer,
   name: string,
@@ -26,7 +26,7 @@ function registerPrompt<A extends Record<string, unknown>, R>(
   args: A,
   cb: (args: A) => R,
 ): void {
-  (server.prompt as any).call(server, name, description, toPromptArgs(args), cb);
+  (server.registerPrompt as any).call(server, name, { description, argsSchema: toPromptArgs(args) }, cb);
 }
 
 /**

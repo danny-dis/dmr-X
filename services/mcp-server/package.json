@@ -21,19 +21,22 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@dmr-x/adapters": "*",
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
     "@dmr-x/mcp-client": "*",
+    "@dmr-x/policy": "*",
+    "@dmr-x/registry": "*",
     "@dmr-x/router": "*",
-    "@dmr-x/adapters": "*",
     "@dmr-x/telemetry": "*",
     "@dmr-x/tool-search": "*",
-    "@dmr-x/policy": "*",
     "@dmr-x/utils": "*",
-    "@dmr-x/registry": "*",
-    "@modelcontextprotocol/sdk": "^1.25.2",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/server-legacy": "^2.0.0",
     "fastify": "^5.0.0",
-    "zod": "3.23.0"
+    "zod": "^4.2.0"
   },
   "devDependencies": {
     "typescript": "5.9.3"

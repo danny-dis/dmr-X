@@ -11,7 +11,7 @@
  *   dmrx://config          — Server configuration (redacted)
  */
 
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
 
 export interface ResourceConfig {
   /** Base path for the MCP server file system (if needed) */
@@ -25,7 +25,7 @@ export function registerResources(server: McpServer, config: ResourceConfig = {}
   // -----------------------------------------------------------------------
   // Resource: dmrx://models — Available models list
   // -----------------------------------------------------------------------
-  server.resource(
+  server.registerResource(
     'available-models',
     'dmrx://models',
     {
@@ -50,7 +50,7 @@ export function registerResources(server: McpServer, config: ResourceConfig = {}
   // -----------------------------------------------------------------------
   // Resource: dmrx://providers — Provider health status
   // -----------------------------------------------------------------------
-  server.resource(
+  server.registerResource(
     'provider-health',
     'dmrx://providers',
     {
@@ -73,7 +73,7 @@ export function registerResources(server: McpServer, config: ResourceConfig = {}
   // -----------------------------------------------------------------------
   // Resource: dmrx://config — Server configuration (redacted)
   // -----------------------------------------------------------------------
-  server.resource(
+  server.registerResource(
     'server-config',
     'dmrx://config',
     {
@@ -107,7 +107,7 @@ export function registerResources(server: McpServer, config: ResourceConfig = {}
   // -----------------------------------------------------------------------
   // Resource Template: dmrx://contexts/{id} — Saved conversation contexts
   // -----------------------------------------------------------------------
-  server.resource(
+  server.registerResource(
     'context',
     new ResourceTemplate('dmrx://contexts/{id}', { list: undefined }),
     {

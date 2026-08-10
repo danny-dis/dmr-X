@@ -1,12 +1,16 @@
 import {
+  BookOpen,
   Boxes,
   Brain,
   Bug,
   Check,
+  Chrome,
   Cloud,
   Container,
+  CreditCard,
   Database,
   ExternalLink,
+  Figma,
   FileText,
   FolderOpen,
   GitBranch,
@@ -14,6 +18,7 @@ import {
   Gitlab,
   Globe,
   HardDrive,
+  ListChecks,
   ListTodo,
   MessageSquare,
   MousePointerClick,
@@ -34,9 +39,16 @@ import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
 import { DataState } from '@/components/primitives/DataState';
 import { EmptyState } from '@/components/primitives/EmptyState';
+import { interpretError } from '@/components/primitives/ErrorState';
 import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
-import { useMcpCatalog, useMcpServers, type McpCatalogEntry } from '@/lib/queries/mcp';
+import { toast } from '@/components/primitives/Toast';
+import {
+  useInstallMcpServer,
+  useMcpCatalog,
+  useMcpServers,
+  type McpCatalogEntry,
+} from '@/lib/queries/mcp';
 import { cn } from '@/lib/utils';
 
 /**
@@ -49,9 +61,10 @@ import { cn } from '@/lib/utils';
  * keeps the bundle proportional to the catalog.
  */
 const CATALOG_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  Boxes, Brain, Bug, Cloud, Container, Database, FileText, FolderOpen,
-  GitBranch, Github, Gitlab, Globe, HardDrive, ListTodo, MessageSquare,
-  MousePointerClick, Search, Server, TestTube, Workflow,
+  Boxes, Brain, Bug, BookOpen, Chrome, Cloud, Container, CreditCard, Database,
+  Figma, FileText, FolderOpen, GitBranch, Github, Gitlab, Globe, HardDrive,
+  ListChecks, ListTodo, MessageSquare, MousePointerClick, Search, Server,
+  TestTube, Workflow,
 };
 
 function CatalogIcon({ name, className }: { name: string; className?: string }) {
@@ -67,6 +80,9 @@ export function McpDiscoverPage() {
   const [search, setSearch] = React.useState('');
   const [category, setCategory] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<McpCatalogEntry | null>(null);
+  const [installingId, setInstallingId] = React.useState<string | null>(null);
+
+  const install = useInstallMcpServer();
 
   const installedIds = React.useMemo(
     () => new Set((installed.data?.servers ?? []).map((s) => s.id)),
@@ -88,6 +104,25 @@ export function McpDiscoverPage() {
       );
     });
   }, [entries, search, category]);
+
+  const handleOneClickInstall = (entry: McpCatalogEntry) => {
+    setInstallingId(entry.id);
+    install.mutate(
+      { catalogId: entry.id, values: {} },
+      {
+        onSuccess: (server) => {
+          toast.success(`${entry.name} installed`, {
+            description: `${server.toolCount} tool${server.toolCount === 1 ? '' : 's'} available.`,
+          });
+        },
+        onError: (e) => {
+          const interpreted = interpretError(e);
+          toast.error(`Could not install ${entry.name}`, { description: interpreted.description });
+        },
+        onSettled: () => setInstallingId(null),
+      },
+    );
+  };
 
   return (
     <PageContainer size="wide">
@@ -187,6 +222,14 @@ export function McpDiscoverPage() {
                       {isInstalled ? (
                         <Button size="sm" variant="ghost" disabled leftIcon={<Check className="size-3.5" />}>
                           Installed
+                        </Button>
+                      ) : entry.requiredEnv.length === 0 ? (
+                        <Button
+                          size="sm"
+                          loading={installingId === entry.id}
+                          onClick={() => handleOneClickInstall(entry)}
+                        >
+                          Install
                         </Button>
                       ) : (
                         <Button size="sm" onClick={() => setSelected(entry)}>

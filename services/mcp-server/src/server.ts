@@ -39,8 +39,8 @@ import { persistentContextStore, initDb, getDb } from '@dmr-x/db';
 void initDb().catch((err) => {
   console.error('[mcp-server] DB init (deferred) failed:', err);
 });
-import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
+import { McpServer, type RegisteredTool } from '@modelcontextprotocol/server';
+import { z } from 'zod/v4';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -1012,7 +1012,7 @@ function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
       return z.array(prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown());
     case 'object': {
       const nested = upstreamSchemaToZod(prop);
-      return nested ?? z.record(z.unknown());
+      return nested ?? z.record(z.string(), z.unknown());
     }
     default:
       return z.unknown();
@@ -1042,7 +1042,7 @@ function buildProxySchema(
   }
   return {
     args: z
-      .record(z.unknown())
+      .record(z.string(), z.unknown())
       .optional()
       .describe(
         `Tool arguments (passed through to ${serverId}/${toolName}; upstream exposes no inputSchema)`
@@ -1081,15 +1081,17 @@ function registerServerToolsOnMcpServer(
     // to a permissive record when the upstream omits or exports an exotic schema.
     const passthroughSchema = buildProxySchema(serverId, tool.name, tool.inputSchema);
 
-    const registered = server.tool(
+    const registered = server.registerTool(
       namespacedName,
-      description,
-      passthroughSchema as any,
+      {
+        description,
+        inputSchema: passthroughSchema as any,
+      },
       createExternalToolProxyHandler(state, serverId, tool.name)
     );
 
     registrations.push(registered as RegisteredTool);
-    // sdkTools recording happens inside the server.tool interceptor.
+    // sdkTools recording happens inside the registerTool interceptor.
   }
 
   state.externalToolRegistrations.set(serverId, registrations);
@@ -1176,15 +1178,17 @@ function registerExternalTools(server: McpServer, client: MCPClient, state: Serv
 
       const passthroughSchema = buildProxySchema(serverId, tool.name, tool.inputSchema);
 
-      const registered = server.tool(
+      const registered = server.registerTool(
         namespacedName,
-        description,
-        passthroughSchema as any,
+        {
+          description,
+          inputSchema: passthroughSchema as any,
+        },
         createExternalToolProxyHandler(state, serverId, tool.name)
       );
 
       registrations.push(registered as RegisteredTool);
-      // sdkTools recording happens inside the server.tool interceptor.
+      // sdkTools recording happens inside the registerTool interceptor.
     }
 
     state.externalToolRegistrations.set(serverId, registrations);
@@ -1522,16 +1526,6 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     if (isToolAllowed(name, config.allowedTools)) {
       const registered = originalRegisterTool(name, spec, handler);
       recordSdkTool(state, name, spec?.description ?? '', spec?.inputSchema);
-      return registered;
-    }
-    return undefined as any;
-  };
-
-  const originalTool = server.tool.bind(server);
-  (server as any).tool = (name: string, description: any, schema?: any, handler?: any) => {
-    if (isToolAllowed(name, config.allowedTools)) {
-      const registered = originalTool(name, description, schema, handler);
-      recordSdkTool(state, name, typeof description === 'string' ? description : '', schema);
       return registered;
     }
     return undefined as any;

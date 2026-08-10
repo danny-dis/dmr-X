@@ -1,7 +1,11 @@
 import { createLogger } from '@dmr-x/utils';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import {
+  Client,
+  SdkHttpError,
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 import { CircuitBreakerManager, type CircuitBreakerStatus } from './circuit-breaker.js';
 
@@ -15,8 +19,8 @@ export interface MCPServerConfig {
   id: string;
   /** Human-readable name */
   name: string;
-  /** Transport type: 'stdio' for local processes, 'sse' for HTTP SSE */
-  transport: 'stdio' | 'sse';
+  /** Transport type: 'stdio' for local processes, 'sse' for legacy HTTP SSE, 'http' for streamable HTTP */
+  transport: 'stdio' | 'sse' | 'http';
   /** Command to run (for stdio transport) */
   command?: string;
   /** Arguments for the command (for stdio transport) */
@@ -84,7 +88,7 @@ export class MCPServerRegistry {
       { capabilities: {} }
     );
 
-    let transport: StdioClientTransport | SSEClientTransport;
+    let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport;
 
     if (serverConfig.transport === 'stdio') {
       if (!serverConfig.command) {
@@ -96,26 +100,47 @@ export class MCPServerRegistry {
         env: serverConfig.env as Record<string, string>,
       });
     } else if (serverConfig.transport === 'sse') {
+      transport = this.buildSseTransport(serverConfig);
+    } else if (serverConfig.transport === 'http') {
       if (!serverConfig.url) {
-        throw new Error(`sse transport requires 'url' for server ${serverConfig.id}`);
+        throw new Error(`http transport requires 'url' for server ${serverConfig.id}`);
       }
 
-      // Build headers with credential injection
-      const headers: Record<string, string> = {};
+      // Streamable HTTP (v2 SDK): the transport performs version negotiation
+      // during connect. Advertise JSON/SSE and inject credentials.
+      const headers: Record<string, string> = {
+        Accept: 'application/json, text/event-stream',
+      };
       if (serverConfig.apiKey) {
         headers['Authorization'] = `Bearer ${serverConfig.apiKey}`;
       }
 
-      transport = new SSEClientTransport(new URL(serverConfig.url), {
-        requestInit: {
-          headers: Object.keys(headers).length > 0 ? headers : undefined,
-        },
-      } as any);
+      transport = new StreamableHTTPClientTransport(new URL(serverConfig.url), {
+        requestInit: { headers },
+      });
     } else {
       throw new Error(`Unknown transport type: ${serverConfig.transport}`);
     }
 
-    await client.connect(transport);
+    try {
+      await client.connect(transport);
+    } catch (error) {
+      // Backward-compat rule for streamable HTTP: the v2 transport performs its
+      // own version negotiation; if the server rejects the HTTP transport with
+      // 400/404/405 it is likely an SSE-only legacy server, so retry over the
+      // legacy SSE transport (best-effort).
+      if (serverConfig.transport === 'http' && this.shouldFallbackToSse(error)) {
+        logger.warn(
+          { id: serverConfig.id, url: serverConfig.url, error },
+          'Streamable HTTP connect rejected with 400/404/405; falling back to legacy SSE transport'
+        );
+        await client.close().catch(() => undefined);
+        transport = this.buildSseTransport(serverConfig);
+        await client.connect(transport);
+      } else {
+        throw error;
+      }
+    }
 
     // Discover tools from the server
     const toolsResult = await client.listTools();
@@ -146,6 +171,38 @@ export class MCPServerRegistry {
     );
 
     return connected;
+  }
+
+  /**
+   * Build a legacy SSE client transport for a server config.
+   */
+  private buildSseTransport(serverConfig: MCPServerConfig): SSEClientTransport {
+    if (!serverConfig.url) {
+      throw new Error(`sse transport requires 'url' for server ${serverConfig.id}`);
+    }
+
+    // Build headers with credential injection
+    const headers: Record<string, string> = {};
+    if (serverConfig.apiKey) {
+      headers['Authorization'] = `Bearer ${serverConfig.apiKey}`;
+    }
+
+    return new SSEClientTransport(new URL(serverConfig.url), {
+      requestInit: {
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+      },
+    });
+  }
+
+  /**
+   * Best-effort detection of a streamable-HTTP rejection that signals an
+   * SSE-only legacy server (HTTP 400/404/405), so the caller can fall back.
+   */
+  private shouldFallbackToSse(error: unknown): boolean {
+    return (
+      error instanceof SdkHttpError &&
+      (error.status === 400 || error.status === 404 || error.status === 405)
+    );
   }
 
   /**
