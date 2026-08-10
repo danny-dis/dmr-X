@@ -1,0 +1,4 @@
+[project]
+name = "mcp-server-fake-time"
+version = "0.1.0"
+description = "Fixture Python time server"

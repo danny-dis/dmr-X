@@ -23,6 +23,8 @@
     "test:watch": "bun vitest",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
+    "mcp:catalog:check": "bun run scripts/generate-mcp-catalog.ts --check",
+    "mcp:catalog:gen": "bun run scripts/generate-mcp-catalog.ts",
     "clean": "bun run clean:src && turbo clean",
     "clean:src": "bun run scripts/clean-src-artifacts.ts"
   },

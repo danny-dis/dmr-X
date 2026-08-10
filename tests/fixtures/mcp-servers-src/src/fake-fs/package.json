@@ -1,0 +1,8 @@
+{
+  "name": "@fixture/server-fake-fs",
+  "version": "1.0.0",
+  "description": "Fixture TypeScript filesystem server",
+  "bin": {
+    "mcp-server-fake-fs": "dist/index.js"
+  }
+}

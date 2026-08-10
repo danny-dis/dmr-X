@@ -1,0 +1,8 @@
+{
+  "name": "@modelcontextprotocol/server-everything",
+  "version": "0.6.2",
+  "description": "MCP server that exercises all the features of the MCP protocol",
+  "bin": {
+    "mcp-server-everything": "dist/index.js"
+  }
+}

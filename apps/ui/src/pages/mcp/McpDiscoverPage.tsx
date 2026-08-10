@@ -5,6 +5,7 @@ import {
   Bug,
   Check,
   Chrome,
+  Clock,
   Cloud,
   Container,
   CreditCard,
@@ -61,7 +62,7 @@ import { cn } from '@/lib/utils';
  * keeps the bundle proportional to the catalog.
  */
 const CATALOG_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  Boxes, Brain, Bug, BookOpen, Chrome, Cloud, Container, CreditCard, Database,
+  Boxes, Brain, Bug, BookOpen, Chrome, Clock, Cloud, Container, CreditCard, Database,
   Figma, FileText, FolderOpen, GitBranch, Github, Gitlab, Globe, HardDrive,
   ListChecks, ListTodo, MessageSquare, MousePointerClick, Search, Server,
   TestTube, Workflow,

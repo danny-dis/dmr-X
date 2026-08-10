@@ -300,10 +300,30 @@ describe('MCP catalog templates', () => {
       'tavily',
       'stripe',
       'supabase',
+      'time',
     ]) {
       expect(ids, `catalog should contain ${id}`).toContain(id);
     }
     expect(ids).not.toContain('puppeteer');
+  });
+
+  it('includes the active upstream reference servers', () => {
+    const ids = MCP_CATALOG.map((e) => e.id);
+    for (const id of [
+      'filesystem',
+      'git',
+      'fetch',
+      'memory',
+      'sequential-thinking',
+      'everything',
+      'time',
+    ]) {
+      expect(ids, `catalog should contain ${id}`).toContain(id);
+    }
+    // The Python reference servers are consumed via uvx, not npx.
+    for (const id of ['git', 'fetch', 'time']) {
+      expect(getCatalogEntry(id)!.command, `${id} should run via uvx`).toBe('uvx');
+    }
   });
 
   it('describes http (streamable) catalog entries', () => {
