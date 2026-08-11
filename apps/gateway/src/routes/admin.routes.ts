@@ -1,8 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EventEmitter } from 'node:events';
-
 import { ValidationError } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { federationService } from '@dmr-x/federation';
@@ -11,11 +9,20 @@ import { PROVIDER_CATALOG, discoverOpenAIModels, registryService } from '@dmr-x/
 import { sandboxService } from '@dmr-x/sandbox';
 import { logger, encrypt, decrypt, encryptConfigApiKey, eventBus, SystemEvents } from '@dmr-x/utils';
 import { workersService } from '@dmr-x/workers';
-import { trace, type Span } from '@opentelemetry/api';
 import type { FastifyInstance } from 'fastify';
 import { Agent } from 'undici';
 import { z } from 'zod';
 
+import {
+  dashboardStatsEvents,
+  publishDashboardStatsUpdate,
+  publishDashboardStatsThrottled,
+  recordTelemetryEvent,
+  registerDashboardStatsComputer,
+  telemetryBuffer,
+  telemetryEvents,
+  trimTelemetryBuffer,
+} from '../admin-events.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
 import { computeSavings } from '../services/savings.js';
@@ -155,33 +162,6 @@ function logAdminAction(
   } catch (err) {
     // Don't let audit logging failures break admin operations
     logger.warn({ err, action, resourceType }, 'Failed to write admin audit log');
-  }
-}
-
-/**
- * Pull the current OTel trace_id / span_id off the active span, if any.
- *
- * - `trace_id` is the 32-char hex id of the request's trace.  It is the
- *   value that ties multiple spans (gateway -> router -> adapter.fetch)
- *   together in a trace UI.
- * - `span_id` is the 16-char hex id of the *active* span when this
- *   helper was called. For events emitted from request handlers, that
- *   is the `http.request` span started in `apps/gateway/src/server.ts`.
- *
- * Both return `null` when no SDK has registered a global provider, or
- * when there is no active span on the current async context.
- */
-function getActiveTraceContext(): { traceId: string | null; spanId: string | null } {
-  try {
-    const span = trace.getActiveSpan() as Span | undefined;
-    if (!span) return { traceId: null, spanId: null };
-    const ctx = span.spanContext();
-    if (!ctx || ctx.traceId === '00000000000000000000000000000000') {
-      return { traceId: null, spanId: null };
-    }
-    return { traceId: ctx.traceId, spanId: ctx.spanId };
-  } catch {
-    return { traceId: null, spanId: null };
   }
 }
 
@@ -3947,7 +3927,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           SELECT
             rl.id,
             rl.timestamp,
-            json_extract(rl.task_profile, '$.taskType') as task_type,
+            CASE WHEN json_valid(rl.task_profile) = 1
+                 THEN json_extract(rl.task_profile, '$.taskType')
+                 ELSE rl.task_profile END as task_type,
             rl.selected_model,
             p.name as selected_provider,
             json_extract(rl.routing_plan, '$.executionMode') as execution_mode,
@@ -4528,80 +4510,6 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     return { id, resolved: true, resolvedAt: new Date().toISOString() };
   });
 
-  // Telemetry events (in-memory ring buffer + push-based SSE)
-  const telemetryEvents = new EventEmitter();
-  telemetryEvents.setMaxListeners(100); // up to 100 concurrent SSE subscribers
-
-  const telemetryBuffer: Array<{
-    id: string;
-    timestamp: string;
-    level: string;
-    service: string;
-    message: string;
-    trace_id: string | null;
-    span_id: string | null;
-    duration: number | null;
-    metadata: Record<string, unknown>;
-  }> = [];
-
-  const MAX_TELEMETRY_EVENTS = 1000;
-
-  function trimTelemetryBuffer(): void {
-    while (telemetryBuffer.length > MAX_TELEMETRY_EVENTS) {
-      telemetryBuffer.shift();
-    }
-  }
-
-  /**
-   * Publish a telemetry event. Appends to the in-memory buffer (trimmed to
-   * MAX_TELEMETRY_EVENTS) and emits to all live SSE subscribers.
-   *
-   * Call sites: any code that wants to surface a real-time event in the
-   * admin dashboard (e.g. request failures, auth failures, provider
-   * health changes, etc.).
-   */
-  function recordTelemetryEvent(event: {
-    id?: string;
-    level?: string;
-    service?: string;
-    message: string;
-    trace_id?: string | null;
-    span_id?: string | null;
-    duration?: number | null;
-    metadata?: Record<string, unknown>;
-  }): void {
-    // HIGH-3: the `trace_id` / `span_id` fields used to be hard-coded to
-    // `null` placeholders, which meant the live telemetry SSE stream could
-    // never link an event back to its source span. Now we resolve the
-    // active OTel span context at publish time. Callers can still pass
-    // explicit values (e.g. when emitting a "child" event for a span that
-    // has already been closed) and those values win.
-    const explicitTraceId = event.trace_id;
-    const explicitSpanId = event.span_id;
-    let activeTraceId: string | null = null;
-    let activeSpanId: string | null = null;
-    if (explicitTraceId === null || explicitTraceId === undefined ||
-        explicitSpanId === null || explicitSpanId === undefined) {
-      const active = getActiveTraceContext();
-      activeTraceId = active.traceId;
-      activeSpanId = active.spanId;
-    }
-    const enriched = {
-      id: event.id ?? crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      level: event.level ?? 'info',
-      service: event.service ?? 'gateway',
-      message: event.message,
-      trace_id: explicitTraceId ?? activeTraceId,
-      span_id: explicitSpanId ?? activeSpanId,
-      duration: event.duration ?? null,
-      metadata: event.metadata ?? {},
-    };
-    telemetryBuffer.push(enriched);
-    trimTelemetryBuffer();
-    telemetryEvents.emit('event', enriched);
-  }
-
   server.get('/admin/telemetry/events', async () => {
     trimTelemetryBuffer();
     return { events: telemetryBuffer.slice(-100) };
@@ -4656,45 +4564,6 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     });
   });
 
-  // SSE stream of dashboard stats updates. Pushes live metrics to the UI
-  // so it doesn't have to poll every 5 seconds.
-  const dashboardStatsEvents = new EventEmitter();
-  dashboardStatsEvents.setMaxListeners(50);
-
-  // Publish dashboard stats update (called after significant events)
-  function publishDashboardStatsUpdate(stats: Record<string, unknown>): void {
-    dashboardStatsEvents.emit('stats', stats);
-  }
-
-  /**
-   * Recompute and broadcast dashboard stats, at most once a second.
-   *
-   * `publishDashboardStatsUpdate` was exposed on the server object but nothing
-   * ever called it, so the stream only ever emitted heartbeats. This is the
-   * missing producer: the request lifecycle hook calls it on every completed
-   * request.
-   *
-   * Two guards keep it off the hot path — it no-ops when nobody is listening,
-   * and it coalesces bursts into one recompute per second. The stat block is
-   * six aggregate queries, which is fine once a second and not fine per
-   * request under load.
-   */
-  let lastStatsPublish = 0;
-  function publishDashboardStatsThrottled(): void {
-    if (dashboardStatsEvents.listenerCount('stats') === 0) return;
-
-    const now = Date.now();
-    if (now - lastStatsPublish < 1000) return;
-    lastStatsPublish = now;
-
-    try {
-      publishDashboardStatsUpdate(computeDashboardStats());
-    } catch (err) {
-      // Telemetry must never break a request.
-      logger.warn({ err }, 'Dashboard stats publish failed');
-    }
-  }
-
   server.get('/admin/dashboard/stream', async (request, reply) => {
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -4737,14 +4606,12 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     });
   });
 
-  // Expose publisher for dashboard stats updates
-  (server as unknown as Record<string, unknown>).publishDashboardStatsUpdate = publishDashboardStatsUpdate;
-  (server as unknown as Record<string, unknown>).publishDashboardStatsThrottled = publishDashboardStatsThrottled;
-
-  // Expose buffer + publisher for adding events from other routes
-  (server as unknown as Record<string, unknown>).telemetryBuffer = telemetryBuffer;
-  (server as unknown as Record<string, unknown>).trimTelemetryBuffer = trimTelemetryBuffer;
-  (server as unknown as Record<string, unknown>).recordTelemetryEvent = recordTelemetryEvent;
+  // The telemetry-event and dashboard-stat publishers live in
+  // src/admin-events.ts and are decorated on the ROOT server instance in
+  // server.ts, so every Fastify-encapsulated plugin (telemetry-hooks, chat,
+  // tools, auth…) can reach them. Here we only feed the throttled dashboard
+  // publisher the closure-local compute function.
+  registerDashboardStatsComputer(computeDashboardStats);
 
   // Audit events
   server.get('/admin/audit/events', async () => {

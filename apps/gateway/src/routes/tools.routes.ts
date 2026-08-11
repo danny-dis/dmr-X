@@ -820,7 +820,11 @@ function resolveSandboxDir(tenantId?: string, workspaceKey?: string): string {
  * back to the request id for one-off tool calls with no conversation.
  */
 function workspaceKeyFor(context?: { requestId?: string; conversationId?: string }): string | undefined {
-  return context?.conversationId || context?.requestId;
+  const raw = context?.conversationId || context?.requestId;
+  if (!raw) return undefined;
+  // Sanitize: replace invalid filename characters with underscore
+  // Windows prohibits: < > : " / \ | ? *
+  return raw.replace(/[<>:"/\\|?*]/g, '_');
 }
 
 /**

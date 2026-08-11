@@ -431,7 +431,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             modelId: candidate.modelId,
             modality: unifiedRequest.modality ?? 'llm',
             tenantId,
-            taskProfile: unifiedRequest.modality,
+            taskProfile: JSON.stringify({ taskType: unifiedRequest.modality }),
             routingPlan: {
               primary: {
                 providerId: plan.primary.providerId,
