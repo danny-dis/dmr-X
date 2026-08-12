@@ -1,0 +1,157 @@
+diff --git a/src/lib/openrouter.ts b/src/lib/openrouter.ts
+index 199a691..3526ac4 100644
+--- a/src/lib/openrouter.ts
++++ b/src/lib/openrouter.ts
+@@ -82,8 +82,9 @@ export function formatAPIError(status: number, errorMessage?: string): string {
+ }
+ 
+ interface Message {
+-  role: 'system' | 'user' | 'assistant'
+-  content: string
++  role: 'system' | 'user' | 'assistant' | 'tool'
++  content: string | null
++  tool_calls?: any[]
+ }
+ 
+ interface SendMessageOptions {
+@@ -99,6 +100,8 @@ interface SendMessageOptions {
+   frequency_penalty?: number
+   presence_penalty?: number
+   repetition_penalty?: number
++  tools?: any[]
++  tool_choice?: any
+ }
+ 
+ interface OpenRouterResponse {
+@@ -107,7 +110,8 @@ interface OpenRouterResponse {
+   choices: {
+     message: {
+       role: string
+-      content: string
++      content: string | null
++      tool_calls?: any[]
+     }
+     finish_reason: string
+   }[]
+@@ -133,7 +137,9 @@ export async function sendMessage({
+   top_k,
+   frequency_penalty,
+   presence_penalty,
+-  repetition_penalty
++  repetition_penalty,
++  tools,
++  tool_choice
+ }: SendMessageOptions): Promise<string> {
+   if (!apiKey && !isRelay()) {
+     throw new Error('No API key set. Go to Settings → API Key and enter your OpenRouter key from [openrouter.ai/keys](https://openrouter.ai/keys).')
+@@ -153,6 +159,8 @@ export async function sendMessage({
+   if (frequency_penalty !== undefined) body.frequency_penalty = frequency_penalty
+   if (presence_penalty !== undefined) body.presence_penalty = presence_penalty
+   if (repetition_penalty !== undefined) body.repetition_penalty = repetition_penalty
++  if (tools !== undefined) body.tools = tools
++  if (tool_choice !== undefined) body.tool_choice = tool_choice
+ 
+   // Add provider-specific options if needed
+   const providerOptions: Record<string, unknown> = {}
+@@ -188,6 +196,68 @@ export async function sendMessage({
+   return data.choices[0].message.content
+ }
+ 
++/**
++ * Like `sendMessage` but returns the full assistant message (content AND
++ * tool_calls) so DMR-X can round-trip function calls through the relay.
++ */
++export async function sendMessageFull({
++  messages,
++  model,
++  apiKey,
++  noLog = false,
++  signal,
++  temperature = 0.7,
++  maxTokens = 4096,
++  top_p,
++  top_k,
++  frequency_penalty,
++  presence_penalty,
++  repetition_penalty,
++  tools,
++  tool_choice
++}: SendMessageOptions): Promise<{ content: string | null; tool_calls?: any[] }> {
++  if (!apiKey && !isRelay()) {
++    throw new Error('No API key set. Go to Settings → API Key and enter your OpenRouter key from [openrouter.ai/keys](https://openrouter.ai/keys).')
++  }
++
++  const body: Record<string, unknown> = {
++    model,
++    messages,
++    temperature,
++    max_tokens: maxTokens
++  }
++
++  if (top_p !== undefined) body.top_p = top_p
++  if (top_k !== undefined) body.top_k = top_k
++  if (frequency_penalty !== undefined) body.frequency_penalty = frequency_penalty
++  if (presence_penalty !== undefined) body.presence_penalty = presence_penalty
++  if (repetition_penalty !== undefined) body.repetition_penalty = repetition_penalty
++  if (tools !== undefined) body.tools = tools
++  if (tool_choice !== undefined) body.tool_choice = tool_choice
++  if (noLog) body.provider = { allow_fallbacks: false }
++
++  const response = await fetch(openrouterApiUrl(), {
++    method: 'POST',
++    headers: upstreamHeadersFor(apiKey),
++    body: JSON.stringify(body),
++    signal
++  })
++
++  if (!response.ok) {
++    const errorData = await response.json().catch(() => ({}))
++    throw new Error(formatAPIError(response.status, errorData.error?.message))
++  }
++
++  const data: OpenRouterResponse = await response.json()
++
++  if (!data.choices || data.choices.length === 0) {
++    throw new Error('No response from model')
++  }
++
++  const message = data.choices[0].message
++  return { content: message.content ?? null, tool_calls: message.tool_calls }
++}
++
+ /**
+  * Stream a message response from the AI model
+  * (For future implementation)
+@@ -204,8 +274,10 @@ export async function* streamMessage({
+   top_k,
+   frequency_penalty,
+   presence_penalty,
+-  repetition_penalty
+-}: SendMessageOptions): AsyncGenerator<string, void, unknown> {
++  repetition_penalty,
++  tools,
++  tool_choice
++}: SendMessageOptions): AsyncGenerator<string | any[], void, unknown> {
+   if (!apiKey && !isRelay()) {
+     throw new Error('No API key set. Go to Settings → API Key and enter your OpenRouter key from [openrouter.ai/keys](https://openrouter.ai/keys).')
+   }
+@@ -223,6 +295,8 @@ export async function* streamMessage({
+   if (frequency_penalty !== undefined) streamBody.frequency_penalty = frequency_penalty
+   if (presence_penalty !== undefined) streamBody.presence_penalty = presence_penalty
+   if (repetition_penalty !== undefined) streamBody.repetition_penalty = repetition_penalty
++  if (tools !== undefined) streamBody.tools = tools
++  if (tool_choice !== undefined) streamBody.tool_choice = tool_choice
+ 
+   const response = await fetch(openrouterApiUrl(), {
+     method: 'POST',
+@@ -264,6 +338,10 @@ export async function* streamMessage({
+           if (content) {
+             yield content
+           }
++          const toolCalls = json.choices?.[0]?.delta?.tool_calls
++          if (toolCalls) {
++            yield toolCalls
++          }
+         } catch {
+           // Skip invalid JSON
+         }

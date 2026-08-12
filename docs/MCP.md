@@ -15,7 +15,7 @@ DMR-X includes an MCP (Model Context Protocol) server that exposes its routing c
 ```bash
 # .env
 DMRX_MCP_TRANSPORT=stdio         # Transport type
-DMRX_MCP_PORT=3100               # Port for SSE/HTTP transports
+DMRX_MCP_PORT=47114               # Port for SSE/HTTP transports
 DMRX_MCP_HOST=127.0.0.1          # Bind address (127.0.0.1 for local only)
 DMRX_MCP_API_KEY=your-mcp-key    # API key for authentication (required in production)
 ```
@@ -355,7 +355,7 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "dmr-x": {
-      "url": "http://localhost:3100",
+      "url": "http://localhost:47114",
       "headers": {
         "Authorization": "Bearer your-mcp-key"
       }
@@ -371,7 +371,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 
 const transport = new SSEClientTransport(
-  new URL("http://localhost:3100/sse"),
+  new URL("http://localhost:47114/sse"),
   {
     requestInit: {
       headers: { Authorization: "Bearer your-mcp-key" },

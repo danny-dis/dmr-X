@@ -113,7 +113,7 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `DMRX_MCP_TRANSPORT` | `stdio` | No | Transport: `stdio`, `sse`, `http`. |
-| `DMRX_MCP_PORT` | `3100` | No | MCP HTTP/SSE port. |
+| `DMRX_MCP_PORT` | `47114` | No | MCP HTTP/SSE port. |
 | `DMRX_MCP_HOST` | `127.0.0.1` | No | MCP HTTP/SSE host. Use `0.0.0.0` only for remote access. |
 | `DMRX_MCP_API_KEY` | — | Production | API key for MCP server authentication. Comma-separated for multiple keys. Required when transport is `sse` or `http` in production. |
 | `DMRX_MCP_CORS_ORIGIN` | `*` (dev only) | Production | CORS origin for SSE/HTTP transports. Tighten to explicit origins in production. |
@@ -128,7 +128,7 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 | `DMRX_MCP_CIRCUIT_BREAKER_TIMEOUT_MS` | `60000` (60 s) | No | Time in ms before the circuit transitions from open to half-open. |
 | `DMRX_MCP_AUTOSTART` | `true` | No | When the gateway boots, spawn the MCP HTTP server (with A2A) as a sidecar if `:DMRX_MCP_PORT` is not already healthy. |
 | `DMRX_A2A_ENABLED` | `true` (sidecar) | No | Enable A2A agent-card + task endpoints on the MCP server. |
-| `DMRX_A2A_AGENT_URL` | `http://127.0.0.1:3100` | No | Public URL advertised in the A2A agent card. |
+| `DMRX_A2A_AGENT_URL` | `http://127.0.0.1:47114` | No | Public URL advertised in the A2A agent card. |
 | `DMRX_GODMODE_AUTOSTART` | `true` | No | When the gateway boots, start the local G0DM0D3 proxy in relay mode if it is not already healthy. |
 
 **Security:** The MCP server binds to `127.0.0.1` by default. Only change to `0.0.0.0` if you need remote access, and always set `DMRX_MCP_API_KEY` when exposing externally.

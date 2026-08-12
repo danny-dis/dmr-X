@@ -129,6 +129,24 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
 
     const body = parsed.data as GodmodeChatRequest;
 
+    // No model supplied → let DMR-X's own algorithm pick (pick-then-wrap):
+    // rank the live vault candidates with the same picker the `auto-free`
+    // flow uses, then wrap the top concrete model. Never a hardcoded default.
+    if (!body.model) {
+      const { buildGodmodeWrapOrder } = await import('../lib/godmode-guard.js');
+      const router = (server as any).router as { getCandidates?: () => any };
+      const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
+      const wrapOrder = buildGodmodeWrapOrder(router?.getCandidates?.() ?? [], costFilter);
+      body.model = wrapOrder[0] ?? undefined;
+      if (!body.model) {
+        throw new ValidationError(
+          'No model available for godmode wrap — add provider candidates or pass model explicitly',
+          {},
+        );
+      }
+      logger.info({ model: body.model, wrapOrder }, 'godmode chat: resolved model via DMR-X router');
+    }
+
     if (body.stream) {
       // Streaming response
       reply.header('Content-Type', 'text/event-stream');

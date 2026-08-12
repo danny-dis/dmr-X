@@ -40,7 +40,11 @@ export type ParseltongueIntensity = 'light' | 'medium' | 'heavy';
 export type STMModule = 'hedge_reducer' | 'direct_mode' | 'curiosity_bias' | 'casual_mode';
 
 export interface GodmodeChatRequest {
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{
+    role: string;
+    content: string | Array<unknown> | null;
+    tool_calls?: any[];
+  }>;
   model?: string;
   stream?: boolean;
   max_tokens?: number;
@@ -48,6 +52,9 @@ export interface GodmodeChatRequest {
   top_p?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
+  /** OpenAI-format tool definitions, forwarded verbatim to the G0DM0D3 relay. */
+  tools?: any[];
+  tool_choice?: any;
   /** Enable GODMODE system prompt injection */
   godmode?: boolean;
   /** Custom system prompt to replace GODMODE */
@@ -118,7 +125,11 @@ export interface GodmodeChatResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: { role: string; content: string };
+    message: {
+      role: string;
+      content: string | null;
+      tool_calls?: any[];
+    };
     finish_reason: string;
   }>;
   usage?: {

@@ -1,0 +1,221 @@
+diff --git a/api/routes/chat.ts b/api/routes/chat.ts
+index 109b106..97197b8 100644
+--- a/api/routes/chat.ts
++++ b/api/routes/chat.ts
+@@ -20,7 +20,7 @@ import { v4 as uuidv4 } from 'uuid'
+ import { computeAutoTuneParams, type AutoTuneStrategy } from '../../src/lib/autotune'
+ import { applyParseltongue, type ParseltongueConfig } from '../../src/lib/parseltongue'
+ import { allModules, applySTMs, type STMModule } from '../../src/stm/modules'
+-import { sendMessage } from '../../src/lib/openrouter'
++import { sendMessage, sendMessageFull } from '../../src/lib/openrouter'
+ import { getSharedProfiles } from './autotune'
+ import {
+   GODMODE_SYSTEM_PROMPT,
+@@ -117,8 +117,10 @@ function runPipeline(opts: {
+ 
+   // Normalize messages
+   const normalizedMessages = messages.map((m: any) => ({
+-    role: m.role as 'system' | 'user' | 'assistant',
++    role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+     content: coerceContent(m.content),
++    // Preserve assistant tool_calls so tool-calling loops survive the relay.
++    ...(Array.isArray(m.tool_calls) ? { tool_calls: m.tool_calls } : {}),
+   }))
+ 
+   // Build system prompt
+@@ -245,15 +247,21 @@ chatRoutes.post('/completions', async (req, res) => {
+       openrouter_api_key: caller_key,
+       stream = false,
+       max_tokens = 4096,
++      // Tool calling (round-tripped verbatim for the agent runtime)
++      tools,
++      tool_choice,
+       // G0DM0D3 pipeline options (optional — transparent to OpenAI SDK users)
+-      godmode = true,
++      // Tool-calling requests default to a CLEAN pipeline: no persona
++      // injection, no AutoTune, no Parseltongue (mangles JSON tool payloads),
++      // no STM (rewrites tool outputs). Callers may override explicitly.
++      godmode = !tools,
+       custom_system_prompt,
+-      autotune = true,
++      autotune = !tools,
+       strategy = 'adaptive',
+-      parseltongue = true,
++      parseltongue = !tools,
+       parseltongue_technique = 'leetspeak',
+       parseltongue_intensity = 'medium',
+-      stm_modules = ['hedge_reducer', 'direct_mode'],
++      stm_modules = tools ? [] : ['hedge_reducer', 'direct_mode'],
+       // Direct param overrides
+       temperature,
+       top_p,
+@@ -678,6 +686,7 @@ chatRoutes.post('/completions', async (req, res) => {
+ 
+       const created = Math.floor(Date.now() / 1000)
+       let fullContent = ''
++      let sawToolCalls = false
+ 
+       try {
+         // Request streaming from OpenRouter
+@@ -693,6 +702,8 @@ chatRoutes.post('/completions', async (req, res) => {
+         if (pipeline.finalParams.frequency_penalty !== undefined) streamBody.frequency_penalty = pipeline.finalParams.frequency_penalty
+         if (pipeline.finalParams.presence_penalty !== undefined) streamBody.presence_penalty = pipeline.finalParams.presence_penalty
+         if (pipeline.finalParams.repetition_penalty !== undefined) streamBody.repetition_penalty = pipeline.finalParams.repetition_penalty
++        if (tools !== undefined) streamBody.tools = tools
++        if (tool_choice !== undefined) streamBody.tool_choice = tool_choice
+ 
+         // Retry on 429 with exponential backoff (addresses rate-limit failures)
+         let upstreamRes: Response | undefined
+@@ -753,14 +764,23 @@ chatRoutes.post('/completions', async (req, res) => {
+                 try {
+                   const json = JSON.parse(trailing.slice(6))
+                   const content = json.choices?.[0]?.delta?.content
+-                  if (content) {
+-                    fullContent += content
++                  const toolCalls = json.choices?.[0]?.delta?.tool_calls
++                  if (content) fullContent += content
++                  if (toolCalls) sawToolCalls = true
++                  if (content || toolCalls) {
+                     const chunk = {
+                       id: completionId,
+                       object: 'chat.completion.chunk',
+                       created,
+                       model,
+-                      choices: [{ index: 0, delta: { content }, finish_reason: null }],
++                      choices: [{
++                        index: 0,
++                        delta: {
++                          ...(content ? { content } : {}),
++                          ...(toolCalls ? { tool_calls: toolCalls } : {}),
++                        },
++                        finish_reason: null,
++                      }],
+                     }
+                     res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+                   }
+@@ -778,8 +798,12 @@ chatRoutes.post('/completions', async (req, res) => {
+             const trimmed = line.trim()
+             if (!trimmed || trimmed === 'data: [DONE]') {
+               if (trimmed === 'data: [DONE]') {
+-                // Apply STM to full content before sending final chunk
+-                const { finalResponse } = applySTMPost(fullContent, stm_modules)
++                // Apply STM to full content before sending final chunk —
++                // but NEVER post-process tool_calls responses (STM would
++                // rewrite the function-arguments JSON).
++                const { finalResponse } = sawToolCalls
++                  ? { finalResponse: fullContent }
++                  : applySTMPost(fullContent, stm_modules)
+                 // If STM changed the content, send a correction chunk
+                 if (finalResponse !== fullContent) {
+                   const correctionChunk = {
+@@ -790,7 +814,7 @@ chatRoutes.post('/completions', async (req, res) => {
+                     choices: [{
+                       index: 0,
+                       delta: {},
+-                      finish_reason: 'stop',
++                      finish_reason: sawToolCalls ? 'tool_calls' : 'stop',
+                     }],
+                     x_g0dm0d3: {
+                       stm_applied: true,
+@@ -808,7 +832,7 @@ chatRoutes.post('/completions', async (req, res) => {
+                     choices: [{
+                       index: 0,
+                       delta: {},
+-                      finish_reason: 'stop',
++                      finish_reason: sawToolCalls ? 'tool_calls' : 'stop',
+                     }],
+                   }
+                   res.write(`data: ${JSON.stringify(stopChunk)}\n\n`)
+@@ -822,8 +846,10 @@ chatRoutes.post('/completions', async (req, res) => {
+             try {
+               const json = JSON.parse(trimmed.slice(6))
+               const content = json.choices?.[0]?.delta?.content
+-              if (content) {
+-                fullContent += content
++              const toolCalls = json.choices?.[0]?.delta?.tool_calls
++              if (content) fullContent += content
++              if (toolCalls) sawToolCalls = true
++              if (content || toolCalls) {
+                 // Re-emit in our standard format with our ID
+                 const chunk = {
+                   id: completionId,
+@@ -832,7 +858,10 @@ chatRoutes.post('/completions', async (req, res) => {
+                   model,
+                   choices: [{
+                     index: 0,
+-                    delta: { content },
++                    delta: {
++                      ...(content ? { content } : {}),
++                      ...(toolCalls ? { tool_calls: toolCalls } : {}),
++                    },
+                     finish_reason: null,
+                   }],
+                 }
+@@ -883,21 +912,41 @@ chatRoutes.post('/completions', async (req, res) => {
+     }
+ 
+     // ── Non-streaming mode ────────────────────────────────────────────
+-    const response = await sendMessage({
+-      messages: pipeline.processedMessages,
+-      model,
+-      apiKey: openrouter_api_key,
+-      temperature: pipeline.finalParams.temperature,
+-      maxTokens: max_tokens,
+-      top_p: pipeline.finalParams.top_p,
+-      top_k: pipeline.finalParams.top_k,
+-      frequency_penalty: pipeline.finalParams.frequency_penalty,
+-      presence_penalty: pipeline.finalParams.presence_penalty,
+-      repetition_penalty: pipeline.finalParams.repetition_penalty,
+-    })
+-
+-    // STM transforms
+-    const { finalResponse, stmResult } = applySTMPost(response, stm_modules)
++    const hasTools = Array.isArray(tools) && tools.length > 0
++    const messageResult = hasTools
++      ? await sendMessageFull({
++          messages: pipeline.processedMessages,
++          model,
++          apiKey: openrouter_api_key,
++          temperature: pipeline.finalParams.temperature,
++          maxTokens: max_tokens,
++          top_p: pipeline.finalParams.top_p,
++          top_k: pipeline.finalParams.top_k,
++          frequency_penalty: pipeline.finalParams.frequency_penalty,
++          presence_penalty: pipeline.finalParams.presence_penalty,
++          repetition_penalty: pipeline.finalParams.repetition_penalty,
++          tools,
++          tool_choice,
++        })
++      : { content: await sendMessage({
++          messages: pipeline.processedMessages,
++          model,
++          apiKey: openrouter_api_key,
++          temperature: pipeline.finalParams.temperature,
++          maxTokens: max_tokens,
++          top_p: pipeline.finalParams.top_p,
++          top_k: pipeline.finalParams.top_k,
++          frequency_penalty: pipeline.finalParams.frequency_penalty,
++          presence_penalty: pipeline.finalParams.presence_penalty,
++          repetition_penalty: pipeline.finalParams.repetition_penalty,
++        }), tool_calls: undefined }
++    const response = messageResult.content || ''
++    const toolCalls = messageResult.tool_calls
++
++    // STM transforms — skipped for tool_calls responses (would rewrite them)
++    const { finalResponse, stmResult } = toolCalls && toolCalls.length > 0
++      ? { finalResponse: response, stmResult: null }
++      : applySTMPost(response, stm_modules)
+ 
+     // Dataset collection (opt-in)
+     let datasetId: string | null = null
+@@ -964,8 +1013,9 @@ chatRoutes.post('/completions', async (req, res) => {
+           message: {
+             role: 'assistant',
+             content: finalResponse,
++            ...(toolCalls && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+           },
+-          finish_reason: 'stop',
++          finish_reason: toolCalls && toolCalls.length > 0 ? 'tool_calls' : 'stop',
+         },
+       ],
+       usage: {

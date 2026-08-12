@@ -8,9 +8,13 @@ import {
 } from '../../apps/gateway/src/routes/tools.routes.js';
 
 // A subagent's allowedTools is a list of names (see agent-schema.ts).
+// Phase 2c "tools always on": empty/absent allowedTools → the full registered
+// standard set; an explicit non-empty list narrows.
 function buildAgentTools(allowedTools: string[]): RegisteredToolDefinition[] | undefined {
-  if (!allowedTools || allowedTools.length === 0) return undefined;
-  const defs = getRegisteredToolDefinitions(allowedTools);
+  const defs =
+    !allowedTools || allowedTools.length === 0
+      ? getRegisteredToolDefinitions()
+      : getRegisteredToolDefinitions(allowedTools);
   return defs.length > 0 ? defs : undefined;
 }
 
@@ -56,9 +60,14 @@ describe('subagent tool wiring (tools: undefined bug fix)', () => {
     expect(tools![0].function.name).toBe('bash');
   });
 
-  it('returns undefined when the agent has no allowed tools (no empty array)', () => {
-    expect(buildAgentTools([])).toBeUndefined();
-    expect(buildAgentTools(undefined as unknown as string[])).toBeUndefined();
+  it('returns the FULL standard tool set when the agent has no allowed tools (tools always on)', () => {
+    // Empty/absent allowedTools now means "everything", not "tool-less".
+    const fromEmpty = buildAgentTools([]);
+    const fromUndefined = buildAgentTools(undefined as unknown as string[]);
+    expect(fromEmpty).toBeDefined();
+    expect(fromUndefined).toBeDefined();
+    expect(fromEmpty!.map((t) => t.function.name).sort()).toEqual(['bash', 'read_file', 'search_files']);
+    expect(fromUndefined!.map((t) => t.function.name).sort()).toEqual(['bash', 'read_file', 'search_files']);
   });
 
   it('skips tool names that have no registered definition', () => {

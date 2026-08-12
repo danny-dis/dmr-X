@@ -44,12 +44,15 @@ interface AgentChatBody {
 /**
  * Build the OpenAI-format `tools` array for a subagent, derived from the
  * gateway's registered tool definitions and narrowed to the agent's
- * `allowedTools`. Returns `undefined` when the agent has no allowed tools, so
- * the model is never handed an empty tool list.
+ * `allowedTools`. When the agent lists no tools, the FULL registered standard
+ * set is used ("tools always on"): an absent/empty allowedTools means "give the
+ * agent everything", not "tool-less". An explicit non-empty list narrows.
  */
 function buildAgentTools(allowedTools: string[]): any[] | undefined {
-  if (!allowedTools || allowedTools.length === 0) return undefined;
-  const defs = getRegisteredToolDefinitions(allowedTools);
+  const defs =
+    !allowedTools || allowedTools.length === 0
+      ? getRegisteredToolDefinitions()
+      : getRegisteredToolDefinitions(allowedTools);
   return defs.length > 0 ? defs : undefined;
 }
 
@@ -161,6 +164,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           tenantId: definition.tenantId,
           allowedTools: definition.allowedTools,
         },
+        godmodeWrap: definition.godmodeWrap === true,
         loadedSkillIds,
         runtime: agentRuntimeService,
         conversationId: convId,
@@ -374,6 +378,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           tenantId: definition.tenantId,
           allowedTools: definition.allowedTools,
         },
+        godmodeWrap: definition.godmodeWrap === true,
         loadedSkillIds,
         runtime: agentRuntimeService,
         conversationId,

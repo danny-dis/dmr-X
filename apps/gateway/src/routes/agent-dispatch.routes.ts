@@ -227,7 +227,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       tools:
         definition.allowedTools && definition.allowedTools.length > 0
           ? getRegisteredToolDefinitions(definition.allowedTools)
-          : undefined,
+          : getRegisteredToolDefinitions(),
       metadata: { requestId: reqId, tenant },
     };
 

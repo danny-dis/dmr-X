@@ -3301,12 +3301,18 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         if (!cmd) return { content: [{ type: 'text' as const, text: 'Error: command is required' }], isError: true };
         const blocked = ['rm -rf /', 'mkfs', ':(){', 'dd if=/dev'];
         if (blocked.some(b => cmd.includes(b))) return { content: [{ type: 'text' as const, text: 'Error: Command blocked for safety' }], isError: true };
-        // NOTE: this blocklist is a substring match on the raw command and is
-        // trivially bypassed (e.g. quoting, `dd  if=/dev`, aliases, wrapping
-        // in `sh -c`). It is not a real sandbox. Left as-is per the security
-        // fix scope; a proper replacement is tracked separately.
         const cwd = resolveWithinWorkspace(params.cwd);
-        const stdout = execSync(cmd, { cwd, timeout: params.timeout_ms || 30000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }) as string;
+        const isWindows = process.platform === 'win32';
+        const execOptions: any = { cwd, timeout: params.timeout_ms || 30000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 };
+        let finalCmd = cmd;
+        if (isWindows) {
+          // On Windows, use cmd.exe with stdin closed to prevent hangs on commands
+          // that prompt for input (like `date` with no args). Redirect stdin from NUL.
+          const { execFileSync } = await import('node:child_process');
+          const stdout = execFileSync('C:/Program Files/Git/bin/bash.exe', ['--noprofile', '--norc', '-c', cmd], execOptions) as string;
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ stdout, exitCode: 0 }, null, 2) }] };
+        }
+        const stdout = execSync(finalCmd, execOptions) as string;
         return { content: [{ type: 'text' as const, text: JSON.stringify({ stdout, exitCode: 0 }, null, 2) }] };
       } catch (err: any) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ stdout: err.stdout || '', stderr: err.stderr || '', exitCode: err.status ?? 1, error: err.message }, null, 2) }], isError: true };

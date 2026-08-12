@@ -42,7 +42,28 @@ export function buildGodmodeWrapOrder(
   costFilter?: 'free' | 'all',
   limit = DEFAULT_WRAP_CANDIDATE_LIMIT,
 ): string[] {
-  const resolution = resolveMetaModel('auto-free', candidates, costFilter);
+  return buildWrapOrderForModel('auto-free', candidates, costFilter, limit);
+}
+
+/**
+ * Rank gateway candidates for an arbitrary model and return concrete model ids
+ * (pick-first). Unlike {@link buildGodmodeWrapOrder} — which is pinned to the
+ * `auto-free` meta-model — this resolves the GIVEN model:
+ *  - a meta-model alias (e.g. `auto`, `auto-smart`, `auto-fast`) ranks its
+ *    candidates through that meta-model's ranker (any family by default);
+ *  - a concrete provider/model id (contains '/') is used directly;
+ *  - nothing resolvable → emergency fallbacks.
+ *
+ * Used by the agent loop's opt-in `godmodeWrap` path, where the agent's OWN
+ * resolved model (any family) is wrapped rather than a hardcoded `auto-free`.
+ */
+export function buildWrapOrderForModel(
+  model: string,
+  candidates: CandidateSet,
+  costFilter?: 'free' | 'all',
+  limit = DEFAULT_WRAP_CANDIDATE_LIMIT,
+): string[] {
+  const resolution = resolveMetaModel(model, candidates, costFilter);
   const seen = new Set<string>();
   const order: string[] = [];
 
@@ -54,12 +75,19 @@ export function buildGodmodeWrapOrder(
     if (order.length >= limit) break;
   }
 
-  if (order.length === 0) {
-    logger.warn('auto-free wrap: no ranked candidates — using emergency fallbacks');
-    return [...GODMODE_WRAP_FALLBACK];
+  if (order.length > 0) return order;
+
+  // Not a meta-model (or it ranked zero candidates): treat the model as a
+  // concrete id and wrap it directly. Only when it is blank too do we fall
+  // back to the emergency list.
+  const trimmed = model.trim();
+  if (trimmed) {
+    logger.warn({ model }, 'godmode wrap: model not resolvable as meta-model — wrapping concrete id directly');
+    return [trimmed];
   }
 
-  return order;
+  logger.warn('godmode wrap: no ranked candidates — using emergency fallbacks');
+  return [...GODMODE_WRAP_FALLBACK];
 }
 
 /**
@@ -141,7 +169,9 @@ export async function ensureGodmodeProxy(requestId: string): Promise<boolean> {
 export interface GodmodeWrapArgs {
   requestId: string;
   messages: any[];
-  /** Usually `auto-free`; used only for logging. */
+  /** Model to wrap. For the OpenAI path this is `auto-free`; for the agent
+   *  loop's opt-in `godmodeWrap` path it is the agent's OWN resolved model
+   *  (any family) — the wrap order is built from this model. */
   model: string;
   /** Live router candidates — ranked to pick the active wrap model(s). */
   candidates: CandidateSet;
@@ -149,6 +179,9 @@ export interface GodmodeWrapArgs {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  /** OpenAI-format tool definitions to round-trip through the wrap. */
+  tools?: any[];
+  tool_choice?: any;
 }
 
 export interface GodmodeWrapResult {
@@ -163,22 +196,24 @@ export interface GodmodeWrapResult {
 }
 
 /**
- * Resolve an `auto-free` request through the godmode proxy (non-streaming).
+ * Resolve a request through the godmode proxy (non-streaming). The wrap order
+ * is built from `args.model` — a meta-model alias ranks its candidates, a
+ * concrete model id is wrapped directly (see {@link buildWrapOrderForModel}).
  *
  * Pick-then-wrap: rank vault candidates first, then wrap each concrete model
  * through G0DM0D3 until one succeeds.
  *
  * Streaming stays in the route handlers (SSE framing differs per wire format);
- * use {@link buildGodmodeWrapOrder} + {@link ensureGodmodeProxy} there.
+ * use {@link buildWrapOrderForModel} + {@link ensureGodmodeProxy} there.
  */
-export async function wrapAutoFreeViaGodmode(
+export async function wrapViaGodmode(
   args: GodmodeWrapArgs,
 ): Promise<GodmodeWrapResult> {
-  const { requestId, messages, temperature, maxTokens, topP, candidates, costFilter } = args;
-  const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
+  const { requestId, messages, model, temperature, maxTokens, topP, candidates, costFilter, tools, tool_choice } = args;
+  const wrapOrder = buildWrapOrderForModel(model, candidates, costFilter);
   logger.info(
-    { requestId, primary: wrapOrder[0], wrapOrder },
-    'auto-free pick-then-wrap: resolved concrete model(s) for godmode',
+    { requestId, model, primary: wrapOrder[0], wrapOrder },
+    'godmode pick-then-wrap: resolved concrete model(s) for wrap',
   );
 
   const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
@@ -210,13 +245,15 @@ export async function wrapAutoFreeViaGodmode(
         temperature,
         max_tokens: maxTokens,
         top_p: topP,
+        ...(tools !== undefined ? { tools } : {}),
+        ...(tool_choice !== undefined ? { tool_choice } : {}),
       });
       wrapErr = undefined;
       usedModel = wrapModel;
       break;
     } catch (e) {
       wrapErr = e;
-      logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode wrap attempt failed; trying next picked model');
+      logger.warn({ requestId, wrapModel, err: e }, 'godmode wrap attempt failed; trying next picked model');
     }
   }
   if (wrapErr || !completion || !usedModel) {
@@ -224,4 +261,19 @@ export async function wrapAutoFreeViaGodmode(
     return { status: 'unavailable', wrapOrder };
   }
   return { status: 'wrapped', completion, wrapModel: usedModel, wrapOrder };
+}
+
+/**
+ * Resolve an `auto-free` request through the godmode proxy (non-streaming).
+ *
+ * Pick-then-wrap: rank vault candidates first, then wrap each concrete model
+ * through G0DM0D3 until one succeeds.
+ *
+ * @deprecated Prefer {@link wrapViaGodmode} which accepts any model; this is a
+ * model-agnostic alias pinned to `auto-free` for existing callers.
+ */
+export async function wrapAutoFreeViaGodmode(
+  args: GodmodeWrapArgs,
+): Promise<GodmodeWrapResult> {
+  return wrapViaGodmode({ ...args, model: 'auto-free' });
 }

@@ -108,6 +108,43 @@ export const AnthropicMessagesRequestSchema = z.object({
   metadata: z.object({ user_id: z.string().optional() }).optional(),
 });
 
+/** Anthropic-native tool def → OpenAI-format tool def (godmode wrap expects OpenAI shape). */
+function anthropicToolsToOpenAi(tools: Array<{ name: string; description?: string; input_schema: Record<string, unknown> }>): any[] {
+  return tools.map(t => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      ...(t.description ? { description: t.description } : {}),
+      parameters: t.input_schema,
+    },
+  }));
+}
+
+/** Anthropic tool_choice → OpenAI tool_choice. */
+function anthropicToolChoiceToOpenAi(toolChoice: { type: string; name?: string }): any {
+  switch (toolChoice.type) {
+    case 'any':
+      return 'required';
+    case 'none':
+      return 'none';
+    case 'tool':
+      return { type: 'function', function: { name: toolChoice.name ?? '' } };
+    case 'auto':
+    default:
+      return 'auto';
+  }
+}
+
+/** Best-effort JSON.parse of a tool-arguments string (null when invalid). */
+function safeJsonParse(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw ?? null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
   // Encapsulated error handler: this plugin only registers `/messages`, so
   // non-streaming failures are serialized in the Anthropic wire format the
@@ -166,18 +203,36 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
             temperature: body.temperature,
             maxTokens: body.max_tokens,
             topP: body.top_p,
+            tools: body.tools ? anthropicToolsToOpenAi(body.tools) : undefined,
+            tool_choice: body.tool_choice ? anthropicToolChoiceToOpenAi(body.tool_choice) : undefined,
           });
 
           if (result.status === 'wrapped' && result.completion) {
             const choice = result.completion.choices?.[0];
-            const content = choice?.message?.content ?? '';
+            const message = choice?.message;
+            const content = message?.content ?? '';
+            const toolCalls = message?.tool_calls;
+            const blocks: any[] = [];
+            if (content) blocks.push({ type: 'text', text: content });
+            if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+              for (const tc of toolCalls) {
+                blocks.push({
+                  type: 'tool_use',
+                  id: tc.id ?? `toolu_${requestId}`,
+                  name: tc.function?.name ?? 'tool',
+                  input: safeJsonParse(tc.function?.arguments) ?? {},
+                });
+              }
+            }
             return {
               id: result.completion.id ?? `msg_${requestId}`,
               type: 'message',
               role: 'assistant',
-              content: [{ type: 'text', text: content }],
+              content: blocks,
               model: result.wrapModel ?? result.completion.model ?? body.model,
-              stop_reason: choice?.finish_reason === 'length' ? 'max_tokens' : 'end_turn',
+              stop_reason: toolCalls && toolCalls.length > 0
+                ? 'tool_use'
+                : (choice?.finish_reason === 'length' ? 'max_tokens' : 'end_turn'),
               stop_sequence: null,
               usage: {
                 input_tokens: result.completion.usage?.prompt_tokens ?? 0,
@@ -208,7 +263,8 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
               for (const wrapModel of wrapOrder) {
                 try {
                   let sent = false;
-                  for await (const chunk of godmode.chatStream({
+                  const toolIdx = new Map<number, string>();
+                  for await (const delta of godmode.chatStreamFull({
                     messages: body.messages.map(m => ({
                       role: m.role,
                       content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
@@ -217,18 +273,49 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                     temperature: body.temperature,
                     max_tokens: body.max_tokens,
                     top_p: body.top_p,
+                    tools: body.tools ? anthropicToolsToOpenAi(body.tools) : undefined,
+                    tool_choice: body.tool_choice ? anthropicToolChoiceToOpenAi(body.tool_choice) : undefined,
                   })) {
-                    if (chunk) {
+                    if (delta.content) {
                       const event = {
                         type: 'content_block_delta',
                         index: 0,
-                        delta: { type: 'text_delta', text: chunk },
+                        delta: { type: 'text_delta', text: delta.content },
                       };
                       reply.raw.write(`event: content_block_delta\ndata: ${JSON.stringify(event)}\n\n`);
                       sent = true;
                     }
+                    if (Array.isArray(delta.tool_calls)) {
+                      for (const tc of delta.tool_calls) {
+                        const idx = tc.index ?? 0;
+                        if (!toolIdx.has(idx)) {
+                          toolIdx.set(idx, tc.id ?? `toolu_${requestId}`);
+                          reply.raw.write(`event: content_block_start\ndata: ${JSON.stringify({
+                            type: 'content_block_start',
+                            index: idx,
+                            content_block: {
+                              type: 'tool_use',
+                              id: toolIdx.get(idx),
+                              name: tc.function?.name ?? 'tool',
+                              input: {},
+                            },
+                          })}\n\n`);
+                        }
+                        if (tc.function?.arguments) {
+                          reply.raw.write(`event: content_block_delta\ndata: ${JSON.stringify({
+                            type: 'content_block_delta',
+                            index: idx,
+                            delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
+                          })}\n\n`);
+                        }
+                        sent = true;
+                      }
+                    }
                   }
                   if (sent) {
+                    for (const idx of toolIdx.keys()) {
+                      reply.raw.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: idx })}\n\n`);
+                    }
                     reply.raw.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
                     reply.raw.end();
                     return reply;

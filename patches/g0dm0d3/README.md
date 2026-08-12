@@ -22,6 +22,8 @@ recreated by the server-manager — so re-apply after any re-clone.
 | `api_routes_chat.ts.patch` | Streaming path + key guard use the resolved upstream. |
 | `src_lib_openrouter.ts.patch` | Non-streaming `sendMessage`/`streamMessage` (the path DMR-X actually calls). |
 | `api_middleware_rateLimit.ts.patch` | Skip the limiter in relay mode; the host gateway owns quotas. |
+| `api_routes_chat_tools.ts.patch` | Tool-calling passthrough in the chat route: `tools`/`tool_choice` forwarded upstream, `tool_calls` re-emitted in stream + non-stream responses, pipeline defaults (persona/AutoTune/Parseltongue/STM) turn OFF when `tools` is present, and STM is never applied to `tool_calls` payloads. |
+| `src_lib_openrouter_tools.ts.patch` | New `sendMessageFull` (returns content + `tool_calls`); `tools`/`tool_choice` forwarded in `sendMessage`/`streamMessage`; Message type accepts `role: 'tool'` and `tool_calls`. |
 
 ## Applying
 
@@ -31,7 +33,13 @@ cp patches/g0dm0d3/relay.ts "$G/api/lib/relay.ts"
 git -C "$G" apply ../../../patches/g0dm0d3/api_routes_chat.ts.patch
 git -C "$G" apply ../../../patches/g0dm0d3/src_lib_openrouter.ts.patch
 git -C "$G" apply ../../../patches/g0dm0d3/api_middleware_rateLimit.ts.patch
+git -C "$G" apply ../../../patches/g0dm0d3/api_routes_chat_tools.ts.patch
+git -C "$G" apply ../../../patches/g0dm0d3/src_lib_openrouter_tools.ts.patch
 ```
+
+Apply the relay patches first, then the tool passthrough patches (they build on the
+relay context). On a fresh clone the working tree is CRLF on Windows — if
+`git apply` refuses, retry with `--ignore-whitespace`.
 
 Then restart the gateway so the child is respawned.
 
@@ -47,6 +55,12 @@ curl -s -X POST http://127.0.0.1:7860/v1/chat/completions \
 curl -s -X POST http://127.0.0.1:47113/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"auto-free","messages":[{"role":"user","content":"Say PONG"}],"max_tokens":16}'
+
+# tool_calls round-trip through the relay (agent tool loop)
+curl -s -X POST http://127.0.0.1:7860/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"mistral-small-latest","messages":[{"role":"user","content":"What is the weather in Paris?"}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"tool_choice":"auto","max_tokens":64}'
+# expect a response whose choices[0].message.tool_calls is non-empty, finish_reason "tool_calls"
 ```
 
 Measured 2026-07-28: 5/5 `auto-free` responses godmode-wrapped, 0 fell through
