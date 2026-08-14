@@ -137,3 +137,5 @@ turbo-output.txt
 *-build*.txt
 crypto-test.txt
 unit-test-full.txt
+# Vendored upstream source (fork of modelcontextprotocol/servers) - clone on demand for catalog generation
+vendored/

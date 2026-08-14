@@ -4,7 +4,7 @@
  * Each tool maps to a DMR-X modality and accepts parameters
  * matching the OpenAI-compatible API surface.
  */
-import { z } from 'zod';
+import { z } from 'zod/v4';
 
 // ---------------------------------------------------------------------------
 // Shared enums / literals
@@ -69,7 +69,7 @@ export const ToolSchema = z.object({
   function: z.object({
     name: z.string(),
     description: z.string().optional(),
-    parameters: z.record(z.unknown()).optional(),
+    parameters: z.record(z.string(), z.unknown()).optional(),
   }),
 });
 
@@ -229,7 +229,7 @@ export const dmrxStatusParams = {
 export const dmrxBatchParams = {
   calls: z.array(z.object({
     tool: z.string().describe('Tool name (e.g., dmrx_chat, dmrx_embed)'),
-    parameters: z.record(z.unknown()).describe('Tool parameters'),
+    parameters: z.record(z.string(), z.unknown()).describe('Tool parameters'),
   })).min(1, 'At least one call required').max(50, 'Too many batch calls — max 50').describe('Array of tool calls to execute'),
   continue_on_fail: z.boolean().optional().describe('Continue executing on failure (default true)'),
 } as const;
@@ -340,8 +340,8 @@ export const dmrxWorkflowParams = {
   steps: z.array(z.object({
     id: z.string().max(100).describe('Step identifier'),
     tool: z.string().max(200).describe('Tool name to execute'),
-    parameters: z.record(z.unknown()).describe('Tool parameters'),
-    input_mapping: z.record(z.string()).optional().describe('Map previous step outputs to this step inputs'),
+    parameters: z.record(z.string(), z.unknown()).describe('Tool parameters'),
+    input_mapping: z.record(z.string(), z.string()).optional().describe('Map previous step outputs to this step inputs'),
     condition: z.string().max(500).optional().describe('Expression to evaluate for conditional execution'),
     retry_policy: z.object({
       max_retries: z.number().int().nonnegative().max(10).optional(),
@@ -655,7 +655,7 @@ export const dmrxWorkflowOutput = {
     output: z.unknown().optional(),
     error: z.string().optional(),
   })),
-  step_outputs: z.record(z.unknown()),
+  step_outputs: z.record(z.string(), z.unknown()),
 } as const;
 
 export const dmrxToolSearchOutput = {
@@ -763,8 +763,8 @@ export const dmrxTemplateCreateParams = {
   steps: z.array(z.object({
     id: z.string().describe('Step ID for input mapping'),
     tool_name: z.string().describe('Tool to execute (e.g., "dmrx_bash", "dmrx_chat")'),
-    parameters: z.record(z.unknown()).describe('Default parameters for this step'),
-    input_mapping: z.record(z.string()).optional().describe('Map outputs from previous steps: { "param": "$step_id.output_field" }'),
+    parameters: z.record(z.string(), z.unknown()).describe('Default parameters for this step'),
+    input_mapping: z.record(z.string(), z.string()).optional().describe('Map outputs from previous steps: { "param": "$step_id.output_field" }'),
     condition: z.string().optional().describe('Conditional execution expression'),
     description: z.string().optional().describe('Step description'),
   })).min(1).max(20).describe('Ordered list of steps to execute'),
@@ -779,8 +779,8 @@ export const dmrxTemplateUpdateParams = {
   steps: z.array(z.object({
     id: z.string().describe('Step ID for input mapping'),
     tool_name: z.string().describe('Tool to execute'),
-    parameters: z.record(z.unknown()).describe('Default parameters'),
-    input_mapping: z.record(z.string()).optional().describe('Input mapping from previous steps'),
+    parameters: z.record(z.string(), z.unknown()).describe('Default parameters'),
+    input_mapping: z.record(z.string(), z.string()).optional().describe('Input mapping from previous steps'),
     condition: z.string().optional().describe('Conditional execution'),
     description: z.string().optional().describe('Step description'),
   })).optional().describe('Updated steps'),
@@ -794,7 +794,7 @@ export const dmrxTemplateDeleteParams = {
 
 export const dmrxTemplateExecuteParams = {
   id: z.string().describe('Template ID'),
-  inputs: z.record(z.unknown()).optional().describe('Override parameters for specific steps (key: "step_id.param", value: override)'),
+  inputs: z.record(z.string(), z.unknown()).optional().describe('Override parameters for specific steps (key: "step_id.param", value: override)'),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -811,16 +811,16 @@ export const dmrxPresetGetParams = {
 
 export const dmrxPresetCreateParams = {
   tool_name: z.string().describe('Tool name (e.g., "dmrx_chat", "dmrx_bash")'),
-  defaults: z.record(z.unknown()).describe('Default parameter values'),
-  overrides: z.record(z.unknown()).optional().describe('Forced values (cannot be overridden by user)'),
+  defaults: z.record(z.string(), z.unknown()).describe('Default parameter values'),
+  overrides: z.record(z.string(), z.unknown()).optional().describe('Forced values (cannot be overridden by user)'),
   priority: z.number().int().min(0).max(1000).optional().describe('Priority (higher = evaluated first, default: 0)'),
   description: z.string().max(500).optional().describe('Preset description'),
 } as const;
 
 export const dmrxPresetUpdateParams = {
   id: z.string().describe('Preset ID'),
-  defaults: z.record(z.unknown()).optional().describe('Updated default values'),
-  overrides: z.record(z.unknown()).optional().describe('Updated forced values'),
+  defaults: z.record(z.string(), z.unknown()).optional().describe('Updated default values'),
+  overrides: z.record(z.string(), z.unknown()).optional().describe('Updated forced values'),
   priority: z.number().int().min(0).max(1000).optional().describe('Updated priority'),
   description: z.string().max(500).optional().describe('Updated description'),
 } as const;

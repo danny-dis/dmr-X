@@ -27,7 +27,7 @@ export interface McpTool {
 export interface McpServer {
   id: string;
   name: string;
-  transport: 'stdio' | 'sse';
+  transport: 'stdio' | 'sse' | 'http';
   command?: string;
   args?: string[];
   /** Values are redacted server-side; only the keys are meaningful here. */
@@ -57,7 +57,7 @@ export interface McpCatalogEntry {
   description: string;
   category: string;
   icon: string;
-  transport: 'stdio' | 'sse';
+  transport: 'stdio' | 'sse' | 'http';
   command?: string;
   args?: string[];
   url?: string;
@@ -78,7 +78,7 @@ export interface McpTestResult {
 export interface McpServerInput {
   id?: string;
   name: string;
-  transport: 'stdio' | 'sse';
+  transport: 'stdio' | 'sse' | 'http';
   command?: string;
   args?: string[];
   env?: Record<string, string>;

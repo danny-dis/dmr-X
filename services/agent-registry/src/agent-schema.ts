@@ -83,6 +83,10 @@ export const AgentDefinitionCreateSchema = z.object({
   planMode: z.boolean().optional().default(false),
   // Opt-in: compact early tool-activity turns once the transcript grows large.
   historyCompaction: z.boolean().optional().default(false),
+  // Opt-in: route the agent's per-turn model calls through the godmode wrap
+  // (router-resolved concrete model, any family). Defaults to off — the agent
+  // uses normal router routing.
+  godmodeWrap: z.boolean().optional().default(false),
 });
 
 export type AgentDefinitionCreate = z.infer<typeof AgentDefinitionCreateSchema>;
@@ -175,7 +179,7 @@ export const AgentListQuerySchema = z.object({
   tag: z.string().optional(),
   search: z.string().optional(),
   page: z.coerce.number().min(1).optional().default(1),
-  limit: z.coerce.number().min(1).max(1000).optional().default(20),
+  limit: z.coerce.number().min(1).max(1000).optional().default(100),
 });
 
 export type AgentListQuery = z.infer<typeof AgentListQuerySchema>;

@@ -139,7 +139,7 @@ async function routeWithTimeout(
   router: Router,
   unifiedRequest: UnifiedRequest,
   qualityTarget: ReturnType<typeof parseQualityTarget>,
-): Promise<{ response: any }> {
+): Promise<{ plan: any; response: any }> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TURN_TIMEOUT_MS);
   try {
@@ -410,6 +410,10 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
       const abortController = new AbortController();
       conversationAbortControllers.set(convId, abortController);
       let consecutiveErrors = 0;
+      let lastPlan: any;
+      let lastResponse: any;
+      let totalPromptTokens = 0;
+      let totalCompletionTokens = 0;
 
       // Streaming response
       reply.raw.writeHead(200, {
@@ -453,8 +457,9 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           }
 
           let response: any;
+          let plan: any;
           try {
-            ({ response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
+            ({ plan, response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
           } catch (err) {
             consecutiveErrors++;
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
@@ -489,10 +494,14 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           // Accumulate token/cost usage
           if (response.usage) {
             totalTokensUsed += response.usage.total_tokens ?? 0;
+            totalPromptTokens += response.usage.prompt_tokens ?? 0;
+            totalCompletionTokens += response.usage.completion_tokens ?? 0;
             // Cost tracking: extract from usage if available
             const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
             totalCost += stepCost;
           }
+          lastPlan = plan;
+          lastResponse = response;
 
           // Stream the model response for this turn
           writeSSE(reply, 'turn', {
@@ -667,6 +676,45 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         writeSSE(reply, 'error', { error: { message: 'Request failed' } });
       }
 
+      // Telemetry: surface the completed agentic request on the Requests page
+      // and feed request_logs + usage via the onResponse hook.
+      try {
+        const servedProviderId = lastPlan?.primary?.providerId;
+        const servedModelId = lastResponse?.modelId;
+        if (servedProviderId && servedModelId) {
+          (request as any).metrics = {
+            providerId: servedProviderId,
+            modelId: servedModelId,
+            modality: 'agentic',
+            tenantId: tenant.id,
+            taskProfile: JSON.stringify({ taskType: 'agentic' }),
+            tokens: {
+              prompt: totalPromptTokens,
+              completion: totalCompletionTokens,
+              total: totalTokensUsed,
+            },
+            qualityTarget,
+          };
+        }
+        (server as any).recordTelemetryEvent?.({
+          level: 'info',
+          service: 'gateway',
+          message: 'Agentic request completed',
+          metadata: {
+            path: request.url,
+            requestId,
+            model: body.model,
+            providerId: servedProviderId,
+            modelId: servedModelId,
+            tokens: totalTokensUsed,
+            status: 'completed',
+            conversationId: conversation.id,
+          },
+        });
+      } catch (metricsErr) {
+        logger.debug({ err: metricsErr }, 'agentic telemetry emission failed');
+      }
+
       writeSSE(reply, 'done', { status: 'completed', conversationId: conversation.id });
       reply.raw.end();
       return reply;
@@ -678,6 +726,49 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     let nonStreamingTotalTokens = 0;
     let nonStreamingTotalCost = 0;
     let nonStreamingConsecutiveErrors = 0;
+    let nonStreamingPlan: any;
+    let nonStreamingResponse: any;
+    let nonStreamingPromptTokens = 0;
+    let nonStreamingCompletionTokens = 0;
+    const emitAgenticTelemetry = (status: string, stepsCompleted: number): void => {
+      try {
+        const servedProviderId = nonStreamingPlan?.primary?.providerId;
+        const servedModelId = nonStreamingResponse?.modelId;
+        if (servedProviderId && servedModelId) {
+          (request as any).metrics = {
+            providerId: servedProviderId,
+            modelId: servedModelId,
+            modality: 'agentic',
+            tenantId: tenant.id,
+            taskProfile: JSON.stringify({ taskType: 'agentic' }),
+            tokens: {
+              prompt: nonStreamingPromptTokens,
+              completion: nonStreamingCompletionTokens,
+              total: nonStreamingTotalTokens,
+            },
+            qualityTarget,
+          };
+        }
+        (server as any).recordTelemetryEvent?.({
+          level: 'info',
+          service: 'gateway',
+          message: 'Agentic request completed',
+          metadata: {
+            path: request.url,
+            requestId,
+            model: body.model,
+            providerId: servedProviderId,
+            modelId: servedModelId,
+            tokens: nonStreamingTotalTokens,
+            status,
+            steps: stepsCompleted,
+            conversationId: conversation.id,
+          },
+        });
+      } catch (metricsErr) {
+        logger.debug({ err: metricsErr }, 'agentic telemetry emission failed');
+      }
+    };
     const nonStreamingStopConditions = buildStopConditions(
       stopConditions,
       () => nonStreamingLastResponseText,
@@ -713,8 +804,9 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         );
 
         let response: any;
+        let plan: any;
         try {
-          ({ response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
+          ({ plan, response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
         } catch (err) {
           nonStreamingConsecutiveErrors++;
           if (nonStreamingConsecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
@@ -759,9 +851,13 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         // Accumulate token/cost usage
         if (response.usage) {
           nonStreamingTotalTokens += response.usage.total_tokens ?? 0;
+          nonStreamingPromptTokens += response.usage.prompt_tokens ?? 0;
+          nonStreamingCompletionTokens += response.usage.completion_tokens ?? 0;
           const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
           nonStreamingTotalCost += stepCost;
         }
+        nonStreamingPlan = plan;
+        nonStreamingResponse = response;
 
         // Check stop conditions using SDK composable conditions
         const stepResult: StepResult = {
@@ -799,6 +895,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             expiresAt: defaultExpiresAt(),
           });
 
+          emitAgenticTelemetry('completed', turn + 1);
           return {
             id: requestId,
             object: 'chat.completion',
@@ -851,6 +948,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             expiresAt: defaultExpiresAt(),
           });
 
+          emitAgenticTelemetry('awaiting_approval', turn + 1);
           return {
             id: requestId,
             object: 'chat.completion',
@@ -928,6 +1026,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         expiresAt: defaultExpiresAt(),
       });
 
+    emitAgenticTelemetry('max_steps', maxSteps);
     return {
       id: requestId,
       object: 'chat.completion',

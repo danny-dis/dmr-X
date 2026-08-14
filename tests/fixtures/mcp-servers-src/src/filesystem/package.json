@@ -1,0 +1,8 @@
+{
+  "name": "@modelcontextprotocol/server-filesystem",
+  "version": "0.6.3",
+  "description": "MCP server for filesystem access",
+  "bin": {
+    "mcp-server-filesystem": "dist/index.js"
+  }
+}

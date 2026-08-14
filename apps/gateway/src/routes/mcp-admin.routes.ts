@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 
-import { MCP_CATALOG, MCP_CATALOG_CATEGORIES, getCatalogEntry, renderCatalogArgs } from '@dmr-x/core';
+import {
+  MCP_CATALOG,
+  MCP_CATALOG_CATEGORIES,
+  getCatalogEntry,
+  renderCatalogArgs,
+  type McpCatalogEntry,
+} from '@dmr-x/core';
 import { MCPServerRegistry, type MCPServerConfig } from '@dmr-x/mcp-client';
 import { logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
@@ -32,7 +38,7 @@ const McpServerSchema = z
       .regex(/^[a-zA-Z0-9_-]+$/, 'id may contain only letters, numbers, hyphens and underscores')
       .optional(),
     name: z.string().min(1).max(128),
-    transport: z.enum(['stdio', 'sse']),
+    transport: z.enum(['stdio', 'sse', 'http']),
     command: z.string().min(1).max(512).optional(),
     args: z.array(z.string().max(2048)).max(64).optional(),
     env: z.record(z.string(), z.string().max(4096)).optional(),
@@ -52,6 +58,10 @@ const McpServerSchema = z
   .refine((s) => s.transport !== 'sse' || !!s.url, {
     message: "sse transport requires 'url'",
     path: ['url'],
+  })
+  .refine((s) => s.transport !== 'http' || !!s.url, {
+    message: "http transport requires 'url'",
+    path: ['url'],
   });
 
 /** Install a catalog entry: the template id plus the operator's values. */
@@ -63,6 +73,53 @@ const McpInstallSchema = z.object({
 });
 
 export type McpServerInput = z.infer<typeof McpServerSchema>;
+
+/**
+ * Build a persisted-server body from a catalog entry + operator values.
+ * Credential values (requiredEnv with secret:true) for url-based transports
+ * (http/sse) become `apiKey` — the registry sends that as a Bearer token —
+ * rather than leaking into `env`, where the transports would ignore them.
+ */
+export function buildCatalogInstallBody(
+  entry: McpCatalogEntry,
+  values: Record<string, string>,
+  opts: { id: string; name?: string },
+) {
+  // Values consumed as positional args are not also exported as env vars —
+  // a connection string in argv does not additionally belong in the child's
+  // environment.
+  const args = renderCatalogArgs(entry.args, values);
+  const consumed = new Set(
+    (entry.args ?? []).flatMap((a) => [...a.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1])),
+  );
+  const env = Object.fromEntries(
+    Object.entries(values).filter(([k, v]) => !consumed.has(k) && v !== ''),
+  );
+
+  const transport = entry.transport as 'stdio' | 'sse' | 'http';
+  let apiKey: string | undefined;
+  if (transport === 'http' || transport === 'sse') {
+    const secretKeys = new Set(entry.requiredEnv.filter((v) => v.secret).map((v) => v.key));
+    for (const key of secretKeys) {
+      if (env[key]) {
+        apiKey = apiKey ?? env[key];
+        delete env[key];
+      }
+    }
+  }
+
+  return {
+    id: opts.id,
+    name: opts.name ?? entry.name,
+    transport: entry.transport,
+    ...(entry.command ? { command: entry.command } : {}),
+    ...(args.length > 0 ? { args } : {}),
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+    ...(apiKey ? { apiKey } : {}),
+    ...(entry.url ? { url: entry.url } : {}),
+    enabled: true,
+  };
+}
 
 /**
  * Live connections owned by the gateway.
@@ -471,27 +528,7 @@ export async function mcpAdminRoutes(server: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: { message: `"${entry.name}" is already installed` } });
     }
 
-    // Values consumed as positional args are not also exported as env vars —
-    // a connection string in argv does not additionally belong in the child's
-    // environment.
-    const args = renderCatalogArgs(entry.args, values);
-    const consumed = new Set(
-      (entry.args ?? []).flatMap((a) => [...a.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1])),
-    );
-    const env = Object.fromEntries(
-      Object.entries(values).filter(([k, v]) => !consumed.has(k) && v !== ''),
-    );
-
-    const body = {
-      id,
-      name: parsed.data.name ?? entry.name,
-      transport: entry.transport,
-      ...(entry.command ? { command: entry.command } : {}),
-      ...(args.length > 0 ? { args } : {}),
-      ...(Object.keys(env).length > 0 ? { env } : {}),
-      ...(entry.url ? { url: entry.url } : {}),
-      enabled: true,
-    };
+    const body = buildCatalogInstallBody(entry, values, { id, name: parsed.data.name });
 
     // Re-dispatch through the create route so install and manual add cannot
     // drift apart in validation or connection semantics.

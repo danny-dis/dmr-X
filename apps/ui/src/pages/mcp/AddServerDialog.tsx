@@ -35,7 +35,7 @@ export function AddServerDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const [transport, setTransport] = React.useState<'stdio' | 'sse'>('stdio');
+  const [transport, setTransport] = React.useState<'stdio' | 'sse' | 'http'>('stdio');
   const [name, setName] = React.useState('');
   const [command, setCommand] = React.useState('npx');
   const [argsText, setArgsText] = React.useState('');
@@ -63,7 +63,8 @@ export function AddServerDialog({
   const nameError = touched.name && !name.trim() ? 'Name is required.' : null;
   const commandError =
     touched.command && transport === 'stdio' && !command.trim() ? 'Command is required.' : null;
-  const urlError = touched.url && transport === 'sse' && !url.trim() ? 'URL is required.' : null;
+  const urlError =
+    touched.url && transport !== 'stdio' && !url.trim() ? 'URL is required.' : null;
 
   const build = (): McpServerInput => ({
     name: name.trim(),
@@ -126,10 +127,11 @@ export function AddServerDialog({
         </DialogHeader>
 
         <DialogBody className="space-y-4">
-          <Tabs value={transport} onValueChange={(v) => { setTransport(v as 'stdio' | 'sse'); setTest(null); }}>
+          <Tabs value={transport} onValueChange={(v) => { setTransport(v as 'stdio' | 'sse' | 'http'); setTest(null); }}>
             <TabsList>
               <TabsTrigger value="stdio">Local process (stdio)</TabsTrigger>
               <TabsTrigger value="sse">Remote (SSE)</TabsTrigger>
+              <TabsTrigger value="http">HTTP (streamable)</TabsTrigger>
             </TabsList>
           </Tabs>
 

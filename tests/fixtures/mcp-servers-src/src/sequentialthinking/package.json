@@ -1,0 +1,8 @@
+{
+  "name": "@modelcontextprotocol/server-sequential-thinking",
+  "version": "0.6.2",
+  "description": "MCP server for sequential thinking and problem solving",
+  "bin": {
+    "mcp-server-sequential-thinking": "dist/index.js"
+  }
+}

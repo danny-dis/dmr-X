@@ -106,10 +106,18 @@ export class GodmodeService {
   async chat(request: GodmodeChatRequest): Promise<GodmodeChatResponse> {
     this.assertInitialized();
 
+    // No silent hardcoded model: the caller must resolve one via DMR-X's own
+    // ranking first (pick-then-wrap). Whatever DMR-X picks is what godmode
+    // wraps — never a hardcoded default.
+    if (!request.model) {
+      throw new Error(
+        'GodmodeService.chat: model is required — resolve it through the DMR-X router (resolveMetaModel / buildGodmodeWrapOrder) before calling',
+      );
+    }
+
     const body = {
       ...request,
       openrouter_api_key: this.config.openrouterApiKey,
-      model: request.model || 'nousresearch/hermes-3-llama-3.1-70b',
     };
 
     const response = await this.fetchWithTimeout(
@@ -136,10 +144,15 @@ export class GodmodeService {
   async *chatStream(request: GodmodeChatRequest): AsyncIterable<string> {
     this.assertInitialized();
 
+    if (!request.model) {
+      throw new Error(
+        'GodmodeService.chatStream: model is required — resolve it through the DMR-X router (resolveMetaModel / buildGodmodeWrapOrder) before calling',
+      );
+    }
+
     const body = {
       ...request,
       openrouter_api_key: this.config.openrouterApiKey,
-      model: request.model || 'nousresearch/hermes-3-llama-3.1-70b',
       stream: true,
     };
 
@@ -180,6 +193,74 @@ export class GodmodeService {
             const parsed = JSON.parse(data);
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) yield content;
+          } catch {
+            // Skip invalid JSON
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Standard chat with streaming — yields parsed OpenAI SSE deltas
+   * ({ content?, tool_calls? }) so callers can round-trip tool calls
+   * through the G0DM0D3 relay without losing function-call payloads.
+   */
+  async *chatStreamFull(request: GodmodeChatRequest): AsyncIterable<{ content?: string; tool_calls?: any[] }> {
+    this.assertInitialized();
+
+    if (!request.model) {
+      throw new Error(
+        'GodmodeService.chatStreamFull: model is required — resolve it through the DMR-X router (resolveMetaModel / buildGodmodeWrapOrder) before calling',
+      );
+    }
+
+    const body = {
+      ...request,
+      openrouter_api_key: this.config.openrouterApiKey,
+      stream: true,
+    };
+
+    const response = await this.fetchWithTimeout(
+      `${this.config.baseUrl}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(body),
+        timeoutMs: 120000,
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(`G0DM0D3 stream failed: ${response.status} ${errorText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta;
+            const out: { content?: string; tool_calls?: any[] } = {};
+            if (delta?.content) out.content = delta.content;
+            if (delta?.tool_calls) out.tool_calls = delta.tool_calls;
+            if (out.content !== undefined || out.tool_calls) yield out;
           } catch {
             // Skip invalid JSON
           }

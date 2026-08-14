@@ -1,6 +1,8 @@
 import { createDMRXMcpServer } from '../../services/mcp-server/dist/index.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+// v2 SDK: the monolithic @modelcontextprotocol/sdk (v1) was split into
+// @modelcontextprotocol/client (Client + transports, incl. InMemoryTransport)
+// and @modelcontextprotocol/server. Both are installed as workspace deps.
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 
 const GATEWAY_URL = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
 

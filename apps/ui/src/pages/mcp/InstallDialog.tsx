@@ -73,11 +73,23 @@ export function InstallDialog({
       Object.entries(values).filter(([k, v]) => !consumed.has(k) && v.trim() !== ''),
     );
 
+    let apiKey: string | undefined;
+    if (entry.transport === 'http' || entry.transport === 'sse') {
+      const secretKeys = new Set(entry.requiredEnv.filter((v) => v.secret).map((v) => v.key));
+      for (const key of secretKeys) {
+        if (env[key]) {
+          apiKey = apiKey ?? env[key];
+          delete env[key];
+        }
+      }
+    }
+
     return {
       name: entry.name,
       transport: entry.transport,
       ...(entry.command ? { command: entry.command } : {}),
       ...(args.length ? { args } : {}),
+      ...(apiKey ? { apiKey } : {}),
       ...(Object.keys(env).length ? { env } : {}),
       ...(entry.url ? { url: entry.url } : {}),
     };
@@ -94,7 +106,7 @@ export function InstallDialog({
         <DialogBody className="space-y-4">
           {entry.requiredEnv.length === 0 ? (
             <p className="text-sm text-fg-muted">
-              This server needs no configuration. Test it to confirm it starts, then install.
+              This server needs no configuration — install it directly.
             </p>
           ) : (
             entry.requiredEnv.map((v) => {
@@ -153,45 +165,72 @@ export function InstallDialog({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            variant="secondary"
-            disabled={!canSubmit}
-            loading={testMutation.isPending}
-            onClick={() =>
-              testMutation.mutate(buildPreview() as never, {
-                onSuccess: setTest,
-                onError: (e) => {
-                  const interpreted = interpretError(e);
-                  toast.error(`Could not test ${entry.name}`, { description: interpreted.description });
-                },
-              })
-            }
-          >
-            Test
-          </Button>
-          <Button
-            disabled={!canSubmit}
-            loading={installMutation.isPending}
-            onClick={() =>
-              installMutation.mutate(
-                { catalogId: entry.id, values },
-                {
-                  onSuccess: (server) => {
-                    toast.success(`${entry.name} installed`, {
-                      description: `${server.toolCount} tool${server.toolCount === 1 ? '' : 's'} available.`,
-                    });
-                    onClose();
+          {entry.requiredEnv.length === 0 ? (
+            <Button
+              loading={installMutation.isPending}
+              onClick={() =>
+                installMutation.mutate(
+                  { catalogId: entry.id, values },
+                  {
+                    onSuccess: (server) => {
+                      toast.success(`${entry.name} installed`, {
+                        description: `${server.toolCount} tool${server.toolCount === 1 ? '' : 's'} available.`,
+                      });
+                      onClose();
+                    },
+                    onError: (e) => {
+                      const interpreted = interpretError(e);
+                      toast.error(`Could not install ${entry.name}`, { description: interpreted.description });
+                    },
                   },
-                  onError: (e) => {
-                    const interpreted = interpretError(e);
-                    toast.error(`Could not install ${entry.name}`, { description: interpreted.description });
-                  },
-                },
-              )
-            }
-          >
-            Install
-          </Button>
+                )
+              }
+            >
+              Install
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                disabled={!canSubmit}
+                loading={testMutation.isPending}
+                onClick={() =>
+                  testMutation.mutate(buildPreview() as never, {
+                    onSuccess: setTest,
+                    onError: (e) => {
+                      const interpreted = interpretError(e);
+                      toast.error(`Could not test ${entry.name}`, { description: interpreted.description });
+                    },
+                  })
+                }
+              >
+                Test
+              </Button>
+              <Button
+                disabled={!canSubmit}
+                loading={installMutation.isPending}
+                onClick={() =>
+                  installMutation.mutate(
+                    { catalogId: entry.id, values },
+                    {
+                      onSuccess: (server) => {
+                        toast.success(`${entry.name} installed`, {
+                          description: `${server.toolCount} tool${server.toolCount === 1 ? '' : 's'} available.`,
+                        });
+                        onClose();
+                      },
+                      onError: (e) => {
+                        const interpreted = interpretError(e);
+                        toast.error(`Could not install ${entry.name}`, { description: interpreted.description });
+                      },
+                    },
+                  )
+                }
+              >
+                Install
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

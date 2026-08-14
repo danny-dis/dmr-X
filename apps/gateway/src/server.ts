@@ -27,6 +27,11 @@ import { registerSecurity } from './security-headers.js';
 import { registerHealthEndpoints } from './health-endpoints.js';
 import { registerOAuthRefresh } from './oauth-refresh.js';
 import { registerTelemetryHooks } from './telemetry-hooks.js';
+import {
+  publishDashboardStatsThrottled,
+  publishDashboardStatsUpdate,
+  recordTelemetryEvent,
+} from './admin-events.js';
 import { authMiddleware, DEPLOYMENT_MODE } from './middleware/auth.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { registerSiemForwarding } from './middleware/siem-forward.middleware.js';
@@ -322,6 +327,14 @@ export async function createServer() {
     }
     return adapter;
   });
+
+  // Attach telemetry-event + dashboard-stat publishers on the ROOT instance.
+  // Decorations on the root are inherited by Fastify-encapsulated plugins,
+  // so every `(server as any).recordTelemetryEvent?.(...)` call site across
+  // chat/tools/auth/telemetry-hooks finally reaches the admin buffer.
+  server.decorate('recordTelemetryEvent', recordTelemetryEvent);
+  server.decorate('publishDashboardStatsUpdate', publishDashboardStatsUpdate);
+  server.decorate('publishDashboardStatsThrottled', publishDashboardStatsThrottled);
 
   router.setAdapterExecutor({
     execute: async (providerId: string, modelId: string, request: UnifiedRequest) => {

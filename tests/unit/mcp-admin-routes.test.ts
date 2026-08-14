@@ -6,7 +6,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { MCP_CATALOG, renderCatalogArgs, getCatalogEntry } from '../../packages/core/src/mcp-catalog.js';
-import { mcpAdminRoutes } from '../../apps/gateway/src/routes/mcp-admin.routes.js';
+import {
+  buildCatalogInstallBody,
+  mcpAdminRoutes,
+} from '../../apps/gateway/src/routes/mcp-admin.routes.js';
 
 let tmpDir: string;
 let configFile: string;
@@ -284,6 +287,58 @@ describe('MCP catalog templates', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it('contains the current catalog set', () => {
+    const ids = MCP_CATALOG.map((e) => e.id);
+    for (const id of [
+      'playwright',
+      'chrome-devtools',
+      'context7',
+      'pglite',
+      'todoist',
+      'figma',
+      'exa',
+      'tavily',
+      'stripe',
+      'supabase',
+      'time',
+    ]) {
+      expect(ids, `catalog should contain ${id}`).toContain(id);
+    }
+    expect(ids).not.toContain('puppeteer');
+  });
+
+  it('includes the active upstream reference servers', () => {
+    const ids = MCP_CATALOG.map((e) => e.id);
+    for (const id of [
+      'filesystem',
+      'git',
+      'fetch',
+      'memory',
+      'sequential-thinking',
+      'everything',
+      'time',
+    ]) {
+      expect(ids, `catalog should contain ${id}`).toContain(id);
+    }
+    // The Python reference servers are consumed via uvx, not npx.
+    for (const id of ['git', 'fetch', 'time']) {
+      expect(getCatalogEntry(id)!.command, `${id} should run via uvx`).toBe('uvx');
+    }
+  });
+
+  it('describes http (streamable) catalog entries', () => {
+    const stripe = getCatalogEntry('stripe')!;
+    const supabase = getCatalogEntry('supabase')!;
+
+    for (const entry of [stripe, supabase]) {
+      expect(entry.transport).toBe('http');
+      expect(entry.url).toBeTruthy();
+      expect(entry.command).toBeUndefined();
+    }
+
+    expect(stripe.requiredEnv.map((v) => v.key)).toContain('STRIPE_API_KEY');
+  });
+
   it('substitutes placeholders into args', () => {
     const entry = getCatalogEntry('filesystem')!;
     const args = renderCatalogArgs(entry.args, { ALLOWED_DIR: '/srv/data' });
@@ -299,5 +354,56 @@ describe('MCP catalog templates', () => {
     // An empty allowlist path would read as "current directory" to the
     // filesystem server — the token must survive so the failure is visible.
     expect(args).toContain('{{ALLOWED_DIR}}');
+  });
+});
+
+describe('buildCatalogInstallBody — credential routing', () => {
+  it('routes an http entry secret into apiKey, not env (stripe)', () => {
+    const body = buildCatalogInstallBody(
+      getCatalogEntry('stripe')!,
+      { STRIPE_API_KEY: 'sk_test_x' },
+      { id: 'stripe' },
+    );
+
+    expect(body.transport).toBe('http');
+    expect(body.apiKey).toBe('sk_test_x');
+    expect(body.env).toBeUndefined();
+    expect(body.url).toBeTruthy();
+    expect(body.command).toBeUndefined();
+    expect(body.enabled).toBe(true);
+  });
+
+  it('routes an http entry secret into apiKey, not env (supabase)', () => {
+    const body = buildCatalogInstallBody(
+      getCatalogEntry('supabase')!,
+      { SUPABASE_ACCESS_TOKEN: 'sbp_example' },
+      { id: 'supabase' },
+    );
+
+    expect(body.transport).toBe('http');
+    expect(body.apiKey).toBe('sbp_example');
+    expect(body.env).toBeUndefined();
+    expect(body.url).toBe('https://mcp.supabase.com/mcp');
+    expect(body.enabled).toBe(true);
+  });
+
+  it('keeps secret values in env for stdio entries (no apiKey)', () => {
+    const body = buildCatalogInstallBody(
+      getCatalogEntry('github')!,
+      { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_example' },
+      { id: 'github' },
+    );
+
+    expect(body.transport).toBe('stdio');
+    expect(body.apiKey).toBeUndefined();
+    expect(body.env).toEqual({ GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_example' });
+  });
+
+  it('handles an http entry with no values', () => {
+    const body = buildCatalogInstallBody(getCatalogEntry('stripe')!, {}, { id: 'stripe' });
+
+    expect(body.transport).toBe('http');
+    expect(body.apiKey).toBeUndefined();
+    expect(body.env).toBeUndefined();
   });
 });

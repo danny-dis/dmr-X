@@ -12,8 +12,7 @@
  */
 
 import { createLogger } from '@dmr-x/utils';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { Client, SSEClientTransport } from '@modelcontextprotocol/client';
 
 const logger = createLogger('mcp-server:federation');
 

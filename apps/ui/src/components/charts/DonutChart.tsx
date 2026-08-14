@@ -137,7 +137,9 @@ const SUNBURST_PALETTE = [
 export function Sunburst({ data, size = 280, className }: SunburstProps) {
   return (
     <div className={cn('flex justify-center', className)}>
-      <SunburstNode data={data} size={size} depth={0} index={0} />
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img">
+        <SunburstNode data={data} size={size} depth={0} index={0} />
+      </svg>
     </div>
   );
 }

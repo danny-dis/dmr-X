@@ -80,20 +80,25 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 for (const wrapModel of wrapOrder) {
                   try {
                     let sent = false;
-                    for await (const chunk of godmode.chatStream({
+                    for await (const delta of godmode.chatStreamFull({
                       messages: body.messages as any,
                       model: wrapModel,
                       temperature: body.temperature,
                       max_tokens: body.max_tokens,
                       top_p: body.top_p,
+                      tools: (body as any).tools,
+                      tool_choice: (body as any).tool_choice,
                     })) {
-                      if (chunk) {
+                      const chunkDelta: any = {};
+                      if (delta.content) chunkDelta.content = delta.content;
+                      if (delta.tool_calls) chunkDelta.tool_calls = delta.tool_calls;
+                      if (delta.content || delta.tool_calls) {
                         reply.raw.write(
                           `data: ${JSON.stringify({
                             id: `gm-${requestId}`,
                             object: 'chat.completion.chunk',
                             model: wrapModel,
-                            choices: [{ index: 0, delta: { role: 'assistant', content: chunk }, finish_reason: null }],
+                            choices: [{ index: 0, delta: { role: 'assistant', ...chunkDelta }, finish_reason: null }],
                           })}\n\n`,
                         );
                         sent = true;
@@ -149,17 +154,27 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               temperature: body.temperature,
               maxTokens: body.max_tokens,
               topP: body.top_p,
+              tools: (body as any).tools,
+              tool_choice: (body as any).tool_choice,
             });
             if (result.status === 'wrapped' && result.completion) {
               const gm = result.completion;
-              const gmContent = Array.isArray(gm.choices) && gm.choices[0]?.message?.content
-                ? gm.choices[0].message.content
-                : '';
+              const gmMessage = Array.isArray(gm.choices) ? gm.choices[0]?.message : undefined;
+              const gmContent = typeof gmMessage?.content === 'string' ? gmMessage.content : '';
+              const gmToolCalls = gmMessage?.tool_calls;
               return reply.send({
                 id: `gm-${requestId}`,
                 object: 'chat.completion',
                 model: result.wrapModel ?? gm.model ?? 'auto-free',
-                choices: [{ index: 0, message: { role: 'assistant', content: gmContent }, finish_reason: 'stop' }],
+                choices: [{
+                  index: 0,
+                  message: {
+                    role: 'assistant',
+                    content: gmContent,
+                    ...(gmToolCalls ? { tool_calls: gmToolCalls } : {}),
+                  },
+                  finish_reason: gmToolCalls ? 'tool_calls' : (gm.choices?.[0]?.finish_reason ?? 'stop'),
+                }],
                 usage: gm.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
               });
             }
@@ -438,7 +453,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             modelId: candidate.modelId,
             modality: unifiedRequest.modality ?? 'llm',
             tenantId,
-            taskProfile: unifiedRequest.modality,
+            taskProfile: JSON.stringify({ taskType: unifiedRequest.modality }),
             routingPlan: {
               primary: {
                 providerId: plan.primary.providerId,

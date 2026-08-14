@@ -195,6 +195,22 @@ export function registerTelemetryHooks(server: FastifyInstance, telemetry: any):
             metrics.freeTierStrategy ?? null,
           );
 
+          // Persist billing usage so /v1/admin/billing/usage-history and the
+          // Routing page traffic-composition chart have data. Best-effort —
+          // failures must never break the request (same policy as above).
+          try {
+            await billingService.recordUsage({
+              tenantId: metrics.tenantId ?? 'default',
+              providerId: metrics.providerId,
+              modelId: metrics.modelId,
+              inputTokens: metrics.tokens?.prompt ?? 0,
+              outputTokens: metrics.tokens?.completion ?? 0,
+              requestId: request.id,
+            });
+          } catch (usageErr) {
+            logger.warn({ err: usageErr, requestId: request.id }, 'usage_records write failed');
+          }
+
           // Two distinct frames go out on the dashboard stream, discriminated
           // by `type`:
           //
@@ -258,6 +274,35 @@ export function registerTelemetryHooks(server: FastifyInstance, telemetry: any):
             logger.warn({ err: usageErr, requestId: request.id }, 'usage_records write failed');
           }
         }
+
+        // Surface the completed request on the Requests page live stream.
+        // Fires once per HTTP request (not per fallback attempt) for every
+        // path that populates `request.metrics` — chat, tools, moderation,
+        // and agentic. Explicit per-route emissions (error paths etc.) carry
+        // richer metadata; this generic frame guarantees every real model
+        // call shows up on the dashboard.
+        try {
+          (server as any).recordTelemetryEvent?.({
+            level: metrics.errorCode ? 'error' : 'info',
+            service: 'gateway',
+            message: metrics.errorCode
+              ? `Request failed: ${metrics.errorCode}`
+              : 'Request completed',
+            metadata: {
+              path: request.url,
+              requestId: request.id,
+              providerId: metrics.providerId,
+              modelId: metrics.modelId,
+              statusCode,
+              latencyMs,
+              tokens: (metrics.tokens?.prompt ?? 0) + (metrics.tokens?.completion ?? 0),
+              error: metrics.errorCode ?? null,
+            },
+          });
+        } catch (telemetryErr) {
+          logger.debug({ err: telemetryErr }, 'telemetry event emission failed');
+        }
+      }
 
         // Content capture: record the call event for ML-ready streaming
         if (contentCaptureService.isEnabled()) {

@@ -47,6 +47,8 @@ export interface AgentDefinition {
   verifyOnStop?: boolean;
   planMode?: boolean;
   historyCompaction?: boolean;
+  /** Opt-in: route the agent's per-turn model calls through the godmode wrap. */
+  godmodeWrap?: boolean;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -173,8 +175,8 @@ export class AgentRegistryService {
         personality, preferred_model, model_tier, allowed_tools, custom_tools,
         workflow, triggers, visibility, tags, category, icon, skills, human_name,
         skill_nudge_interval, verify_on_stop, plan_mode, history_compaction,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        godmode_wrap, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tenantId,
@@ -199,6 +201,7 @@ export class AgentRegistryService {
       input.verifyOnStop ? 1 : 0,
       input.planMode ? 1 : 0,
       input.historyCompaction ? 1 : 0,
+      input.godmodeWrap ? 1 : 0,
       now,
       now,
     );
@@ -287,6 +290,7 @@ export class AgentRegistryService {
     if (input.verifyOnStop !== undefined) { updates.push('verify_on_stop = ?'); params.push(input.verifyOnStop ? 1 : 0); }
     if (input.planMode !== undefined) { updates.push('plan_mode = ?'); params.push(input.planMode ? 1 : 0); }
     if (input.historyCompaction !== undefined) { updates.push('history_compaction = ?'); params.push(input.historyCompaction ? 1 : 0); }
+    if (input.godmodeWrap !== undefined) { updates.push('godmode_wrap = ?'); params.push(input.godmodeWrap ? 1 : 0); }
 
     if (updates.length === 0) return existing;
 
@@ -1039,6 +1043,7 @@ export class AgentRegistryService {
       verifyOnStop: row.verify_on_stop ? true : false,
       planMode: row.plan_mode ? true : false,
       historyCompaction: row.history_compaction ? true : false,
+      godmodeWrap: row.godmode_wrap ? true : false,
       publishedAt: row.published_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

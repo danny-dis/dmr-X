@@ -266,7 +266,7 @@ DMRX_MCP_API_KEY=<mcp-bearer-key> \
 bun run services/mcp-server
 ```
 
-Point your MCP client at `http://localhost:3100/mcp`, sending
+Point your MCP client at `http://localhost:47114/mcp`, sending
 `Authorization: Bearer <mcp-bearer-key>` and `Mcp-Session-Id` on resume.
 
 ## 11. Summary of the workflow

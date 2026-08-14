@@ -71,7 +71,7 @@ bun run lint             # Lint all packages
 
 - **TypeScript ESM** — all packages use `"type": "module"`, import with `.js` extensions in relative imports
 - **No `.ts` extensions in imports** — TypeScript resolves `.js` to `.ts` automatically
-- **Stale `.js` in source** — Bun resolves `.js` before `.ts`. If you see stale `.js`/`.d.ts`/`.js.map` files alongside `.ts` source, they are build artifacts that should be deleted. They cause the runtime to execute old code. Note `bun run clean:src` only walks directories literally named `src/`, so artifacts in `scripts/` and `packages/*/scripts/` survive it and must be removed by hand.
+- **Stale `.js` in source** — Bun resolves `.js` before `.ts`. If you see stale `.js`/`.d.ts`/`.js.map` files alongside `.ts` source, they are build artifacts that should be deleted. They cause the runtime to execute old code.
 - **Package barrels** — each package exports from `src/index.ts`
 - **No `@ts-nocheck`** — fix type errors properly
 - **Zod schemas** — use Zod for input validation on admin endpoints
@@ -125,14 +125,7 @@ DMRX_RUN_E2E=true bun run test -- tests/e2e/   # E2E (requires running gateway)
 
 Unit tests cover: routing pipeline, anthropic converter/stream, API contracts, auth middleware, task classifier, tool orchestrator, SQLite client, memory cache, crypto, meta-models, event streams, HTTP errors.
 
-**Vitest issue on Windows + Node v24:** vitest/tinypool spawn fails with UNKNOWN. Type-check directly instead:
-
-```bash
-node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit        # backend
-node node_modules/typescript/bin/tsc -p apps/ui/tsconfig.app.json --noEmit   # UI
-```
-
-Do **not** use `npx tsc` — in this repo it resolves to a decoy package that prints "This is not the tsc command you are looking for" and exits 1 without compiling anything.
+**Vitest issue on Windows + Node v24:** vitest/tinypool spawn fails with UNKNOWN. Use `npx tsc` directly for type checking instead.
 
 ## Documentation
 
@@ -150,7 +143,7 @@ When updating docs, keep them accurate to the actual codebase state. The authori
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dmr-X** (12664 symbols, 31325 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dmr-X** (12219 symbols, 30158 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

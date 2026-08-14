@@ -1,8 +1,11 @@
-# DMR-X always-on launcher for pre-built binary.
-# Starts the gateway (PORT, default 47113) in a crash-restart loop and keeps the
-# MCP+A2A (:3100) and G0DM0D3 (:7860) companions alive alongside it.
+# DMR-X always-on launcher.
+# Keeps the gateway running and the MCP+A2A (:3100) and G0DM0D3 (:7860)
+# companions alive alongside it. The gateway itself is started through PM2
+# (source code with all fixes) — the compiled binary lineage had
+# false-corruption detection and silent data loss on restart, so it is never
+# launched from here.
 # Loads .env from user home and project directory (project overrides).
-# Used by Windows Task Scheduler "DMR-X-Binary" task.
+# Used by Windows Task Scheduler / Startup VBS.
 
 $ErrorActionPreference = 'Continue'
 
@@ -76,6 +79,25 @@ function Test-IsOurProcess([int]$ProcessId) {
                 $cmd -like '*gateway\src\main.ts*')
     }
     return $false
+}
+
+# Is this PID the fixed source gateway running under PM2 (bun/node +
+# apps/gateway/src/main.ts)? PM2 passes the script path relative to the project
+# root, so the entry-path patterns are matched directly rather than against the
+# full project root. Recognising it means we ADOPT a healthy pm2 gateway at
+# startup instead of killing it (the binary legacy) and instead of treating it
+# as a foreign process (which would abort the launcher).
+function Test-IsSourceGateway([int]$ProcessId) {
+    try {
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    if (-not $proc) { return $false }
+    $cmd = "$($proc.CommandLine) $($proc.ExecutablePath)".Trim().ToLower()
+    if (-not $cmd) { return $false }
+    return ($cmd -like '*gateway/src/main.ts*' -or
+            $cmd -like '*gateway\src\main.ts*')
 }
 
 # The gateway resolves its web UI from "<directory of the exe>\public" (see the
@@ -166,6 +188,13 @@ Write-Log "Gateway port: $GwPort"
 # supervisor loop below adopts a healthy companion and restarts a dead one, so
 # killing them on every boot would cause avoidable downtime for no benefit.
 foreach ($p in (Get-PortOwnerPids $GwPort)) {
+    # A healthy pm2-supervised source gateway already owns the port: adopt it.
+    # Never kill it, and do not treat it as foreign (which would abort the
+    # launcher). Only the binary legacy (dmrx.exe) and companions get reaped.
+    if (Test-IsSourceGateway ([int]$p)) {
+        Write-Log "Source gateway already running on :$GwPort (PID $p) - adopting"
+        continue
+    }
     if (Test-IsOurProcess ([int]$p)) {
         Write-Log "Clearing stale DMR-X process holding :$GwPort (PID $p)"
         Start-Process -FilePath 'taskkill' -ArgumentList "/PID",$p,"/F" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
@@ -305,6 +334,60 @@ function Stop-Companions {
     }
 }
 
+function Test-Pm2Available {
+    try {
+        return $null -ne (Get-Command pm2 -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+}
+
+# Start the gateway through PM2 — never the compiled binary.
+#
+# The binary at $BinaryPath belongs to a buggy lineage (false-corruption
+# detection + silent data loss on restart). PM2 restores the saved process dump
+# (dmrx-gateway + dmrx-needle-router), which runs the current source with all
+# fixes. If PM2 is unavailable, log loudly and let the outer loop retry; we do
+# NOT fall back to the binary.
+function Start-GatewayViaPm2 {
+    try {
+        if (-not (Test-Pm2Available)) {
+            Write-Log "ERROR: pm2 is not available. The gateway runs from source under pm2 - install pm2 or start 'dmrx-gateway' manually."
+            return $false
+        }
+        # Restore the saved process list. Harmless when the apps are already up:
+        # this branch is only reached while nothing listens on :$GwPort.
+        pm2 resurrect 2>$null | Out-Null
+        Start-Sleep -Seconds 1
+        try {
+            $list = pm2 jlist 2>$null | ConvertFrom-Json
+            $online = @($list | Where-Object { $_.name -eq 'dmrx-gateway' -and $_.pm2_env.status -eq 'online' })
+            if ($online.Count -eq 0) {
+                Write-Log "Starting dmrx-gateway via pm2..."
+                pm2 start dmrx-gateway 2>$null | Out-Null
+            }
+        } catch {
+            Write-Log "WARNING: could not inspect pm2 list ($($_.Exception.Message)); starting 'dmrx-gateway' anyway..."
+            pm2 start dmrx-gateway 2>$null | Out-Null
+        }
+        # Wait for the gateway to bind the port.
+        $waited = 0
+        while ($waited -lt 30) {
+            Start-Sleep -Seconds 1
+            $waited++
+            if (Test-PortListen $GwPort) {
+                Write-Log "Gateway online via pm2 (took ${waited}s)"
+                return $true
+            }
+        }
+        Write-Log "ERROR: gateway did not come up on :$GwPort within 30s (check 'pm2 list')"
+        return $false
+    } catch {
+        Write-Log "ERROR: Start-GatewayViaPm2 failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 # Main crash-restart loop
 while ($true) {
     # Reached when the script starts while a gateway is already listening (an
@@ -322,32 +405,20 @@ while ($true) {
         continue
     }
     Stop-Companions
-    Write-Log "Starting DMR-X gateway on :$GwPort..."
-    $proc = Start-Process -FilePath $BinaryPath `
-        -PassThru -NoNewWindow `
-        -RedirectStandardOutput $GatewayLog `
-        -RedirectStandardError $ErrLogFile
-    # Wait for gateway to start listening, then launch companions
-    $waited = 0
-    while ($waited -lt 15) {
-        Start-Sleep -Seconds 1
-        $waited++
-        if (Test-PortListen $GwPort) {
-            Start-Companions
-            break
-        }
+    # Start via pm2 — never spawn the compiled binary (buggy lineage).
+    if (-not (Start-GatewayViaPm2)) {
+        Write-Log "Gateway did not start via pm2. Retrying in 10s..."
+        Start-Sleep -Seconds 10
+        continue
     }
+    Start-Companions
     # Supervise by polling, never by blocking.
     #
-    # This used to be `Wait-Process -Id $proc.Id`, which parked the script here
-    # for the entire lifetime of the gateway. That made the companion health
-    # check at the top of this loop unreachable in the one case that matters —
-    # when this script is the thing that launched the gateway — so a companion
-    # that died was never restarted, and the log simply went silent.
-    while ($proc -and -not $proc.HasExited) {
+    # pm2 owns the gateway process (it crash-restarts it), so there is no
+    # process handle to wait on here. This loop keeps companions alive while
+    # the gateway listens and returns to the outer loop when it goes away.
+    while (Test-PortListen $GwPort) {
         Start-Sleep -Seconds 10
-        $proc.Refresh()   # HasExited is cached; refresh before trusting it
-        if ($proc.HasExited) { break }
         $mcpAlive = Test-PortListen 3100
         $g0dAlive = Test-PortListen 7860
         if (-not $mcpAlive -or -not $g0dAlive) {
@@ -359,7 +430,6 @@ while ($true) {
             Start-Companions
         }
     }
-    $exitCode = if ($proc) { $proc.ExitCode } else { -1 }
-    Write-Log "Gateway exited (exit code $exitCode). Restarting in 3s..."
+    Write-Log "Gateway no longer listening on :$GwPort. Restarting in 3s..."
     Start-Sleep -Seconds 3
 }

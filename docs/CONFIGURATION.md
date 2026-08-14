@@ -113,7 +113,7 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `DMRX_MCP_TRANSPORT` | `stdio` | No | Transport: `stdio`, `sse`, `http`. |
-| `DMRX_MCP_PORT` | `3100` | No | MCP HTTP/SSE port. |
+| `DMRX_MCP_PORT` | `47114` | No | MCP HTTP/SSE port. |
 | `DMRX_MCP_HOST` | `127.0.0.1` | No | MCP HTTP/SSE host. Use `0.0.0.0` only for remote access. |
 | `DMRX_MCP_API_KEY` | — | Production | API key for MCP server authentication. Comma-separated for multiple keys. Required when transport is `sse` or `http` in production. |
 | `DMRX_MCP_CORS_ORIGIN` | `*` (dev only) | Production | CORS origin for SSE/HTTP transports. Tighten to explicit origins in production. |
@@ -128,7 +128,7 @@ The adapter also uses `AUDIO_SHAKE_API_KEY` and `STEMSPLIT_API_KEY` (see [Provid
 | `DMRX_MCP_CIRCUIT_BREAKER_TIMEOUT_MS` | `60000` (60 s) | No | Time in ms before the circuit transitions from open to half-open. |
 | `DMRX_MCP_AUTOSTART` | `true` | No | When the gateway boots, spawn the MCP HTTP server (with A2A) as a sidecar if `:DMRX_MCP_PORT` is not already healthy. |
 | `DMRX_A2A_ENABLED` | `true` (sidecar) | No | Enable A2A agent-card + task endpoints on the MCP server. |
-| `DMRX_A2A_AGENT_URL` | `http://127.0.0.1:3100` | No | Public URL advertised in the A2A agent card. |
+| `DMRX_A2A_AGENT_URL` | `http://127.0.0.1:47114` | No | Public URL advertised in the A2A agent card. |
 | `DMRX_GODMODE_AUTOSTART` | `false` | No | When the gateway boots, start the local G0DM0D3 proxy in relay mode if it is not already healthy. **Off by default:** enabling it makes the gateway clone and execute a third-party GitHub repo at boot, so it must be opted into explicitly with `DMRX_GODMODE_AUTOSTART=true`. |
 | `DMRX_GODMODE_REPO` | `https://github.com/danny-dis/G0DM0D3.git` | No | Repo the managed G0DM0D3 server is cloned from. Defaults to DMR-X's own fork, not upstream, so `.github/workflows/godmode-fork-sync.yml` controls when upstream changes reach it. |
 | `DMRX_GODMODE_REF` | pinned commit SHA | No | Commit SHA (or branch/tag) the clone is pinned to. Fetched directly (works for a branch, tag, or SHA), so every fresh install is byte-identical regardless of when it runs. See `patches/g0dm0d3/README.md`. |

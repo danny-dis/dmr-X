@@ -1,0 +1,8 @@
+{
+  "name": "@modelcontextprotocol/server-memory",
+  "version": "0.6.2",
+  "description": "MCP server for enabling memory for Claude through a knowledge graph",
+  "bin": {
+    "mcp-server-memory": "dist/index.js"
+  }
+}

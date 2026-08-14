@@ -265,8 +265,12 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       max_tokens: body.maxTokens,
       stream: false,
       tools: (() => {
+        // Phase 2c tools-always-on: empty/absent allowedTools means "full
+        // standard set" — every registered tool is passed. An explicit list
+        // is normalized (unbracketed `tools:` frontmatter may store a bare
+        // string) and filtered to registered definitions.
         const names = normalizeAllowedTools(definition.allowedTools);
-        return names.length > 0 ? getRegisteredToolDefinitions(names) : undefined;
+        return names.length > 0 ? getRegisteredToolDefinitions(names) : getRegisteredToolDefinitions();
       })(),
       metadata: { requestId: reqId, tenant },
     };

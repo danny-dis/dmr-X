@@ -92,6 +92,10 @@ interface RunAgentChatLoopArgs {
   approvalDecisions?: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>;
   /** Router quality target (from the X-Quality-Target header). Defaults to 'balanced'. */
   qualityTarget?: ReturnType<typeof parseQualityTarget>;
+  /** Opt-in: route per-turn model calls through the godmode wrap using the
+   *  agent's own resolved model (any family) instead of plain router routing.
+   *  Falls back to normal routing when the wrap is unavailable. */
+  godmodeWrap?: boolean;
 }
 
 const MAX_TURN_RETRIES = 2;
@@ -299,6 +303,82 @@ export async function routeWithTimeout(
 }
 
 /**
+ * Map a godmode proxy completion (OpenAI wire format) back into the loop's
+ * UnifiedResponse shape so the ReAct loop can consume tool_calls/content/
+ * usage/finishReason unchanged.
+ */
+function godmodeCompletionToResponse(
+  completion: any,
+  wrapModel: string | undefined,
+  requestId: string,
+): any {
+  const choice = completion?.choices?.[0];
+  const gmMessage = choice?.message;
+  const toolCalls = gmMessage?.tool_calls;
+  return {
+    modality: 'llm',
+    requestId,
+    providerId: 'godmode',
+    modelId: wrapModel ?? completion?.model ?? 'godmode',
+    message: {
+      role: 'assistant',
+      content: typeof gmMessage?.content === 'string' ? gmMessage.content : '',
+      ...(toolCalls ? { tool_calls: toolCalls } : {}),
+    },
+    usage: completion?.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    finishReason: choice?.finish_reason ?? (toolCalls ? 'tool_calls' : 'stop'),
+    latencyMs: 0,
+  };
+}
+
+/**
+ * Complete one agent turn. With `godmodeWrap` the request is routed through
+ * the godmode proxy first, resolving the wrap order from the agent's OWN
+ * resolved model (any family) via {@link wrapViaGodmode}. When the wrap is
+ * unavailable the turn degrades to normal router routing — unless strict mode
+ * is on, in which case the turn hard-fails (operator asked for a wrap, got
+ * none). Without `godmodeWrap` this is a plain routeWithTimeout.
+ */
+async function completeAgentTurn(
+  router: Router,
+  unifiedRequest: UnifiedRequest,
+  target: ReturnType<typeof parseQualityTarget>,
+  requestId: string,
+  godmodeWrap: boolean,
+): Promise<{ response: any }> {
+  if (!godmodeWrap) {
+    return routeWithTimeout(router, unifiedRequest, target);
+  }
+
+  const { wrapViaGodmode, isGodmodeStrict } = await import('../lib/godmode-guard.js');
+  const candidates = router.getCandidates();
+  const result = await wrapViaGodmode({
+    requestId,
+    messages: (unifiedRequest.messages ?? []) as any[],
+    model: unifiedRequest.model ?? '',
+    candidates,
+    costFilter: 'all',
+    temperature: unifiedRequest.temperature,
+    maxTokens: unifiedRequest.max_tokens,
+    tools: unifiedRequest.tools,
+  });
+
+  if (result.status === 'wrapped' && result.completion) {
+    return { response: godmodeCompletionToResponse(result.completion, result.wrapModel, requestId) };
+  }
+
+  if (isGodmodeStrict()) {
+    throw new Error(`godmode wrap unavailable for agent turn (strict mode): ${requestId}`);
+  }
+
+  logger.warn(
+    { requestId, wrapOrder: result.wrapOrder },
+    'godmode wrap unavailable for agent turn — falling back to router routing',
+  );
+  return routeWithTimeout(router, unifiedRequest, target);
+}
+
+/**
  * Build composable SDK stop conditions from request-body conditions. Closures
  * read the loop's live lastResponseText / totalTokensUsed / totalCost, so the
  * conditions stay current across turns.
@@ -451,6 +531,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     conversationId,
     onCheckpoint,
     qualityTarget,
+    godmodeWrap = false,
   } = args;
 
   // conversationId is optional; fall back to the conversation's own id so
@@ -547,7 +628,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     let response: UnifiedResponse;
 
     try {
-      ({ response } = await routeWithTimeout(router, unifiedRequest, target));
+      ({ response } = await completeAgentTurn(router, unifiedRequest, target, requestId, godmodeWrap));
     } catch (error) {
       const decision = resolveFallbackForError(runtime, error, context.definition, model);
 
@@ -581,7 +662,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         tenant,
       );
 
-      ({ response } = await routeWithTimeout(router, retryRequest, target));
+      ({ response } = await completeAgentTurn(router, retryRequest, target, requestId, godmodeWrap));
     }
 
     const toolCalls = response.message?.tool_calls ?? [];

@@ -154,6 +154,7 @@ export function loadAgentFromConfig(filePath: string): AgentConfigFile | null {
       verifyOnStop: (config.verifyOnStop ?? false) as boolean,
       planMode: (config.planMode ?? false) as boolean,
       historyCompaction: (config.historyCompaction ?? false) as boolean,
+      godmodeWrap: (config.godmodeWrap ?? false) as boolean,
     };
 
     return { filePath, definition };
@@ -324,6 +325,7 @@ export function parseAgentMdFromString(
       verifyOnStop: (config.verifyOnStop ?? false) as boolean,
       planMode: (config.planMode ?? false) as boolean,
       historyCompaction: (config.historyCompaction ?? false) as boolean,
+      godmodeWrap: (config.godmodeWrap ?? false) as boolean,
     };
 
     return { filePath: opts.filePath ?? 'pasted.md', definition };

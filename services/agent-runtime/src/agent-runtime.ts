@@ -168,11 +168,16 @@ export class AgentRuntimeService {
     }
 
     // 5. Tool constraints
+    // NOTE: empty/absent allowedTools now means "full standard set" (Phase 2c
+    // tools-always-on): the gateway passes every registered tool via the API
+    // `tools` array. Emitting a "no tools" line here would contradict that, so
+    // the constraint block is only emitted for an explicit non-empty list.
+    // normalizeAllowedTools also coerces the unbracketed `tools:` frontmatter
+    // string shape (bare string vs string[]) so imported agents don't crash.
     const toolNames = normalizeAllowedTools(definition.allowedTools);
     if (toolNames.length > 0) {
       parts.push(`You have access to these tools: ${toolNames.join(', ')}. Only use the tools listed here.`);
-    } else {
-      parts.push('You do not have access to any tools. Respond based on your knowledge alone.');
+    }
     }
 
     // 6. Verify-on-stop self-check nudge (opt-in)

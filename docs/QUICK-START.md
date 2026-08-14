@@ -45,7 +45,7 @@ docker compose up -d
 docker compose -f docker-compose.demo.yml up -d
 # Gateway :3000
 # UI :3000
-# dmrx-mcp SSE endpoint :3100
+# dmrx-mcp SSE endpoint :47114
 ```
 
 ## 1. Run Gateway and UI
@@ -287,13 +287,13 @@ env DMRX_MCP_TRANSPORT=stdio \
 
 # SSE (web apps)
 env DMRX_MCP_TRANSPORT=sse \
-    DMRX_MCP_PORT=3100 \
+    DMRX_MCP_PORT=47114 \
     DMRX_MCP_API_KEY=dmrx-mcp-*** \
     bun --cwd services/mcp-server run start
 
 # HTTP
 env DMRX_MCP_TRANSPORT=http \
-    DMRX_MCP_PORT=3100 \
+    DMRX_MCP_PORT=47114 \
     bun --cwd services/mcp-server run start
 ```
 
@@ -301,7 +301,7 @@ SSE client example:
 
 ```js
 const transport = new SSEClientTransport(
-  new URL("http://localhost:3100/sse"),
+  new URL("http://localhost:47114/sse"),
   {
     requestInit: {
       headers: { Authorization: "Bearer your-mcp-key" },
@@ -341,7 +341,7 @@ HTTP alternative:
 {
   "mcpServers": {
     "dmr-x": {
-      "url": "http://localhost:3100",
+      "url": "http://localhost:47114",
       "headers": { "Authorization": "Bearer your-mcp-key" }
     }
   }
@@ -377,7 +377,7 @@ Or via `dmrx-mcp.config.json` for live hot-reload:
 ```json
 {
   "transport": "sse",
-  "port": 3100,
+  "port": 47114,
   "aggregation": {
     "servers": [
       {
@@ -398,7 +398,7 @@ Namespaced access pattern once connected: `github__create_issue`, `filesystem__r
 Verify aggregation health:
 
 ```bash
-curl http://localhost:3100/ \
+curl http://localhost:47114/ \
   -H "Authorization: Bearer your-mcp-key" \
   -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dmrx_status","arguments":{}}}'
