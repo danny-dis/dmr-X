@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { initDb, closeDb, getDb } from '@dmr-x/db';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkersService } from '../../services/workers/src/workers.service.js';
@@ -9,16 +9,25 @@ describe('WorkersService', () => {
   let workersService: WorkersService;
   let db: ReturnType<typeof getDb>;
   let tempDir: string;
+  let originalDataDir: string | undefined;
 
   beforeAll(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'dmrx-workers-'));
+    originalDataDir = process.env.DMRX_DATA_DIR;
     process.env.DMRX_DATA_DIR = tempDir;
     await initDb();
   });
 
   afterAll(async () => {
+    // closeDb() must run BEFORE rmSync: Windows won't delete a directory while
+    // a sqlite handle inside it is still open.
     await closeDb();
-    delete process.env.DMRX_DATA_DIR;
+    if (originalDataDir === undefined) {
+      delete process.env.DMRX_DATA_DIR;
+    } else {
+      process.env.DMRX_DATA_DIR = originalDataDir;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
   });
 
   beforeEach(() => {

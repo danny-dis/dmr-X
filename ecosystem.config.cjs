@@ -115,8 +115,10 @@ module.exports = {
 
       // The shutdown path closes the HTTP server, flushes SQLite, and tears
       // down the MCP sidecar and G0DM0D3. PM2's 1600ms default would SIGKILL
-      // partway through and orphan those children.
-      kill_timeout: 20000,
+      // partway through and orphan those children. The gateway's own in-process
+      // flush deadline is 30s (SHUTDOWN_TIMEOUT_MS), so kill_timeout must exceed
+      // it or PM2's treekill lands before the graceful flush completes.
+      kill_timeout: 35000,
 
       // Kill the whole process tree, so a force-kill cannot strand the sidecar
       // or G0DM0D3's three-deep `bun x tsx` chain.

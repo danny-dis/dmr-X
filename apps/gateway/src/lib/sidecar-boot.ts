@@ -465,6 +465,7 @@ export async function deferMcpBoot(): Promise<void> {
     DMRX_MCP_AGENT_API_KEY: agentKey,
     DMRX_A2A_ENABLED: process.env.DMRX_A2A_ENABLED ?? 'true',
     DMRX_A2A_AGENT_URL: process.env.DMRX_A2A_AGENT_URL || `http://${host}:${port}`,
+    DMRX_A2A_DB_PATH: process.env.DMRX_A2A_DB_PATH || path.join(dataDir, 'a2a.db'),
     DMRX_GATEWAY_URL: gatewayUrl,
     DMRX_DATA_DIR: dataDir,
   };

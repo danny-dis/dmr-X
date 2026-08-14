@@ -31,7 +31,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { MCPClient, type MCPServerConfig } from '@dmr-x/mcp-client';
-import { initDb } from '@dmr-x/db';
+import { initDb, closeDb } from '@dmr-x/db';
 import { registryService, autoRegisterProviders } from '@dmr-x/registry';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -923,6 +923,19 @@ async function disposeAndExit(client: MCPClient | null, code: number): Promise<v
     } catch (err) {
       console.error('Error disposing external MCP client:', err);
     }
+  }
+  // Flush the MCP server's own DB, then close A2A persistence. Both are
+  // best-effort — a failure must never block the process from exiting.
+  try {
+    await closeDb();
+  } catch (err) {
+    console.error('Error closing database:', err);
+  }
+  try {
+    const { closePersistence } = await import('./a2a/persistence.js');
+    closePersistence();
+  } catch (err) {
+    console.error('Error closing A2A persistence:', err);
   }
   process.exit(code);
 }

@@ -1,12 +1,16 @@
 /**
  * AgentMemoryManager tests.
  *
- * Uses a fresh in-memory database initialized via @dmr-x/db's initDb, which
- * applies all migrations (including 051_agent_memory). No live external DB
- * required.
+ * Uses a fresh file-backed database in a scratch DMRX_DATA_DIR initialized via
+ * @dmr-x/db's initDb, which applies all migrations (including 051_agent_memory).
+ * No live external DB required. The scratch dir (not the real ~/.dmr-x home
+ * dir) is mandatory — initDb writes a real native data.db on each run.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { initDb, closeDb } from '@dmr-x/db';
 import { AgentMemoryManager } from '../../services/memory/src/memory-manager.js';
@@ -17,12 +21,26 @@ const TENANT = 'test-tenant';
 const AGENT = 'test-agent';
 const SESSION = 'test-session';
 
+let scratchDir: string;
+let originalDataDir: string | undefined;
+
 beforeAll(async () => {
+  scratchDir = mkdtempSync(join(tmpdir(), 'dmrx-agent-memory-'));
+  originalDataDir = process.env.DMRX_DATA_DIR;
+  process.env.DMRX_DATA_DIR = scratchDir;
   await initDb();
 }, 30000);
 
 afterAll(async () => {
+  // closeDb() must run BEFORE rmSync: Windows won't delete a directory while a
+  // sqlite handle inside it is still open.
   await closeDb();
+  if (originalDataDir === undefined) {
+    delete process.env.DMRX_DATA_DIR;
+  } else {
+    process.env.DMRX_DATA_DIR = originalDataDir;
+  }
+  rmSync(scratchDir, { recursive: true, force: true });
 });
 
 describe('AgentMemoryManager', () => {

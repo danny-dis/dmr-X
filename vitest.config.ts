@@ -104,6 +104,10 @@ export default defineConfig({
           globals: true,
           environment: 'node',
           include: ['tests/unit/**/*.test.ts'],
+          // bun:sqlite is a Bun native module — vite cannot transform/resolve
+          // it, so externalize it and let the Bun runtime (which spawns the
+          // fork workers under `bun vitest run`) load it natively.
+          deps: { external: [/^bun:/] }, 
           // Vitest's defaults (5s test / 10s hook) assume a machine with CPU
           // to spare. The root config pins `maxForks: 1`, so the whole suite
           // shares one starvable process: anything else busy on the box
@@ -154,6 +158,7 @@ export default defineConfig({
           globals: true,
           environment: 'node',
           include: ['tests/e2e/**/*.test.ts'],
+          deps: { external: [/^bun:/] }, 
           exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
           // E2E tests are slow and network-dependent. Single fork, longer
           // timeout, and bail on the first failure so we don't pile up
@@ -208,6 +213,7 @@ export default defineConfig({
           globals: true,
           environment: 'node',
           include: ['tests/unit/mcp-policy-engine.test.ts'],
+          deps: { external: [/^bun:/] }, 
           exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
           pool: 'forks',
           poolOptions: { forks: { singleFork: true } },

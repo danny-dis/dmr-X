@@ -4,7 +4,49 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// sql.js is retained as the engine for the exported migration runner and the
+// migration unit tests (they build a fresh in-memory SQLite via initSqlJs).
+// The LIVE engine is Bun's native bun:sqlite — see below.
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
+
+// The live native handle. `any` because the engine modules are resolved at
+// runtime; every use goes through methods both bun:sqlite and node:sqlite
+// actually expose (mirrors the pattern in
+// services/mcp-server/src/a2a/persistence.ts).
+type BunDatabase = any;
+
+// Engine acquisition: pick bun:sqlite when running under Bun (production),
+// node:sqlite DatabaseSync otherwise (Node runtime — vitest's fork workers
+// spawn plain Node even when vitest itself is launched via `bun`, so the
+// `bun:` URL scheme is unresolvable there). The import is LAZY and marked
+// @vite-ignore so Vite's module runner (vitest) leaves the dynamic import
+// untouched — the specifier is resolved by the RUNTIME, which resolves it
+// natively on its own runtime. Both engines expose the same surface we need:
+// `.exec(sql)`, `.prepare(sql).all/.get/.run`, `.close()`.
+let nativeEngine: { name: 'bun' | 'node'; open(filePath: string): BunDatabase } | null = null;
+async function getNativeEngine(): Promise<typeof nativeEngine> {
+  if (nativeEngine) return nativeEngine;
+  if (typeof (globalThis as Record<string, unknown>).Bun !== 'undefined') {
+    // @ts-ignore — `bun:sqlite` types ship with @types/bun, which this repo
+    // does not install; the runtime module exists under Bun.
+    const { Database } = await import(/* @vite-ignore */ 'bun:sqlite');
+    nativeEngine = { name: 'bun', open: (filePath: string) => new Database(filePath) };
+  } else {
+    // @ts-ignore — node:sqlite types ship with @types/node 22.5+; this repo
+    // has no coverage for the module, and the runtime module exists under
+    // Node. readBigInts: true keeps large INTEGER values as bigint instead of
+    // throwing RangeError ("Value is too large to be represented as a
+    // JavaScript number") on read — parity with bun:sqlite, which silently
+    // rounds to a double. The wrapper's coerceBigInt normalizes them back to
+    // numbers exactly like it does for sql.js's bigint rows.
+    const { DatabaseSync } = await import('node:sqlite');
+    nativeEngine = {
+      name: 'node',
+      open: (filePath: string) => new DatabaseSync(filePath, { readBigInts: true }),
+    };
+  }
+  return nativeEngine;
+}
 
 import { MIGRATIONS } from './migrations-data.js';
 
@@ -22,15 +64,15 @@ const log = {
   warn: (...args: unknown[]) => console.warn('[dmr-x]', ...args),
 };
 
-// Store the live sql.js handle on globalThis so every copy of this module
+// Store the live native handle on globalThis so every copy of this module
 // (the monorepo can load @dmr-x/db more than once under bun) shares ONE
-// in-memory database. Without this, server-manager and the gateway each get
+// file-backed database. Without this, server-manager and the gateway each get
 // their own `db`, so writes by one are invisible to the other.
-const g = globalThis as unknown as { __dmrxSqlDb?: SqlJsDatabase | null; __dmrxDbPath?: string; __dmrxDbInit?: Promise<DatabaseWrapper> | null };
-function getDbHandle(): SqlJsDatabase | null {
+const g = globalThis as unknown as { __dmrxSqlDb?: BunDatabase | null; __dmrxDbPath?: string; __dmrxDbInit?: Promise<DatabaseWrapper> | null };
+function getDbHandle(): BunDatabase | null {
   return g.__dmrxSqlDb ?? null;
 }
-function setDbHandle(v: SqlJsDatabase | null): void {
+function setDbHandle(v: BunDatabase | null): void {
   g.__dmrxSqlDb = v;
   if (v) (v as any).__marker = (v as any).__marker ?? `raw-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -77,95 +119,16 @@ function splitFt5(sql: string): string[] {
   });
 }
 
-// Serialize saves so two callers never write/rename the same tmpPath at once.
-// Without this, scheduleSave() + flush() can race (TOCTOU on the `saving`
-// flag) and run two concurrent saveDatabase() calls: the first rename deletes
-// the .tmp file, the second rename then throws ENOENT and crashes the process.
-
-/**
- * Acquire a cross-process mutex backed by an exclusively-created lock file.
- *
- * `fs.open(path, 'wx')` is atomic at the OS level: exactly one caller across
- * every process on the machine gets the file, everyone else sees EEXIST. That
- * makes it safe to serialize the two independent processes (gateway + MCP
- * server) that can both be publishing to the same `data.db(.enc)` at once —
- * something an in-process flag can never do.
- *
- * A holder that crashes without releasing the lock would otherwise wedge
- * every future save forever, so a lock file older than `staleAfterMs` is
- * treated as abandoned and reclaimed.
- */
-async function acquirePublishLock(lockPath: string, maxWaitMs = 10_000, staleAfterMs = 30_000): Promise<() => Promise<void>> {
-  const start = Date.now();
-  for (;;) {
-    try {
-      const handle = await fs.promises.open(lockPath, 'wx');
-      await handle.close();
-      return async () => { try { await fs.promises.unlink(lockPath); } catch { /* best-effort */ } };
-    } catch (err: any) {
-      if (err?.code !== 'EEXIST') throw err;
-      try {
-        const st = await fs.promises.stat(lockPath);
-        if (Date.now() - st.mtimeMs > staleAfterMs) {
-          // Holder is presumed dead (crashed mid-publish). Reclaim the lock
-          // rather than wedge every future save on this machine forever.
-          try { await fs.promises.unlink(lockPath); } catch { /* another waiter may have reclaimed it first — fine */ }
-          continue;
-        }
-      } catch { /* lock vanished between EEXIST and stat — retry immediately */ }
-      if (Date.now() - start > maxWaitMs) {
-        throw new Error(`Timed out waiting for database publish lock: ${lockPath}`);
-      }
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  }
-}
-
-/**
- * Atomically publish `src` as `dest`.
- *
- * `fs.rename` on Windows cannot replace a destination that still has an open
- * handle (live gateway flush, antivirus, search indexer) — it fails with
- * EPERM. That handle is just as likely to be another DMR-X process (the
- * gateway and the MCP server can both target the same data.db) as it is a
- * transient scanner, and if two processes both fell through to a raw
- * `copyFile` at the same moment, their writes could interleave on disk and
- * publish a torn file — copyFile is not atomic the way rename is.
- *
- * A cross-process lock file makes the whole publish attempt (rename retries
- * and, if it comes to that, the copyFile fallback) mutually exclusive across
- * every process on the machine, so only one writer is ever touching `dest`
- * at a time. The destination is never deleted before the new bytes are fully
- * written, so a failed replace only leaves a stray temp file — it can never
- * truncate or zero the live database.
- */
-async function atomicReplace(src: string, dest: string): Promise<void> {
-  const release = await acquirePublishLock(`${dest}.publish.lock`);
-  try {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await fs.promises.rename(src, dest);
-        return;
-      } catch (err: any) {
-        if (err?.code === 'EPERM' || err?.code === 'EBUSY') {
-          if (attempt < 4) {
-            await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
-            continue;
-          }
-          // Last resort: copyFile overwrites an in-use file on Windows. Safe
-          // to do here because the lock above guarantees no other process is
-          // doing the same thing to `dest` at the same time.
-          await fs.promises.copyFile(src, dest);
-          try { await fs.promises.unlink(src); } catch { /* best-effort */ }
-          return;
-        }
-        throw err;
-      }
-    }
-  } finally {
-    await release();
-  }
-}
+// ---------------------------------------------------------------------------
+// Durable write helper (S6: whole-file publish machinery removed)
+//
+// The sql.js save path built a whole-file export, encrypted/verified it and
+// atomically replaced data.db(.enc) — with .tmp staging, a cross-process
+// publish lock and .lastgood/.corrupt artifacts. The native engine retired all
+// of it: saveDatabase() is a WAL checkpoint and SQLite owns the file. The only
+// survivor is writeFileDurable, used by doInitDb to write decrypted legacy
+// data out as the native file (the .enc auto-convert) and to restore backups.
+// ---------------------------------------------------------------------------
 
 /**
  * Write `bytes` to `filePath` and force them onto the physical device.
@@ -176,7 +139,7 @@ async function atomicReplace(src: string, dest: string): Promise<void> {
  * never reached the disk before the process died. Without the explicit fsync
  * that stays possible no matter how carefully the rename is sequenced.
  */
-async function writeFileDurable(filePath: string, bytes: Buffer): Promise<void> {
+async function writeFileDurable(filePath: string, bytes: Uint8Array): Promise<void> {
   const handle = await fs.promises.open(filePath, 'w');
   try {
     await handle.writeFile(bytes);
@@ -186,54 +149,14 @@ async function writeFileDurable(filePath: string, bytes: Buffer): Promise<void> 
   }
 }
 
-/**
- * Read `filePath` back off disk and prove it holds exactly `expected`.
- *
- * Writing a file is not the same as writing a *recoverable* file. Previously a
- * torn or truncated write was published straight over the live database and
- * then copied to the .lastgood snapshot, so a single bad write destroyed the
- * primary copy AND every fallback at once — leaving a fresh, empty database on
- * the next boot. That is the "DMR-X starts from zero after a restart" failure.
- *
- * Comparing against the buffer we meant to write is both stronger and cheaper
- * than re-parsing the database: it catches zero-fill, truncation and tearing,
- * without pulling a multi-megabyte export back through sql.js on every save.
- */
-async function verifyPersistedFile(filePath: string, expected: Buffer, encrypted: boolean): Promise<boolean> {
-  try {
-    const raw = await fs.promises.readFile(filePath);
-    if (raw.byteLength !== expected.byteLength) return false;
-    if (!raw.equals(expected)) return false;
-    // Decrypting proves the envelope is intact and the payload authenticates;
-    // the header check proves we are about to publish a real SQLite file.
-    let bytes: Buffer;
-    if (encrypted) {
-      const { decryptBytesRaw } = await import('@dmr-x/utils');
-      bytes = decryptBytesRaw(raw);
-    } else {
-      bytes = raw;
-    }
-    return bytes.subarray(0, 15).toString('latin1') === 'SQLite format 3';
-  } catch (err) {
-    log.error(`Verification of persisted database failed: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
-}
-
-// Set when startup could not open the existing database or any backup and fell
-// back to an empty one. While true, the .lastgood snapshot is left frozen so an
-// empty database cannot destroy the last recoverable copy of the user's data.
-let startedFromUnrecoverableDb = false;
-
 let saveInFlight: Promise<void> | null = null;
 let saveQueued = false;
-let tmpCounter = 0;
 async function saveDatabase(): Promise<void> {
   if (!getDbHandle() || !getDbPath()) return;
   // Coalescing must not drop the newest state. Returning the in-flight promise
-  // meant a caller whose write landed *after* that save had already exported
-  // the database was told "saved" while its rows were never persisted. Queue a
-  // follow-up save instead, so the last writer is always flushed to disk.
+  // meant a caller whose write landed *after* that save had already persisted
+  // the database was told "saved" while its rows were never flushed. Queue a
+  // follow-up save instead, so the last writer is always written out.
   if (saveInFlight) {
     saveQueued = true;
     return saveInFlight.then(() => {
@@ -244,89 +167,27 @@ async function saveDatabase(): Promise<void> {
   }
   const run = (async () => {
     await fs.promises.mkdir(path.dirname(getDbPath()), { recursive: true });
-    const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
-    const targetPath = keySet ? `${getDbPath()}.enc` : getDbPath();
-    const lastGoodPath = `${targetPath}.lastgood`;
-    // Unique temp file per save. A fixed ".tmp" name let two concurrent
-    // saves (e.g. the init-time saveDatabase() and a debounced scheduleSave)
-    // overwrite each other's temp and then fail rename with ENOENT — which
-    // left a corrupt/zeroed on-disk file and forced a fresh DB on reboot.
-    const tmpPath = `${targetPath}.tmp.${process.pid}.${++tmpCounter}`;
     try {
-      const data = getDbHandle()!.export();
-      // Guard against persisting an empty/invalid export. A mid-crash export
-      // can yield a zero-byte buffer; writing that would clobber the last
-      // good on-disk copy and force a "fresh database" reset on the next
-      // reboot (the root cause of the dashboard resetting to zero).
-      if (!data || data.byteLength === 0) {
-        log.warn('Refusing to persist empty database export — keeping existing on-disk copy');
-        return;
-      }
-      let toWrite: Buffer;
-      if (keySet) {
-        // Encrypt the on-disk database at rest (AES-256-GCM) using the binary
-        // envelope. The previous hex encoding doubled every write; a 26 MB
-        // database became a 52 MB write on every debounce, which is how a save
-        // stayed in flight long enough to be torn by the next one.
-        const { encryptBytesRaw } = await import('@dmr-x/utils');
-        toWrite = encryptBytesRaw(Buffer.from(data));
-        // Never leave a plaintext copy behind once encryption is enabled.
-        try { if (fs.existsSync(getDbPath())) await fs.promises.unlink(getDbPath()); } catch { /* best-effort */ }
-      } else {
-        toWrite = Buffer.from(data);
-      }
-      // Write to a temporary file first to ensure atomic replacement.
-      // This prevents database corruption if the process crashes mid-write.
-      await writeFileDurable(tmpPath, toWrite);
-
-      // Prove the bytes are recoverable BEFORE they are allowed anywhere near
-      // the live file or the last-good snapshot. A file that fails here is
-      // discarded and the existing good copy on disk is left untouched.
-      if (!(await verifyPersistedFile(tmpPath, toWrite, keySet))) {
-        log.error('Refusing to publish an unreadable database write — keeping the existing on-disk copy');
-        try { await fs.promises.unlink(tmpPath); } catch { /* best-effort */ }
-        return;
-      }
-      // Atomically publish the new file. On Windows, fs.rename over an
-      // existing target fails with EPERM when the destination still has an
-      // open handle (the live gateway's own flush, an antivirus scan, the
-      // search indexer). Retry with a short backoff, then fall back to
-      // copyFile (which can overwrite a locked file). CRITICAL: the existing
-      // good file is never deleted before the new one is in place, so a
-      // failed replace only leaves a stray temp — it can never zero the DB.
-      await atomicReplace(tmpPath, targetPath);
-      // Keep a rolling "last good" copy. If the live target is ever caught
-      // mid-write during the next crash, recovery prefers this complete
-      // snapshot instead of falling back to a brand-new empty database.
-      //
-      // The snapshot is written via a temp file and only published once its
-      // size matches the verified payload. A blind copyFile straight onto
-      // .lastgood could truncate the one remaining fallback if it were
-      // interrupted, which is exactly how every recovery candidate ended up
-      // corrupt at the same time.
+      // Native engine: the file-backed database is already on disk, so a
+      // "save" is a WAL checkpoint that folds every committed frame into the
+      // main database file. TRUNCATE both checkpoints AND resets the WAL, so a
+      // reboot never has un-replayed frames to recover. Defensively wrapped: a
+      // brand-new database may not have a WAL yet, and a failed checkpoint
+      // must not clobber anything — the frames are still in the WAL and are
+      // replayed on the next open.
       try {
-        if (startedFromUnrecoverableDb) {
-          throw new Error('recovery pending — last-good snapshot is frozen');
-        }
-        const lgTmp = `${lastGoodPath}.tmp.${process.pid}.${tmpCounter}`;
-        await fs.promises.copyFile(targetPath, lgTmp);
-        const copied = await fs.promises.stat(lgTmp);
-        if (copied.size === toWrite.byteLength) {
-          await atomicReplace(lgTmp, lastGoodPath);
-        } else {
-          try { await fs.promises.unlink(lgTmp); } catch { /* best-effort */ }
-        }
-      } catch { /* best-effort — the primary write already succeeded */ }
+        getDbHandle()!.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      } catch (checkpointErr) {
+        log.warn(`WAL checkpoint failed (non-fatal): ${checkpointErr instanceof Error ? checkpointErr.message : String(checkpointErr)}`);
+        throw checkpointErr;
+      }
+      // Only a fully successful checkpoint clears the dirty flag. A failed
+      // checkpoint (re-thrown above) stays dirty so the heartbeat retries it
+      // rather than letting a reboot lose the writes.
+      dirty = false;
+      lastSaveAt = Date.now();
     } catch (err) {
       log.error('Failed to save database:', err);
-      // Best-effort cleanup of the temporary file
-      try {
-        if (fs.existsSync(tmpPath)) {
-          await fs.promises.unlink(tmpPath);
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
     }
   })();
   saveInFlight = run;
@@ -343,6 +204,16 @@ let lastSaveDurationMs = 0;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSaveResolvers: (() => void)[] = [];
 let saving = false;
+// Set true whenever a write landed since the last successful save. A hard
+// reboot delivers no signal, so only the debounced deadline used to bound
+// write loss — but a quiet database with no new writes never saved at all.
+// The heartbeat below forces a save every MAX_STALE_MS after a write even
+// when nothing else triggers one, bounding reboot loss to ~2 s.
+let dirty = false;
+let lastSaveAt = Date.now();
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+// Read once at module load (env var override for tests/tuning; floor 500 ms).
+const MAX_STALE_MS = Math.max(500, Number(process.env.DMRX_DB_MAX_STALE_MS) || 2000);
 
 /**
  * How long to coalesce writes before hitting the disk.
@@ -367,6 +238,7 @@ function saveDebounceMs(): number {
  * the write actually completes, so callers can await it when needed.
  */
 function scheduleSave(): Promise<void> {
+  dirty = true;
   return new Promise<void>((resolve) => {
     pendingSaveResolvers.push(resolve);
     if (saveTimer !== null) {
@@ -403,12 +275,26 @@ export async function flush(): Promise<void> {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  if (saving) return;
+  // If a debounced save is mid-flight, wait for it. Bailing here meant a
+  // shutdown-time flush() (e.g. closeDb) could close the sql.js handle out
+  // from under an in-flight export() and drop the newest state.
+  while (saving || saveInFlight) {
+    await (saveInFlight ?? new Promise((r) => setTimeout(r, 1)));
+  }
+  // Nothing changed since the last save — skip the needless whole-file
+  // export. `dirty` is set by scheduleSave() (every DatabaseWrapper write
+  // path) and only cleared on a successful save, so a real pending write
+  // can never be skipped.
+  if (!dirty && pendingSaveResolvers.length === 0) {
+    return;
+  }
   saving = true;
   try {
     const resolvers = pendingSaveResolvers;
     pendingSaveResolvers = [];
     await saveDatabase();
+    dirty = false;
+    lastSaveAt = Date.now();
     for (const r of resolvers) r();
   } finally {
     saving = false;
@@ -419,10 +305,113 @@ export async function flush(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Migration-runner compatibility shim
+// ---------------------------------------------------------------------------
+//
+// `runMigrations` and `migratePlaintextApiKeys` were written against sql.js's
+// API shape: `db.exec(sql)` returns `[{ columns, values }]` and
+// `db.prepare(sql)` returns a `{ bind, step, free }` statement. The exported
+// runner keeps that contract so the migration unit tests can keep driving it
+// with a real sql.js Database. This shim presents the SAME shape over the live
+// native handle, so production migrations run natively without rewriting
+// the runner. S6 may retire this along with the sql.js engine.
+
+interface MigrationCompatStatement {
+  bind(params: unknown[]): void;
+  step(): void;
+  free(): void;
+}
+
+interface MigrationCompatDb {
+  exec(sql: string): Array<{ columns: string[]; values: unknown[][] }>;
+  prepare(sql: string): MigrationCompatStatement;
+}
+
+/**
+ * Column names for a prepared statement. bun:sqlite exposes them as the
+ * `columnNames` array property; node:sqlite exposes them via the `columns()`
+ * method (array of `{ name, type }`). Returns [] when neither is available.
+ */
+function statementColumnNames(stmt: BunDatabase): string[] {
+  const names = stmt?.columnNames;
+  if (Array.isArray(names)) return names as string[];
+  if (typeof stmt?.columns === 'function') {
+    try {
+      return stmt.columns().map((c: { name: string }) => c.name);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * Finalize a prepared statement. bun:sqlite requires explicit finalize to
+ * release the statement; node:sqlite has no `finalize()` at all (statements
+ * are finalized when GC'd). Guard both so one engine's absence is harmless.
+ */
+function tryFinalizeStatement(stmt: BunDatabase): void {
+  try {
+    if (typeof stmt?.finalize === 'function') stmt.finalize();
+  } catch {
+    // Already finalized by all/run/get — fine.
+  }
+}
+
+function createMigrationCompat(raw: BunDatabase): MigrationCompatDb {
+  return {
+    exec(sql: string) {
+      // prepare() only executes the FIRST statement of a multi-statement
+      // string on BOTH engines, so DDL / DML (migration files, CREATE etc.)
+      // must go through raw.exec() which runs every statement. Only single,
+      // row-returning statements (SELECT / PRAGMA / WITH / VALUES) are read
+      // back as sql.js-shaped { columns, values }.
+      const head = /^\s*(SELECT|PRAGMA|WITH|VALUES|EXPLAIN)\b/i.exec(sql);
+      if (head) {
+        const stmt = raw.prepare(sql);
+        try {
+          const columns = statementColumnNames(stmt);
+          const rows = stmt.all() as Array<Record<string, unknown>>;
+          // sql.js returns INTEGER columns as plain numbers; node:sqlite
+          // returns bigints when readBigInts is on (see getNativeEngine).
+          // Coerce so the migration runner's numeric version lookups
+          // (migrations.get(version), applied.has(version)) keep working.
+          return [{
+            columns,
+            values: rows.map((r) => columns.map((c) => {
+              const v = r[c];
+              return typeof v === 'bigint' ? Number(v) : v;
+            })),
+          }];
+        } finally {
+          tryFinalizeStatement(stmt);
+        }
+      }
+      raw.exec(sql);
+      return [];
+    },
+    prepare(sql: string) {
+      const stmt = raw.prepare(sql);
+      let params: unknown[] = [];
+      return {
+        bind(p: unknown[]) { params = p; },
+        step() {
+          stmt.run(...params);
+          tryFinalizeStatement(stmt);
+        },
+        free() {
+          tryFinalizeStatement(stmt);
+        },
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // One-time migration: encrypt any plaintext provider API keys
 // ---------------------------------------------------------------------------
 
-async function migratePlaintextApiKeys(dbWrapper: SqlJsDatabase): Promise<void> {
+async function migratePlaintextApiKeys(dbWrapper: MigrationCompatDb): Promise<void> {
   if (!process.env.DMRX_ENCRYPTION_KEY) return; // No encryption configured
 
   let encrypt: ((plaintext: string) => string) | null = null;
@@ -472,6 +461,8 @@ async function migratePlaintextApiKeys(dbWrapper: SqlJsDatabase): Promise<void> 
 
 // sql.js returns BigInt for INTEGER columns; JSON.stringify cannot
 // serialize BigInt. This helper converts every BigInt in a row to Number.
+// bun:sqlite returns plain numbers by default (safeIntegers off), so this is
+// a no-op on the native engine but is kept for parity and safety.
 function coerceBigInt(row: Record<string, unknown>): Record<string, unknown> {
   for (const key of Object.keys(row)) {
     const v = row[key];
@@ -480,11 +471,12 @@ function coerceBigInt(row: Record<string, unknown>): Record<string, unknown> {
   return row;
 }
 
-// Wrapper that mimics better-sqlite3 API on top of sql.js
+// Wrapper that mimics better-sqlite3 API on top of the native engine
+// (bun:sqlite under Bun, node:sqlite DatabaseSync under Node).
 class DatabaseWrapper {
-  private raw: SqlJsDatabase;
+  private raw: BunDatabase;
 
-  constructor(raw: SqlJsDatabase) {
+  constructor(raw: BunDatabase) {
     this.raw = raw;
   }
 
@@ -494,38 +486,29 @@ class DatabaseWrapper {
       all(...params: unknown[]) {
         const stmt = raw.prepare(sql);
         try {
-          stmt.bind(params.length > 0 ? params as initSqlJs.BindParams : undefined);
-          const rows: Record<string, unknown>[] = [];
-          while (stmt.step()) {
-            rows.push(coerceBigInt(stmt.getAsObject()));
-          }
-          return rows;
+          const rows = params.length > 0 ? stmt.all(...params) : stmt.all();
+          return rows.map(coerceBigInt);
         } finally {
-          stmt.free();
+          tryFinalizeStatement(stmt);
         }
       },
       get(...params: unknown[]) {
         const stmt = raw.prepare(sql);
         try {
-          stmt.bind(params.length > 0 ? params as initSqlJs.BindParams : undefined);
-          if (stmt.step()) {
-            return coerceBigInt(stmt.getAsObject());
-          }
-          return undefined;
+          const row = params.length > 0 ? stmt.get(...params) : stmt.get();
+          return row == null ? undefined : coerceBigInt(row);
         } finally {
-          stmt.free();
+          tryFinalizeStatement(stmt);
         }
       },
       run(...params: unknown[]) {
         const stmt = raw.prepare(sql);
         try {
-          stmt.bind(params.length > 0 ? params as initSqlJs.BindParams : undefined);
-          stmt.step();
-          const changes = raw.getRowsModified();
+          const res = params.length > 0 ? stmt.run(...params) : stmt.run();
           scheduleSave();
-          return { changes };
+          return { changes: typeof res.changes === 'bigint' ? Number(res.changes) : res.changes };
         } finally {
-          stmt.free();
+          tryFinalizeStatement(stmt);
         }
       },
     };
@@ -553,8 +536,10 @@ class DatabaseWrapper {
     scheduleSave();
   }
 
-  pragma(_p: string) {
-    // sql.js doesn't support PRAGMA the same way — no-op
+  pragma(p: string) {
+    // The native engine supports PRAGMA statements, so execute them rather
+    // than the sql.js no-op.
+    this.raw.exec(p);
   }
 
   flush() {
@@ -913,122 +898,232 @@ function cleanupStaleArtifacts(dataDir: string, keepBackups = 3): void {
   }
 }
 
-async function doInitDb(): Promise<DatabaseWrapper> {
-  const SQL = await initSqlJs();
+// ---------------------------------------------------------------------------
+// Corruption detection + recovery
+// ---------------------------------------------------------------------------
 
+/**
+ * SQLite's 16-byte magic header (sqlite.org/fileformat.html §1.4). Both native
+ * engines open a file with the WRONG header without throwing — the "file is
+ * not a database" error is deferred to the first executed statement — so the
+ * header is validated up front in doInitDb, before the engine ever sees the
+ * file. Mirrors the same check used to validate backup candidates below.
+ */
+function isSqliteDatabase(bytes: Uint8Array): boolean {
+  return Buffer.from(bytes).subarray(0, 15).toString('latin1') === 'SQLite format 3';
+}
+
+/**
+ * Escape a filesystem path as a SQL string literal (single quotes doubled).
+ */
+function quotePathLiteral(filePath: string): string {
+  return `'${filePath.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Recover from a corrupt or unopenable database file: move the broken file
+ * aside as a dated .corrupt backup, then auto-restore the newest VALID .bak
+ * candidate (pre-migration snapshots and prior .corrupt renames); with no
+ * valid backup, fall back to an in-memory database — never a fresh empty file,
+ * which would shadow the preserved .corrupt backup (see the DATA LOSS note).
+ * Shared by the up-front magic-header check, the open() failure path, and the
+ * deferred first-statement failure path.
+ */
+async function recoverFromCorruptDb(
+  nativePath: string,
+  dataDir: string,
+  keySet: boolean,
+  engine: typeof nativeEngine,
+): Promise<BunDatabase> {
+  // Move the broken file out of the way
+  const backupPath = `${nativePath}.corrupt.${Date.now()}.bak`;
+  try { fs.renameSync(nativePath, backupPath); } catch { /* best-effort */ }
+
+  // ── Auto-restore from the most recent backup ──────────────────
+  // The pre-S5 "last good" snapshot files (.lastgood / .enc.lastgood)
+  // have had no writer since S5 and were retired in S6 — dated .bak
+  // backups (pre-migration snapshots and prior .corrupt renames) are the
+  // only recovery material left.
+  try {
+    const candidates = fs.readdirSync(dataDir)
+      .filter(f => f.startsWith(path.basename(nativePath)) && f.endsWith('.bak'))
+      .map(f => ({
+        name: f,
+        mtime: fs.statSync(path.join(dataDir, f)).mtimeMs,
+      }))
+      .sort((a, b) => b.mtime - a.mtime); // newest first
+
+    for (const cand of candidates) {
+      try {
+        let bytes: Buffer<ArrayBufferLike> = fs.readFileSync(path.join(dataDir, cand.name));
+        // Legacy whole-file-encrypted backups (data.db.enc.*.bak) need a
+        // key to open.
+        if (keySet && cand.name.includes('.enc.')) {
+          const { decryptBytesRaw } = await import('@dmr-x/utils');
+          bytes = decryptBytesRaw(bytes);
+        }
+        if (!isSqliteDatabase(bytes)) continue;
+        await writeFileDurable(nativePath, bytes);
+        const reopened = engine!.open(nativePath);
+        log.warn(`Restored database from backup: ${cand.name}`);
+        return reopened;
+      } catch {
+        // This backup is also corrupt or incompatible — skip it
+      }
+    }
+  } catch { /* readdir failed — ignore */ }
+
+  // Starting empty here means real user data (providers, keys, request
+  // history) just became unreachable. Say so unmistakably. The broken
+  // file stays preserved as <backupPath> for manual recovery.
+  log.error(
+    `DATA LOSS: could not open ${nativePath} or any backup — starting with an EMPTY database. ` +
+    `The previous file was preserved as ${backupPath}. If DMRX_ENCRYPTION_KEY changed, restore the ` +
+    `old key and restart before doing anything else.`,
+  );
+  // In-memory on purpose: never write a fresh empty file over the
+  // preserved .corrupt backup during this run.
+  return engine!.open(':memory:');
+}
+
+async function doInitDb(): Promise<DatabaseWrapper> {
   const dataDir = process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
   fs.mkdirSync(dataDir, { recursive: true });
   setDbPath(path.join(dataDir, 'data.db'));
   cleanupStaleArtifacts(dataDir);
 
-  // When DMRX_ENCRYPTION_KEY is set, the on-disk DB is stored encrypted as
-  // data.db.enc. Otherwise we use the plaintext data.db (dev / local mode).
+  // DMRX_ENCRYPTION_KEY drives the LEGACY whole-file-encrypted path
+  // (data.db.enc). The ACTIVE save path produces a plaintext native data.db
+  // (see saveDatabase()), so the key is only used here — to auto-convert an
+  // existing data.db.enc and to open legacy encrypted backups. Column-level
+  // encryption is a later phase.
   const keySet = !!process.env.DMRX_ENCRYPTION_KEY;
-  const activeDbPath = keySet ? `${getDbPath()}.enc` : getDbPath();
+  const nativePath = getDbPath();
+  const encPath = `${nativePath}.enc`;
 
-  async function openDbFile(filePath: string): Promise<SqlJsDatabase> {
-    const raw = fs.readFileSync(filePath);
-    if (keySet) {
+  // ── Auto-convert a legacy encrypted database ──────────────────────────
+  // S6's sole remaining whole-file-encryption READ path. Converts only when
+  // no native plaintext data.db exists yet — an existing data.db is ALWAYS
+  // authoritative and is never converted-over or clobbered. The .enc is
+  // retained as a backup after a successful convert (deliberately never
+  // deleted here), and the same .enc is never re-converted: once data.db
+  // exists this branch is skipped entirely. The decrypted payload is staged
+  // through data.db.tmp and atomically renamed into place, so an interrupted
+  // convert leaves no partial data.db behind — at worst a stale .tmp that the
+  // next startup truncates before re-attempting. A corrupt .enc produces a
+  // loud error and leaves BOTH the .enc and any healthy data.db untouched.
+  if (!fs.existsSync(nativePath) && keySet && fs.existsSync(encPath)) {
+    const tmpPath = `${nativePath}.tmp`;
+    try {
       const { decryptBytesRaw } = await import('@dmr-x/utils');
-      // Handles both the current binary envelope and the legacy hex-as-UTF-8
-      // format, so databases written by older builds still open.
-      return new SQL.Database(decryptBytesRaw(raw));
+      // readFileSync returns after closing its handle — no .enc handle stays
+      // open across the write below or the engine's open of data.db.
+      const bytes = decryptBytesRaw(fs.readFileSync(encPath));
+      if (bytes.subarray(0, 15).toString('latin1') !== 'SQLite format 3') {
+        throw new Error('decrypted .enc payload is not a SQLite database');
+      }
+      // writeFileDurable opens with 'w' (truncating any stale .tmp from an
+      // interrupted earlier attempt) and closes before the rename; the rename
+      // destination does not exist, so there is no Windows EPERM window.
+      await writeFileDurable(tmpPath, bytes);
+      await fs.promises.rename(tmpPath, nativePath);
+      log.info('Migrated legacy encrypted database to native plaintext data.db (data.db.enc retained as backup)');
+    } catch (convertErr) {
+      // Discard any partial .tmp — never publish a torn file as data.db — and
+      // leave the .enc untouched. A healthy data.db is never reached here
+      // because this branch only runs when data.db does not exist.
+      try { await fs.promises.unlink(tmpPath); } catch { /* best-effort */ }
+      log.error(`Legacy .enc conversion failed (data.db.enc left untouched): ${convertErr instanceof Error ? convertErr.message : String(convertErr)}`);
     }
-    return new SQL.Database(raw);
   }
 
-  if (fs.existsSync(activeDbPath)) {
+  // Load the native engine once. Production (Bun) resolves bun:sqlite; the
+  // vitest suite (Node fork workers) resolves node:sqlite DatabaseSync. Both
+  // engines open a file-backed database with `new Database(':memory:')` too.
+  const engine = await getNativeEngine();
+  const openNative = (filePath: string): BunDatabase => engine!.open(filePath);
+
+  let db: BunDatabase | null = null;
+  // Set true once recoverFromCorruptDb has run. Guards the deferred-PRAGMA
+  // recovery below from re-entering recovery on a RESTORED backup or the
+  // :memory: fallback (an infinite-recursion guard).
+  let recovered = false;
+  if (fs.existsSync(nativePath)) {
+    // Corruption guard (industry standard — sqlite.org/fileformat.html §1.4):
+    // a real SQLite database MUST begin with the "SQLite format 3" magic
+    // header. bun:sqlite and node:sqlite both OPEN a file with garbage bytes
+    // WITHOUT throwing at construction — the "file is not a database" error is
+    // deferred to the first executed statement (the PRAGMA block below) and
+    // used to fire outside any recovery path. The header is therefore
+    // validated BEFORE the engine ever sees the file. A zero-length file is
+    // exempt: SQLite opens a 0-byte file as a brand-new EMPTY database, which
+    // is a legitimate state, not corruption.
+    let magicOk = true;
     try {
-      setDbHandle(await openDbFile(activeDbPath));
-    } catch (openErr) {
-      // Log the exact error so operators can diagnose sql.js version
-      // mismatches, file truncation, or actual corruption.
-      log.error(`Failed to open database: ${openErr instanceof Error ? openErr.message : String(openErr)}`);
-
-      // Move the broken file out of the way
-      const backupPath = `${activeDbPath}.corrupt.${Date.now()}.bak`;
-      try { fs.renameSync(activeDbPath, backupPath); } catch { /* best-effort */ }
-
-      // ── Auto-restore from the most recent backup ──────────────────
-      // Look for any .bak files produced by previous corruption events,
-      // pre-migration snapshots, or manual backups.  Try each from
-      // newest to oldest until one opens successfully.
-      const dataDir = path.dirname(activeDbPath);
-      const basename = path.basename(activeDbPath); // e.g. "data.db.enc"
-      let restored = false;
-      // ── Try the rolling "last good" snapshot first ───────────────
-      // Updated by saveDatabase() after every successful write, so it is
-      // always the most recent complete (non-mid-write) copy. Prefer it
-      // over dated .bak files to avoid losing real data on reboot.
-      const lastGoodPath = `${activeDbPath}.lastgood`;
-      if (!restored && fs.existsSync(lastGoodPath)) {
-        try {
-          const lgBuf = fs.readFileSync(lastGoodPath);
-          setDbHandle(keySet
-            ? new SQL.Database((await import('@dmr-x/utils')).decryptBytesRaw(lgBuf))
-            : new SQL.Database(lgBuf));
-          fs.copyFileSync(lastGoodPath, activeDbPath);
-          log.warn(`Restored database from last-good snapshot: ${lastGoodPath}`);
-          restored = true;
-        } catch {
-          // lastgood is also unusable — fall through to .bak candidates
-        }
+      const head = Buffer.alloc(16);
+      const headHandle = await fs.promises.open(nativePath, 'r');
+      let bytesRead = 0;
+      try {
+        ({ bytesRead } = await headHandle.read(head, 0, 16, 0));
+      } finally {
+        await headHandle.close();
       }
-      // Only fall through to dated .bak files when the last-good snapshot did
-      // not restore. Without this guard the loop below ran anyway and copied an
-      // OLDER backup over the newer snapshot that had just been recovered,
-      // silently rolling the database back.
-      if (!restored) try {
-        const candidates = fs.readdirSync(dataDir)
-          .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
-          .map(f => ({
-            name: f,
-            mtime: fs.statSync(path.join(dataDir, f)).mtimeMs,
-          }))
-          .sort((a, b) => b.mtime - a.mtime); // newest first
-
-        for (const cand of candidates) {
-          try {
-            const candBuf = fs.readFileSync(path.join(dataDir, cand.name));
-            setDbHandle(keySet
-              ? new SQL.Database((await import('@dmr-x/utils')).decryptBytesRaw(candBuf))
-              : new SQL.Database(candBuf));
-            // Restore the good file back to the primary path
-            fs.copyFileSync(path.join(dataDir, cand.name), activeDbPath);
-            log.warn(`Restored database from backup: ${cand.name}`);
-            restored = true;
-            break;
-          } catch {
-            // This backup is also corrupt or incompatible — skip it
-          }
-        }
-      } catch { /* readdir failed — ignore */ }
-
-      if (!restored) {
-        // Starting empty here means real user data (providers, keys, request
-        // history) just became unreachable. Say so unmistakably, and latch a
-        // flag so this empty database cannot go on to overwrite the .lastgood
-        // snapshot — that snapshot plus the .corrupt backups are the only
-        // remaining material for a manual recovery.
-        startedFromUnrecoverableDb = true;
-        log.error(
-          `DATA LOSS: could not open ${activeDbPath} or any backup — starting with an EMPTY database. ` +
-          `The previous file was preserved as ${backupPath}. The .lastgood snapshot will NOT be overwritten ` +
-          `while this process runs, so recovery is still possible. If DMRX_ENCRYPTION_KEY changed, restore the ` +
-          `old key and restart before doing anything else.`,
-        );
-        setDbHandle(new SQL.Database());
+      magicOk = bytesRead === 0 || isSqliteDatabase(head.subarray(0, bytesRead));
+    } catch (headErr) {
+      // Could not read the header (e.g. data.db is a directory) — let the
+      // engine try; its own open error (and the PRAGMA guard below) still
+      // routes into recovery.
+      magicOk = true;
+    }
+    if (!magicOk) {
+      log.error('Failed to open database: file is not a database (magic header check failed)');
+      db = await recoverFromCorruptDb(nativePath, dataDir, keySet, engine);
+      recovered = true;
+    } else {
+      try {
+        db = openNative(nativePath);
+      } catch (openErr) {
+        // Log the exact error so operators can diagnose file truncation or
+        // actual corruption.
+        log.error(`Failed to open database: ${openErr instanceof Error ? openErr.message : String(openErr)}`);
+        db = await recoverFromCorruptDb(nativePath, dataDir, keySet, engine);
+        recovered = true;
       }
     }
   } else {
-    setDbHandle(new SQL.Database());
+    db = openNative(nativePath);
   }
 
-  // Enable foreign key enforcement (SQLite has it off by default)
-  getDbHandle()!.exec('PRAGMA foreign_keys = ON;');
-
-  // Enable Write-Ahead Logging for concurrent reads without blocking on writes
-  getDbHandle()!.exec('PRAGMA journal_mode = WAL;');
+  // The PRAGMA block is the FIRST statement executed on the handle, so a
+  // garbage file whose first 15 bytes happen to look like the magic header
+  // (or a torn page-1) still fails HERE with a deferred "file is not a
+  // database" / "database disk image is malformed" error. Wrapping it keeps
+  // that failure inside recovery: if the handle still points at the ORIGINAL
+  // corrupt file (recovery has not run), close it and recover; a restored
+  // backup or the :memory: fallback is never re-recovered.
+  try {
+    setDbHandle(db!);
+    // busy_timeout FIRST, before journal_mode: on a cold open while another
+    // process is still recovering the WAL, the busy handler must already be
+    // installed or the WAL-mode switch fails instantly with SQLITE_BUSY.
+    getDbHandle()!.exec('PRAGMA busy_timeout = 5000;');
+    getDbHandle()!.exec('PRAGMA journal_mode = WAL;');
+    getDbHandle()!.exec('PRAGMA synchronous = FULL;');
+    // Explicitly keep foreign_keys OFF to match the behavior that shipped under
+    // sql.js (which never enforced FK constraints). bun:sqlite defaults to OFF,
+    // but node:sqlite's DatabaseSync defaults to ON — so we must set it
+    // explicitly or the engine swap silently changes delete/insert semantics
+    // for existing callers written against FK-off behavior.
+    getDbHandle()!.exec('PRAGMA foreign_keys = OFF;');
+  } catch (pragmaErr) {
+    log.error(`Failed to configure database: ${pragmaErr instanceof Error ? pragmaErr.message : String(pragmaErr)}`);
+    if (!recovered) {
+      recovered = true;
+      try { getDbHandle()?.close(); } catch { /* best-effort */ }
+      db = await recoverFromCorruptDb(nativePath, dataDir, keySet, engine);
+      setDbHandle(db!);
+    }
+  }
 
   // Load migrations from disk when present, then backfill any missing versions
   // from embedded SQL. Some dev/dist layouts can have a partial migrations
@@ -1089,7 +1184,10 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   // filling the data directory.
   try {
     const preMigrationPath = `${getDbPath()}.pre-migration.${Date.now()}.bak`;
-    fs.copyFileSync(getDbPath(), preMigrationPath);
+    // VACUUM INTO produces a consistent snapshot even with concurrent
+    // writers, is compact, and — unlike a raw file copy — needs no manual
+    // checkpoint first (sqlite.org/backup.html).
+    getDbHandle()!.exec(`VACUUM INTO ${quotePathLiteral(preMigrationPath)}`);
     log.info(`Pre-migration backup: ${preMigrationPath}`);
 
     // Prune old pre-migration backups (keep newest 5)
@@ -1109,7 +1207,11 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   // Apply pending migrations and verify checksums of already-applied ones.
   // Strict mode (production) refuses to start on mismatch; dev mode logs only.
   const isProduction = process.env.NODE_ENV === 'production';
-  const migrationResult = runMigrations(getDbHandle()!, migrations, { strict: isProduction });
+  const migrationResult = runMigrations(
+    createMigrationCompat(getDbHandle()!) as unknown as SqlJsDatabase,
+    migrations,
+    { strict: isProduction },
+  );
   if (migrationResult.applied.length > 0) {
     log.info(
       `Applied ${migrationResult.applied.length} migration(s): ${migrationResult.applied.join(', ')}`,
@@ -1124,8 +1226,20 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   await saveDatabase();
   log.info(`SQLite database ready at ${getDbPath()}`);
 
+  // Force a save at most MAX_STALE_MS after any write even when no new
+  // writes (and thus no debounced save) arrives — a hard reboot delivers no
+  // signal, so without this the newest state could sit un-persisted for an
+  // unbounded time. unref() is critical: the timer must not hold the process
+  // open at shutdown.
+  heartbeatTimer = setInterval(() => {
+    if (dirty && Date.now() - lastSaveAt >= MAX_STALE_MS) {
+      void flush();
+    }
+  }, Math.max(250, Math.floor(MAX_STALE_MS / 2)));
+  heartbeatTimer.unref();
+
   // Migrate plaintext API keys to encrypted (one-time pass)
-  await migratePlaintextApiKeys(getDbHandle()!);
+  await migratePlaintextApiKeys(createMigrationCompat(getDbHandle()!));
 
   return new DatabaseWrapper(getDbHandle()!);
 }
@@ -1139,7 +1253,19 @@ export function getDb(): DatabaseWrapper {
 
 export async function closeDb() {
   if (getDbHandle()) {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
     await flush();
+    // Tune the connection/release statistics before closing so the next open
+    // starts from a leaner schema (sqlite.org/pragma.html#pragma_optimize).
+    // A no-op on failure — must never block close.
+    try {
+      getDbHandle()!.exec('PRAGMA optimize;');
+    } catch {
+      // Non-fatal; close must proceed regardless.
+    }
     getDbHandle()!.close();
     setDbHandle(null);
     setInitPromise(null);

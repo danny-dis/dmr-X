@@ -17,9 +17,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initDb, getDb, closeDb } from '../../packages/db/src/client.js';
 
 let tmpDir: string;
+let originalDataDir: string | undefined;
 
 beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmr-x-sqlite-test-'));
+  originalDataDir = process.env.DMRX_DATA_DIR;
   process.env.DMRX_DATA_DIR = tmpDir;
   // Reset the module-level cache so a fresh DB is created per test.
   // The client module exports a singleton `db` variable; we close it
@@ -36,6 +38,11 @@ afterEach(async () => {
     await closeDb();
   } catch {
     // ignore
+  }
+  if (originalDataDir === undefined) {
+    delete process.env.DMRX_DATA_DIR;
+  } else {
+    process.env.DMRX_DATA_DIR = originalDataDir;
   }
   try {
     fs.rmSync(tmpDir, { recursive: true, force: true });
