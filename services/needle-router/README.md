@@ -1,6 +1,6 @@
-# Needle Router
+# Needle 2 Router
 
-A local, OpenAI-compatible tool-calling HTTP service that wraps the Needle 26M-param tool-calling model (cactus-compute/needle). DMR-X registers it as a cheap first-stage "which tool?" pre-router that runs before an expensive model, narrowing a large tool list down to the few most relevant functions.
+A local, OpenAI-compatible tool-calling HTTP service that wraps **Needle 2** (`cactus-needle`), a 45M-param CQ2-bit tool-calling model with a C inference engine. DMR-X registers it as a cheap first-stage "which tool?" pre-router that runs before an expensive model, narrowing a large tool list down to the few most relevant functions.
 
 ## Install
 
@@ -21,7 +21,7 @@ uvicorn server:app --host 0.0.0.0 --port 8011 --workers 2
 curl -X POST http://localhost:8011/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "needle",
+    "model": "needle2",
     "messages": [{"role": "user", "content": "What is the weather in SF?"}],
     "tools": [
       {
@@ -64,6 +64,7 @@ Response:
 ```
 
 ## Notes
-- Requires the `needle` package (installed by `setup.sh`) and the trained checkpoint weights, which auto-download from Hugging Face on first request. The server boots even if they are not yet present (it returns `503` until the model is available). Needle's context limit is 128 tokens, so keep queries and tool lists small.
-- Server includes: 2-worker Uvicorn, async-safe lazy model loading, in-memory TTL cache, and batch endpoint for tool-routing fan-out.
+- Requires `cactus-needle>=2.0.0` (installed by `setup.sh`). The engine auto-downloads from Hugging Face on first use and caches under `~/.cache/cactus-needle/`. The server boots even if it is not yet present (it returns `503` until the package is installed).
+- Needle 2's context limit is 256 tokens (sliding window), so keep queries and tool lists small.
+- Server includes: 2-worker Uvicorn, async-safe lazy package loading, in-memory TTL cache, and batch endpoint for tool-routing fan-out.
 - Cache key is a SHA-256 over query + tool schema, TTL 60s, max 256 entries.

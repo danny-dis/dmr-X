@@ -110,9 +110,9 @@ __pycache__/
 *.egg-info/
 .ruff_cache/
 .pytest_cache/
-# needle-router venv + model checkpoints (large, regenerated locally)
+# needle-router venv + engine cache (large, regenerated locally)
 services/needle-router/.venv/
-services/needle-router/checkpoints/
+services/needle-router/.cache/
 
 # ─── AI-tool / IDE caches (regenerated on demand) ──────────────────────────
 .claude/

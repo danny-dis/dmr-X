@@ -821,10 +821,9 @@ export function SettingsPage() {
                     <CardHeader className="px-0 pt-0">
                       <CardTitle>Needle tool pre-filter</CardTitle>
                       <p className="text-[10px] text-fg-muted mt-0.5">
-                        Local CPU model (services/needle-router) that narrows a large tool list before
-                        it reaches the routed model. Measured single-request inference on this class of
-                        hardware runs 50-90+ seconds regardless of tool count, so it stays off by default —
-                        review the status below before enabling.
+                        Needle 2 (services/needle-router) narrows a large tool list before
+                        it reaches the routed model. Uses a C inference engine (no JAX). Off
+                        by default until measured on this hardware.
                       </p>
                     </CardHeader>
                     <CardContent className="px-0 flex flex-col gap-4">

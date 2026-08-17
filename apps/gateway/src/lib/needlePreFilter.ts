@@ -1,30 +1,24 @@
 /**
  * needlePreFilter — cheap first-stage tool pre-router.
  *
- * POSTs the query + tools to the local Needle router (services/needle-router,
+ * POSTs the query + tools to the local Needle 2 router (services/needle-router,
  * bound at localhost:8011) and returns the subset of input tools that Needle
  * matched. NEVER throws: any failure returns `undefined` so the caller falls
  * back to the full tool list.
  *
- * Needle is an OPTIMISATION — it trims the tool list before the real model
+ * Needle 2 is an OPTIMISATION — it trims the tool list before the real model
  * sees it. It is never load-bearing, so it gets a hard latency budget.
  *
- * MEASURED REALITY (2026-08-03, this machine, CPU-only JAX inference):
- *   - 2 tools, obvious match  : 52.5s
- *   - 10 tools, no match      : 81.2s
- *   - repeat of the same call : 69.5s (worker-local cache miss — uvicorn
- *     runs 2 workers, each with its own in-process TTL cache, so even an
- *     identical request only has ~50% odds of hitting a warm cache entry)
- * The floor is tens of seconds regardless of tool count or whether the model
- * finds a match quickly — consistent with per-shape JIT recompilation /
- * per-token CPU dispatch overhead in the decode loop (services/needle-router
- * wraps a JAX model; see model/run.py's `generate`), not model size (26M
- * params) or cold checkpoint load (the checkpoint was already warm for all
- * three measurements above). None of that is fixable from the gateway side.
+ * MEASURED REALITY (old Needle, JAX inference, 2026-08-03 — now replaced):
+ *   The old Needle (JAX) had a floor of 52-81s per call on CPU — per-token
+ *   dispatch overhead in the decode loop. That's why this filter shipped
+ *   off-by-default.
  *
- * Given that, a 1500ms default budget doesn't mean "usually completes, sometimes
- * slow" — it means "never completes, always falls back," while still paying a
- * network round-trip + timer on every eligible turn. That's a straight loss, so:
+ * Needle 2 (cactus-needle) replaces the JAX serving path with a C engine
+ * (ctypes FFI). The first query is instant; subsequent queries are bounded
+ * by the C engine's throughput. If that holds, this filter can actually
+ * complete inside the latency budget — but it remains opt-in until measured
+ * on this machine.
  *
  *   - The filter is OFF BY DEFAULT via a settings-backed toggle
  *     (`needleRouterEnabled` in the `settings` table, default false when
@@ -164,7 +158,7 @@ export async function needlePreFilter(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'needle',
+        model: 'needle2',
         messages: [{ role: 'user', content: query }],
         tools,
       }),

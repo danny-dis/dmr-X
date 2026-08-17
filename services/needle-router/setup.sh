@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Install Needle Router dependencies and the Needle model package.
-pip install -r requirements.txt && pip install git+https://github.com/cactus-compute/needle
+set -e
+cd "$(dirname "$0")"
+python3 -m venv .venv
+. .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt

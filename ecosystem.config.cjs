@@ -138,10 +138,8 @@ module.exports = {
 
     {
       name: 'dmrx-needle-router',
-      // run_clean.py, not server.py: it strips the Hermes venv out of sys.path
-      // before importing anything. Without it `import needle` resolves into the
-      // wrong environment and the service starts but never binds :8011.
-      script: 'run_clean.py',
+      script: 'uvicorn',
+      args: 'server:app --host 0.0.0.0 --port 8011 --workers 2',
       cwd: path.join(root, 'services', 'needle-router'),
       interpreter: path.join(root, 'services', 'needle-router', '.venv', 'Scripts', 'python.exe'),
 
@@ -155,18 +153,10 @@ module.exports = {
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
 
-      // uvicorn spawns workers; treekill stops them dying orphaned and holding
-      // :8011 against the next start.
       kill_timeout: 10000,
       treekill: true,
 
       env: {
-        // Belt and braces with run_clean.py. Hermes exports these globally, and
-        // an inherited PYTHONPATH/PYTHONHOME re-contaminates the interpreter
-        // before run_clean.py gets a chance to run — this is what
-        // start-clean.bat was working around.
-        PYTHONPATH: '',
-        PYTHONHOME: '',
         PYTHONUNBUFFERED: '1',
       },
 

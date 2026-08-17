@@ -208,12 +208,18 @@ The full feature set exists only as a monorepo checkout.
 `bun run dev:gateway`, not from `bun run start`. On Windows and via the documented
 commands, godmode fails every relayed call with `400 missing_api_key`.
 
-### 20. needle-router is a latency tax on CPU
-`services/needle-router/server.py` is well-built (lazy async load, SHA-256 TTL
+### 20. needle-router — replaced with Needle 2 C engine
+~~`services/needle-router/server.py` is well-built (lazy async load, SHA-256 TTL
 cache, `asyncio.to_thread`), but `apps/gateway/src/lib/needlePreFilter.ts:11-19`
 records 45-55s CPU inference against a 1500ms default budget — it times out on
 effectively every call. No autostart in `sidecar-boot.ts`, so it silently no-ops
-unless the user ran `setup.sh`.
+unless the user ran `setup.sh`.~~
+
+Replaced the old JAX-based Needle with **Needle 2** (`cactus-needle`), which uses a
+C inference engine (ctypes FFI) instead of JAX. The old JAX model had a floor of
+52-81s per call on CPU; Needle 2's C engine is expected to complete within the
+latency budget. The filter remains opt-in (`needleRouterEnabled` setting, default
+off) until measured on this hardware.
 
 ### 21. A2A: server-only, persistence dead under Bun
 `services/mcp-server/src/a2a/*` is a genuine spec-shaped JSON-RPC server (correct

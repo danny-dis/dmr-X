@@ -387,7 +387,7 @@ If no provider matches, the gateway returns `503 No available providers`.
 
 ## Needle Router Integration
 
-DMR-X can call a local **Needle** semantic pre-router (`services/needle-router`, localhost:8011) from `apps/gateway/src/lib/needlePreFilter.ts`. It posts the user query plus the candidate tool list to Needle, which returns the subset of relevant tools; if Needle is unavailable, the gateway silently falls back to the full list. This keeps large tool sets cheap to search without requiring every gateway to embed a full vector index.
+DMR-X can call a local **Needle 2** (`cactus-needle`) semantic pre-router (`services/needle-router`, localhost:8011) from `apps/gateway/src/lib/needlePreFilter.ts`. It posts the user query plus the candidate tool list to Needle 2, which returns the subset of relevant tools; if Needle 2 is unavailable, the gateway silently falls back to the full list. Needle 2 uses a C inference engine (no JAX), a 256-token sliding window, and an optional tool-retrieval head. This keeps large tool sets cheap to search without requiring every gateway to embed a full vector index.
 
 ## MCP Ecosystem
 

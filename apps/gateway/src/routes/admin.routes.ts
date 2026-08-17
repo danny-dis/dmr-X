@@ -5433,15 +5433,9 @@ COALESCE(
 
   // --- Needle tool pre-filter status -----------------------------------
   //
-  // services/needle-router is a local CPU model that trims the tool list
-  // before the real model sees it (apps/gateway/src/lib/needlePreFilter.ts).
-  // Measured on this class of hardware, single-request CPU inference runs
-  // 50-90+ seconds regardless of tool count — far past anything viable as
-  // a synchronous pre-request hop — so the filter is a settings-backed
-  // opt-in (default off) rather than always-on. This route gives the UI
-  // toggle honest, live feedback: is the sidecar even reachable, is the
-  // toggle currently on, and what happened the last time the filter
-  // actually ran (matched / timed out / errored, and how long it took).
+  // services/needle-router runs Needle 2 (cactus-needle), a C-engine tool
+  // router that trims the tool list before the real model sees it. The filter
+  // is a settings-backed opt-in (default off) with honest live feedback.
   server.get('/admin/needle/status', async () => {
     const enabled = isNeedleEnabled();
     const telemetry = getNeedleTelemetry();
@@ -5455,8 +5449,8 @@ COALESCE(
       const res = await fetch(needleHealthUrl(), { signal: controller.signal });
       if (res.ok) {
         reachable = true;
-        const body = (await res.json().catch(() => null)) as { model_loaded?: boolean } | null;
-        modelLoaded = typeof body?.model_loaded === 'boolean' ? body.model_loaded : null;
+        const body = (await res.json().catch(() => null)) as { package_loaded?: boolean; model_loaded?: boolean } | null;
+        modelLoaded = typeof body?.package_loaded === 'boolean' ? body.package_loaded : typeof body?.model_loaded === 'boolean' ? body.model_loaded : null;
       }
     } catch {
       reachable = false;

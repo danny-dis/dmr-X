@@ -880,7 +880,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   // NOTE: this provider is intentionally NOT reachable via auto-agentic (which filters for >=64K context). Use it as a direct pre-router.
   {
     id: 'needle-local',
-    name: 'Needle (Local)',
+    name: 'Needle 2 (Local)',
     category: 'local',
     baseUrl: 'http://localhost:8011/v1',
     authMethod: 'none',
@@ -888,9 +888,9 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     modalities: ['text'],
     models: [
       {
-        id: 'needle',
+        id: 'needle2',
         modalities: ['text'],
-        contextWindow: 128,
+        contextWindow: 256,
         maxOutputTokens: 64,
         capabilities: ['tool_use'],
         specializations: ['function-calling', 'tool-routing'],
