@@ -159,14 +159,30 @@ function resolveFallbackForError(
 }
 
 // ---------------------------------------------------------------------------
-// Opt-in agentic upgrades (both default OFF — existing agents are unchanged)
+// Opt-in agentic upgrades ported from /agentic/chat (all default OFF)
 // ---------------------------------------------------------------------------
 
 // Once the transcript grows past this many messages, compact the early
 // tool-activity turns into a single rolling summary (history-compaction mode).
-const COMPACTION_THRESHOLD = 24;
-// Always keep this many of the most recent messages verbatim (recency matters).
-const COMPACTION_KEEP_RECENT = 8;
+// These are defaults; AgentDefinition.compactionThreshold overrides.
+const DEFAULT_COMPACTION_THRESHOLD = 24;
+const DEFAULT_COMPACTION_KEEP_RECENT = 8;
+const DEFAULT_COMPACTION_MIN_HEAD = 8;
+
+/**
+ * Resolve effective compaction parameters from agent definition.
+ * Falls back to defaults when the definition doesn't override them.
+ */
+function resolveCompactionParams(definition: { compactionThreshold?: number; compactionKeepRecent?: number }): {
+  threshold: number;
+  keepRecent: number;
+  minHead: number;
+} {
+  const threshold = definition.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
+  const keepRecent = definition.compactionKeepRecent ?? DEFAULT_COMPACTION_KEEP_RECENT;
+  const minHead = DEFAULT_COMPACTION_MIN_HEAD;
+  return { threshold, keepRecent, minHead };
+}
 
 /**
  * Plan-then-execute phase. Makes exactly ONE tool-free model call asking for a
@@ -218,7 +234,7 @@ async function runPlanPhase(args: {
 /**
  * Summarize the early portion of a transcript into a single system message.
  * Non-fatal: any failure returns the original messages unchanged. Keeps the
- * most recent COMPACTION_KEEP_RECENT messages verbatim.
+ * most recent keepRecent messages verbatim.
  */
 async function summarizeHistory(args: {
   router: Router;
@@ -226,13 +242,14 @@ async function summarizeHistory(args: {
   tenant: { id: string; name: string };
   requestId: string;
   messages: any[];
+  keepRecent: number;
 }): Promise<{ messages: any[]; summary: string } | null> {
-  const { router, model, tenant, requestId, messages } = args;
+  const { router, model, tenant, requestId, messages, keepRecent } = args;
   // messages[0] is the live system prompt; we compact the user/assistant/tool
   // turns that precede the recent tail.
-  const head = messages.slice(1, messages.length - COMPACTION_KEEP_RECENT);
-  const tail = messages.slice(messages.length - COMPACTION_KEEP_RECENT);
-  if (head.length < COMPACTION_KEEP_RECENT) return null;
+  const head = messages.slice(1, messages.length - keepRecent);
+  const tail = messages.slice(messages.length - keepRecent);
+  if (head.length < keepRecent) return null;
 
   const transcript = head
     .map((m) => `[${m.role}] ${typeof m.content === 'string' ? m.content.slice(0, 2000) : '[non-text]'}`)
@@ -851,8 +868,9 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // Opt-in history compaction: once the transcript is large, fold the early
     // tool-activity turns into a single rolling summary. Non-fatal — on any
     // failure we keep the full transcript (ReAct behavior unchanged).
-    if (historyCompaction && messages.length > COMPACTION_THRESHOLD) {
-      const compacted = await summarizeHistory({ router, model, tenant, requestId, messages });
+    const { threshold, keepRecent } = resolveCompactionParams(definition);
+    if (historyCompaction && messages.length > threshold) {
+      const compacted = await summarizeHistory({ router, model, tenant, requestId, messages, keepRecent });
       if (compacted) {
         messages.length = 0;
         messages.push(...compacted.messages);

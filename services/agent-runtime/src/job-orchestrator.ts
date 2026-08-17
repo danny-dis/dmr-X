@@ -379,5 +379,11 @@ function budgetExhausted(job: Job): string | null {
   if (job.budgetTokens != null && job.spentTokens >= job.budgetTokens) {
     return `budget exhausted: spent ${job.spentTokens} of ${job.budgetTokens} tokens`;
   }
+  if (job.budgetDurationMs != null && job.createdAt) {
+    const elapsedMs = Date.now() - new Date(job.createdAt).getTime();
+    if (elapsedMs >= job.budgetDurationMs) {
+      return `budget exhausted: ran for ${Math.round(elapsedMs / 1000)}s of ${job.budgetDurationMs / 1000}s`;
+    }
+  }
   return null;
 }

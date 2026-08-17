@@ -49,6 +49,7 @@ export interface Job {
   status: JobStatus;
   budgetUsd?: number | null;
   budgetTokens?: number | null;
+  budgetDurationMs?: number | null;
   deadlineAt?: string | null;
   maxDepth: number;
   spentUsd: number;
@@ -71,6 +72,7 @@ export interface CreateJobInput {
   status?: JobStatus;
   budgetUsd?: number | null;
   budgetTokens?: number | null;
+  budgetDurationMs?: number | null;
   deadlineAt?: string | null;
   maxDepth?: number;
   plan?: unknown;
@@ -83,6 +85,7 @@ export interface JobPatch {
   status?: JobStatus;
   budgetUsd?: number | null;
   budgetTokens?: number | null;
+  budgetDurationMs?: number | null;
   deadlineAt?: string | null;
   maxDepth?: number;
   plan?: unknown;
@@ -181,9 +184,9 @@ export class JobStore {
     db.prepare(
       `INSERT INTO jobs (
          id, tenant_id, submitted_by, source, brief, acceptance_criteria, status,
-         budget_usd, budget_tokens, deadline_at, max_depth, spent_usd, spent_tokens,
+         budget_usd, budget_tokens, budget_duration_ms, deadline_at, max_depth, spent_usd, spent_tokens,
          plan, result, decision_log, pin_agents, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.id,
       input.tenantId,
@@ -194,6 +197,7 @@ export class JobStore {
       input.status ?? 'intake',
       input.budgetUsd ?? null,
       input.budgetTokens ?? null,
+      input.budgetDurationMs ?? null,
       input.deadlineAt ?? null,
       input.maxDepth ?? 3,
       0,
@@ -283,6 +287,10 @@ export class JobStore {
     if (patch.budgetTokens !== undefined) {
       sets.push('budget_tokens = ?');
       params.push(patch.budgetTokens ?? null);
+    }
+    if (patch.budgetDurationMs !== undefined) {
+      sets.push('budget_duration_ms = ?');
+      params.push(patch.budgetDurationMs ?? null);
     }
     if (patch.deadlineAt !== undefined) {
       sets.push('deadline_at = ?');
@@ -559,6 +567,7 @@ function rowToJob(row: any): Job {
     status: row.status,
     budgetUsd: row.budget_usd ?? null,
     budgetTokens: row.budget_tokens ?? null,
+    budgetDurationMs: row.budget_duration_ms ?? null,
     deadlineAt: row.deadline_at ?? null,
     maxDepth: row.max_depth ?? 3,
     spentUsd: row.spent_usd ?? 0,
@@ -566,7 +575,7 @@ function rowToJob(row: any): Job {
     plan: safeJsonParse(row.plan),
     result: safeJsonParse(row.result),
     decisionLog: safeJsonParse(row.decision_log),
-    pinAgents: !!row.pin_agents,
+    pinAgents: row.pin_agents === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

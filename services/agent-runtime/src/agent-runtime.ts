@@ -161,7 +161,14 @@ export class AgentRuntimeService {
         definition.id ?? definition.name,
       );
       if (memories && memories.trim().length > 0) {
-        parts.push(`Relevant memory:\n\n${memories}`);
+        // Cap injected memory to avoid silently ballooning the context window.
+        // A large memory store could push the prompt near its limit with no
+        // guardrail; truncate and note how many memories were omitted.
+        const maxChars = 2000;
+        const truncated = memories.length > maxChars
+          ? memories.slice(0, maxChars) + `\n[truncated ${memories.length - maxChars} chars of memory]`
+          : memories;
+        parts.push(`Relevant memory:\n\n${truncated}`);
       }
     } catch {
       // Memory prefetch is best-effort; never block the run on it.
@@ -177,7 +184,6 @@ export class AgentRuntimeService {
     const toolNames = normalizeAllowedTools(definition.allowedTools);
     if (toolNames.length > 0) {
       parts.push(`You have access to these tools: ${toolNames.join(', ')}. Only use the tools listed here.`);
-    }
     }
 
     // 6. Verify-on-stop self-check nudge (opt-in)
