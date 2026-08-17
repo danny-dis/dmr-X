@@ -75,6 +75,16 @@ export function finalSelector(
   // Check if all candidates are free models
   const allFree = candidates.every(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0);
 
+  // Check if all candidates are from a single provider (explicit provider
+  // pin). When the user pins a provider, there's no cross-provider
+  // load-balancing benefit — the Thompson sampler would just re-rank by
+  // historical reward and can promote a smaller, more reliable arm
+  // (e.g. gemma-4-26b-a4b-it) over a better-quality one (e.g.
+  // gemini-2.5-flash). Skip the sampler and pick the highest-quality
+  // model directly so an explicit pin means "best model on this
+  // provider", not "historically most rewardable arm".
+  const singleProvider = candidates.every(c => c.providerId === candidates[0].providerId);
+
   let selectedModel: ProviderModel;
 
   // Use Thompson sampling for ALL candidate sets when a sampler is available.
@@ -84,7 +94,7 @@ export function finalSelector(
   // and leaving other healthy providers idle. Thompson is a multi-armed
   // bandit: it spreads selections across arms in proportion to observed
   // reward, giving every healthy provider real traffic.
-  if (thompsonSampler && qualityTarget) {
+  if (!singleProvider && thompsonSampler && qualityTarget) {
     selectedModel = thompsonSampler.select(candidates, qualityTarget);
   } else {
     // Epsilon-greedy: with probability epsilon, explore top-3 instead of always picking top-1

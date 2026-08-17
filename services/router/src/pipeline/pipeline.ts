@@ -74,6 +74,45 @@ export interface PipelineOutput {
 export async function runPipeline(input: PipelineInput): Promise<PipelineOutput> {
   const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler, routingStrategy = 'thompson' } = input;
 
+  // Stage 1-2.5: Deterministic filters (pure functions of candidates + taskProfile)
+  const preRateLimit = runDeterministicFilters(candidates, taskProfile, providerPreferences);
+
+  // Stage 3-7: Rate-limit, policy, quota, scoring, selection
+  return runPipelineFromFiltered({
+    preRateLimit,
+    taskProfile,
+    epsilon,
+    rateLimitService,
+    quotaService,
+    policyService,
+    tenantId,
+    estimatedTokens,
+    freeTierStrategy,
+    providerPreferences,
+    metaModelFilteredFree,
+    thompsonSampler,
+    routingStrategy,
+    retryWithWait: input.retryWithWait,
+    maxWaitMs: input.maxWaitMs,
+  });
+}
+
+/**
+ * Run the deterministic filtering stages (1-2.5) that are pure functions of
+ * candidates + taskProfile. These can be cached and reused across retries
+ * since they don't depend on mutable state like rate-limit counters.
+ *
+ * Stages included:
+ *   1. Capability filter
+ *   1.5. Provider preference filter
+ *   2. Availability filter (isHealthy)
+ *   2.5. Circuit breaker filter
+ */
+export function runDeterministicFilters(
+  candidates: CandidateSet,
+  taskProfile: TaskProfile,
+  providerPreferences?: ProviderPreferences,
+): CandidateSet {
   // Stage 1: Capability Filter
   let filtered = capabilityFilter(
     candidates,
@@ -100,11 +139,56 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     return providerBreaker.isAvailable(providerKey) && modelBreaker.isAvailable(modelKey) && connectionBreaker.isAvailable(providerKey);
   });
 
+  return filtered;
+}
+
+/**
+ * Run the remaining pipeline stages (3-7) from pre-filtered candidates.
+ * This is the function to call when retrying — only the rate-limit filter
+ * (stage 3) needs to re-run; policy/quota are tenant-scoped and don't change
+ * in a short window.
+ */
+export async function runPipelineFromFiltered(input: {
+  preRateLimit: CandidateSet;
+  taskProfile: TaskProfile;
+  epsilon?: number;
+  rateLimitService?: RateLimitService;
+  quotaService?: QuotaService;
+  policyService?: PolicyService;
+  tenantId?: string;
+  estimatedTokens?: number;
+  freeTierStrategy?: FreeTierStrategy;
+  providerPreferences?: ProviderPreferences;
+  metaModelFilteredFree?: boolean;
+  thompsonSampler?: ThompsonSamplerLike;
+  routingStrategy?: RoutingStrategy;
+  retryWithWait?: boolean;
+  maxWaitMs?: number;
+}): Promise<PipelineOutput> {
+  const {
+    preRateLimit,
+    taskProfile,
+    epsilon = 0.05,
+    rateLimitService,
+    quotaService,
+    policyService,
+    tenantId,
+    estimatedTokens = 0,
+    freeTierStrategy = 'none',
+    providerPreferences,
+    metaModelFilteredFree,
+    thompsonSampler,
+    routingStrategy = 'thompson',
+    retryWithWait = true,
+    maxWaitMs: inputMaxWaitMs,
+  } = input;
+
   // Save pre-rate-limit candidates for retry logic
-  const preRateLimitCandidates = [...filtered];
+  const preRateLimitCandidates = [...preRateLimit];
 
   // Stage 3: Rate-Limit Filter (filters candidates that would exceed free-tier limits)
   let rateLimitResult: RateLimitFilterResult | undefined;
+  let filtered = preRateLimit;
   if (rateLimitService) {
     rateLimitResult = await rateLimitFilter(filtered, rateLimitService, estimatedTokens);
     filtered = rateLimitResult.allowed;
@@ -121,16 +205,18 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   }
 
   // Retry-with-wait: if all providers are rate-limited and wait is short, retry after reset
-  if (filtered.length === 0 && input.retryWithWait !== false && rateLimitResult && rateLimitResult.earliestResetMs > 0) {
-    const maxWait = input.maxWaitMs ?? 3000;
+  if (filtered.length === 0 && retryWithWait !== false && rateLimitResult && rateLimitResult.earliestResetMs > 0) {
+    const maxWait = inputMaxWaitMs ?? 3000;
     const waitMs = Math.min(rateLimitResult.earliestResetMs, maxWait);
     if (waitMs > 0) {
       logger.info({ waitMs, rateLimitedCount: rateLimitResult.rateLimited.length }, 'All providers rate-limited, waiting for reset');
       await new Promise(resolve => setTimeout(resolve, waitMs));
-      // Re-run rate-limit + policy + quota with candidates that existed before rate-limit filtering
+      // Re-run rate-limit with candidates that existed before rate-limit filtering
       const recheck = await rateLimitFilter(preRateLimitCandidates, rateLimitService!, estimatedTokens);
       filtered = recheck.allowed;
-      // Re-apply policy filter
+      // Re-apply policy filter (tenant-scoped, doesn't change in a 3s window —
+      // but re-applying is cheap and avoids staleness if the caller's policy
+      // was updated)
       if (policyService && tenantId) {
         filtered = await policyService.filterByPolicy(filtered, tenantId, taskProfile);
       }
@@ -142,7 +228,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   }
 
   if (filtered.length === 0) {
-    const tried = candidates.map(c => `${c.providerId}/${c.modelId}`);
+    const tried = preRateLimitCandidates.map(c => `${c.providerId}/${c.modelId}`);
     // Convert earliestResetMs to seconds for ProviderUnavailableError
     const retryAfterSeconds = rateLimitResult?.earliestResetMs ? Math.ceil(rateLimitResult.earliestResetMs / 1000) : 30;
     throw new ProviderUnavailableError(tried, retryAfterSeconds);

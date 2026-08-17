@@ -20,7 +20,7 @@ import { HandoverSummarizer, type SummarizationExecutor } from './handover/hando
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
-import { runPipeline } from './pipeline/pipeline.js';
+import { runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
 import { hashConversation, setStickyProvider } from './sticky/sticky-session.js';
 import { handleStickySession } from './sticky-session-handler.js';
 
@@ -284,7 +284,7 @@ export class Router {
 
     // Step 0: Input guardrail checks
     const messages = request.messages || [];
-    if (messages.length > 0) {
+    if (messages.length > 0 && this.guardrailEngine.hasPlugins(tenantId)) {
       const guardrailResult = await tracer.startActiveSpan('guardrail.input', async (span) => {
         try {
           span.setAttribute('guardrail.direction', 'input');
@@ -356,18 +356,34 @@ export class Router {
     // point of stickiness for those.
     const stickyPrefs = request.metadata?.providerPreferences;
     const hasHardProviderConstraint = !!(stickyPrefs?.zdr || stickyPrefs?.only?.length || stickyPrefs?.ignore?.length);
+
+    // Reusable pipeline result from sticky handler — when the planner decides
+    // SWITCH, it returns the pipeline result it already computed so the caller
+    // can reuse it instead of running the pipeline a second time.
+    let stickyPipelineResult: import('./pipeline/pipeline.js').PipelineOutput | undefined;
+    let stickyTaskProfile: import('@dmr-x/core').TaskProfile | undefined;
+
+    // Pre-compute estimated tokens once and pass to both the sticky handler
+    // and the pipeline to avoid redundant message iteration
+    const estimatedTokens = this.estimateTokens(request);
+
     if (conversationHash && !modelTarget.providerName && !hasHardProviderConstraint) {
       const stickyResult = await handleStickySession({
         request, options, candidates: this.candidates,
         adapterExecutor: this.adapterExecutor, config: this.config,
         thompsonSampler: this.thompsonSampler, router: this,
-        conversationHash, modelTarget,
+        conversationHash, modelTarget, estimatedTokens,
       });
       if (stickyResult.used) return stickyResult.result;
+      // Reuse the pipeline result from the sticky handler's planner decision
+      if (stickyResult.pipelineResult) {
+        stickyPipelineResult = stickyResult.pipelineResult;
+        stickyTaskProfile = stickyResult.taskProfile;
+      }
     }
 
     // Step 1: Classify the task (router.classify span)
-    const taskProfile = tracer.startActiveSpan('router.classify', (span) => {
+    const taskProfile = stickyTaskProfile ?? tracer.startActiveSpan('router.classify', (span) => {
       try {
         const profile = classifyTask(request, options);
         span.setAttribute('router.modality', profile.modality);
@@ -543,21 +559,37 @@ export class Router {
     }
 
     const providerPreferences: ProviderPreferences | undefined = request.metadata?.providerPreferences;
-    const pipelineResult = await tracer.startActiveSpan('router.score', async (span) => {
+
+    // When the sticky handler already ran the pipeline for the planner's
+    // STAY/SWITCH comparison, reuse its result. The only thing that may have
+    // changed since then is the taskProfile (classifyTask output) — but the
+    // sticky handler used the same options, so the profile is identical.
+    // The candidates set may have been narrowed by meta-model resolution or
+    // provider pinning below, but for the common case (no meta-model, no pin)
+    // we can skip the entire pipeline run.
+    const pipelineResult = stickyPipelineResult
+      ? stickyPipelineResult
+      : await tracer.startActiveSpan('router.score', async (span) => {
       try {
         span.setAttribute('router.candidate_pool_size', pipelineCandidates.length);
         span.setAttribute('router.quality_target', taskProfile.qualityTarget);
         let result;
+
+        // Run the deterministic filters once — these are pure functions of
+        // candidates + taskProfile, so they can be reused across retries
+        // without re-running capability/availability/circuit-breaker filters.
+        const preRateLimit = runDeterministicFilters(pipelineCandidates, taskProfile, providerPreferences);
+
         try {
-          result = await runPipeline({
+          result = await runPipelineFromFiltered({
+            preRateLimit,
             taskProfile,
-            candidates: pipelineCandidates,
             epsilon: this.config.epsilon ?? 0.05,
             rateLimitService: this.config.rateLimitService,
             quotaService: this.config.quotaService,
             policyService: this.config.policyService,
             tenantId,
-            estimatedTokens: this.estimateTokens(request),
+            estimatedTokens,
             freeTierStrategy: effectiveFreeTierStrategy,
             providerPreferences,
             metaModelFilteredFree,
@@ -572,15 +604,16 @@ export class Router {
               logger.info({ waitMs }, 'All providers temporarily unavailable, retrying after wait');
               span.addEvent('router.retry_after_wait', { 'wait_ms': waitMs });
               await new Promise(resolve => setTimeout(resolve, waitMs));
-              result = await runPipeline({
+              // Re-run only the rate-limit + scoring stages (skip deterministic filters)
+              result = await runPipelineFromFiltered({
+                preRateLimit,
                 taskProfile,
-                candidates: pipelineCandidates,
                 epsilon: this.config.epsilon ?? 0.05,
                 rateLimitService: this.config.rateLimitService,
                 quotaService: this.config.quotaService,
                 policyService: this.config.policyService,
                 tenantId,
-                estimatedTokens: this.estimateTokens(request),
+                estimatedTokens,
                 freeTierStrategy: effectiveFreeTierStrategy,
                 providerPreferences,
                 metaModelFilteredFree,
@@ -599,15 +632,17 @@ export class Router {
                 'Meta-model preferred pool empty/unavailable; degrading to full candidate pool'
               );
               span.addEvent('router.cross_pool_fallback', { meta_model: modelTarget.modelId });
-              result = await runPipeline({
+              // Cross-pool fallback needs a different candidate set, so re-run deterministic filters
+              const fallbackPreRateLimit = runDeterministicFilters(this.candidates, taskProfile, providerPreferences);
+              result = await runPipelineFromFiltered({
+                preRateLimit: fallbackPreRateLimit,
                 taskProfile,
-                candidates: this.candidates,
                 epsilon: this.config.epsilon ?? 0.05,
                 rateLimitService: this.config.rateLimitService,
                 quotaService: this.config.quotaService,
                 policyService: this.config.policyService,
                 tenantId,
-                estimatedTokens: this.estimateTokens(request),
+                estimatedTokens,
                 freeTierStrategy: effectiveFreeTierStrategy,
                 providerPreferences,
                 metaModelFilteredFree: false,
@@ -622,15 +657,16 @@ export class Router {
               logger.warn({ waitMs, model: modelTarget.modelId }, 'Upstream 5xx; backing off then retrying same pool');
               span.addEvent('router.upstream_5xx_backoff', { 'wait_ms': waitMs });
               await new Promise(resolve => setTimeout(resolve, waitMs));
-              result = await runPipeline({
+              // Re-run only the rate-limit + scoring stages (skip deterministic filters)
+              result = await runPipelineFromFiltered({
+                preRateLimit,
                 taskProfile,
-                candidates: pipelineCandidates,
                 epsilon: this.config.epsilon ?? 0.05,
                 rateLimitService: this.config.rateLimitService,
                 quotaService: this.config.quotaService,
                 policyService: this.config.policyService,
                 tenantId,
-                estimatedTokens: this.estimateTokens(request),
+                estimatedTokens,
                 freeTierStrategy: effectiveFreeTierStrategy,
                 providerPreferences,
                 metaModelFilteredFree,
