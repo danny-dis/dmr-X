@@ -89,4 +89,6 @@ export {
   type TaskExecutor,
   type TaskExecutionResult,
   type JobRunResult,
+  subscribeToJobEvents,
+  type JobEvent,
 } from './job-orchestrator.js';

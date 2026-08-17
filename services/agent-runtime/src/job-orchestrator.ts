@@ -5,6 +5,54 @@ import { readBoardFor, renderBoardForPrompt, writeBoardEntry } from './job-board
 import { findCycles, findMissingDependencies, schedulerState } from './job-scheduler.js';
 
 // ---------------------------------------------------------------------------
+// Job event system (for streaming progress via SSE)
+//
+// A minimal in-process pub/sub: listeners register per-job, events are emitted
+// as the orchestrator progresses. The gateway subscribes and forwards events
+// to SSE clients; nothing here depends on apps/* or any transport.
+// ---------------------------------------------------------------------------
+
+export type JobEvent =
+  | { type: 'task:started'; jobId: string; taskId: string; taskTitle: string; attempt: number }
+  | { type: 'task:completed'; jobId: string; taskId: string; taskTitle: string; agentName: string; summary: string }
+  | { type: 'task:failed'; jobId: string; taskId: string; taskTitle: string; error: string; willRetry: boolean }
+  | { type: 'task:retry_scheduled'; jobId: string; taskId: string; taskTitle: string; attempt: number; retryAfter: string }
+  | { type: 'pass:completed'; jobId: string; ranTaskIds: string[]; state: string }
+  | { type: 'job:completed'; jobId: string }
+  | { type: 'job:blocked'; jobId: string; reason: string }
+  | { type: 'job:failed'; jobId: string; reason: string };
+
+type JobEventListener = (event: JobEvent) => void;
+
+const jobListeners = new Map<string, Set<JobEventListener>>();
+
+/** Subscribe to events for a specific job. Returns an unsubscribe function. */
+export function subscribeToJobEvents(jobId: string, listener: JobEventListener): () => void {
+  let set = jobListeners.get(jobId);
+  if (!set) {
+    set = new Set();
+    jobListeners.set(jobId, set);
+  }
+  set.add(listener);
+  return () => {
+    set?.delete(listener);
+    if (set?.size === 0) jobListeners.delete(jobId);
+  };
+}
+
+function emitJobEvent(event: JobEvent): void {
+  const set = jobListeners.get(event.jobId);
+  if (!set) return;
+  for (const listener of set) {
+    try {
+      listener(event);
+    } catch (err) {
+      logger.warn({ err, jobId: event.jobId }, 'job-event listener threw');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Job orchestrator
 //
 // Drives one pass of a multi-agent job: validate the plan, work out which
@@ -129,7 +177,16 @@ export async function runJobPass(
   // Run all ready tasks in parallel. Promise.all preserves order, so results[i]
   // corresponds to before.ready[i].
   const results = await Promise.all(
-    before.ready.map((task) => runTask(tenantId, jobId, current, task, executor)),
+    before.ready.map((task) => {
+      emitJobEvent({
+        type: 'task:started',
+        jobId,
+        taskId: task.id,
+        taskTitle: task.title,
+        attempt: task.attempt,
+      });
+      return runTask(tenantId, jobId, current, task, executor);
+    }),
   );
 
   for (let i = 0; i < before.ready.length; i++) {
@@ -144,6 +201,17 @@ export async function runJobPass(
   const after = schedulerState(jobStore.listTasks(tenantId, jobId));
   const status = SCHEDULER_TO_JOB_STATUS[after.state];
   if (status) jobStore.updateJobStatus(tenantId, jobId, status);
+
+  emitJobEvent({ type: 'pass:completed', jobId, ranTaskIds, state: after.state });
+
+  if (after.state === 'complete') {
+    emitJobEvent({ type: 'job:completed', jobId });
+  } else if (after.state === 'blocked') {
+    emitJobEvent({ type: 'job:blocked', jobId, reason: after.reason ?? '' });
+  } else if (after.state === 'failed') {
+    emitJobEvent({ type: 'job:failed', jobId, reason: after.reason ?? '' });
+  }
+
   return { state: after.state, ranTaskIds, reason: after.reason };
 }
 
@@ -188,6 +256,14 @@ async function runTask(
       forNext: result.forNext ?? [],
     });
     jobStore.updateTask(tenantId, task.id, { status: 'completed' });
+    emitJobEvent({
+      type: 'task:completed',
+      jobId,
+      taskId: task.id,
+      taskTitle: task.title,
+      agentName: result.agentName,
+      summary: result.summary,
+    });
   } else {
     const attempt = (task.attempt ?? 0) + 1;
     const maxRetries = task.maxRetries ?? 3;
@@ -210,6 +286,23 @@ async function runTask(
         retryAfter,
         output: { error: result.error ?? 'task failed', retried: true },
       });
+
+      emitJobEvent({
+        type: 'task:retry_scheduled',
+        jobId,
+        taskId: task.id,
+        taskTitle: task.title,
+        attempt,
+        retryAfter,
+      });
+      emitJobEvent({
+        type: 'task:failed',
+        jobId,
+        taskId: task.id,
+        taskTitle: task.title,
+        error: result.error ?? 'task failed',
+        willRetry: true,
+      });
     } else {
       // No board entry for a failed task — downstream agents must not read a
       // handoff describing work that did not happen.
@@ -217,6 +310,14 @@ async function runTask(
         status: 'failed',
         attempt,
         output: { error: result.error ?? 'task failed' },
+      });
+      emitJobEvent({
+        type: 'task:failed',
+        jobId,
+        taskId: task.id,
+        taskTitle: task.title,
+        error: result.error ?? 'task failed',
+        willRetry: false,
       });
     }
   }

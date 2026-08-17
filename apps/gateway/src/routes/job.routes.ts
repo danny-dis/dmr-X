@@ -10,6 +10,8 @@ import {
 
 import { planJob } from '../lib/job-runner.js';
 import { jobQueue } from '../lib/job-queue.js';
+import { subscribeToJobEvents, type JobEvent } from '@dmr-x/agent-runtime';
+import { writeSSE } from '../lib/sse.js';
 
 // ---------------------------------------------------------------------------
 // Job intake routes
@@ -246,5 +248,44 @@ export function registerJobRoutes(server: FastifyInstance): void {
     preHandler: [agentPermissions.read()],
   }, async (_request, reply) => {
     return reply.send(jobQueue.stats());
+  });
+
+  // ── Job events (SSE) ───────────────────────────────────────────────────
+  // Stream real-time progress of a job's tasks as server-sent events.
+  // Connect with EventSource('/v1/jobs/:id/events') to receive task:started,
+  // task:completed, task:failed, pass:completed, job:completed, etc.
+  server.get('/jobs/:id/events', {
+    preHandler: [agentPermissions.read()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+
+    const job = jobStore.getJob(tenant.id, id);
+    if (!job) {
+      return reply.code(404).send({ error: { message: 'Job not found' } });
+    }
+
+    // SSE headers
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    reply.raw.write(`event: connected\ndata: ${JSON.stringify({ jobId: id, status: job.status })}\n\n`);
+
+    const unsubscribe = subscribeToJobEvents(id, (event: JobEvent) => {
+      reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+
+    // Heartbeat every 15s to keep the connection alive
+    const heartbeat = setInterval(() => {
+      reply.raw.write(': heartbeat\n\n');
+    }, 15_000);
+
+    request.raw.on('close', () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
   });
 }
