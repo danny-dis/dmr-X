@@ -43,11 +43,12 @@ const JobStatusSchema = z.enum([
 // ---------------------------------------------------------------------------
 
 const CreateJobRequestSchema = z.object({
-  brief: z.string().min(1).max(20000),
+  brief: z.string().min(1).max(10000),
   source: z.enum(['api', 'ui', 'mcp']).default('api'),
   acceptanceCriteria: z.array(z.unknown()).optional(),
   budgetUsd: z.number().positive().optional(),
   budgetTokens: z.number().int().positive().optional(),
+  budgetDurationMs: z.number().int().positive().optional(),
   deadlineAt: z.string().datetime().optional(),
   maxDepth: z.number().int().min(1).max(10).optional().default(3),
   pinAgents: z.boolean().optional().default(false),
@@ -85,6 +86,7 @@ export function registerJobRoutes(server: FastifyInstance): void {
       acceptanceCriteria: parsed.data.acceptanceCriteria,
       budgetUsd: parsed.data.budgetUsd,
       budgetTokens: parsed.data.budgetTokens,
+      budgetDurationMs: parsed.data.budgetDurationMs,
       deadlineAt: parsed.data.deadlineAt,
       maxDepth: parsed.data.maxDepth,
       pinAgents: parsed.data.pinAgents,

@@ -219,6 +219,16 @@ export class AgentRegistryService {
     return this.rowToDefinition(row);
   }
 
+  /** Look up a definition by tenant + id or name. Returns null if not found. */
+  async getDefinitionByName(tenantId: string, ref: string): Promise<AgentDefinition | null> {
+    const db = getDb();
+    const row = db.prepare(
+      'SELECT * FROM agent_definitions WHERE tenant_id = ? AND (id = ? OR name = ?)'
+    ).get(tenantId, ref, ref) as any;
+    if (!row) return null;
+    return this.rowToDefinition(row);
+  }
+
   async listDefinitions(tenantId: string, query: AgentListQuery): Promise<{ items: AgentDefinition[]; total: number }> {
     const db = getDb();
     const conditions = ['tenant_id = ?'];
@@ -1133,3 +1143,5 @@ export const getEvaluation = (id: string, tenantId: string) =>
   agentRegistryService.getEvaluation(id, tenantId);
 export const deleteEvaluation = (id: string, tenantId: string) =>
   agentRegistryService.deleteEvaluation(id, tenantId);
+export const getDefinitionByName = (tenantId: string, ref: string) =>
+  agentRegistryService.getDefinitionByName(tenantId, ref);

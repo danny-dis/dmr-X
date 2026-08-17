@@ -21,8 +21,78 @@ import { ChatMessageSchema, ToolSchema, ToolCallSchema } from './shared-schemas.
 import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
-// Tool handler registry (server-side tool execution)
+// Tool catalog cache (SDK + MCP combined)
 // ---------------------------------------------------------------------------
+interface ToolCatalogCache {
+  tools: any[];
+  ts: number;
+  source: 'live' | 'fallback' | 'mcp-down';
+}
+let _toolCatalogCache: ToolCatalogCache | null = null;
+const TOOL_CATALOG_TTL_MS = 60 * 1000; // 60s cache
+
+// MCP server config (same as admin route)
+const MCP_HOST = process.env.DMRX_MCP_HOST || '127.0.0.1';
+const MCP_PORT = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+const MCP_URL = `http://${MCP_HOST}:${MCP_PORT}/tools`;
+
+/** Invalidate the tool catalog cache. Call after registering a new tool. */
+export function invalidateToolCatalog(): void {
+  _toolCatalogCache = null;
+}
+
+/** Fetch live tool catalog from MCP server, with cache */
+async function fetchToolCatalog(): Promise<ToolCatalogCache> {
+  if (_toolCatalogCache && Date.now() - _toolCatalogCache.ts < TOOL_CATALOG_TTL_MS) {
+    return _toolCatalogCache;
+  }
+
+  const sdkDefs = getRegisteredToolDefinitions();
+  const sdkTools = sdkDefs.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.function.name,
+      description: t.function.description,
+      parameters: t.function.parameters,
+    },
+    source: 'sdk' as const,
+  }));
+
+  let mcpTools: any[] = [];
+  let source: 'live' | 'fallback' | 'mcp-down' = 'live';
+  try {
+    const headers: Record<string, string> = {};
+    if (process.env.DMRX_MCP_API_KEY) {
+      headers.Authorization = `Bearer ${process.env.DMRX_MCP_API_KEY}`;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(MCP_URL, { signal: controller.signal, headers });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data: any = await res.json();
+      if (data.tools && Array.isArray(data.tools)) {
+        mcpTools = data.tools.map((t: any) => ({
+          type: 'function',
+          function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.params || { type: 'object', properties: {} },
+          },
+          source: t.source || ('mcp' as const),
+        }));
+      }
+    } else {
+      source = 'mcp-down';
+    }
+  } catch {
+    source = 'mcp-down';
+  }
+
+  const allTools = [...sdkTools, ...mcpTools];
+  _toolCatalogCache = { tools: allTools, ts: Date.now(), source };
+  return _toolCatalogCache;
+}
 
 export type ToolHandler = (
   args: Record<string, unknown>,
@@ -77,6 +147,7 @@ export function registerToolHandler(
       parameters: definition?.parameters ?? { type: 'object', properties: {} },
     },
   });
+  invalidateToolCatalog();
 }
 
 /**
@@ -1313,6 +1384,68 @@ function toUnifiedRequest(
 // ---------------------------------------------------------------------------
 
 export async function toolsRoutes(server: FastifyInstance): Promise<void> {
+  /**
+   * GET /v1/tools
+   *
+   * Returns the combined tool catalog: SDK handlers (13 native tools)
+   * plus MCP-aggregated tools (50+ from services/mcp-server). Cached
+   * for 60s, proxies MCP server when available.
+   *
+   * Response format (OpenAI-compatible):
+   * {
+   *   "tools": [
+   *     { "type": "function", "function": { "name": "...", "description": "...", "parameters": {...} }, "source": "sdk|mcp" },
+   *     ...
+   *   ],
+   *   "total": 63,
+   *   "source": "live|mcp-down",
+   *   "cached_at": 1786963464000
+   * }
+   *
+   * The Gemini and Anthropic converters can both derive their native tool
+   * format from this — OpenAI uses it directly, Gemini maps function_declarations,
+   * Anthropic maps to their tool schema.
+   */
+  server.get('/tools', async () => {
+    const catalog = await fetchToolCatalog();
+    return {
+      tools: catalog.tools,
+      total: catalog.tools.length,
+      source: catalog.source,
+      cached_at: catalog.ts,
+    };
+  });
+
+  /**
+   * GET /tools/sdk
+   *
+   * Returns only the SDK (native) tools — no MCP dependency.
+   */
+  server.get('/tools/sdk', async () => {
+    const defs = getRegisteredToolDefinitions();
+    const tools = defs.map((t) => ({
+      type: 'function',
+      function: {
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
+      },
+      source: 'sdk' as const,
+    }));
+    return { tools, total: tools.length };
+  });
+
+  /**
+   * GET /v1/tools/mcp
+   *
+   * Returns only the MCP-aggregated tools.
+   */
+  server.get('/tools/mcp', async () => {
+    const catalog = await fetchToolCatalog();
+    const tools = catalog.tools.filter((t: any) => t.source === 'mcp' || t.source === 'external');
+    return { tools, total: tools.length, source: catalog.source };
+  });
+
   /**
    * POST /tools/execute
    *

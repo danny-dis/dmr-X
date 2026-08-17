@@ -8,6 +8,7 @@ export {
   type AgentListing,
   type AgentInstall,
   type AgentEvaluation,
+  getDefinitionByName,
 } from './agent-registry.service.js';
 
 // NOTE: createEvaluation / listEvaluations / getEvaluation / deleteEvaluation
