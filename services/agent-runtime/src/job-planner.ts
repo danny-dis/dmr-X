@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { getDb } from '@dmr-x/db';
 import { jobStore, type CreateTaskInput, type Job, type JobTask } from './job.store.js';
 import { findCycles, findMissingDependencies } from './job-scheduler.js';
 
@@ -496,40 +497,47 @@ export function materializePlan(
   }
 
   const created: JobTask[] = [];
-  for (let index = 0; index < tasks.length; index++) {
-    const task = tasks[index];
 
-    const id = refToId.get(task.ref);
-    if (id === undefined) {
-      // Unreachable after validatePlan (every ref was declared above). Guard
-      // anyway — never write a plan with a task that has no id.
-      throw new Error(`cannot materialize plan: task ref "${task.ref}" has no generated id`);
+  // Wrap the entire insert loop in a transaction. A crash mid-insert
+  // previously left a partial plan with dangling dependsOn refs and no
+  // recovery path; now the whole plan is written atomically or not at all.
+  const db = getDb();
+  return db.transaction(() => {
+    for (let index = 0; index < tasks.length; index++) {
+      const task = tasks[index];
+
+      const id = refToId.get(task.ref);
+      if (id === undefined) {
+        // Unreachable after validatePlan (every ref was declared above). Guard
+        // anyway — never write a plan with a task that has no id.
+        throw new Error(`cannot materialize plan: task ref "${task.ref}" has no generated id`);
+      }
+
+      const input: CreateTaskInput = {
+        id,
+        jobId,
+        seq: index + 1,
+        title: task.title,
+        description: task.description === '' ? null : task.description,
+        deliverable: task.deliverable ?? null,
+        acceptance: task.acceptance ?? null,
+        assignedInstanceId: task.suggestedAgent ?? null,
+        dependsOn: task.dependsOn.map((ref) => {
+          const depId = refToId.get(ref);
+          if (depId === undefined) {
+            // Also unreachable after validatePlan; guards against ever writing
+            // a half-mapped dependency list.
+            throw new Error(
+              `cannot materialize plan: task "${task.ref}" depends on unknown ref "${ref}"`,
+            );
+          }
+          return depId;
+        }),
+      };
+
+      created.push(jobStore.createTask(input));
     }
 
-    const input: CreateTaskInput = {
-      id,
-      jobId,
-      seq: index + 1,
-      title: task.title,
-      description: task.description === '' ? null : task.description,
-      deliverable: task.deliverable ?? null,
-      acceptance: task.acceptance ?? null,
-      assignedInstanceId: task.suggestedAgent ?? null,
-      dependsOn: task.dependsOn.map((ref) => {
-        const depId = refToId.get(ref);
-        if (depId === undefined) {
-          // Also unreachable after validatePlan; guards against ever writing
-          // a half-mapped dependency list.
-          throw new Error(
-            `cannot materialize plan: task "${task.ref}" depends on unknown ref "${ref}"`,
-          );
-        }
-        return depId;
-      }),
-    };
-
-    created.push(jobStore.createTask(input));
-  }
-
-  return created;
+    return created;
+  });
 }

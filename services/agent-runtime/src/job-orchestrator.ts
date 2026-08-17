@@ -114,19 +114,27 @@ export async function runJobPass(
     return { state: before.state, ranTaskIds, reason: before.reason };
   }
 
-  for (const task of before.ready) {
-    // Re-read the job every iteration: spend accumulates as tasks run, so a
-    // budget checked once at the start would let the whole pass overrun.
-    const current = jobStore.getJob(tenantId, jobId);
-    if (!current) return { state: 'failed', ranTaskIds, reason: 'job disappeared mid-pass' };
+  // Check budget once before starting parallel work. Ready tasks are
+  // independent (all their deps are 'completed'), so they can run concurrently.
+  // The next pass re-checks budget, so overshoot is bounded by one pass.
+  const current = jobStore.getJob(tenantId, jobId);
+  if (!current) return { state: 'failed', ranTaskIds, reason: 'job disappeared mid-pass' };
 
-    const exhausted = budgetExhausted(current);
-    if (exhausted) {
-      jobStore.updateJobStatus(tenantId, jobId, 'blocked');
-      return { state: 'blocked', ranTaskIds, reason: exhausted };
-    }
+  const exhausted = budgetExhausted(current);
+  if (exhausted) {
+    jobStore.updateJobStatus(tenantId, jobId, 'blocked');
+    return { state: 'blocked', ranTaskIds, reason: exhausted };
+  }
 
-    const result = await runTask(tenantId, jobId, current, task, executor);
+  // Run all ready tasks in parallel. Promise.all preserves order, so results[i]
+  // corresponds to before.ready[i].
+  const results = await Promise.all(
+    before.ready.map((task) => runTask(tenantId, jobId, current, task, executor)),
+  );
+
+  for (let i = 0; i < before.ready.length; i++) {
+    const task = before.ready[i];
+    const result = results[i];
     ranTaskIds.push(task.id);
 
     // A failed task still consumed tokens, so spend is recorded either way.
