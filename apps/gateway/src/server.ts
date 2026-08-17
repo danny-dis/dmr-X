@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, GenericAnthropicAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter, AntigravityAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, GenericAnthropicAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, GeminiAPIAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter, AntigravityAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { Router, loadBanditArms, startBanditPersistence } from '@dmr-x/router';
@@ -167,6 +167,7 @@ export async function createServer() {
   adapterRegistry.register(new FireworksAdapter());
   adapterRegistry.register(new HuggingFaceAdapter());
   adapterRegistry.register(new DatabricksAdapter());
+  adapterRegistry.register(new GeminiAPIAdapter());
   adapterRegistry.register(new VLLMAdapter());
   adapterRegistry.register(new NebiusAdapter());
   adapterRegistry.register(new NovitaAdapter());
