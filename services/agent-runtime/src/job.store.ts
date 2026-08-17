@@ -115,6 +115,8 @@ export interface JobTask {
   status: JobTaskStatus;
   dependsOn?: string[];
   attempt: number;
+  maxRetries: number;
+  retryAfter?: string | null;
   output?: unknown;
   createdAt: string;
   updatedAt: string;
@@ -136,6 +138,7 @@ export interface CreateTaskInput {
   assignedModel?: string | null;
   status?: JobTaskStatus;
   dependsOn?: string[];
+  maxRetries?: number;
 }
 
 /** Partial patch for `updateTask`. Only fields present are updated. */
@@ -147,6 +150,8 @@ export interface TaskPatch {
   status?: JobTaskStatus;
   dependsOn?: string[];
   attempt?: number;
+  maxRetries?: number;
+  retryAfter?: string | null;
   output?: unknown;
   assignedAgentDefId?: string | null;
   assignedAgentVersion?: string | null;
@@ -351,8 +356,8 @@ export class JobStore {
       `INSERT INTO job_tasks (
          id, job_id, parent_task_id, seq, title, description, deliverable, acceptance,
          assigned_agent_def_id, assigned_agent_version, assigned_instance_id, session_id,
-         assigned_model, status, depends_on, attempt, output, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         assigned_model, status, depends_on, attempt, max_retries, output, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.id,
       input.jobId,
@@ -370,6 +375,7 @@ export class JobStore {
       input.status ?? 'pending',
       input.dependsOn !== undefined ? JSON.stringify(input.dependsOn) : null,
       0,
+      input.maxRetries ?? 3,
       null,
       now,
       now,
@@ -466,6 +472,14 @@ export class JobStore {
     if (patch.attempt !== undefined) {
       sets.push('attempt = ?');
       params.push(patch.attempt ?? 0);
+    }
+    if (patch.maxRetries !== undefined) {
+      sets.push('max_retries = ?');
+      params.push(patch.maxRetries ?? 3);
+    }
+    if (patch.retryAfter !== undefined) {
+      sets.push('retry_after = ?');
+      params.push(patch.retryAfter);
     }
     if (patch.output !== undefined) {
       sets.push('output = ?');
@@ -576,6 +590,8 @@ function rowToTask(row: any): JobTask {
     status: row.status,
     dependsOn: safeJsonParse(row.depends_on) as string[] | undefined,
     attempt: row.attempt ?? 0,
+    maxRetries: row.max_retries ?? 3,
+    retryAfter: row.retry_after ?? null,
     output: safeJsonParse(row.output),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

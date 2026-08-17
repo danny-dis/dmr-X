@@ -214,13 +214,25 @@ function insertSortedBySeq(list: JobTask[], item: JobTask): void {
  * id in `dependsOn` refers to a task whose status is `'completed'`. A task
  * with a missing/dangling dependency is NEVER ready — the dependency is not
  * 'completed', so it blocks. A pending task with an empty or absent
- * `dependsOn` is ready. Result is ordered by `seq` ascending.
+ * `dependsOn` is ready.
+ *
+ * A pending task with a future `retryAfter` is NOT ready — its backoff has not
+ * elapsed yet, so it stays parked until the next pass after that timestamp.
+ * Result is ordered by `seq` ascending.
  */
 export function readyTasks(tasks: JobTask[]): JobTask[] {
   const byId = new Map(tasks.map((task) => [task.id, task]));
+  const now = new Date();
   const ready: JobTask[] = [];
   for (const task of [...tasks].sort(bySeqAsc)) {
     if (task.status !== 'pending') continue;
+
+    // Respect exponential-backoff retry: skip tasks whose retryAfter is in the future.
+    if (task.retryAfter) {
+      const retryAt = new Date(task.retryAfter);
+      if (!isNaN(retryAt.getTime()) && retryAt > now) continue;
+    }
+
     let allDepsDone = true;
     for (const dep of task.dependsOn ?? []) {
       const depTask = byId.get(dep);

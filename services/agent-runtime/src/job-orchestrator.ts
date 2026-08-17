@@ -151,6 +151,11 @@ export async function runJobPass(
  * Run one task and record its outcome. Never throws: an executor that rejects
  * is recorded as a failed task, because leaving a task in 'running' would make
  * the job look permanently in-flight and block every dependent forever.
+ *
+ * If the task fails with a retryable error and hasn't exhausted its retry
+ * budget, it is reset to 'pending' (with attempt incremented and retryAfter
+ * set to a future timestamp with exponential backoff) so the next pass picks
+ * it up again.
  */
 async function runTask(
   tenantId: string,
@@ -184,15 +189,49 @@ async function runTask(
     });
     jobStore.updateTask(tenantId, task.id, { status: 'completed' });
   } else {
-    // No board entry for a failed task — downstream agents must not read a
-    // handoff describing work that did not happen.
-    jobStore.updateTask(tenantId, task.id, {
-      status: 'failed',
-      output: { error: result.error ?? 'task failed' },
-    });
+    const attempt = (task.attempt ?? 0) + 1;
+    const maxRetries = task.maxRetries ?? 3;
+
+    if (attempt <= maxRetries && isRetryableError(result.error)) {
+      // Exponential backoff: 2^attempt seconds, capped at 30 seconds.
+      const backoffMs = Math.min(Math.pow(2, attempt) * 1000, 30_000);
+      const retryAfter = new Date(Date.now() + backoffMs).toISOString();
+
+      logger.warn(
+        { taskId: task.id, jobId, attempt, maxRetries, retryAfter, error: result.error },
+        'job-orchestrator: task failed with retryable error, scheduling retry',
+      );
+
+      // Reset to pending so the next pass picks it up. The scheduler's
+      // readyTasks honors retryAfter and won't return it until backoff elapses.
+      jobStore.updateTask(tenantId, task.id, {
+        status: 'pending',
+        attempt,
+        retryAfter,
+        output: { error: result.error ?? 'task failed', retried: true },
+      });
+    } else {
+      // No board entry for a failed task — downstream agents must not read a
+      // handoff describing work that did not happen.
+      jobStore.updateTask(tenantId, task.id, {
+        status: 'failed',
+        attempt,
+        output: { error: result.error ?? 'task failed' },
+      });
+    }
   }
 
   return result;
+}
+
+/**
+ * Heuristic: is a task execution error transient and worth retrying?
+ * Mirrors AgentRuntimeService.classifyProviderError for common retryable
+ * upstream failures (timeout, 5xx, overload, rate limit, unavailable).
+ */
+function isRetryableError(error?: string): boolean {
+  if (!error) return false;
+  return /timed out|timeout|503|502|500|rate limit|overloaded|unavailable|temporarily|connection refused|econnreset/i.test(error);
 }
 
 /**

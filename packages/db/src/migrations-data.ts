@@ -2031,80 +2031,6 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_operator_disabled
 ALTER TABLE api_keys ADD COLUMN role TEXT NOT NULL DEFAULT 'developer';
 `,
   },
-  64: {
-    filename: '064_api_key_lookup_hash.sql',
-    sql: `-- Deterministic API-key lookup hash for O(1) auth, instead of scanning
--- every active key and calling verifyApiKey() on each (the old hot path).
---
--- key_hash stores either a legacy unsalted SHA-256 ("<hex>") or the current
--- salted format ("<salt>:<hash>"). Neither is directly queryable from the
--- plaintext key. key_lookup_hash is a THIRD value: plain SHA-256 of the raw
--- key, computed at creation time and indexed, so auth can do:
---
---   SELECT ... WHERE key_lookup_hash = ?  (indexed, single row)
---
--- and then constant-time verifyApiKey() against the stored salted key_hash
--- to rule out collisions (SHA-256 preimage resistance makes them
--- impossible in practice; the verify is kept for defense in depth).
---
--- Security note: key_lookup_hash is unsalted SHA-256 of a 64-hex-char
--- random key (256 bits of entropy), so it is not brute-forceable even if
--- the DB leaks. It is stored ONLY for indexing; verification always uses
--- the salted key_hash.
---
--- Backfill: any existing row whose key_hash is the legacy unsalted format
--- (no colon) has key_lookup_hash := key_hash, since both are SHA-256 of the
--- same key. Salted rows cannot be backfilled without the plaintext key;
--- they fall back to the legacy scan path (bounded to rows that still have
--- key_lookup_hash IS NULL) until the key is rotated.
-ALTER TABLE api_keys ADD COLUMN key_lookup_hash TEXT;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_lookup_hash
-  ON api_keys(key_lookup_hash)
-  WHERE key_lookup_hash IS NOT NULL;
-
-UPDATE api_keys
-   SET key_lookup_hash = key_hash
- WHERE key_lookup_hash IS NULL
-   AND instr(key_hash, ':') = 0;
-`,
-  },
-  65: {
-    filename: '065_agentic_sessions.sql',
-    sql: `-- Durable /agentic/chat conversations (remediation #13 second half).
--- The /agentic/chat route used a bare in-process Map with a 30-minute TTL,
--- so a gateway restart or idle period destroyed every conversation's state
--- (approval gates, pending tool calls, message history). It cannot reuse
--- agent_sessions because that table's agent_instance_id is a NOT NULL FK to
--- agent_instances, while /agentic/chat is an instance-less generic endpoint.
---
--- This table persists the same ConversationState JSON, keyed by conversation
--- id and scoped to a tenant, with a machine-readable status so an
--- 'awaiting_approval' conversation can be resumed after a restart.
-
-CREATE TABLE IF NOT EXISTS agentic_sessions (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  -- Full ConversationState serialized as JSON
-  state TEXT NOT NULL,
-  -- Arbitrary metadata (model, request id, token counts)
-  metadata TEXT,
-  -- Machine status: 'in_progress' | 'awaiting_approval' | 'interrupted' | 'completed' | 'error'
-  status TEXT NOT NULL DEFAULT 'in_progress',
-  -- Free-text reason for an interrupted/awaiting state
-  status_reason TEXT,
-  -- Which agent turn was last executed
-  last_turn INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  -- Optional hard expiry; NULL = live until completed/cancelled
-  expires_at TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_agentic_sessions_tenant
-  ON agentic_sessions(tenant_id, id);
-`,
-  },
   66: {
     filename: '066_agent_godmode_wrap.sql',
     sql: `-- Agent definition godmode wrap opt-in flag (Phase 2c).
@@ -2116,6 +2042,77 @@ CREATE INDEX IF NOT EXISTS idx_agentic_sessions_tenant
 ALTER TABLE agent_definitions ADD COLUMN godmode_wrap INTEGER NOT NULL DEFAULT 0;
 `,
   },
+  70: {
+    filename: '070_jobs.sql',
+    sql: `-- Agent Jobs: durable, resumable multi-step jobs.
+-- A job captures a raw request (brief) from the api / ui / mcp entry
+-- points and tracks it through the intake -> planning -> running ->
+-- blocked -> verifying -> delivered / failed / cancelled lifecycle.
+-- The plan, result, and decision log are stored as JSON text; spend
+-- and budget are tracked so a job can be gated on cost like an agent run.
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  submitted_by TEXT,
+  source TEXT NOT NULL,             -- 'api' | 'ui' | 'mcp'
+  brief TEXT NOT NULL,
+  acceptance_criteria TEXT,         -- JSON
+  status TEXT NOT NULL DEFAULT 'intake',
+    -- intake | planning | running | blocked | verifying | delivered | failed | cancelled
+  budget_usd REAL,
+  budget_tokens INTEGER,
+  deadline_at TEXT,
+  max_depth INTEGER NOT NULL DEFAULT 3,
+  spent_usd REAL NOT NULL DEFAULT 0,
+  spent_tokens INTEGER NOT NULL DEFAULT 0,
+  plan TEXT,                        -- JSON
+  result TEXT,                      -- JSON
+  decision_log TEXT,                -- JSON
+  pin_agents INTEGER NOT NULL DEFAULT 0,  -- 1 = keep agents pinned across turns
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_tenant
+ON jobs(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status
+ON jobs(status);
+
+-- Job tasks: ordered steps within a job, optionally nested via
+-- parent_task_id for subtask trees. Execution order within a level is
+-- by seq; depends_on holds a JSON array of task ids that must finish
+-- first. assigned_model is the concrete model resolved at dispatch.
+CREATE TABLE IF NOT EXISTS job_tasks (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  parent_task_id TEXT REFERENCES job_tasks(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  deliverable TEXT,
+  acceptance TEXT,
+  assigned_agent_def_id TEXT,
+  assigned_agent_version TEXT,
+  assigned_instance_id TEXT,
+  session_id TEXT,
+  assigned_model TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  depends_on TEXT,                  -- JSON array of task ids
+  attempt INTEGER NOT NULL DEFAULT 0,
+  output TEXT,                      -- JSON
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_tasks_job
+ON job_tasks(job_id);
+
+CREATE INDEX IF NOT EXISTS idx_job_tasks_status
+ON job_tasks(status);
+`,
+  },
   71: {
     filename: '071_bandit_arms.sql',
     sql: `-- Thompson bandit arm state, persisted so routing doesn't forget everything
@@ -2123,7 +2120,7 @@ ALTER TABLE agent_definitions ADD COLUMN godmode_wrap INTEGER NOT NULL DEFAULT 0
 --
 -- ThompsonSampler (services/router/src/bandit/thompson-sampler.ts) previously
 -- kept alpha/beta/pulls/totalReward only in an in-memory Map, keyed by
--- \`\${providerId}:\${modelId}\` (see getArmKey()). That state is the posterior
+-- \`${providerId}:${modelId}\` (see getArmKey()). That state is the posterior
 -- over which provider/model actually performs well; losing it on every
 -- restart reverts routing to argmax-over-static-score until the bandit
 -- re-learns from scratch.
@@ -2143,6 +2140,17 @@ CREATE TABLE IF NOT EXISTS bandit_arms (
 
 CREATE INDEX IF NOT EXISTS idx_bandit_arms_provider
 ON bandit_arms(provider_id);
+`,
+  },
+  72: {
+    filename: '072_job_task_retry.sql',
+    sql: `-- Add retry tracking to job_tasks for task-level retry with exponential backoff.
+-- When a task fails with a transient error, it is reset to 'pending' with
+-- retry_after set to a future timestamp; the scheduler's readyTasks skips it
+-- until backoff elapses.
+
+ALTER TABLE job_tasks ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE job_tasks ADD COLUMN retry_after TEXT;
 `,
   },
 };
