@@ -263,6 +263,36 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 
   {
+    id: 'google_native',
+    name: 'Google Gemini (Native API)',
+    category: 'cloud_llm',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm', 'embedding'],
+    models: [
+      { id: 'gemini-3.6-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-3.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-3.5-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 10 } },
+      { id: 'gemini-3-flash-preview', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
+      { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
+      { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 }, sharedPool: { rpm: 30, rpd: 1500, tpm: 1000000, tpd: 50000000 } },
+      { id: 'gemini-2.0-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
+      { id: 'gemma-4-31b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'gemma-4-26b-a4b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'GOOGLE_API_KEY',
+    description: 'Gemini models via native API (streamGenerateContent). Primary for Gemini streaming.',
+    region: 'us',
+    signupUrl: 'https://aistudio.google.com/',
+  },
+
+  // google_native provider entry - veo follows
+
+  {
     id: 'veo',
     name: 'Google Veo',
     category: 'cloud_video',

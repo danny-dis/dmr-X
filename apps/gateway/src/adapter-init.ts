@@ -1,4 +1,4 @@
-import { AdapterRegistry, GenericOpenAIAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, GenericOpenAIAdapter, GeminiAPIAdapter } from '@dmr-x/adapters';
 import { logger } from '@dmr-x/utils';
 
 export interface ProviderInitConfig {
@@ -73,6 +73,7 @@ export const PROVIDER_INIT_CONFIG: ProviderInitConfig[] = [
 
   // ---- Google / Vertex AI (try/catch, same env key) ----
   { id: 'google', envApiKey: 'GOOGLE_API_KEY', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', registerGenericOpenAI: true },
+  { id: 'google_native', envApiKey: 'GOOGLE_API_KEY', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta', swallowError: true, swallowErrorMsg: 'Skipping google_native init (will retry in background)' },
   { id: 'veo', envApiKey: 'GOOGLE_API_KEY', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
   { id: 'vertex_ai', requireAnyEnv: ['VERTEX_PROJECT_ID', 'GOOGLE_API_KEY'], envApiKey: 'GOOGLE_API_KEY', swallowError: true, swallowErrorMsg: 'Skipping vertex_ai init (will retry in background)' },
 
@@ -152,6 +153,11 @@ export async function initializeAdapters(adapterRegistry: AdapterRegistry): Prom
     // ---- Register dynamic adapter (e.g. ollama-cloud) ----
     if (registerGenericOpenAI) {
       const dynamicAdapter = new GenericOpenAIAdapter(id);
+      adapterRegistry.register(dynamicAdapter);
+    }
+
+    if (id === 'google_native') {
+      const dynamicAdapter = new GeminiAPIAdapter();
       adapterRegistry.register(dynamicAdapter);
     }
 
