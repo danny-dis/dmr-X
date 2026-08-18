@@ -304,7 +304,6 @@ export class BedrockAdapter extends BaseAdapter {
         body: JSON.stringify({ ...body, stream: true }),
         signal: options?.signal,
         timeoutMs: options?.timeoutMs ?? 120000,
-        signal: options?.signal,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'stream');

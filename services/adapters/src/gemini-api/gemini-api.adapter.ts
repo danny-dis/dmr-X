@@ -177,7 +177,6 @@ export class GeminiAPIAdapter extends BaseAdapter {
         body: JSON.stringify(body),
         signal: options?.signal,
         timeoutMs: options?.timeoutMs ?? 120000,
-        signal: options?.signal,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'stream');

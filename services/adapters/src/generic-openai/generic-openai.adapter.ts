@@ -471,6 +471,18 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     };
   }
 
+  /**
+   * Provider-specific extra fields for the /embeddings request body.
+   *
+   * Default is empty so every existing provider keeps its exact wire format.
+   * Subclasses override this when their embedding endpoint needs a parameter
+   * that is not part of the OpenAI schema (see NVIDIANIMAdapter: NVIDIA's
+   * asymmetric retrieval models reject a request without `input_type`).
+   */
+  protected embeddingRequestExtras(_request: UnifiedRequest): Record<string, unknown> {
+    return {};
+  }
+
   private async executeEmbedding(
     request: UnifiedRequest,
     options?: ExecuteOptions
@@ -494,6 +506,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
           input: request.input,
           encoding_format: request.encoding_format,
           dimensions: request.dimensions,
+          ...this.embeddingRequestExtras(request),
         }),
         timeoutMs: options?.timeoutMs ?? 30000,
       });

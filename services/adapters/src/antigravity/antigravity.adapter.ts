@@ -122,7 +122,6 @@ export class AntigravityAdapter extends BaseAdapter {
             body: JSON.stringify(envelope),
             signal: options?.signal,
             timeoutMs: options?.timeoutMs ?? 120000,
-            signal: options?.signal,
           },
         );
 
@@ -253,7 +252,6 @@ export class AntigravityAdapter extends BaseAdapter {
           body: JSON.stringify(envelope),
           signal: options?.signal,
           timeoutMs: options?.timeoutMs ?? 120000,
-          signal: options?.signal,
         },
       );
     } catch (error) {
