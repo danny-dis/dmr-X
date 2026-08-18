@@ -35,15 +35,17 @@ export class MCPClient {
   async connect(config: MCPClientConfig): Promise<void> {
     logger.info({ serverCount: config.servers.length }, 'Connecting to MCP servers');
 
-    for (const serverConfig of config.servers) {
-      try {
-        await this.connectServer(serverConfig);
-      } catch (error) {
+    const results = await Promise.allSettled(
+      config.servers.map((serverConfig) => this.connectServer(serverConfig))
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === 'rejected') {
         logger.error(
-          { serverId: serverConfig.id, error },
+          { serverId: config.servers[i].id, error: result.reason },
           'Failed to connect to MCP server'
         );
-        // Continue connecting other servers even if one fails
       }
     }
 

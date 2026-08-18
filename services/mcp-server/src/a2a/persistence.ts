@@ -258,27 +258,31 @@ export function getPushConfig(taskId: string): PushNotificationConfig | undefine
 }
 
 /**
- * Fire the task's push webhook if configured. Best-effort: failures are
- * logged but never throw (a dead webhook must not break task completion).
- */
-export async function firePushNotification(task: Task): Promise<void> {
-  if (!cfg.pushEnabled) return;
-  const pc = pushConfigs.get(task.id);
-  if (!pc?.url) return;
-  try {
-    const res = await fetch(pc.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(pc.token ? { authorization: `Bearer ${pc.token}` } : {}),
-      },
-      body: JSON.stringify({ id: task.id, contextId: task.contextId, status: task.status, artifacts: task.artifacts }),
-    });
-    if (!res.ok) console.warn(`[a2a] push to ${pc.url} returned ${res.status}`);
-  } catch (e) {
-    console.warn(`[a2a] push to ${pc.url} failed:`, (e as Error).message);
-  }
-}
+ /** Fire the task's push webhook if configured. Best-effort: failures are
+  * logged but never throw (a dead webhook must not break task completion). */
+ const PUSH_TIMEOUT_MS = 10_000;
+ export async function firePushNotification(task: Task): Promise<void> {
+   if (!cfg.pushEnabled) return;
+   const pc = pushConfigs.get(task.id);
+   if (!pc?.url) return;
+   try {
+     const ctrl = new AbortController();
+     const timer = setTimeout(() => ctrl.abort(), PUSH_TIMEOUT_MS);
+     const res = await fetch(pc.url, {
+       method: 'POST',
+       headers: {
+         'content-type': 'application/json',
+         ...(pc.token ? { authorization: `Bearer ${pc.token}` } : {}),
+       },
+       body: JSON.stringify({ id: task.id, contextId: task.contextId, status: task.status, artifacts: task.artifacts }),
+       signal: ctrl.signal,
+     });
+     clearTimeout(timer);
+     if (!res.ok) console.warn(`[a2a] push to ${pc.url} returned ${res.status}`);
+   } catch (e) {
+     console.warn(`[a2a] push to ${pc.url} failed:`, (e as Error).message);
+   }
+ }
 
 export function closePersistence(): void {
   try { db?.exec('PRAGMA optimize;'); } catch {

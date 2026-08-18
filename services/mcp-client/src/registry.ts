@@ -69,6 +69,7 @@ export interface ConnectedServer {
  */
 export class MCPServerRegistry {
   private servers = new Map<string, ConnectedServer>();
+  private toolIndex = new Map<string, ConnectedServer>();
   private circuitBreakers = new CircuitBreakerManager();
   private configOverrides = new Map<string, { timeoutMs: number; maxRetries: number }>();
   private pendingReconnects = new Map<string, MCPServerConfig>();
@@ -158,6 +159,7 @@ export class MCPServerRegistry {
     };
 
     this.servers.set(serverConfig.id, connected);
+    this.indexServerTools(connected);
 
     // Store per-server config overrides for timeout/retry
     this.configOverrides.set(serverConfig.id, {
@@ -217,6 +219,7 @@ export class MCPServerRegistry {
     // Store config for potential reconnection
     this.pendingReconnects.set(serverId, server.config);
 
+    this.unindexServerTools(server);
     await server.client.close();
     this.servers.delete(serverId);
     logger.info({ id: serverId }, 'MCP server disconnected');
@@ -278,15 +281,28 @@ export class MCPServerRegistry {
   }
 
   /**
-   * Find which server hosts a specific tool.
+   * Find which server hosts a specific tool. O(1) via reverse index.
    */
   findServerForTool(toolName: string): ConnectedServer | undefined {
-    for (const server of this.servers.values()) {
-      if (server.tools.some((t) => t.name === toolName)) {
-        return server;
-      }
+    return this.toolIndex.get(toolName);
+  }
+
+  /**
+   * Index a server's tools in the reverse map. Called after connect and refresh.
+   */
+  private indexServerTools(server: ConnectedServer): void {
+    for (const tool of server.tools) {
+      this.toolIndex.set(tool.name, server);
     }
-    return undefined;
+  }
+
+  /**
+   * Remove a server's tools from the reverse map.
+   */
+  private unindexServerTools(server: ConnectedServer): void {
+    for (const tool of server.tools) {
+      this.toolIndex.delete(tool.name);
+    }
   }
 
   /**
@@ -394,6 +410,7 @@ export class MCPServerRegistry {
       description: tool.description,
       inputSchema: tool.inputSchema as Record<string, unknown> | undefined,
     }));
+    this.indexServerTools(server);
 
     logger.info({ serverId, toolCount: server.tools.length }, 'MCP server tools refreshed');
   }
@@ -469,6 +486,7 @@ export class MCPServerRegistry {
       }
     }
     this.servers.clear();
+    this.toolIndex.clear();
     this.pendingReconnects.clear();
   }
 }

@@ -1149,30 +1149,32 @@ function startUpstreamLivenessWatcher(): void {
   }
 
   const LIVENESS_INTERVAL_MS = 15_000; // 15s sweep
+  const LIVENESS_TIMEOUT_MS = 5_000; // per-upstream probe timeout
   const registry = client.getRegistry();
 
   const timer = setInterval(async () => {
     try {
       const connectedIds = client.listServers();
-      for (const id of connectedIds) {
-        const server = registry.get(id);
-        if (!server) continue;
-        try {
-          await server.client.listTools();
-        } catch (err) {
-          // Log the message only. Passing the raw error made Bun print the
-          // offending source line ("615 | return new Promise(...)") in place of
-          // anything diagnostic about the upstream.
-          const reason = err instanceof Error ? err.message : String(err);
-          console.error(`[upstream-watcher] Upstream '${id}' unresponsive, scheduling reconnect: ${reason}`);
-          // Drop it from the live map so reconnect re-adds it, then reconnect.
+      await Promise.allSettled(
+        connectedIds.map(async (id) => {
+          const server = registry.get(id);
+          if (!server) return;
           try {
-            await client.disconnectServer(id);
-          } catch { /* best-effort */ }
-          registry.scheduleReconnect(server.config);
-          reconcileExternalTools(handle.server, handle.state);
-        }
-      }
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), LIVENESS_TIMEOUT_MS);
+            await server.client.listTools();
+            clearTimeout(timer);
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            console.error(`[upstream-watcher] Upstream '${id}' unresponsive, scheduling reconnect: ${reason}`);
+            try {
+              await client.disconnectServer(id);
+            } catch { /* best-effort */ }
+            registry.scheduleReconnect(server.config);
+            reconcileExternalTools(handle.server, handle.state);
+          }
+        })
+      );
     } catch (err) {
       console.error('[upstream-watcher] Sweep error:', err);
     }
@@ -1249,30 +1251,33 @@ function startConfigWatcher(): void {
         console.error('[config-watcher] Aggregation enabled at runtime — created external MCP client');
       }
 
-      // Disconnect servers no longer in config
+      // Disconnect removed servers and connect new ones in parallel
       if (currentClient) {
+        const removals: Array<Promise<void>> = [];
+        const additions: Array<Promise<void>> = [];
+        const currentServers = new Set(currentClient.listServers());
+
         for (const id of knownServerIds) {
-          if (!desiredIds.has(id) && currentClient.listServers().includes(id)) {
-            try {
-              await currentClient.disconnectServer(id);
-              console.error(`[config-watcher] Disconnected server: ${id}`);
-            } catch (err) {
-              console.error(`[config-watcher] Error disconnecting server ${id}:`, err);
-            }
+          if (!desiredIds.has(id) && currentServers.has(id)) {
+            removals.push(
+              currentClient.disconnectServer(id)
+                .then(() => console.error(`[config-watcher] Disconnected server: ${id}`))
+                .catch((err) => console.error(`[config-watcher] Error disconnecting server ${id}:`, err))
+            );
           }
         }
 
-        // Connect new servers from config
         for (const serverCfg of desiredServers) {
-          if (!knownServerIds.has(serverCfg.id) && !currentClient.listServers().includes(serverCfg.id)) {
-            try {
-              await currentClient.connectServer(serverCfg);
-              console.error(`[config-watcher] Connected server: ${serverCfg.id}`);
-            } catch (err) {
-              console.error(`[config-watcher] Error connecting server ${serverCfg.id}:`, err);
-            }
+          if (!knownServerIds.has(serverCfg.id) && !currentServers.has(serverCfg.id)) {
+            additions.push(
+              currentClient.connectServer(serverCfg)
+                .then(() => console.error(`[config-watcher] Connected server: ${serverCfg.id}`))
+                .catch((err) => console.error(`[config-watcher] Error connecting server ${serverCfg.id}:`, err))
+            );
           }
         }
+
+        await Promise.all([...removals, ...additions]);
       }
 
       // Update known IDs
