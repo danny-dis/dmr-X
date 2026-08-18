@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveDataDir } from '@dmr-x/utils';
 import { fileURLToPath } from 'node:url';
 
 // sql.js is retained as the engine for the exported migration runner and the
@@ -1020,7 +1020,7 @@ async function recoverFromCorruptDb(
 }
 
 async function doInitDb(): Promise<DatabaseWrapper> {
-  const dataDir = process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
+  const dataDir = resolveDataDir();
   fs.mkdirSync(dataDir, { recursive: true });
   setDbPath(path.join(dataDir, 'data.db'));
   cleanupStaleArtifacts(dataDir);

@@ -337,3 +337,102 @@ Override default provider API base URLs:
 | `VITE_API_BASE` | (empty) | No | Browser API base URL. Empty means same origin (gateway serves UI). |
 
 In development, the Vite dev server runs at `:4200` and proxies `/v1/*` to the gateway at `:3000`. In production, the UI is served by the gateway itself from `apps/gateway/public`.
+
+## mTLS (Mutual TLS)
+
+The gateway supports terminating TLS and verifying client certificates. All four variables must be set to enable mTLS.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_TLS_CERT` | — | Path to the PEM-encoded server certificate. |
+| `DMRX_TLS_KEY` | — | Path to the PEM-encoded server private key. |
+| `DMRX_TLS_CA` | — | Path to the PEM-encoded CA bundle for verifying client certificates. |
+| `DMRX_TLS_REQUIRE_CLIENT_CERT` | `false` | When `true` (and `DMRX_TLS_CA` is set), clients without a valid certificate are rejected. When `false`, client certs are requested but not enforced (observe-mode for rollout). |
+
+## Content Capture & Request Logging
+
+These control what gets written to logs and request records. Use with caution — `full` mode writes raw prompts and completions.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_CAPTURE_CONTENT` | `off` | Content capture mode: `off` (no capture), `hashed` (store SHA-256 of content), `full` (store raw request/response bodies). |
+| `DMRX_CAPTURE_MAX_BYTES` | — | Maximum bytes to capture per body when `DMRX_CAPTURE_CONTENT=full`. Larger bodies are truncated. |
+| `DMRX_REQUEST_LOG_BODY` | `false` | When `true`, full request/response bodies are logged. Same caution as `full` capture mode. |
+| `DMRX_REQUEST_LOG_LEVEL` | — | Log level for request logging. |
+| `DMRX_REQUEST_LOG_SAMPLE_RATE` | — | Fraction of requests to log (0.0–1.0). |
+| `DMRX_REQUEST_LOGS_RETENTION_DAYS` | — | Retention period for request logs in days. |
+
+## Agent Runtime
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_AGENTIC_MAX_CONSECUTIVE_ERRORS` | — | Max consecutive errors before an agentic conversation is aborted. |
+| `DMRX_AGENTIC_TURN_TIMEOUT_MS` | — | Timeout per agentic turn in ms. |
+| `DMRX_MAX_CONCURRENT_AGENT_REQUESTS` | — | Global cap on concurrent agent requests. |
+| `DMRX_MAX_CONCURRENT_AGENT_REQUESTS_PER_TENANT` | — | Per-tenant cap on concurrent agent requests. |
+| `DMRX_ENABLE_PLANNER` | `false` | Enable the job planner for agentic workflows. |
+| `DMRX_PLANNER_MODEL` | — | Model used for job planning. |
+| `DMRX_ENABLE_HANDOVER` | `false` | Enable model handover mid-conversation. |
+| `DMRX_HANDOVER_MODEL` | — | Model to hand over to. |
+| `DMRX_HANDOVER_MAX_TOKENS` | — | Max tokens before handover triggers. |
+| `DMRX_HANDOVER_TIMEOUT_MS` | — | Timeout for handover in ms. |
+
+## Semantic Cache
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_SEMANTIC_CACHE_ENABLED` | `false` | Enable semantic (embedding-based) response caching. |
+| `DMRX_SEMANTIC_CACHE_MAX_ENTRIES` | — | Maximum cached entries. |
+| `DMRX_SEMANTIC_CACHE_THRESHOLD` | — | Similarity threshold for cache hits (0.0–1.0). |
+| `DMRX_SEMANTIC_CACHE_TTL_SECONDS` | — | Time-to-live for cached entries in seconds. |
+
+## Routing & Provider Selection
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_PROVIDER_ALLOWLIST` | — | Comma-separated provider allowlist. If set, only these providers are used. |
+| `DMRX_FREE_PROVIDERS` | — | Comma-separated list of providers treated as free-tier. |
+| `DMRX_UPSTREAM_STREAM_TIMEOUT_MS` | — | Timeout for upstream streaming responses in ms. |
+| `DMRX_PER_KEY_RATE_LIMIT` | — | Per-API-key rate limit override. |
+| `DMRX_JOB_CONCURRENCY` | — | Max concurrent job executions. |
+
+## Cluster / Federation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_CLUSTER_ROUTING_ENABLED` | `false` | Enable cluster-aware routing. |
+| `DMRX_CLUSTER_EMBED_TIMEOUT_MS` | — | Timeout for cluster embedding operations in ms. |
+| `DMRX_DEPLOYMENT_MODE` | — | Deployment mode label (e.g. `standalone`, `cluster`). |
+| `DMRX_NAMESPACE` | — | Namespace for multi-tenant deployments. |
+
+## Observability Integrations
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_SIEM_URL` | — | SIEM endpoint for forwarding security events. |
+| `DMRX_WEBHOOK_LOGGING_URL` | — | Webhook URL for log shipping. |
+| `DMRX_WEBHOOK_LOGGING_HEADERS` | — | JSON headers for webhook log shipping. |
+
+## Local Inference (ONNX)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_ONNX_MODEL` | — | Path to ONNX model for local inference. |
+| `DMRX_ONNX_ASSETS_DIR` | — | Directory for ONNX model assets. |
+
+## Miscellaneous
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DMRX_API_BASE_URL` | — | Base URL override for the gateway's own API. |
+| `DMRX_INTERNAL_API_KEY` | — | Internal API key for service-to-service calls. |
+| `DMRX_DB_MAX_STALE_MS` | — | Max staleness for DB reads in ms. |
+| `DMRX_API_KEY` | — | Generic API key (context-dependent). |
+| `DMRX_GATEWAY_URL` | — | Gateway URL override for internal services. |
+| `DMRX_CODING_SANDBOX_ROOT` | — | Root directory for coding sandbox jobs. |
+| `DMRX_GODMODE_STRICT` | — | Enable strict mode for G0DM0D3. |
+| `DMRX_NEEDLE_URL` | — | URL for the Needle service. |
+| `DMRX_NEEDLE_TIMEOUT_MS` | — | Timeout for Needle requests in ms. |
+| `DMRX_MCP_AGENT_API_KEY` | — | API key for MCP agent endpoints. |
+| `DMRX_MCP_CONFIG_PATH` | — | Path to MCP config file (alias for `DMRX_MCP_CONFIG`). |
+| `DMRX_MCP_DATA_DIR` | — | Override data directory for the MCP server. |

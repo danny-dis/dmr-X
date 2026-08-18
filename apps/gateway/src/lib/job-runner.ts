@@ -34,6 +34,15 @@ const DEFAULT_CALL_TIMEOUT_MS = 300_000;
 /** Upper bound on passes so a mis-planned job cannot loop indefinitely. */
 const DEFAULT_MAX_PASSES = 20;
 
+/**
+ * Total time driveJob may spend *sleeping* on scheduled task retries within a
+ * single run. Retries exist for transient upstream failures (provider 500s,
+ * rate limits), which clear in seconds to a couple of minutes — so a bounded
+ * wait recovers the job, while the bound stops one job holding a queue slot
+ * forever when a provider is genuinely down.
+ */
+const DEFAULT_MAX_RETRY_WAIT_MS = 10 * 60_000;
+
 /** How many agents may be offered to the planner in one prompt. */
 const PLANNING_AGENT_LIMIT = 60;
 
@@ -354,21 +363,55 @@ export async function planJob(
  * Run passes until the job stops progressing. Each pass runs every currently
  * unblocked task, so a chain of N dependent tasks needs N passes.
  *
- * Two stop conditions matter: a pass that reports 'running' while having run
- * nothing made no progress and would spin forever, and maxPasses bounds a plan
- * that somehow keeps producing work.
+ * Three stop conditions matter: a pass that reports 'running' while having run
+ * nothing made no progress and would spin forever, maxPasses bounds a plan
+ * that somehow keeps producing work, and a 'blocked' state that is only
+ * waiting on a scheduled retry is slept through rather than returned.
+ *
+ * That last case is why a transient provider failure used to kill a job
+ * outright: runTask parks a retryable failure as 'pending' with a future
+ * `retryAfter`, readyTasks correctly skips it, so the scheduler reports
+ * 'blocked' — and returning there stranded the job. Nothing re-queues a
+ * blocked job, so its scheduled retry never fired even though the job had
+ * budget, attempts remaining, and a healthy gateway. Waiting for the earliest
+ * retryAfter and running another pass is what actually makes maxRetries mean
+ * something.
  */
 export async function driveJob(
   tenantId: string,
   jobId: string,
   executor: TaskExecutor,
-  opts: { maxPasses?: number } = {},
+  opts: { maxPasses?: number; maxRetryWaitMs?: number } = {},
 ): Promise<JobRunResult> {
   const maxPasses = opts.maxPasses ?? DEFAULT_MAX_PASSES;
+  const maxRetryWaitMs = opts.maxRetryWaitMs ?? DEFAULT_MAX_RETRY_WAIT_MS;
+  let retryWaitBudgetMs = maxRetryWaitMs;
   let last: JobRunResult = { state: 'empty', ranTaskIds: [] };
 
   for (let pass = 0; pass < maxPasses; pass++) {
     last = await runJobPass(tenantId, jobId, executor);
+
+    if (last.state === 'blocked') {
+      // Only a retry-scheduled block is recoverable. A real deadlock (cycle,
+      // dangling dep, cancelled dependency) has no retryAfter to wait for and
+      // must still be returned to the caller.
+      const waitMs = msUntilNextRetry(tenantId, jobId);
+      if (waitMs === null) return last;
+
+      if (waitMs > retryWaitBudgetMs) {
+        logger.warn(
+          { jobId, waitMs, retryWaitBudgetMs },
+          'job-runner: next retry is beyond the wait budget, leaving job blocked',
+        );
+        return { ...last, reason: `${last.reason ?? 'blocked'} (retry exceeds wait budget)` };
+      }
+
+      logger.info({ jobId, pass, waitMs }, 'job-runner: waiting for scheduled task retry');
+      await new Promise((r) => setTimeout(r, waitMs));
+      retryWaitBudgetMs -= waitMs;
+      continue;
+    }
+
     if (last.state !== 'running') return last;
 
     if (last.ranTaskIds.length === 0) {
@@ -379,4 +422,27 @@ export async function driveJob(
 
   logger.warn({ jobId, maxPasses }, 'job-runner: max passes reached');
   return { ...last, reason: 'max passes reached' };
+}
+
+/**
+ * Milliseconds until the earliest scheduled retry among a job's pending
+ * tasks, or null when no task is waiting on one (a genuine deadlock).
+ *
+ * A retryAfter already in the past returns 0 — the task is due now, so the
+ * next pass should run immediately rather than sleeping.
+ */
+function msUntilNextRetry(tenantId: string, jobId: string): number | null {
+  const now = Date.now();
+  let earliest: number | null = null;
+
+  for (const task of jobStore.listTasks(tenantId, jobId)) {
+    if (task.status !== 'pending' || !task.retryAfter) continue;
+    const at = new Date(task.retryAfter).getTime();
+    if (Number.isNaN(at)) continue;
+    if (earliest === null || at < earliest) earliest = at;
+  }
+
+  if (earliest === null) return null;
+  // +250ms so the pass lands just after the backoff window, not exactly on it.
+  return Math.max(0, earliest - now + 250);
 }

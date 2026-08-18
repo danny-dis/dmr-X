@@ -2031,6 +2031,58 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_operator_disabled
 ALTER TABLE api_keys ADD COLUMN role TEXT NOT NULL DEFAULT 'developer';
 `,
   },
+  64: {
+    filename: '064_key_lookup_hash.sql',
+    sql: `-- Migration 064: Add key_lookup_hash column + index for O(1) API key lookup.
+--
+-- The current auth middleware performs a full table scan or relies on
+-- key_hash (which is salted and cannot be looked up directly). Adding a
+-- plain SHA-256 hash of the raw key enables O(1) indexed lookups without
+-- storing the raw key itself.
+--
+-- Backfill: legacy rows with unsalted key_hash (no colon) get key_lookup_hash
+-- = key_hash. Salted rows (colon present) cannot be backfilled — the plaintext
+-- key is not available — and remain NULL, reachable only via the bounded
+-- fallback scan (key_lookup_hash IS NULL).
+
+ALTER TABLE api_keys ADD COLUMN key_lookup_hash TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_lookup_hash
+  ON api_keys(key_lookup_hash)
+  WHERE key_lookup_hash IS NULL;
+
+-- Backfill legacy unsalted rows
+UPDATE api_keys
+   SET key_lookup_hash = key_hash
+ WHERE key_lookup_hash IS NULL
+   AND instr(key_hash, ':') = 0;
+`,
+  },
+  65: {
+    filename: '065_agentic_sessions.sql',
+    sql: `-- Migration 065: Agentic session store (durable /agentic/chat state).
+--
+-- Persists conversation state so /agentic/chat can be PAUSED (e.g. awaiting
+-- tool approval) and RESUMED across gateway restarts. Scoped to the
+-- instance-less agentic endpoint: agent_sessions requires agent_instance_id.
+
+CREATE TABLE IF NOT EXISTS agentic_sessions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  metadata TEXT,
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  status_reason TEXT,
+  last_turn INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agentic_sessions_tenant
+  ON agentic_sessions(tenant_id, updated_at DESC);
+`,
+  },
   66: {
     filename: '066_agent_godmode_wrap.sql',
     sql: `-- Agent definition godmode wrap opt-in flag (Phase 2c).
