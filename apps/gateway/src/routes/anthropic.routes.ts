@@ -427,7 +427,14 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
               if (controller.signal.aborted) break;
               // Backpressure: pause writing if the response buffer is full.
               if (!reply.raw.write(sseLine)) {
-                await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+                await new Promise<void>((resolve) => {
+                  const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
+                  const onClose = () => { reply.raw.off('drain', onDrain); reply.raw.off('error', onError); resolve(); };
+                  const onError = () => { reply.raw.off('drain', onDrain); reply.raw.off('close', onClose); resolve(); };
+                  reply.raw.once('drain', onDrain);
+                  reply.raw.once('close', onClose);
+                  reply.raw.once('error', onError);
+                });
               }
             }
           } catch (streamError) {
@@ -435,11 +442,16 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
               logger.debug({ requestId }, 'Anthropic stream aborted by client disconnect');
             } else {
               logger.error({ err: streamError, requestId }, 'Anthropic streaming error');
-              if (!reply.raw.write(`event: error\ndata: ${JSON.stringify({
-                type: 'error',
-                error: { type: 'stream_error', message: 'Stream failed' },
-              })}\n\n`)) {
-                await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+              const streamErrorMsg = JSON.stringify({ type: 'error', error: { type: 'stream_error', message: 'Stream failed' } });
+              if (!reply.raw.write(`event: error\ndata: ${streamErrorMsg}\n\n`)) {
+                await new Promise<void>((resolve) => {
+                  const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
+                  const onClose = () => { reply.raw.off('drain', onDrain); reply.raw.off('error', onError); resolve(); };
+                  const onError = () => { reply.raw.off('drain', onDrain); reply.raw.off('close', onClose); resolve(); };
+                  reply.raw.once('drain', onDrain);
+                  reply.raw.once('close', onClose);
+                  reply.raw.once('error', onError);
+                });
               }
             }
           } finally {

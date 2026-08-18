@@ -422,7 +422,8 @@ function buildFallbackChain(
     });
   }
   // Allow more fallbacks when many free providers are available
-  const maxFallbacks = remaining.length > 20 ? 8 : remaining.length > 10 ? 6 : 3;
+  // ponytail: 3 max (was 6/8), raise if fallback success rate >50% at 3
+  const maxFallbacks = remaining.length > 10 ? 3 : 2;
   return crossProvider.slice(0, maxFallbacks).map((model, index) => ({
     provider: {
       providerId: model.providerId,

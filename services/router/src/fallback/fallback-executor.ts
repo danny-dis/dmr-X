@@ -466,6 +466,73 @@ export async function executeWithFallback(
     return true;
   });
 
+  // Parallel probe: race first 2 immediate (waitMs=0) fallbacks concurrently.
+  // Cuts fallback latency from ~2x to ~1x when the first candidate is dead.
+  // On failure, errors are tracked so the main loop skips them.
+  // ponytail: races 2 candidates (2x bandwidth on failure); use sequential if only 1
+  const immediateSteps = deduplicated.filter(s => !s.waitMs || s.waitMs === 0).slice(0, 2);
+  if (immediateSteps.length > 1) {
+    const probePromises = immediateSteps.map(step =>
+      (async (): Promise<{ step: typeof immediateSteps[0]; response: UnifiedResponse }> => {
+        if (isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)) {
+          throw new Error('on cooldown');
+        }
+        if (rls) {
+          const limitCheck = rls.checkLimit(step.provider.providerId, step.provider.modelId, 0);
+          if (!limitCheck.allowed) throw new Error('rate-limited');
+        }
+        if (qs && tenantId) {
+          await qs.checkQuota(tenantId, step.provider.providerId, 0, 0);
+        }
+        tried.push(step.provider.providerId);
+        const response = await withConcurrencySlot(step.provider.providerId, () =>
+          executor.execute(step.provider.providerId, step.provider.modelId, request)
+        );
+        return { step, response };
+      })()
+    );
+
+    const results = await Promise.allSettled(probePromises);
+    let winner: { step: typeof immediateSteps[0]; response: UnifiedResponse } | null = null;
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === 'fulfilled' && !winner) {
+        winner = result.value;
+      } else if (result.status === 'rejected') {
+        const step = immediateSteps[i];
+        const category = classifyError(result.reason);
+        trackModelError(step.provider.providerId, step.provider.modelId, category);
+        recordTriedError(step.provider.providerId, result.reason);
+      }
+    }
+
+    if (winner) {
+      try { options?.onSuccess?.(winner.step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
+      try {
+        if (rls) {
+          const tokens = winner.response.usage?.total_tokens || 0;
+          await rls.recordUsage(winner.step.provider.providerId, winner.step.provider.modelId, tokens);
+        }
+        if (qs && tenantId) {
+          const tokens = winner.response.usage?.total_tokens || 0;
+          await qs.recordUsage(tenantId, winner.step.provider.providerId, tokens, 0);
+          await qs.recordProviderBudgetUsage(tenantId, winner.step.provider.providerId, tokens);
+        }
+      } catch (usageErr) {
+        logger.warn({ err: usageErr, provider: winner.step.provider.providerId }, 'Failed to record usage for parallel fallback');
+      }
+      winner.response.fallback = {
+        fromProviderId: plan.primary.providerId,
+        fromModelId: plan.primary.modelId,
+        attempts: tried.length,
+        reason: errorCategory,
+        errors: [...triedErrors],
+      };
+      return winner.response;
+    }
+  }
+
   for (const step of deduplicated) {
     try {
       // Skip models on error cooldown (deprecated, auth errors, etc.)

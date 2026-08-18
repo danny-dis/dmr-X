@@ -281,20 +281,20 @@ export class Router {
     // Resolve requestId from options or from request metadata
     const requestId = options.requestId || (request as any).metadata?.requestId;
     const tenantId = (request as any).metadata?.tenant?.id;
-
-    // Step 0: Input guardrail checks
     const messages = request.messages || [];
+
+    // Step 0: Input guardrail checks — only when plugins are configured for this tenant
     if (messages.length > 0 && this.guardrailEngine.hasPlugins(tenantId)) {
+      // Map messages inside the check to avoid allocation when no guardrails are active
+      const guardrailMessages = messages.map(m => ({
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+      }));
+
       const guardrailResult = await tracer.startActiveSpan('guardrail.input', async (span) => {
         try {
           span.setAttribute('guardrail.direction', 'input');
           if (requestId) span.setAttribute('request.id', requestId);
-
-          // Convert messages to format expected by guardrail engine
-          const guardrailMessages = messages.map(m => ({
-            role: m.role,
-            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-          }));
 
           const result = await this.guardrailEngine.checkMessages(
             guardrailMessages,
@@ -315,12 +315,6 @@ export class Router {
       });
 
       if (!guardrailResult.allowed) {
-        // Not a ProviderUnavailableError. That reported a guardrail rejection
-        // as 503 "All providers currently unavailable", which is wrong twice
-        // over: it blames an outage for a decision about the caller's own
-        // content, and 503 tells clients the request is retryable when
-        // retrying it can only fail again. Surfacing the violations lets a
-        // caller see which rule fired instead of hunting a phantom outage.
         const reasons = guardrailResult.violations
           .map(v => v.description)
           .filter(Boolean);
