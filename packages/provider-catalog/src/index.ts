@@ -288,6 +288,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'Gemini models via native API (streamGenerateContent). Primary for Gemini streaming.',
     region: 'us',
     signupUrl: 'https://aistudio.google.com/',
+    envKey: 'GOOGLE_API_KEY',
   },
 
   // google_native provider entry - veo follows
