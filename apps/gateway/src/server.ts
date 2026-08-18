@@ -52,6 +52,7 @@ import { ocrRoutes } from './routes/ocr.routes.js';
 import { rerankRoutes } from './routes/rerank.routes.js';
 import { moderationRoutes } from './routes/moderation.routes.js';
 import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers, sweepStaleSandboxes } from './routes/tools.routes.js';
+import { registerReceptionistToolHandlers } from './lib/receptionist-tools.js';
 import { videoRoutes } from './routes/video.routes.js';
 import { geminiRoutes, geminiNativeRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
@@ -645,6 +646,7 @@ void (async () => {
    await server.register(toolsRoutes, { prefix: '/v1' });
    registerBuiltinToolHandlers();
    registerCodingToolHandlers();
+   registerReceptionistToolHandlers();
    sweepStaleSandboxes();
     logger.info('Registering route: agenticRoutes');
     await server.register(agenticRoutes, { prefix: '/v1' });

@@ -11,6 +11,7 @@ import type {
   AgentListQuery,
   MarketplaceQuery,
   AgentImportResult,
+  AgentCapabilities,
 } from './agent-schema.js';
 
 import {
@@ -47,8 +48,13 @@ export interface AgentDefinition {
   verifyOnStop?: boolean;
   planMode?: boolean;
   historyCompaction?: boolean;
+  /** Opt-in: per-agent compaction thresholds (loop engine falls back to defaults). */
+  compactionThreshold?: number;
+  compactionKeepRecent?: number;
   /** Opt-in: route the agent's per-turn model calls through the godmode wrap. */
   godmodeWrap?: boolean;
+  /** Structured capability declaration, consumed by the Receptionist matcher. */
+  capabilities?: Partial<AgentCapabilities>;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -76,6 +82,10 @@ export interface AgentInstanceDetail extends AgentInstance {
   definitionCategory: string | null;
   definitionIcon: string | null;
   definitionModelTier: string | null;
+  /** Parsed capability declaration from the parent definition (see AgentCapabilitiesSchema). */
+  definitionCapabilities?: Partial<AgentCapabilities>;
+  /** Tags from the parent definition, used by capability matching. */
+  definitionTags?: string[];
   executionCount: number;
   lastExecutionAt: string | null;
   /** Cents, matching agent_executions.cost_cents. */
@@ -96,6 +106,16 @@ function safeJsonParse<T>(raw: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/**
+ * System-owned agent names start with `__` (e.g. `__receptionist`). These
+ * definitions back platform plumbing and must not be deleted or renamed —
+ * jobs and tasks reference them by name.
+ */
+export const SYSTEM_AGENT_PREFIX = '__';
+export function isSystemAgentName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.startsWith(SYSTEM_AGENT_PREFIX);
 }
 
 export interface AgentExecution {
@@ -175,8 +195,9 @@ export class AgentRegistryService {
         personality, preferred_model, model_tier, allowed_tools, custom_tools,
         workflow, triggers, visibility, tags, category, icon, skills, human_name,
         skill_nudge_interval, verify_on_stop, plan_mode, history_compaction,
-        godmode_wrap, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        compaction_threshold, compaction_keep_recent,
+        godmode_wrap, capabilities, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tenantId,
@@ -201,7 +222,10 @@ export class AgentRegistryService {
       input.verifyOnStop ? 1 : 0,
       input.planMode ? 1 : 0,
       input.historyCompaction ? 1 : 0,
+      input.compactionThreshold ?? null,
+      input.compactionKeepRecent ?? null,
       input.godmodeWrap ? 1 : 0,
+      input.capabilities ? JSON.stringify(input.capabilities) : null,
       now,
       now,
     );
@@ -276,6 +300,12 @@ export class AgentRegistryService {
     const existing = await this.getDefinition(id);
     if (!existing || existing.tenantId !== tenantId) return null;
 
+    // System-owned agents (name starts with `__`) are immutable in identity:
+    // renaming one would orphan every job/task that references it by name.
+    if (input.name !== undefined && input.name !== existing.name && isSystemAgentName(existing.name)) {
+      return null;
+    }
+
     const updates: string[] = [];
     const params: unknown[] = [];
 
@@ -300,7 +330,13 @@ export class AgentRegistryService {
     if (input.verifyOnStop !== undefined) { updates.push('verify_on_stop = ?'); params.push(input.verifyOnStop ? 1 : 0); }
     if (input.planMode !== undefined) { updates.push('plan_mode = ?'); params.push(input.planMode ? 1 : 0); }
     if (input.historyCompaction !== undefined) { updates.push('history_compaction = ?'); params.push(input.historyCompaction ? 1 : 0); }
+    if (input.compactionThreshold !== undefined) { updates.push('compaction_threshold = ?'); params.push(input.compactionThreshold); }
+    if (input.compactionKeepRecent !== undefined) { updates.push('compaction_keep_recent = ?'); params.push(input.compactionKeepRecent); }
     if (input.godmodeWrap !== undefined) { updates.push('godmode_wrap = ?'); params.push(input.godmodeWrap ? 1 : 0); }
+    if (input.capabilities !== undefined) {
+      updates.push('capabilities = ?');
+      params.push(input.capabilities ? JSON.stringify(input.capabilities) : null);
+    }
 
     if (updates.length === 0) return existing;
 
@@ -317,6 +353,9 @@ export class AgentRegistryService {
     const db = getDb();
     const existing = await this.getDefinition(id);
     if (!existing || existing.tenantId !== tenantId) return false;
+    // System-owned agents (name starts with `__`) are not deletable — they
+    // back platform plumbing (e.g. the __receptionist coordinator).
+    if (isSystemAgentName(existing.name)) return false;
 
     db.prepare('DELETE FROM agent_definitions WHERE id = ?').run(id);
     logger.info({ id, tenantId }, 'Agent definition deleted');
@@ -481,6 +520,8 @@ export class AgentRegistryService {
         d.category    AS definition_category,
         d.icon        AS definition_icon,
         d.model_tier  AS definition_model_tier,
+        d.capabilities AS definition_capabilities,
+        d.tags        AS definition_tags,
         (SELECT COUNT(*)        FROM agent_executions e WHERE e.agent_instance_id = i.id) AS execution_count,
         (SELECT MAX(created_at) FROM agent_executions e WHERE e.agent_instance_id = i.id) AS last_execution_at,
         (SELECT COALESCE(SUM(cost_cents), 0) FROM agent_executions e
@@ -500,6 +541,10 @@ export class AgentRegistryService {
       definitionCategory: r.definition_category ?? null,
       definitionIcon: r.definition_icon ?? null,
       definitionModelTier: r.definition_model_tier ?? null,
+      definitionCapabilities: r.definition_capabilities
+        ? safeJsonParse<Partial<AgentCapabilities>>(r.definition_capabilities, {})
+        : undefined,
+      definitionTags: safeJsonParse<string[]>(r.definition_tags, []),
       executionCount: Number(r.execution_count ?? 0),
       lastExecutionAt: r.last_execution_at ?? null,
       costCents24h: Number(r.cost_cents_24h ?? 0),
@@ -1053,7 +1098,10 @@ export class AgentRegistryService {
       verifyOnStop: row.verify_on_stop ? true : false,
       planMode: row.plan_mode ? true : false,
       historyCompaction: row.history_compaction ? true : false,
+      compactionThreshold: row.compaction_threshold ?? undefined,
+      compactionKeepRecent: row.compaction_keep_recent ?? undefined,
       godmodeWrap: row.godmode_wrap ? true : false,
+      capabilities: row.capabilities ? safeJsonParse<Partial<AgentCapabilities>>(row.capabilities, {}) : undefined,
       publishedAt: row.published_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

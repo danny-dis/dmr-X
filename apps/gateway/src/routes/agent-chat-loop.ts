@@ -868,7 +868,9 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // Opt-in history compaction: once the transcript is large, fold the early
     // tool-activity turns into a single rolling summary. Non-fatal — on any
     // failure we keep the full transcript (ReAct behavior unchanged).
-    const { threshold, keepRecent } = resolveCompactionParams(definition);
+    // Compaction thresholds live in the loop engine (see migration 058);
+    // AgentDefinition only carries the on/off `historyCompaction` flag.
+    const { threshold, keepRecent } = resolveCompactionParams({});
     if (historyCompaction && messages.length > threshold) {
       const compacted = await summarizeHistory({ router, model, tenant, requestId, messages, keepRecent });
       if (compacted) {

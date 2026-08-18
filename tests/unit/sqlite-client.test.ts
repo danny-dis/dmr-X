@@ -68,7 +68,10 @@ describe('sqlite-client', () => {
       // 065 adds agentic_sessions (durable /agentic/chat conversations).
       // 070 adds jobs.
       // 071 adds bandit_arms (persisted Thompson bandit posterior).
-      expect(row.v).toBe(71);
+      // 072-075: agent tool UX / sidecar / plan-mode polish.
+      // 076 adds agent capabilities + seeds the system tenant and __receptionist.
+      // 077 adds per-agent compaction thresholds.
+      expect(row.v).toBe(77);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

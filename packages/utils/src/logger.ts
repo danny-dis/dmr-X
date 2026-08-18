@@ -50,7 +50,9 @@ export function createLogger(name: string): pino.Logger {
     // object (e.g. `logger.error({ err, req: request })`). Without this, pino
     // serializes `IncomingMessage.rawHeaders`, leaking API keys on every error.
     redact: {
-      paths: SENSITIVE_HEADERS.map((h) => `req.headers.${h}`),
+      // Bracket notation — fast-redact rejects hyphens in bare path segments
+      // (e.g. `req.headers.x-api-key`), so express each header as a quoted key.
+      paths: SENSITIVE_HEADERS.map((h) => `req.headers['${h}']`),
       censor: '[REDACTED]',
     },
     serializers: {

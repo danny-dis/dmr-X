@@ -93,7 +93,7 @@ any transitive dependency is RCE on the gateway, with no opt-in.
 `if (godmodeKey && !llmBaseUrl) env.GODMODE_API_KEY = godmodeKey;`. The comment
 at `:549-553` states the intent — unset disables auth in relay/local mode. The
 autostart path always passes `llmBaseUrl` (`sidecar-boot.ts:548-551`), so the
-child on port 7860 has auth disabled while configured to relay into DMR-X's
+child on port 47115 has auth disabled while configured to relay into DMR-X's
 provider vault. **Unverified:** the child's bind address lives in the external
 fork; loopback vs `0.0.0.0` is unconfirmed and decides the severity.
 

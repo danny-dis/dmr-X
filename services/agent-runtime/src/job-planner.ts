@@ -457,6 +457,7 @@ function toGraphTask(task: PlannedTask, index: number): JobTask {
     status: 'pending',
     dependsOn: task.dependsOn,
     attempt: 0,
+    maxRetries: 3,
     output: null,
     createdAt: '',
     updatedAt: '',

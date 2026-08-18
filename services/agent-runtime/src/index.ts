@@ -92,3 +92,24 @@ export {
   subscribeToJobEvents,
   type JobEvent,
 } from './job-orchestrator.js';
+
+export {
+  RECEPTIONIST_AGENT_NAME,
+  RECEPTIONIST_TOOLS,
+  getReceptionistToolHandlers,
+  jobDecompose,
+  findAgents,
+  assignTask,
+  readJobBoard,
+  requestVerification,
+  deliverJob,
+  escalateToHuman,
+  verifyAcceptanceCriteria,
+  normalizeCriteria,
+  scoreAgentForTask,
+  type ReceptionistToolContext,
+  type ReceptionistToolDefinition,
+  type AgentMatch,
+  type CriterionVerdict,
+  type AcceptanceVerification,
+} from './receptionist.js';

@@ -145,7 +145,7 @@ Runtime connection settings for the managed G0DM0D3 sidecar (in addition to
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GODMODE_API_URL` | `http://localhost:7860` | Base URL the gateway uses to reach the G0DM0D3 API server. |
+| `GODMODE_API_URL` | `http://localhost:47115` | Base URL the gateway uses to reach the G0DM0D3 API server. |
 | `GODMODE_API_KEY` | — | API key for the G0DM0D3 instance, only needed if it requires auth. |
 | `GODMODE_OPENROUTER_API_KEY` | — | OpenRouter key for G0DM0D3 to route via OpenRouter; falls back to `OPENROUTER_API_KEY` when unset. |
 

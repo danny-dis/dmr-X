@@ -114,7 +114,7 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
 
     if (liveHealthy) {
       setGodmodeConfig({
-        baseUrl: live!.url ?? 'http://localhost:7860',
+        baseUrl: live!.url ?? 'http://localhost:47115',
         openrouterApiKey: '',
         llmBaseUrl: live!.llm_base_url ?? `${gatewayUrl}/v1`,
         llmApiKey: live!.llm_api_key ?? undefined,
@@ -130,7 +130,7 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
         llmBaseUrl: `${gatewayUrl}/v1`,
       });
       setGodmodeConfig({
-        baseUrl: started.url ?? 'http://localhost:7860',
+        baseUrl: started.url ?? 'http://localhost:47115',
         openrouterApiKey: '',
         llmBaseUrl: started.llm_base_url ?? `${gatewayUrl}/v1`,
         llmApiKey: started.llm_api_key ?? undefined,

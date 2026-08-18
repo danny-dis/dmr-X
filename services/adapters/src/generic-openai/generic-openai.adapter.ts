@@ -433,6 +433,27 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       );
     }
 
+    // Empty-content guard (mirror chat.routes.ts streaming path, ~L517).
+    // A 200 with zero content tokens AND no tool calls is a silent
+    // free-tier failure (e.g. gemini-3.5-flash spending its whole budget
+    // on reasoning, or a model ignoring tool_choice). Throw a
+    // ProviderError so the fallback chain picks the next candidate
+    // instead of delivering an empty body to the caller.
+    const guardMessage = data.choices?.[0]?.message;
+    const hasContent =
+      guardMessage?.content &&
+      typeof guardMessage.content === 'string' &&
+      guardMessage.content.length > 0;
+    const hasToolCalls =
+      Array.isArray(guardMessage?.tool_calls) && guardMessage.tool_calls.length > 0;
+    if (!hasContent && !hasToolCalls) {
+      throw new ProviderError(
+        `${this.providerId} chat: upstream returned HTTP ${response.status} with empty content and no tool calls`,
+        this.providerId,
+        502,
+      );
+    }
+
     const latencyMs = Date.now() - start;
 
     return {
