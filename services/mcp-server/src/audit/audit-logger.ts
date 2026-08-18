@@ -13,7 +13,10 @@
 
 import crypto from 'node:crypto';
 
+import { getDb } from '@dmr-x/db';
 import { createLogger } from '@dmr-x/utils';
+
+import { getAuditLogStore } from './audit-store.js';
 
 const logger = createLogger('mcp-server:audit');
 
@@ -140,10 +143,33 @@ export class AuditTrailEngine {
     event.hash = this.calculateHash(event);
     this.lastHash = event.hash;
 
-    // Store event
+    // Store event in-memory (for fast reads)
     this.events.push(event);
 
-    // Trim old events
+    // Persist to SQLite (compliance: survive restarts)
+    try {
+      const store = getAuditLogStore({ hashAlgorithm: this.config.hashAlgorithm });
+      store.insert({
+        id: event.id,
+        timestamp: event.timestamp.toISOString(),
+        event_type: event.type,
+        severity: event.severity,
+        message: event.message,
+        actor_type: event.actor.type,
+        actor_id: event.actor.id,
+        actor_ip: event.actor.ip ?? null,
+        target_type: event.target?.type ?? null,
+        target_id: event.target?.id ?? null,
+        metadata: event.metadata ? JSON.stringify(event.metadata) : null,
+        request: event.request ? JSON.stringify(event.request) : null,
+        response: event.response ? JSON.stringify(event.response) : null,
+      });
+    } catch (dbErr) {
+      // Best-effort persistence — never fail an audit log because of DB issues
+      logger.warn({ err: dbErr }, 'Failed to persist audit event to DB');
+    }
+
+    // Trim old events (in-memory + DB)
     this.trimEvents();
 
     // Log to console
@@ -418,15 +444,23 @@ export class AuditTrailEngine {
   }
 
   private trimEvents(): void {
-    // Trim by count
+    // Trim by count (in-memory)
     if (this.events.length > this.config.maxLogSize) {
       this.events = this.events.slice(-this.config.maxLogSize);
     }
 
-    // Trim by retention period
+    // Trim by retention period (in-memory)
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - this.config.retentionDays);
     this.events = this.events.filter((e) => e.timestamp >= cutoffDate);
+
+    // Trim by retention period (DB) — best-effort
+    try {
+      const store = getAuditLogStore({ hashAlgorithm: this.config.hashAlgorithm });
+      store.prune(this.config.retentionDays);
+    } catch (dbErr) {
+      logger.warn({ err: dbErr }, 'Failed to prune audit events from DB');
+    }
   }
 
   private exportAsCSV(): string {

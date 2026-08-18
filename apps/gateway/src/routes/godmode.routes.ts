@@ -20,6 +20,7 @@ import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 import { getGodmodeService, setGodmodeConfig } from '@dmr-x/godmode';
 import { serverManager, getGodmodeRepoInfo, getInstalledGodmodeRef } from '@dmr-x/server-manager';
 import { checkGodmodeUpstream } from '../lib/godmode-upstream.js';
+import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 import type {
   GodmodeChatRequest,
   UltraplinianRequest,
@@ -106,6 +107,15 @@ function replyError(err: unknown): { error: string; message: string } {
 
 export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   const service = getGodmodeService();
+
+  // Ensure service is initialized before handling requests
+  if (!service.isInitialized()) {
+    try {
+      await service.initialize();
+    } catch (err) {
+      logger.warn({ err }, 'GodmodeService initialization deferred — will retry on first request');
+    }
+  }
 
   // Health check
   server.get('/godmode/health', async () => {
@@ -243,17 +253,24 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   server.post('/godmode/server/install', async (request) => {
     try {
       const body = (request.body ?? {}) as { openrouterApiKey?: string; llmBaseUrl?: string; llmApiKey?: string };
+      // C4 — SSRF: validate llmBaseUrl against private/loopback ranges before
+      // passing it to serverManager.install(). The godmode lifecycle endpoints
+      // are tenant-authenticated, not admin-authenticated, so any tenant key
+      // could point the relay at an internal host without this check.
+      if (body.llmBaseUrl) {
+        await validateBaseUrlForSSRF(body.llmBaseUrl);
+      }
       const res = await serverManager.install({
         openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
         llmBaseUrl: body.llmBaseUrl,
-        llmApiKey: body.llmApiKey,
+        llmApiKey: body.llmApiKey
       });
       const relay = res.openrouter_key_ref?.startsWith('relay:')
         ? res.openrouter_key_ref.slice('relay:'.length)
         : null;
       // Point the proxy at the freshly-launched server.
       setGodmodeConfig({
-        baseUrl: res.url ?? 'http://localhost:7860',
+        baseUrl: res.url ?? 'http://localhost:47115',
         apiKey: res.api_key ?? undefined,
         openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
         llmBaseUrl: relay ?? undefined,
@@ -275,17 +292,21 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       // DMR-X itself (reuses the host's provider vault, incl. LOCAL MODE).
       const gatewayUrl = resolveGatewayUrl();
       const useRelay = !body.openrouterApiKey && !process.env.OPENROUTER_API_KEY;
+      // C4 — SSRF: validate llmBaseUrl before passing to serverManager.start()
+      if (body.llmBaseUrl) {
+        await validateBaseUrlForSSRF(body.llmBaseUrl);
+      }
       const llmBaseUrl = body.llmBaseUrl ?? (useRelay ? `${gatewayUrl}/v1` : undefined);
       const res = await serverManager.start({
         openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
         llmBaseUrl,
-        llmApiKey: body.llmApiKey,
+        llmApiKey: body.llmApiKey
       });
       const relay = res.openrouter_key_ref?.startsWith('relay:')
         ? res.openrouter_key_ref.slice('relay:'.length)
         : null;
       setGodmodeConfig({
-        baseUrl: res.url ?? 'http://localhost:7860',
+        baseUrl: res.url ?? 'http://localhost:47115',
         apiKey: res.api_key ?? undefined,
         openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
         llmBaseUrl: relay ?? undefined,

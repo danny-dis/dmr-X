@@ -45,7 +45,7 @@ import {
   type McpConfigFile,
 } from './config.js';
 import { createDMRXMcpServer, reconcileExternalTools, type DMRXMcpServerConfig } from './server.js';
-import { reconcileAggregationServers } from './aggregation-reconcile.js';
+import { handleOAuthRoutes } from './oauth/routes.js';
 
 // Re-export for programmatic use
 export { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
@@ -374,6 +374,67 @@ let liveConfig: DMRXMcpServerConfig | null = null;
 
 const MCP_CONFIG_WATCH_INTERVAL = 2000; // 2 seconds
 
+// ---------------------------------------------------------------------------
+// Active session registry (for graceful shutdown)
+// ---------------------------------------------------------------------------
+
+interface ActiveSession {
+  id: string;
+  transport: { handlePostMessage?: (...args: unknown[]) => Promise<void>; handleRequest?: (...args: unknown[]) => Promise<void>; close?: () => void | Promise<void> };
+  server: { close?: () => void | Promise<void> };
+}
+
+const activeSessions = new Map<string, ActiveSession>();
+
+function registerActiveSession(id: string, session: ActiveSession): void {
+  activeSessions.set(id, session);
+}
+
+function unregisterActiveSession(id: string): void {
+  activeSessions.delete(id);
+}
+
+/**
+ * Gracefully close all active SSE / Streamable HTTP sessions.
+ * Called during shutdown so clients get a clean disconnect instead of a TCP RST.
+ */
+async function drainSessions(timeoutMs: number = 5000): Promise<void> {
+  if (activeSessions.size === 0) return;
+
+  console.error(`[shutdown] Draining ${activeSessions.size} active session(s)...`);
+  const deadline = Date.now() + timeoutMs;
+
+  const closers: Array<Promise<void>> = [];
+  for (const [id, session] of activeSessions) {
+    try {
+      const closer = async () => {
+        try {
+          if (session.transport.close) {
+            await session.transport.close();
+          }
+        } catch { /* best-effort */ }
+        try {
+          if (session.server.close) {
+            await session.server.close();
+          }
+        } catch { /* best-effort */ }
+        activeSessions.delete(id);
+      };
+      closers.push(closer());
+    } catch { /* best-effort */ }
+  }
+
+  // Wait for all closes or until timeout
+  await Promise.race([
+    Promise.all(closers),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+
+  if (activeSessions.size > 0) {
+    console.error(`[shutdown] ${activeSessions.size} session(s) did not drain cleanly — forcing exit`);
+  }
+}
+
 async function buildConfig(): Promise<BuiltConfig> {
   const configFile = loadConfigFile();
   const adapterConfigs: Record<string, { baseUrl: string; apiKey?: string }> = {};
@@ -600,6 +661,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const { SSEServerTransport } = await import('@modelcontextprotocol/server-legacy/sse');
   const http = await import('node:http');
   const { handleA2ARoutes } = await import('./a2a/handler.js');
+  const { handleOAuthRoutes } = await import('./oauth/routes.js');
 
   // Share ONE McpServer/external-client handle across all SSE sessions so that
   // hot-reload (config watcher) and the upstream liveness sweeper operate on a
@@ -647,6 +709,12 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
+    // Handle OAuth routes
+    if (url.pathname.startsWith('/oauth/') || url.pathname === '/.well-known/oauth-authorization-server') {
+      const oauthHandled = await handleOAuthRoutes(req, res, config.oauth);
+      if (oauthHandled) return;
+    }
+
     if (url.pathname === '/sse' && req.method === 'GET') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
@@ -663,17 +731,22 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
       sessions.set(sessionId, { server, transport });
       touchSession(sessionId, () => {
         sessions.delete(sessionId);
+        unregisterActiveSession(sessionId);
       });
 
       transport.onclose = () => {
         removeSession(sessionId);
         sessions.delete(sessionId);
+        unregisterActiveSession(sessionId);
       };
 
       res.on('close', () => {
         removeSession(sessionId);
         sessions.delete(sessionId);
+        unregisterActiveSession(sessionId);
       });
+
+      registerActiveSession(sessionId, { id: sessionId, server, transport: transport as unknown as ActiveSession['transport'] });
 
       await server.connect(transport);
       return;
@@ -807,6 +880,12 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
+    // Handle OAuth routes
+    if (url.pathname.startsWith('/oauth/') || url.pathname === '/.well-known/oauth-authorization-server') {
+      const oauthHandled = await handleOAuthRoutes(req, res, config.oauth);
+      if (oauthHandled) return;
+    }
+
     if (url.pathname === '/mcp') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
@@ -836,7 +915,9 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
             sessions.set(sid, { server, transport });
             touchSession(sid, () => {
               sessions.delete(sid);
+              unregisterActiveSession(sid);
             });
+            registerActiveSession(sid, { id: sid, server, transport: transport as unknown as ActiveSession['transport'] });
           },
         });
 
@@ -844,6 +925,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
           if (transport.sessionId) {
             removeSession(transport.sessionId);
             sessions.delete(transport.sessionId);
+            unregisterActiveSession(transport.sessionId);
           }
         };
 
@@ -924,6 +1006,10 @@ async function disposeAndExit(client: MCPClient | null, code: number): Promise<v
       console.error('Error disposing external MCP client:', err);
     }
   }
+
+  // Gracefully drain active SSE / Streamable HTTP sessions
+  await drainSessions(5000);
+
   // Flush the MCP server's own DB, then close A2A persistence. Both are
   // best-effort — a failure must never block the process from exiting.
   try {

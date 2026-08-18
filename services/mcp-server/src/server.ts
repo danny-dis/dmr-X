@@ -182,6 +182,8 @@ export interface DMRXMcpServerConfig {
     enabled?: boolean;
     agentCard?: AgentCardConfig;
   };
+  /** OAuth 2.1 authorization server configuration */
+  oauth?: import('./oauth/routes.js').OAuthRoutesConfig;
   /** Federation configuration for multi-instance tool sharing */
   federation?: FederationConfig;
   /** DMR-X gateway URL used to expose defined subagents as MCP tools */

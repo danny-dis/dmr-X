@@ -810,12 +810,42 @@ export const ALLOWED_BASH_COMMANDS = new Set([
  * allowlisted binary; command substitution, backgrounding, and redirects to
  * system paths are blocked.
  */
+/**
+ * Binaries that can execute arbitrary code from a string argument. The
+ * allowlist intentionally includes these (they're needed for builds/tests),
+ * but ONLY for their standard invocation — never with a code-execution flag.
+ * `node -e`, `python -c`, `bun x`, and `npx` all bypass the allowlist's
+ * intent by running attacker-supplied code instead of a project script.
+ *
+ * C1 — without this, any tenant key yields arbitrary code execution on the
+ * gateway host via the bash tool.
+ */
+const ARBITRARY_CODE_FLAGS: { binary: string; pattern: RegExp; flag: string }[] = [
+  { binary: 'node', pattern: /node\s+(-e|--eval|-p|--print)\s/, flag: '-e/--eval/-p/--print' },
+  { binary: 'python', pattern: /python3?\s+-[cm]\s/, flag: '-c/-m' },
+  { binary: 'python3', pattern: /python3?\s+-[cm]\s/, flag: '-c/-m' },
+  { binary: 'bun', pattern: /bun\s+(x|run)\s+/, flag: 'x/run' },
+  { binary: 'deno', pattern: /deno\s+(eval|run)\s/, flag: 'eval/run' },
+  { binary: 'npx', pattern: /npx\s+/, flag: 'npx (downloads + runs arbitrary packages)' },
+];
+
 export function isBashCommandAllowed(command: string): { allowed: boolean; reason?: string } {
   const trimmed = command.trim();
 
   // Block command substitution patterns
   if (/\$\(|`[^`]*`|\$\{/.test(trimmed)) {
     return { allowed: false, reason: 'Command substitution not allowed' };
+  }
+
+  // Block arbitrary-code-execution flags on runtime binaries. The allowlist
+  // includes node/python/bun/deno/npx for legitimate build/test use, but
+  // `node -e 'require("child_process").exec(...)'` would otherwise pass —
+  // any tenant key could run arbitrary code on the host via the bash tool.
+  for (const { binary, pattern, flag } of ARBITRARY_CODE_FLAGS) {
+    const firstWord = trimmed.split(/\s+/)[0]?.split('/').pop() || '';
+    if (firstWord === binary && pattern.test(trimmed)) {
+      return { allowed: false, reason: `'${binary}' flag '${flag}' allows arbitrary code execution and is blocked` };
+    }
   }
 
   // Split into statement segments on ; && || | and newlines. Every segment

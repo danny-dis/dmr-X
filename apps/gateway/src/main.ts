@@ -1,3 +1,25 @@
+// Load .env before anything else reads process.env.
+// The gateway has no dotenv loader, so env vars from .env (GODMODE_*,
+// DMRX_GODMODE_*, provider keys, etc.) never reached the process. This
+// inline parser brings them in so the godmode companion boots on startup.
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+try {
+  const envPath = resolve(process.cwd(), '.env');
+  const envFile = readFileSync(envPath, 'utf8');
+  for (const line of envFile.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim();
+    if (!(key in process.env)) process.env[key] = val;
+  }
+} catch {
+  // .env missing — ignore, use process.env as-is
+}
+
 // sql.js returns BigInt for INTEGER columns. JSON.stringify cannot serialize
 // BigInt, which causes 500s with empty bodies when Fastify tries to send the
 // response. Patch the prototype before anything else loads.
@@ -104,7 +126,6 @@ function validateStartupConfig(): void {
 
   const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
   const encryptionKey = process.env.DMRX_ENCRYPTION_KEY;
-  const corsOrigin = process.env.DMRX_CORS_ORIGIN;
 
   if (
     !adminApiKey?.trim() ||
@@ -117,7 +138,17 @@ function validateStartupConfig(): void {
   if (!encryptionKey || !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
     errors.push('DMRX_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) in production for AES-256-GCM encryption. Generate with: openssl rand -hex 32');
   }
+}
 
+function validateProductionConfig(): void {
+  const errors: string[] = [];
+
+  const corsOrigin = process.env.DMRX_CORS_ORIGIN;
+
+  // H2 — CORS must NEVER accept a wildcard/empty origin, even when NODE_ENV
+  // is not 'production'. The audit found the old gate let non-production boots
+  // (dev, staging, unset) accept DMRX_CORS_ORIGIN=*, which in a real deploy
+  // opens the API to any browser origin. Validate unconditionally.
   if (!corsOrigin || corsOrigin.split(',').some(origin => {
     const value = origin.trim();
     return value.length === 0 || value === '*';
@@ -139,6 +170,7 @@ function failIfInvalid(errors: string[]): void {
 
 async function main(): Promise<void> {
   validateStartupConfig();
+  validateProductionConfig();
   const port = parseInt(process.env.PORT || '3000', 10);
 
   // Initialize SQLite database (async — loads WASM, runs migrations)
@@ -253,7 +285,7 @@ async function main(): Promise<void> {
     }
 
     // Tear down G0DM0D3 too, otherwise its process tree outlives every restart
-    // and keeps port 7860 held by a process nothing supervises.
+    // and keeps port 47115 held by a process nothing supervises.
     try {
       await stopGodmode();
     } catch (err) {
