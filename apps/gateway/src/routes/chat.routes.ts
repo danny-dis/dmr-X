@@ -80,6 +80,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 for (const wrapModel of wrapOrder) {
                   try {
                     let sent = false;
+                    let sawToolCalls = false;
                     for await (const delta of godmode.chatStreamFull({
                       messages: body.messages as any,
                       model: wrapModel,
@@ -91,7 +92,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                     })) {
                       const chunkDelta: any = {};
                       if (delta.content) chunkDelta.content = delta.content;
-                      if (delta.tool_calls) chunkDelta.tool_calls = delta.tool_calls;
+                      if (delta.tool_calls) {
+                        chunkDelta.tool_calls = delta.tool_calls;
+                        sawToolCalls = true;
+                      }
                       if (delta.content || delta.tool_calls) {
                         reply.raw.write(
                           `data: ${JSON.stringify({
@@ -110,7 +114,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                           id: `gm-${requestId}`,
                           object: 'chat.completion.chunk',
                           model: wrapModel,
-                          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+                          choices: [{ index: 0, delta: {}, finish_reason: sawToolCalls ? 'tool_calls' : 'stop' }],
                         })}\n\n`,
                       );
                       reply.raw.write('data: [DONE]\n\n');
@@ -542,7 +546,14 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               continue;
             }
             if (!reply.raw.write(data)) {
-              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+              await new Promise<void>((resolve) => {
+                const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
+                const onClose = () => { reply.raw.off('drain', onDrain); reply.raw.off('error', onError); resolve(); };
+                const onError = () => { reply.raw.off('drain', onDrain); reply.raw.off('close', onClose); resolve(); };
+                reply.raw.once('drain', onDrain);
+                reply.raw.once('close', onClose);
+                reply.raw.once('error', onError);
+              });
             }
             // Once any token/done bytes reach the client, we can no longer fall back.
             if (chunk.type === 'token' || chunk.type === 'done') {
@@ -619,37 +630,51 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             );
             continue;
           }
-          // SMOOTH-FLOW FIX (benign trailing error): free-tier providers
-          // sometimes emit a trailing error chunk AFTER successfully streaming
-          // valid content / tool calls (e.g. gemini ending a tool-call stream
-          // with an error frame). If we have already delivered real output, the
-          // turn is effectively complete — emitting "Stream failed" here would
-          // make the client (pi) abort a turn whose tool calls it already has.
-          // Treat a post-output error as benign: close cleanly with [DONE] and
-          // mark success so no raw provider error reaches the client.
+          // If a stream errors after bytes have been sent, the handler writes a
+          // clean terminal frame with `finish_reason: 'stop'` and sets
+          // `succeeded = true`. The comment scopes this to free-tier providers
+          // emitting a trailing error frame, but the branch has **no such
+          // discriminator** — it catches a provider dropping at token 5 of 500
+          // identically. The client receives a truncated response
+          // indistinguishable from a complete one.
+          //
+          // FIX (R7): only treat a post-output error as benign if the stream
+          // already delivered meaningful content (>100 chars) AND the error is
+          // a known trailing-error pattern (free-tier providers sometimes emit
+          // a trailing error frame after valid content). Otherwise, report it
+          // as a real error.
           if (streamedAnyOutput) {
-            logger.warn(
-              { err: streamError instanceof Error ? streamError.message : streamError, requestId, provider: candidate.providerId },
-              'Stream error after output already sent; treating as benign and closing stream'
-            );
-            // Emit a clean terminal frame so clients (pi) see a properly
-            // finished stream with the correct finish_reason, then succeed.
-            const finishReason = collectedToolCalls ? 'tool_calls' : 'stop';
-            const doneFrame = `data: ${JSON.stringify({
-              id: requestId,
-              object: 'chat.completion.chunk',
-              choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-              usage: {
-                prompt_tokens: streamPromptTokens,
-                completion_tokens: streamCompletionTokens,
-                total_tokens: streamPromptTokens + streamCompletionTokens,
-              },
-            })}\n\n`;
-            if (!reply.raw.write(doneFrame)) {
-              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+            const chunkErr = streamError as { __streamChunkError?: boolean };
+            const isKnownTrailingError = chunkErr.__streamChunkError &&
+              collectedContent.length > 100;
+            if (isKnownTrailingError) {
+              logger.warn(
+                { err: streamError instanceof Error ? streamError.message : streamError, requestId, provider: candidate.providerId },
+                'Stream error after output already sent; treating as benign and closing stream'
+              );
+              const finishReason = collectedToolCalls ? 'tool_calls' : 'stop';
+              const doneFrame = `data: ${JSON.stringify({
+                id: requestId,
+                object: 'chat.completion.chunk',
+                choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+                usage: {
+                  prompt_tokens: streamPromptTokens,
+                  completion_tokens: streamCompletionTokens,
+                  total_tokens: streamPromptTokens + streamCompletionTokens,
+                } })}\n\n`;
+              if (!reply.raw.write(doneFrame)) {
+                await new Promise<void>((resolve) => {
+                  const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
+                  const onClose = () => { reply.raw.off('drain', onDrain); reply.raw.off('error', onError); resolve(); };
+                  const onError = () => { reply.raw.off('drain', onDrain); reply.raw.off('close', onClose); resolve(); };
+                  reply.raw.once('drain', onDrain);
+                  reply.raw.once('close', onClose);
+                  reply.raw.once('error', onError);
+                });
+              }
+              succeeded = true;
+              break;
             }
-            succeeded = true;
-            break;
           }
           // Cannot fall back (already streamed output, or no candidates left).
           // ROOT-CAUSE FIX (smooth-flow / sticky self-healing): if the provider
@@ -686,7 +711,14 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           if (!reply.raw.write(`data: ${JSON.stringify({
             error: { message: 'Stream failed', type: 'stream_error' },
           })}\n\n`)) {
-            await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+            await new Promise<void>((resolve) => {
+              const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
+              const onClose = () => { reply.raw.off('drain', onDrain); reply.raw.off('error', onError); resolve(); };
+              const onError = () => { reply.raw.off('drain', onDrain); reply.raw.off('close', onClose); resolve(); };
+              reply.raw.once('drain', onDrain);
+              reply.raw.once('close', onClose);
+              reply.raw.once('error', onError);
+            });
           }
           break;
         } finally {

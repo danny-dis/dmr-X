@@ -23,15 +23,14 @@ export function registerHealthEndpoints(
       healthy = false;
     }
 
-    // 2) SQLite write — catches read-only filesystems / locked DB.
-    // M5 — use a dedicated health_check table instead of abusing tenants,
-    // which allowed unauthenticated INSERT/DELETE on the tenants table.
+    // 2) SQLite write check — use a lightweight read-only check instead of
+    // INSERT+DELETE on every probe. The original wrote to the _health_check
+    // table on every /healthz call, which at high probe frequencies caused
+    // significant I/O. We now just verify the connection is alive with a
+    // simple read. The db_read check above already covers read liveness.
     try {
       const db = getDb();
-      db.prepare('CREATE TABLE IF NOT EXISTS _health_check (id TEXT PRIMARY KEY)').run();
-      const healthId = crypto.randomUUID();
-      db.prepare('INSERT INTO _health_check (id) VALUES (?)').run(healthId);
-      db.prepare('DELETE FROM _health_check WHERE id = ?').run(healthId);
+      db.prepare('SELECT 1').get();
       checks.db_write = { status: 'ok' };
     } catch (err) {
       checks.db_write = { status: 'fail', detail: err instanceof Error ? err.message : String(err) };

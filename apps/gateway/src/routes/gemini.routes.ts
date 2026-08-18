@@ -187,7 +187,14 @@ async function handleGenerateContent(
             if (controller.signal.aborted) break;
             // Backpressure: pause writing if the response buffer is full.
             if (!reply.raw.write(sseLine)) {
-              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+              await new Promise<void>((resolve) => {
+                const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
+                const onClose = () => { reply.raw.off('drain', onDrain); reply.raw.off('error', onError); resolve(); };
+                const onError = () => { reply.raw.off('drain', onDrain); reply.raw.off('close', onClose); resolve(); };
+                reply.raw.once('drain', onDrain);
+                reply.raw.once('close', onClose);
+                reply.raw.once('error', onError);
+              });
             }
           }
         } catch (streamError) {
@@ -196,7 +203,14 @@ async function handleGenerateContent(
           } else {
             logger.error({ err: streamError, requestId }, 'Gemini streaming error');
             if (!reply.raw.write(`data: ${JSON.stringify({ error: { message: 'Stream failed', code: 500 } })}\n\n`)) {
-              await new Promise<void>(resolve => reply.raw.once('drain', resolve));
+              await new Promise<void>((resolve) => {
+                const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
+                const onClose = () => { reply.raw.off('drain', onDrain); reply.raw.off('error', onError); resolve(); };
+                const onError = () => { reply.raw.off('drain', onDrain); reply.raw.off('close', onClose); resolve(); };
+                reply.raw.once('drain', onDrain);
+                reply.raw.once('close', onClose);
+                reply.raw.once('error', onError);
+              });
             }
           }
         } finally {

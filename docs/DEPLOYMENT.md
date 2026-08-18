@@ -131,7 +131,7 @@ The binary creates its data directory at `~/.dmr-x/` on first run.
 
 ### Pre-Built Binaries
 
-Download from the [Releases](https://github.com/dmr-x/dmr-x/releases) page:
+Download from the [Releases](https://github.com/danny-dis/dmr-X/releases) page:
 
 | Platform | Archive |
 |----------|---------|

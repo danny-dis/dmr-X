@@ -34,6 +34,7 @@ import { federationService } from '@dmr-x/federation';
 import { memoryService } from '@dmr-x/memory';
 import { logger, parseBodyLimit, parseTrustProxy } from '@dmr-x/utils';
 import { workersService } from '@dmr-x/workers';
+import { retentionService } from '@dmr-x/telemetry';
 
 import { createServer } from './server.js';
 import { connectPersistedMcpServers } from './routes/mcp-admin.routes.js';
@@ -188,6 +189,9 @@ async function main(): Promise<void> {
   federationService.start();
   logger.info('Platform services started');
 
+  // O5 — start data retention service to prune unbounded tables
+  retentionService.start();
+
   // Start server
   const { server, runBackgroundInit } = await createServer();
 
@@ -296,6 +300,7 @@ async function main(): Promise<void> {
       memoryService.stop();
       workersService.stop();
       federationService.stop();
+      retentionService.stop();
     } catch (err) {
       logger.error({ err }, 'Error stopping platform services');
     }
@@ -311,7 +316,7 @@ async function main(): Promise<void> {
       logger.error({ err }, 'Error during closeDb()');
     }
     logger.info('Shutdown complete');
-    process.exit(0);
+    process.exit(1);
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));

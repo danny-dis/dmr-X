@@ -75,6 +75,12 @@ export function registerSecurity(server: FastifyInstance): void {
       code: statusCode >= 500 && !isDev ? 'internal_error' : code.toLowerCase(),
     };
 
+    // O17 — set x-request-id response header so clients can correlate
+    // responses with requests. Previously the id was only returned inside
+    // 5xx JSON bodies, making 4xx responses and successes uncorrelatable
+    // from the client side.
+    reply.header('X-Request-Id', request.id);
+
     // For 5xx, include the request id so users can quote it in support
     // tickets (matches the pattern used by Stripe, GitHub, Cloudflare).
     // The x-request-id response header carries the same value.

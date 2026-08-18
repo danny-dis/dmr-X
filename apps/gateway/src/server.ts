@@ -13,7 +13,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 
-import { getTelemetryService, contentCaptureService } from '@dmr-x/telemetry';
+import { getTelemetryService, contentCaptureService, retentionService } from '@dmr-x/telemetry';
 import { ProviderUnavailableError } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications, classifyFreeProviderModels } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
@@ -433,11 +433,42 @@ export async function createServer() {
 
   // Start health checker — delay initial run to allow all adapters (including
   // those loaded from DB and auto-registered) to fully initialise.
+  //
+  // Scoped to DMRX_PROVIDER_ALLOWLIST when one is set. Probing EVERY
+  // registered adapter is what made the gateway fall over: the catalog
+  // registers 40+ providers, each probe retries to attempt 4 on failure, so
+  // one 30s tick fired 160+ concurrent outbound requests. That exhausted
+  // sockets and killed the process; pm2 restarted it, and any in-flight agent
+  // turn saw a dead socket — surfaced to callers as the misleading
+  // "All providers currently unavailable". Multi-step agent runs (10 turns)
+  // hit the storm repeatedly, which is why job tasks died while a
+  // single-turn direct call survived.
+  //
+  // getCandidates() already honours the allowlist, so unlisted providers can
+  // never be routed to. Health-probing them was pure overhead against
+  // credentials the operator does not have.
   const healthChecker = new HealthChecker({ intervalMs: 30_000 });
   server.addHook('onListen', async () => {
     // Register health checks for all providers after a short delay
     setTimeout(async () => {
-      for (const id of adapterRegistry.list()) {
+      const allowlist = (process.env.DMRX_PROVIDER_ALLOWLIST ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const registered = adapterRegistry.list();
+      const monitored = allowlist.length
+        ? registered.filter((id) => allowlist.includes(id))
+        : registered;
+
+      if (allowlist.length && monitored.length < registered.length) {
+        logger.info(
+          { monitored: monitored.length, registered: registered.length, allowlist },
+          'Health checks scoped to DMRX_PROVIDER_ALLOWLIST',
+        );
+      }
+
+      for (const id of monitored) {
         const adapter = adapterRegistry.peek(id);
         if (adapter) {
           healthChecker.startProviderCheck(id, async () => {

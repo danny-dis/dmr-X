@@ -47,9 +47,13 @@
   can ever be routed to them.
 - **Hybrid tool search (BM25 + semantic, RRF)** — ✅ **Shipped** (`services/tool-search`, `DMRX_TOOL_SEARCH_*`).
 
-## Kubernetes / Operator (formerly "PHASE3-FEATURES")
+## SLO / Alerting
 
-- **Helm chart** — ✅ **Shipped** (`helm/dmr-x`).
+- **Burn-rate SLO alerts** — ✅ **Shipped.** `monitoring/prometheus-alerts.yml`
+  now has multi-window burn-rate rules (fast burn: 14.4x in 1h; slow burn: 6x in 6h).
+- **Benchmark SLO alerts** — 🔲 **Planned.** No benchmark failure rate alert exists. (O16)
+
+## Kubernetes / Operator (formerly \"PHASE3-FEATURES\")
 - **Kubernetes Operator** — ✅ **Shipped** (`services/operator`).
 - **Workflow engine (CRDs / Workflow API)** — ✅ **Shipped** (`services/operator`: `WorkflowSpec` +
   `generateWorkflowManifest()`; CRDs in `helm/`).

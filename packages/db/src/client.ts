@@ -694,9 +694,11 @@ export function runMigrations(
     .sort((a, b) => a.version - b.version);
 
   // Phase 1: apply SQL for each pending migration
+  const appliedMigrations: Array<{ version: number; filename: string; sql: string }> = [];
   for (const mig of pendingMigrations) {
     try {
       db.exec(mig.sql);
+      appliedMigrations.push(mig);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('duplicate column name')) {
@@ -711,6 +713,7 @@ export function runMigrations(
           `Migration ${mig.filename}: FTS5 module unavailable, applying migration without the search index`,
         );
         const statements = splitFt5(mig.sql);
+        let fts5Failed = false;
         for (const stmt of statements) {
           if (!stmt.trim()) continue;
           try {
@@ -718,7 +721,11 @@ export function runMigrations(
           } catch (e2: unknown) {
             const m2 = e2 instanceof Error ? e2.message : String(e2);
             log.warn(`Migration ${mig.filename}: skipping statement (${m2})`);
+            fts5Failed = true;
           }
+        }
+        if (!fts5Failed) {
+          appliedMigrations.push(mig);
         }
       } else {
         log.error(`Migration ${mig.filename} failed:`, err);
@@ -732,9 +739,10 @@ export function runMigrations(
   // tracking it via the migrations list.
   const hasChecksumColumn = tableHasColumn(db, 'schema_version', 'checksum');
 
-  // Phase 3: record each newly applied migration in schema_version.
-  // The INSERT shape depends on whether the checksum column exists.
-  for (const mig of pendingMigrations) {
+  // Phase 3: record each successfully applied migration in schema_version.
+  // Only migrations that were actually applied (not skipped due to errors)
+  // are recorded. This prevents marking partially-applied migrations as complete.
+  for (const mig of appliedMigrations) {
     const checksum = computeChecksum(mig.sql);
     insertSchemaVersionRow(db, mig.version, mig.filename, checksum, hasChecksumColumn);
     result.applied.push(mig.version);
