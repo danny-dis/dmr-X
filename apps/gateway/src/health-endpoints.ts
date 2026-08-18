@@ -23,12 +23,15 @@ export function registerHealthEndpoints(
       healthy = false;
     }
 
-    // 2) SQLite write — catches read-only filesystems / locked DB
+    // 2) SQLite write — catches read-only filesystems / locked DB.
+    // M5 — use a dedicated health_check table instead of abusing tenants,
+    // which allowed unauthenticated INSERT/DELETE on the tenants table.
     try {
       const db = getDb();
+      db.prepare('CREATE TABLE IF NOT EXISTS _health_check (id TEXT PRIMARY KEY)').run();
       const healthId = crypto.randomUUID();
-      db.prepare("INSERT INTO tenants (id, name) VALUES (?, ?)").run(healthId, '_health_write_check');
-      db.prepare("DELETE FROM tenants WHERE id = ?").run(healthId);
+      db.prepare('INSERT INTO _health_check (id) VALUES (?)').run(healthId);
+      db.prepare('DELETE FROM _health_check WHERE id = ?').run(healthId);
       checks.db_write = { status: 'ok' };
     } catch (err) {
       checks.db_write = { status: 'fail', detail: err instanceof Error ? err.message : String(err) };

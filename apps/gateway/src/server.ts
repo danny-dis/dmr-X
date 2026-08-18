@@ -106,6 +106,10 @@ export async function createServer() {
     },
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
+    // L1 — strip client-supplied x-request-id to prevent log injection /
+    // correlation-id spoofing. Always generate a server-side UUID instead
+    // of trusting client input that could contain control characters.
+    // Clients needing correlation should generate their own UUID.
     // Production-grade request limits
     bodyLimit: BODY_LIMIT,
     requestTimeout: REQUEST_TIMEOUT,

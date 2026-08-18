@@ -162,10 +162,10 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
       }
       const keyBuf = Buffer.from(apiKey);
       const adminBuf = Buffer.from(adminApiKey);
-      // Pad both buffers to a fixed length to prevent timing attacks that
-      // could leak the admin key length. The previous implementation compared
-      // lengths first, which leaks timing information about the key size.
-      const FIXED_KEY_LENGTH = 256;
+      // L2 — use the actual key length for padding instead of truncating
+      // to 256 bytes. Keys longer than 256 bytes would have their tail ignored,
+      // making different long keys compare as equal.
+      const FIXED_KEY_LENGTH = Math.max(256, keyBuf.length, adminBuf.length);
       const keyPadded = Buffer.alloc(FIXED_KEY_LENGTH, 0);
       const adminPadded = Buffer.alloc(FIXED_KEY_LENGTH, 0);
       keyBuf.copy(keyPadded);

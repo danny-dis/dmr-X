@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { getDb } from '@dmr-x/db';
 import { verifyApiKey, hashApiKey } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
@@ -22,10 +23,22 @@ export async function validateRoutes(server: FastifyInstance): Promise<void> {
       return { valid: false, error: 'Missing API key' };
     }
 
-    // Admin key check
+    // Admin key check — MUST use constant-time comparison to prevent
+    // timing attacks that leak the admin key byte-by-byte (the auth
+    // middleware does this correctly at auth.middleware.ts:163-173;
+    // the old `token === adminKey` was a timing oracle).
     const adminKey = process.env.DMRX_ADMIN_API_KEY;
-    if (adminKey && token === adminKey) {
-      return { valid: true, type: 'admin' };
+    if (adminKey && adminKey !== 'replace-with-admin-key') {
+      const tokenBuf = Buffer.from(token);
+      const adminBuf = Buffer.from(adminKey);
+      const FIXED_KEY_LENGTH = 256;
+      const tokenPadded = Buffer.alloc(FIXED_KEY_LENGTH, 0);
+      const adminPadded = Buffer.alloc(FIXED_KEY_LENGTH, 0);
+      tokenBuf.copy(tokenPadded);
+      adminBuf.copy(adminPadded);
+      if (timingSafeEqual(tokenPadded, adminPadded)) {
+        return { valid: true, type: 'admin' };
+      }
     }
 
     // Local mode: any key is valid

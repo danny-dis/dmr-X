@@ -102,17 +102,12 @@ function upsertEnvVar(envPath: string, key: string, value: string): void {
  * Looks up the provider's catalog entry to find the correct env-var name.
  */
 function syncApiKeyToEnvFile(providerName: string, apiKey: string | undefined): void {
-  if (!apiKey) return; // Don't write empty keys — only sync actual secrets
-
-  // Find the catalog entry to get the envKey
-  const template = PROVIDER_CATALOG.find(t => t.id === providerName);
-  if (!template?.envKey) return; // No env-var mapping for this provider
-
-  const envPath = findEnvFile();
-  if (!envPath) return; // No .env file found — skip silently
-
-  upsertEnvVar(envPath, template.envKey, apiKey);
-  logger.info({ provider: providerName, envKey: template.envKey, envPath }, 'Synced API key to .env file');
+  // M4 — provider keys are stored encrypted in the `provider_keys` table.
+  // Writing them to .env in plaintext defeats encryption at rest and feeds
+  // C1/C2 (the gateway process can read its own .env). This function is now
+  // a no-op; keys are loaded from the DB at boot (server.ts seed path).
+  void providerName;
+  void apiKey;
 }
 
 /**

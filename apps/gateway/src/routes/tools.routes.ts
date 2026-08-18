@@ -1021,7 +1021,10 @@ export function safePath(filePath: string, tenantId?: string, workspaceKey?: str
   const normalizedWorkspace = workspace.replace(/\\/g, '/');
   const normalizedReal = realPath.replace(/\\/g, '/');
 
-  if (!normalizedReal.startsWith(normalizedWorkspace)) {
+  // M2 — containment: require a trailing separator so workspace /sandbox/req1
+  // does NOT also admit /sandbox/req11. Without it, startsWith passes paths
+  // that merely share a prefix with the workspace dir.
+  if (normalizedReal !== normalizedWorkspace && !normalizedReal.startsWith(normalizedWorkspace + '/')) {
     throw new Error('Path outside workspace');
   }
 
