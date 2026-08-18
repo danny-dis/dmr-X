@@ -56,11 +56,26 @@ const speedPrior = (c: any): number => {
 const isFree = (c: any) => {
   if (c.pricingTier === 'free' || c.pricingTier === 'free_with_limits') return true;
   if (c.freeTierMetadata) return true;
-  if (FREE_PROVIDERS_ENV.includes(c.providerName) || FREE_PROVIDERS_ENV.includes(c.providerId)) return true;
   // Providers that namespace their free tier in the model id (OpenRouter's
   // `…:free`, opencode-zen's `…-free`).
   const id = String(c.modelId ?? '');
   if (/:free$|-free$/.test(id)) return true;
+  // DMRX_FREE_PROVIDERS is an operator declaration that a provider's KEY is a
+  // free-tier key — it is NOT a claim that every model that provider serves is
+  // free. Treating it as provider-wide marked genuinely paid flagship models
+  // (opencode-zen `claude-opus-4-8`, tokenrouter's paid pool) as free, so the
+  // free-only aliases elected them and the request died on the provider's own
+  // billing error ("No payment method", "Insufficient credits", "credit limit
+  // is insufficient") instead of routing to a model that actually costs
+  // nothing. Honour the declaration only when the model itself carries no
+  // positive price, which keeps the operator override working for providers
+  // whose catalog nominally prices a free-tier key while refusing to promote a
+  // model the catalog explicitly prices.
+  const declaredFreeProvider =
+    FREE_PROVIDERS_ENV.includes(c.providerName) || FREE_PROVIDERS_ENV.includes(c.providerId);
+  const hasPositivePrice =
+    (c.costPerInputToken ?? 0) > 0 || (c.costPerOutputToken ?? 0) > 0;
+  if (declaredFreeProvider && !hasPositivePrice) return true;
   // KNOWN LIMITATION: model_profiles.input_cost_per_1k is REAL NOT NULL
   // DEFAULT 0, so a model whose provider publishes no pricing is stored as 0 —
   // indistinguishable from a genuinely free one, and most /v1/models endpoints
@@ -68,8 +83,7 @@ const isFree = (c: any) => {
   // contract (tests/unit/meta-models.test.ts, "should exclude paid models when
   // costFilter=free"); dropping it broke that for callers who supply real
   // pricing. Closing the ambiguity needs a migration making the cost columns
-  // nullable so "unpriced" and "free" stop sharing a representation. Until
-  // then DMRX_FREE_PROVIDERS is the authoritative operator-side override.
+  // nullable so "unpriced" and "free" stop sharing a representation.
   if ((c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0) return true;
   return false;
 };

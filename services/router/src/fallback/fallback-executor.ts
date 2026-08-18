@@ -163,12 +163,56 @@ function isInsufficientQuotaError(error: unknown): boolean {
     msg.includes('insufficient quota') ||
     msg.includes('quota_exhausted') ||
     msg.includes('out of credits') ||
-    msg.includes('payment_required')
+    msg.includes('payment_required') ||
+    // Billing exhaustion is phrased differently by every gateway, and each
+    // phrasing below was observed on this deployment failing EVERY model the
+    // provider serves. Classifying them as generic 'error' cooled one model
+    // at a time, so a provider with no balance burned a fallback slot per
+    // model and surfaced "All providers failed" while payable candidates sat
+    // further down the chain:
+    //   gitlawb      -> "Insufficient credits — top up your balance at ..."
+    //   opencode-zen -> "No payment method. Add a payment method here: ..."
+    //   tokenrouter  -> "User's credit limit is insufficient, remaining ..."
+    msg.includes('insufficient credits') ||
+    msg.includes('no payment method') ||
+    msg.includes('credit limit is insufficient') ||
+    msg.includes('top up your balance') ||
+    msg.includes('add a payment method')
   );
 }
 
 function isQuotaError(error: unknown): boolean {
   return error instanceof QuotaExhaustedError;
+}
+
+/**
+ * Failures that LOOK permanent but were observed to succeed on an immediate
+ * retry of the same provider+model.
+ *
+ * Deliberately narrow. A 400 usually means the request really is malformed and
+ * retrying is waste — so this only matches the two generic phrasings seen
+ * flapping on this deployment, and explicitly defers to the specific
+ * classifiers first: a context-window overflow, a content-policy block or a
+ * model-not-found 400 is a real verdict and must NOT be retried, because the
+ * second attempt would fail identically.
+ */
+function isAmbiguousTransientError(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) return false;
+  if (isContextWindowError(error) || isContentPolicyError(error) || isModelNotFoundError(error)) {
+    return false;
+  }
+  const msg = error.message.toLowerCase();
+  // "200 with empty content" — the upstream accepted the request and returned
+  // a well-formed but empty completion. Never a property of the request.
+  if (msg.includes('empty content') || msg.includes('empty_output') || msg.includes('without a usable completion')) {
+    return true;
+  }
+  // Generic, detail-free 400. A provider that genuinely dislikes the payload
+  // says which field; this phrasing carries no field at all and flaps.
+  if (error.statusCode === 400 && msg.includes('invalid request parameters')) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -328,9 +372,26 @@ export async function executeWithFallback(
       await qs.checkQuota(tenantId, plan.primary.providerId, 0, 0);
     }
     tried.push(plan.primary.providerId);
-    const response = await withConcurrencySlot(plan.primary.providerId, () =>
-      executor.execute(plan.primary.providerId, plan.primary.modelId, request)
-    );
+    // Some upstreams intermittently reject a request they will accept on the
+    // very next attempt. Measured on this deployment: the SAME google model,
+    // the same trivial prompt, six serial attempts -> FAIL/OK/OK/OK/FAIL/FAIL,
+    // alternating between HTTP 400 "Invalid request parameters" and "HTTP 200
+    // with empty content". Both look like hard, request-shaped errors, so the
+    // model was cooled down and the caller got a 502 for a model that works.
+    // One immediate in-place retry converts that class of flake into a success
+    // without consuming a cross-provider fallback slot.
+    const response = await withConcurrencySlot(plan.primary.providerId, async () => {
+      try {
+        return await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
+      } catch (err) {
+        if (!isAmbiguousTransientError(err)) throw err;
+        logger.warn(
+          { provider: plan.primary.providerId, modelId: plan.primary.modelId, err },
+          'Primary provider returned an ambiguous transient failure — retrying the same model once'
+        );
+        return await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
+      }
+    });
     // Record circuit breaker success (wrapped in try/catch)
     try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
     // Record successful usage (fire-and-forget, never fail the request)
@@ -466,11 +527,13 @@ export async function executeWithFallback(
     return true;
   });
 
-  // Parallel probe: race first 2 immediate (waitMs=0) fallbacks concurrently.
-  // Cuts fallback latency from ~2x to ~1x when the first candidate is dead.
+  // Parallel probe: race the first N immediate (waitMs=0) fallbacks concurrently.
+  // Cuts fallback latency from ~Nx to ~1x when the leading candidates are dead.
   // On failure, errors are tracked so the main loop skips them.
-  // ponytail: races 2 candidates (2x bandwidth on failure); use sequential if only 1
-  const immediateSteps = deduplicated.filter(s => !s.waitMs || s.waitMs === 0).slice(0, 2);
+  // Raised 2 → 3 to match the wider chain (see buildFallbackChain maxFallbacks):
+  // with one upstream dominating the top scores, racing only 2 meant both probes
+  // routinely hit the SAME dead provider.
+  const immediateSteps = deduplicated.filter(s => !s.waitMs || s.waitMs === 0).slice(0, 3);
   if (immediateSteps.length > 1) {
     const probePromises = immediateSteps.map(step =>
       (async (): Promise<{ step: typeof immediateSteps[0]; response: UnifiedResponse }> => {

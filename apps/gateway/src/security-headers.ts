@@ -89,8 +89,21 @@ export function registerSecurity(server: FastifyInstance): void {
       if (isDev) {
         // Dev-only: surface the real error so the UI toast and pino log
         // line up. Production keeps `error.message` out of the wire.
-        errorBody.dev_message = err.message;
+        //
+        // AllProvidersFailedError/ProviderUnavailableError build a far more
+        // informative `details.dev_message` (per-provider "name (HTTP 429):
+        // reason" list) than their generic `.message` ("All providers
+        // failed"). Preferring `.message` here made every routing failure
+        // look identical on the wire and hid WHICH upstream failed and why.
+        const details = (err.details ?? {}) as Record<string, unknown>;
+        errorBody.dev_message =
+          typeof details.dev_message === 'string' && details.dev_message.length > 0
+            ? details.dev_message
+            : err.message;
         errorBody.dev_stack = err.stack;
+        if (Array.isArray(details.triedErrors) && details.triedErrors.length > 0) {
+          errorBody.dev_tried_errors = details.triedErrors;
+        }
       }
 
       // Surface 5xx to the live telemetry SSE stream so the observability

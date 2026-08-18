@@ -40,9 +40,11 @@ export function capabilityFilter(
   modality: Modality,
   requiredCapabilityTier?: CapabilityTier,
 ): CandidateSet {
-  return candidates.filter((model) => {
+  const matchesModality = (model: CandidateSet[number]): boolean => model.modality === modality;
+
+  const strict = candidates.filter((model) => {
     // Must match modality
-    if (model.modality !== modality) {
+    if (!matchesModality(model)) {
       return false;
     }
 
@@ -64,6 +66,32 @@ export function capabilityFilter(
 
     return true;
   });
+
+  // Capability tags come from nullable DB columns (`supports_tool_use`,
+  // `supports_reasoning`, ...) that are sparsely populated: a model that
+  // genuinely supports tools is dropped here whenever its column was never
+  // backfilled. Measured on this deployment, requiring `tool_use` cut the
+  // pool from 177 models / 3 providers to 8 models / 1 provider, which left
+  // the fallback chain with nothing to fail over to and turned any single
+  // upstream hiccup into a hard 502.
+  //
+  // Degrade to a PREFERENCE only for capabilities where a mis-tagged model
+  // still produces a usable answer: `tool_use`, `json_mode` and `reasoning`
+  // are advisory (a model without the tag usually still handles tool calls,
+  // and the adapter surfaces a real error if it truly cannot). `vision` stays
+  // HARD — a text-only model cannot see an attached image, so routing there
+  // would guarantee a wrong answer instead of risking one. Modality is always
+  // hard for the same reason.
+  const SOFT_CAPABILITIES = new Set(['tool_use', 'json_mode', 'reasoning', 'function_call']);
+  const allSoft =
+    requiredCapabilities.length > 0 &&
+    requiredCapabilities.every((cap) => SOFT_CAPABILITIES.has(cap));
+
+  if (strict.length > 0 || !allSoft) {
+    return strict;
+  }
+
+  return candidates.filter(matchesModality);
 }
 
 /**

@@ -113,6 +113,20 @@ export function runDeterministicFilters(
   taskProfile: TaskProfile,
   providerPreferences?: ProviderPreferences,
 ): CandidateSet {
+  // Diagnostic: count distinct providers at each stage. A collapsed pool
+  // (every candidate sharing one providerId) is the difference between a
+  // fallback chain that survives an upstream outage and a bare 502, and it
+  // was previously invisible — set DMRX_ROUTER_TRACE=true to see where the
+  // candidate set narrows.
+  const trace = process.env.DMRX_ROUTER_TRACE === 'true';
+  const shape = (set: CandidateSet): string => {
+    const byProvider = new Map<string, number>();
+    for (const c of set) {
+      byProvider.set(c.providerName ?? c.providerId, (byProvider.get(c.providerName ?? c.providerId) ?? 0) + 1);
+    }
+    return `${set.length} models / ${byProvider.size} providers ${JSON.stringify(Object.fromEntries(byProvider))}`;
+  };
+
   // Stage 1: Capability Filter
   let filtered = capabilityFilter(
     candidates,
@@ -120,14 +134,43 @@ export function runDeterministicFilters(
     taskProfile.modality,
     taskProfile.requiredCapabilityTier,
   );
+  if (trace) {
+    logger.info(
+      {
+        stage: 'capability',
+        capabilities: taskProfile.capabilities,
+        modality: taskProfile.modality,
+        tier: taskProfile.requiredCapabilityTier,
+        before: shape(candidates),
+        after: shape(filtered),
+      },
+      'router trace: capability filter',
+    );
+  }
 
   // Stage 1.5: Provider Preference Filter
   if (providerPreferences) {
+    const before = filtered;
     filtered = applyProviderPreferences(filtered, providerPreferences);
+    if (trace) {
+      logger.info(
+        { stage: 'provider-preference', before: shape(before), after: shape(filtered) },
+        'router trace: provider preference filter',
+      );
+    }
   }
 
   // Stage 2: Availability Filter
-  filtered = availabilityFilter(filtered);
+  {
+    const before = filtered;
+    filtered = availabilityFilter(filtered);
+    if (trace) {
+      logger.info(
+        { stage: 'availability', before: shape(before), after: shape(filtered) },
+        'router trace: availability filter',
+      );
+    }
+  }
 
   // Stage 2.5: Circuit Breaker Filter — exclude providers/models with open circuits
   const providerBreaker = getProviderCircuitBreaker();
@@ -138,6 +181,12 @@ export function runDeterministicFilters(
     const modelKey = `${m.providerId}:${m.modelId}`;
     return providerBreaker.isAvailable(providerKey) && modelBreaker.isAvailable(modelKey) && connectionBreaker.isAvailable(providerKey);
   });
+  if (trace) {
+    logger.info(
+      { stage: 'circuit-breaker', after: shape(filtered) },
+      'router trace: circuit breaker filter (final deterministic pool)',
+    );
+  }
 
   return filtered;
 }
@@ -421,10 +470,42 @@ function buildFallbackChain(
       return aFree - bFree;
     });
   }
-  // Allow more fallbacks when many free providers are available
-  // ponytail: 3 max (was 6/8), raise if fallback success rate >50% at 3
-  const maxFallbacks = remaining.length > 10 ? 3 : 2;
-  return crossProvider.slice(0, maxFallbacks).map((model, index) => ({
+  // Allow more fallbacks when many free providers are available.
+  // Raised from 3/2 → 8/4: the live pool is heavily dominated by ONE upstream
+  // (google supplies most top-scored candidates), so a google-wide HTTP 400
+  // defeated the whole chain and surfaced ALL_PROVIDERS_FAILED while hundreds
+  // of healthy openrouter-free / tokenrouter / nvidia-nim candidates sat
+  // further down. Measured: 20/117 providers reachable, ~4 attempts per
+  // request → intermittent 502/503 on auto, auto-coding and auto-agentic.
+  const maxFallbacks = remaining.length > 10 ? 8 : 4;
+
+  // PROVIDER DIVERSITY: `remaining` is score-ordered, and the top slots are
+  // routinely all the SAME provider (e.g. every candidate is a google/gemini
+  // model). Slicing the top N then gave a chain whose every step shared one
+  // upstream, so a single provider-wide failure (google returning HTTP 400 /
+  // "200 with empty content") burned all fallbacks and surfaced
+  // AllProvidersFailedError — the whole point of a fallback chain is to
+  // survive exactly that. Take the best model per DISTINCT provider first,
+  // then backfill with the next-best remaining models if the chain is still
+  // short. Same chain length, same latency budget, but the steps can no
+  // longer be defeated by one bad upstream.
+  const seenProviders = new Set<string>([primary.providerId]);
+  const diversified: ProviderModel[] = [];
+  for (const model of crossProvider) {
+    if (diversified.length >= maxFallbacks) break;
+    if (seenProviders.has(model.providerId)) continue;
+    seenProviders.add(model.providerId);
+    diversified.push(model);
+  }
+  if (diversified.length < maxFallbacks) {
+    for (const model of crossProvider) {
+      if (diversified.length >= maxFallbacks) break;
+      if (diversified.includes(model)) continue;
+      diversified.push(model);
+    }
+  }
+
+  return diversified.map((model, index) => ({
     provider: {
       providerId: model.providerId,
       modelId: model.modelId,
