@@ -107,6 +107,26 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
     const godmode = getGodmodeService();
     const gatewayUrl = resolveGatewayUrl();
 
+    // First: check if godmode is already reachable on the default URL
+    // (externally managed instance — don't spawn a duplicate on the same port).
+    const defaultUrl = process.env.GODMODE_API_URL || 'http://localhost:47115';
+    try {
+      const res = await fetch(`${defaultUrl}/v1/health`, { method: 'GET', signal: AbortSignal.timeout(2000) });
+      if (res.ok) {
+        setGodmodeConfig({
+          baseUrl: defaultUrl,
+          openrouterApiKey: process.env.OPENROUTER_API_KEY,
+          llmBaseUrl: `${gatewayUrl}/v1`,
+          llmApiKey: process.env.DMRX_ADMIN_API_KEY || undefined,
+        });
+        await godmode.initialize();
+        logger.info({ requestId, url: defaultUrl }, 'Godmode proxy found healthy (externally managed)');
+        return true;
+      }
+    } catch {
+      // not reachable on default URL — fall through to server-manager path
+    }
+
     const live = serverManager.getRunningInstance();
     const liveHealthy = live?.url
       ? await serverManager.healthCheck({ url: live.url, timeoutMs: 2500 }).catch(() => false)
