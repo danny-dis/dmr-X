@@ -176,6 +176,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                   finish_reason: gmToolCalls ? 'tool_calls' : (gm.choices?.[0]?.finish_reason ?? 'stop'),
                 }],
                 usage: gm.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+                ...(gm.x_g0dm0d3 ? { x_g0dm0d3: gm.x_g0dm0d3 } : {}),
               });
             }
             if (isGodmodeStrict()) {
