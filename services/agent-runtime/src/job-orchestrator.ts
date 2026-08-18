@@ -162,40 +162,45 @@ export async function runJobPass(
     return { state: before.state, ranTaskIds, reason: before.reason };
   }
 
-  // Check budget once before starting parallel work. Ready tasks are
-  // independent (all their deps are 'completed'), so they can run concurrently.
-  // The next pass re-checks budget, so overshoot is bounded by one pass.
+  // Fast-fail if the job is already over budget before we start any work.
+  // The per-task loop below re-checks after each task records its spend, so a
+  // multi-task pass cannot overrun the cap.
   const current = jobStore.getJob(tenantId, jobId);
   if (!current) return { state: 'failed', ranTaskIds, reason: 'job disappeared mid-pass' };
 
-  const exhausted = budgetExhausted(current);
-  if (exhausted) {
+  if (budgetExhausted(current)) {
     jobStore.updateJobStatus(tenantId, jobId, 'blocked');
-    return { state: 'blocked', ranTaskIds, reason: exhausted };
+    return { state: 'blocked', ranTaskIds, reason: budgetExhausted(current)! };
   }
 
-  // Run all ready tasks in parallel. Promise.all preserves order, so results[i]
-  // corresponds to before.ready[i].
-  const results = await Promise.all(
-    before.ready.map((task) => {
-      emitJobEvent({
-        type: 'task:started',
-        jobId,
-        taskId: task.id,
-        taskTitle: task.title,
-        attempt: task.attempt,
-      });
-      return runTask(tenantId, jobId, current, task, executor);
-    }),
-  );
-
-  for (let i = 0; i < before.ready.length; i++) {
-    const task = before.ready[i];
-    const result = results[i];
+  // Run ready tasks sequentially, re-checking budget before each one. A
+  // multi-task pass would otherwise overrun the cap: the first task spends,
+  // the pre-pass check is now stale, and the second task runs for free.
+  // Spend is recorded immediately after each task so the next iteration's
+  // budget check sees it.
+  const results: TaskExecutionResult[] = [];
+  let budgetBlocked = false;
+  for (const task of before.ready) {
+    const fresh = jobStore.getJob(tenantId, jobId);
+    if (!fresh) {
+      results.push({ ok: false, agentName: task.assignedInstanceId ?? 'unknown', summary: '', error: 'job disappeared mid-pass' });
+      continue;
+    }
+    if (budgetExhausted(fresh)) {
+      jobStore.updateJobStatus(tenantId, jobId, 'blocked');
+      budgetBlocked = true;
+      break;
+    }
+    emitJobEvent({ type: 'task:started', jobId, taskId: task.id, taskTitle: task.title, attempt: task.attempt });
+    const result = await runTask(tenantId, jobId, fresh, task, executor);
+    results.push(result);
     ranTaskIds.push(task.id);
-
     // A failed task still consumed tokens, so spend is recorded either way.
     jobStore.addSpend(tenantId, jobId, result.costUsd ?? 0, result.tokens ?? 0);
+  }
+
+  if (budgetBlocked) {
+    return { state: 'blocked', ranTaskIds, reason: budgetExhausted(jobStore.getJob(tenantId, jobId)!) ?? 'budget exhausted' };
   }
 
   const after = schedulerState(jobStore.listTasks(tenantId, jobId));
