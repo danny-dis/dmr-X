@@ -69,7 +69,8 @@ export class StabilityAdapter extends BaseAdapter {
           seed: request.diffusion_seed ?? 0,
           samples: 1,
         }),
-        timeoutMs: options?.timeoutMs ?? 60000,
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       }
     );
 

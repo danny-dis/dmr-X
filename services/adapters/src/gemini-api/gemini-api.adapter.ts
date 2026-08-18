@@ -82,7 +82,8 @@ export class GeminiAPIAdapter extends BaseAdapter {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        timeoutMs: options?.timeoutMs ?? 60000,
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'chat');
@@ -176,6 +177,7 @@ export class GeminiAPIAdapter extends BaseAdapter {
         body: JSON.stringify(body),
         signal: options?.signal,
         timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'stream');

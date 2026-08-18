@@ -62,7 +62,8 @@ export class DeepgramAdapter extends BaseAdapter {
           Authorization: `Token ${this.apiKey}`,
         },
         body: audioBuffer as unknown as string,
-        timeoutMs: options?.timeoutMs ?? 60000,
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       }
     );
 

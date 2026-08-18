@@ -108,7 +108,8 @@ export class AzureOpenAIAdapter extends BaseAdapter {
           seed: request.seed,
           stream: false,
         }),
-        timeoutMs: options?.timeoutMs ?? 60000,
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'chat');

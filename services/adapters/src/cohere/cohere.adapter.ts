@@ -183,7 +183,8 @@ export class CohereAdapter extends BaseAdapter {
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
-      timeoutMs: options?.timeoutMs ?? 60000,
+      timeoutMs: options?.timeoutMs ?? 120000,
+      signal: options?.signal,
     });
 
     if (!response.ok) {
@@ -369,7 +370,8 @@ export class CohereAdapter extends BaseAdapter {
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
-      timeoutMs: options?.timeoutMs ?? 60000,
+      timeoutMs: options?.timeoutMs ?? 120000,
+      signal: options?.signal,
     });
 
     if (!response.ok) {

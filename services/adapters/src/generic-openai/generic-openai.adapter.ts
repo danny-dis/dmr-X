@@ -340,7 +340,8 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         method: 'POST',
         headers,
         body: JSON.stringify(this.buildChatBody(request, false)),
-        timeoutMs: options?.timeoutMs ?? 60000,
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'chat');
