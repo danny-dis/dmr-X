@@ -2904,7 +2904,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         const limit = params.limit || 20;
         const cacheStore = getContextStore();
-        const keys = cacheStore.keys(`context:*`);
+        const keys = cacheStore.keys(`context:`);
 
         const contexts: Array<{ id: string; user: string; created_at: string; preview: string }> = [];
         for (const key of keys) {
@@ -5300,7 +5300,12 @@ async function executeDMRXTool(
       modality = '3d';
       break;
     default:
-      throw new Error(`Unsupported tool in batch: ${toolName}`);
+      throw new Error(
+        `Tool not supported in workflow/batch steps: ${toolName}. ` +
+        `Only routed inference tools can be composed here (dmrx_chat, dmrx_generate_image, ` +
+        `dmrx_embed, dmrx_transcribe, dmrx_speak, dmrx_rerank, dmrx_generate_video, ` +
+        `dmrx_generate_music, dmrx_generate_3d). Call filesystem/bash/state tools directly.`
+      );
   }
 
   const response = await routeViaGateway(gatewayUrl, modality, params);

@@ -27,6 +27,10 @@ export interface MCPServerConfig {
   args?: string[];
   /** Environment variables (for stdio transport) */
   env?: Record<string, string>;
+  /** Working directory the stdio child process is spawned in.
+   *  Required when `args` reference a script by a path relative to a repo root
+   *  rather than to the dmrx-mcp process cwd. */
+  cwd?: string;
   /** URL for SSE transport */
   url?: string;
   /** API key or token for authentication with this server */
@@ -99,6 +103,7 @@ export class MCPServerRegistry {
         command: serverConfig.command,
         args: serverConfig.args,
         env: serverConfig.env as Record<string, string>,
+        ...(serverConfig.cwd ? { cwd: serverConfig.cwd } : {}),
       });
     } else if (serverConfig.transport === 'sse') {
       transport = this.buildSseTransport(serverConfig);
