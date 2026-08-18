@@ -301,15 +301,28 @@ export function createAnthropicSSEIterator(
  * then re-serializes into OpenAI-compatible SSE format.
  */
 export async function* createSSESerializer(chunks: AsyncIterable<StreamChunk>): AsyncGenerator<string> {
+  let sawToolCalls = false;
   for await (const chunk of chunks) {
     if (chunk.type === 'token') {
-      const delta = (chunk as TokenStreamChunk).data;
+      const delta = (chunk as TokenStreamChunk).data as {
+        content?: string;
+        role?: string;
+        tool_calls?: unknown[];
+      };
+      // tool_calls ride INSIDE a token chunk's data (OpenAI shape). Forwarding only
+      // `content` silently drops them, and the terminal frame then reports
+      // finish_reason:'stop' — a spec violation that makes tool-calling clients hang.
+      const outDelta: Record<string, unknown> = { content: delta.content, role: delta.role };
+      if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+        outDelta.tool_calls = delta.tool_calls;
+        sawToolCalls = true;
+      }
       const data = {
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion.chunk',
         choices: [{
           index: 0,
-          delta: { content: delta.content, role: delta.role },
+          delta: outDelta,
           finish_reason: null,
         }],
       };
@@ -321,7 +334,7 @@ export async function* createSSESerializer(chunks: AsyncIterable<StreamChunk>): 
         choices: [{
           index: 0,
           delta: {},
-          finish_reason: 'stop',
+          finish_reason: sawToolCalls ? 'tool_calls' : 'stop',
         }],
       };
       yield `data: ${JSON.stringify(data)}\n\n`;
@@ -339,14 +352,25 @@ export async function* createSSESerializer(chunks: AsyncIterable<StreamChunk>): 
  */
 export function formatSSEChunk(chunk: StreamChunk, requestId: string): string | undefined {
   if (chunk.type === 'token') {
-    const delta = (chunk as TokenStreamChunk).data;
+    const delta = (chunk as TokenStreamChunk).data as {
+      content?: string;
+      role?: string;
+      tool_calls?: unknown[];
+    };
+    const outDelta: Record<string, unknown> = { content: delta.content, role: delta.role };
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+      outDelta.tool_calls = delta.tool_calls;
+    }
     return `data: ${JSON.stringify({
       id: requestId,
       object: 'chat.completion.chunk',
-      choices: [{ index: 0, delta: { content: delta.content, role: delta.role }, finish_reason: null }],
+      choices: [{ index: 0, delta: outDelta, finish_reason: null }],
     })}\n\n`;
   }
   if (chunk.type === 'done') {
+    // NOTE: this helper is stateless, so it cannot know whether earlier token chunks
+    // carried tool_calls. Callers that stream tool calls must emit their own terminal
+    // frame with finish_reason:'tool_calls' (see chat.routes.ts) rather than rely on this.
     return `data: ${JSON.stringify({
       id: requestId,
       object: 'chat.completion.chunk',
