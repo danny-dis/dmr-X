@@ -823,6 +823,31 @@ export function runMigrations(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// R1 — request_logs pruning to prevent unbounded DB growth.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_REQUEST_LOGS_RETENTION_DAYS = Number(
+  process.env.DMRX_REQUEST_LOGS_RETENTION_DAYS || '7'
+);
+
+export async function pruneRequestLogs(): Promise<void> {
+  const retentionDays = Math.max(1, DEFAULT_REQUEST_LOGS_RETENTION_DAYS);
+  try {
+    const db = getDbHandle();
+    if (!db) return;
+    const stmt = db.prepare(
+      `DELETE FROM request_logs WHERE timestamp < datetime('now', ?);`
+    );
+    const result = stmt.run(`-${retentionDays} days`);
+    if (result.changes > 0) {
+      log.info(`Pruned ${result.changes} request_logs rows older than ${retentionDays} days`);
+    }
+  } catch (err) {
+    log.warn(`request_logs prune failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export function initDb(): Promise<DatabaseWrapper> {
   if (getDbHandle()) return Promise.resolve(new DatabaseWrapper(getDbHandle()!));
   if (getInitPromise()) return getInitPromise()!;
@@ -1231,9 +1256,17 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   // signal, so without this the newest state could sit un-persisted for an
   // unbounded time. unref() is critical: the timer must not hold the process
   // open at shutdown.
+  let heartbeatTicks = 0;
   heartbeatTimer = setInterval(() => {
+    heartbeatTicks++;
     if (dirty && Date.now() - lastSaveAt >= MAX_STALE_MS) {
       void flush();
+    }
+    // R1 — prune request_logs every ~60s to prevent unbounded DB growth.
+    // At 1 req/s, request_logs reaches 500k rows in ~6 days, causing 2-second
+    // event-loop-blocking saves. Pruning keeps it bounded to ~7 days of data.
+    if (heartbeatTicks % 60 === 0) {
+      void pruneRequestLogs();
     }
   }, Math.max(250, Math.floor(MAX_STALE_MS / 2)));
   heartbeatTimer.unref();
@@ -1257,10 +1290,12 @@ export async function closeDb() {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    // R3 — await the in-flight flush before closing the DB handle. The audit
+    // found that a shutdown-time flush() could early-return `if (saving)`
+    // without awaiting, then closeDb() called raw.close() which freed the
+    // WASM heap out from under an in-flight export() — dropping the newest
+    // writes (billing deductions, quota counters, conversation messages).
     await flush();
-    // Tune the connection/release statistics before closing so the next open
-    // starts from a leaner schema (sqlite.org/pragma.html#pragma_optimize).
-    // A no-op on failure — must never block close.
     try {
       getDbHandle()!.exec('PRAGMA optimize;');
     } catch {

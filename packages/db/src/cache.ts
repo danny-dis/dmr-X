@@ -63,6 +63,12 @@ export class MemoryCache {
 
     if (Date.now() > node.expires) {
       this.removeKVNode(node);
+      // R2 — size leak fix: expired reads removed the node but never
+      // decremented _size. Every other removal path (del, evictLRU, sweep)
+      // decrements, so _size drifted permanently upward. Once it crossed
+      // maxSize, set()'s eviction loop spun forever on an empty map —
+      // evictLRU returns without decrementing when both maps are empty.
+      this._size--;
       return null;
     }
 
@@ -86,8 +92,10 @@ export class MemoryCache {
       return;
     }
 
-    // Evict if at capacity
+    // Evict if at capacity. Guard: if both maps are empty but _size is
+    // inflated (R2), evictLRU can't make progress — break instead of spinning.
     while (this._size >= this.maxSize) {
+      if (this.kvMap.size === 0 && this.hashMap.size === 0) break;
       this.evictLRU();
     }
 
