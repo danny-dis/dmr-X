@@ -235,8 +235,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
       { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 }, sharedPool: { rpm: 30, rpd: 1500, tpm: 1000000, tpd: 50000000 } },
-      // gemini-2.5-flash-lite removed: the API returns 404 "no longer available to new users".
-      { id: 'gemini-2.0-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
+      // gemini-2.0-flash removed: API returns 404 "This model is no longer available"
       { id: 'text-embedding-004', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
       { id: 'imagen-3.0', modalities: ['diffusion'], capabilities: ['text2img'], specializations: ['creative'] },
       // Gemma on the Gemini API: only the gemma-4 pair is served. The gemma-3-*
@@ -278,7 +277,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
       { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 }, sharedPool: { rpm: 30, rpd: 1500, tpm: 1000000, tpd: 50000000 } },
-      { id: 'gemini-2.0-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
+      // gemini-2.0-flash removed: API returns 404 "This model is no longer available"
       { id: 'gemma-4-31b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
       { id: 'gemma-4-26b-a4b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
     ],
@@ -288,7 +287,6 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
     description: 'Gemini models via native API (streamGenerateContent). Primary for Gemini streaming.',
     region: 'us',
     signupUrl: 'https://aistudio.google.com/',
-    envKey: 'GOOGLE_API_KEY',
   },
 
   // google_native provider entry - veo follows

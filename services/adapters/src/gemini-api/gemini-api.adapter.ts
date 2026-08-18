@@ -12,6 +12,9 @@ import { createOpenAISSEIterator } from '../stream-normalizer.js';
 
 // --- Gemini API model id mapping (mirrors VertexAIAdapter.mapModelId) ---
 const GEMINI_MODEL_MAP: Record<string, string> = {
+  'gemini-3.6-flash': 'gemini-3.6-flash',
+  'gemini-3.6-flash-preview': 'gemini-3.6-flash',
+  'gemini-3.5-flash': 'gemini-3.5-flash',
   'gemini-3.1-pro': 'gemini-3.1-pro-preview',
   'gemini-3.1-pro-preview': 'gemini-3.1-pro-preview',
   'gemini-3.1-flash': 'gemini-3.1-flash-preview',
@@ -25,8 +28,6 @@ const GEMINI_MODEL_MAP: Record<string, string> = {
   'gemini-2.5-flash': 'gemini-2.5-flash-preview-04-17',
   'gemini-2.5-flash-preview-04-17': 'gemini-2.5-flash-preview-04-17',
   'gemini-2.5-flash-lite': 'gemini-2.5-flash-lite',
-  'gemini-2.0-flash': 'gemini-2.0-flash',
-  'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite',
   'gemini-1.5-pro': 'gemini-1.5-pro-002',
   'gemini-1.5-pro-002': 'gemini-1.5-pro-002',
   'gemini-1.5-flash': 'gemini-1.5-flash-002',
