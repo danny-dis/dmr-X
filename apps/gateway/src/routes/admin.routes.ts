@@ -165,7 +165,17 @@ const CreateProviderSchema = z.object({
   name: z.string().min(1),
   adapter_type: z.string().min(1),
   base_url: z.string().url().optional().nullable(),
-  api_key_ref: z.string().optional().nullable(),
+  // M3 — api_key_ref is used as an environment-variable name (process.env[row.api_key_ref]).
+  // Block sensitive names so an admin can't exfiltrate DMRX_ENCRYPTION_KEY or other
+  // secrets by pointing base_url at a public host that receives them as Authorization.
+  api_key_ref: z.string().optional().nullable().refine(
+    (val) => {
+      if (!val) return true;
+      const blocked = ['DMRX_ENCRYPTION_KEY', 'DMRX_ADMIN_API_KEY', 'DMRX_MCP_API_KEY', 'OPENROUTER_API_KEY'];
+      return !blocked.includes(val.toUpperCase());
+    },
+    { message: 'api_key_ref cannot reference sensitive environment variables (DMRX_ENCRYPTION_KEY, DMRX_ADMIN_API_KEY, etc.)' }
+  ),
   // The `providers` table has no dedicated columns for these, so the route
   // handler merges them into the `config` JSON blob. The dialog sends
   // them as top-level fields because that's what the UI form model carries.
