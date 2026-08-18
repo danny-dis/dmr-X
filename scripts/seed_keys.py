@@ -62,6 +62,19 @@ def main():
         "GITLAWB_API_KEY": ("gitlawb", "paid"),
         "OPENROUTER_API_KEY": ("openrouter-free", "free"),
     }
+
+    # Guard against cross-provider key contamination. A gitlawb OpenGateway key
+    # (ogw_live_...) was once stored as OPENROUTER_API_KEY, so it got seeded to
+    # openrouter-free and every request to that provider's 413 models failed
+    # upstream with "User not found" — a 401 that looks like a revoked key rather
+    # than the wrong key entirely. Prefixes are cheap to check and the failure is
+    # expensive to diagnose.
+    expected_prefixes = {
+        "openrouter-free": ("sk-or-",),
+        "gitlawb": ("ogw_",),
+        "google": ("AQ.", "AIza"),
+        "nvidia-nim": ("nvapi-",),
+    }
     
     print("Fetching provider UUIDs...")
     provider_uuids = get_provider_uuids()
@@ -87,7 +100,17 @@ def main():
         
         api_key = env_keys[env_var]
         uuid = provider_uuids[provider_name]
-        
+
+        want = expected_prefixes.get(provider_name)
+        if want and not api_key.startswith(want):
+            print(
+                f"  REFUSE {provider_name}: {env_var} value starts with "
+                f"'{api_key[:8]}...', expected one of {want}. Seeding it would "
+                f"authenticate as the wrong service; fix .env instead."
+            )
+            errors += 1
+            continue
+
         print(f"  Seeding {provider_name} ({uuid[:11]}) tier={tier}...", end=" ")
         response = seed_key(uuid, api_key, tier)
         
