@@ -31,6 +31,7 @@ const DispatchRequestSchema = z.object({
     .optional(),
   maxTokens: z.number().min(1).max(1000000).optional(),
   temperature: z.number().min(0).max(2).optional(),
+  model: z.string().max(256).optional(),
 });
 
 function slugify(name: string): string {
@@ -248,7 +249,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
 
     // run:true → forward to the chosen subagent, with a tool-use loop.
     const router = (server as any).router as Router;
-    const model = agentRuntimeService.resolveModel(definition);
+    const model = body.model ?? agentRuntimeService.resolveModel(definition);
     const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0);
     const reqId = generateRequestId();
     const userMessages =

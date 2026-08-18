@@ -158,6 +158,7 @@ export const AgentChatRequestSchema = z.object({
   stream: z.boolean().optional().default(false),
   maxTokens: z.number().min(1).max(1000000).optional(),
   temperature: z.number().min(0).max(2).optional(),
+  model: z.string().max(256).optional(),
   // Optional client-supplied conversation id. When omitted a per-request
   // conversation is created, so concurrent callers never share a transcript.
   conversationId: z.string().min(1).max(256).optional(),

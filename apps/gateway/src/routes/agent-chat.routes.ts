@@ -27,6 +27,7 @@ interface AgentChatBody {
   maxTokens?: number;
   temperature?: number;
   maxSteps?: number;
+  model?: string;
   conversationId?: string;
   max_cost_budget?: number;
   stopWhen?: Array<{ type: string; value: number | string }>;
@@ -95,7 +96,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const definition = context.definition;
-    const model = agentRuntimeService.resolveModel(definition);
+    const model = body.model ?? agentRuntimeService.resolveModel(definition);
     const agentTools = normalizeAllowedTools(definition.allowedTools);
     const agentToolDefs = buildAgentTools(agentTools);
 
@@ -369,7 +370,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       });
 
       const definition = context.definition;
-      const model = agentRuntimeService.resolveModel(definition);
+      const model = body.model ?? agentRuntimeService.resolveModel(definition);
       const agentTools = normalizeAllowedTools(definition.allowedTools);
       const agentToolDefs = buildAgentTools(agentTools);
 

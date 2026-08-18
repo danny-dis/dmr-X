@@ -683,8 +683,9 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     }
 
     const toolCalls = response.message?.tool_calls ?? [];
-    const responseText =
+    let responseText =
       typeof response.message?.content === 'string' ? response.message.content : '';
+    responseText = responseText.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
     lastResponseText = responseText;
     finalUsage = response.usage;
 
