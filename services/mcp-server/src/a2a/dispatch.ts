@@ -28,9 +28,13 @@ export interface DispatchResult {
 /** Default wall-clock ceiling for one gateway dispatch (ms). */
 const DEFAULT_TASK_TIMEOUT_MS = 60_000;
 
-function taskTimeoutMs(): number {
+/** Extended timeout for multi-turn contexts (ms) — longer conversations need more processing time. */
+const MULTI_TURN_TASK_TIMEOUT_MS = 120_000;
+
+function taskTimeoutMs(turnCount: number): number {
   const raw = Number(process.env.DMRX_A2A_TASK_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TASK_TIMEOUT_MS;
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return turnCount > 2 ? MULTI_TURN_TASK_TIMEOUT_MS : DEFAULT_TASK_TIMEOUT_MS;
 }
 
 /** Max conversation turns forwarded downstream (newest kept). */
@@ -102,6 +106,7 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
   }
 
   const messages = buildContextMessages(task, taskText);
+  const turnCount = messages ? messages.length : 1;
 
   try {
     const res = await fetch(`${gatewayUrl}/v1/agentic/dispatch`, {
@@ -114,7 +119,7 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
       }),
       // Without a deadline a wedged gateway pins the A2A request open forever;
       // the client sees a hang instead of a `failed` task.
-      signal: AbortSignal.timeout(taskTimeoutMs()),
+      signal: AbortSignal.timeout(taskTimeoutMs(turnCount)),
     });
     const json: any = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -126,7 +131,7 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
   } catch (err) {
     const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
     const text = timedOut
-      ? `Dispatch timed out after ${taskTimeoutMs()}ms`
+      ? `Dispatch timed out after ${taskTimeoutMs(turnCount)}ms`
       : `Dispatch error: ${err instanceof Error ? err.message : String(err)}`;
     return finalize(taskId, 'failed', text);
   }

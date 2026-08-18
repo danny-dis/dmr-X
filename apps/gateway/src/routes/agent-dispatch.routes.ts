@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { agentRegistryService } from '@dmr-x/agent-registry';
 import { agentRuntimeService } from '@dmr-x/agent-runtime';
 import { generateRequestId, logger } from '@dmr-x/utils';
-import { getRegisteredToolDefinitions, normalizeAllowedTools } from './tools.routes.js';
+import { executeToolCall, getRegisteredToolDefinitions, normalizeAllowedTools } from './tools.routes.js';
 import type { Router } from '@dmr-x/router';
 
 // ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       });
     }
 
-    // run:true → one-shot forward to the chosen subagent.
+    // run:true → forward to the chosen subagent, with a tool-use loop.
     const router = (server as any).router as Router;
     const model = agentRuntimeService.resolveModel(definition);
     const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0);
@@ -255,44 +255,99 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       body.messages && body.messages.length > 0
         ? body.messages
         : [{ role: 'user' as const, content: body.task }];
-    const messages = [{ role: 'system' as const, content: systemPrompt }, ...userMessages];
+    let messages: Array<{ role: string; content: string; tool_calls?: any[]; tool_call_id?: string }> = [
+      { role: 'system', content: systemPrompt },
+      ...userMessages,
+    ];
 
-    const unifiedRequest = {
-      modality: 'llm' as const,
-      model,
-      messages: messages as any,
-      temperature: body.temperature,
-      max_tokens: body.maxTokens,
-      stream: false,
-      tools: (() => {
-        // Phase 2c tools-always-on: empty/absent allowedTools means "full
-        // standard set" — every registered tool is passed. An explicit list
-        // is normalized (unbracketed `tools:` frontmatter may store a bare
-        // string) and filtered to registered definitions.
-        const names = normalizeAllowedTools(definition.allowedTools);
-        return names.length > 0 ? getRegisteredToolDefinitions(names) : getRegisteredToolDefinitions();
-      })(),
-      metadata: { requestId: reqId, tenant },
-    };
+    const agentToolDefs = (() => {
+      const names = normalizeAllowedTools(definition.allowedTools);
+      const allDefs = names.length > 0 ? getRegisteredToolDefinitions(names) : getRegisteredToolDefinitions();
+      // Google and other providers reject requests with too many tool defs
+      // (HTTP 400 "Invalid request parameters"). Cap at 30 to stay under
+      // every provider's tool limit — the agent can load more on demand.
+      return allDefs.slice(0, 30);
+    })();
 
-    try {
-      const { response } = await router.route(unifiedRequest, { path: '/v1/agentic/dispatch' });
-      const content = typeof response.message?.content === 'string' ? response.message.content : '';
-      return reply.send({
-        instanceId: instance.id,
-        name: definition.name,
-        category: definition.category,
-        tags: definition.tags,
-        confidence: lowConfidence ? 'low' : 'high',
-        content,
-        model: response.modelId,
-        usage: response.usage,
-      });
-    } catch (err) {
-      logger.error({ err }, 'agent-dispatch: run failed');
-      return reply.code(502).send({
-        error: { message: 'Subagent execution failed', instanceId: instance.id },
-      });
+    // Tool-use loop: up to 5 rounds of model call → tool execution → repeat.
+    // Without this, a model that responds with tool_calls (e.g. dmrx_bash,
+    // dmrx_read_file) would have its calls silently dropped, and the final
+    // response would be empty — the caller sees a blank completion.
+    let lastContent = '';
+    const MAX_TOOL_ROUNDS = 5;
+    for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+      const unifiedRequest = {
+        modality: 'llm' as const,
+        model,
+        messages: messages as any,
+        temperature: body.temperature,
+        max_tokens: body.maxTokens,
+        stream: false,
+        tools: agentToolDefs,
+        metadata: { requestId: reqId, tenant },
+      };
+
+      let response: any;
+      try {
+        const routed = await router.route(unifiedRequest, { path: '/v1/agentic/dispatch' });
+        response = routed.response;
+      } catch (err) {
+        logger.error({ err, round }, 'agent-dispatch: route failed');
+        return reply.code(502).send({
+          error: { message: 'Subagent execution failed', instanceId: instance.id },
+        });
+      }
+
+      const toolCalls = response?.message?.tool_calls ?? [];
+      lastContent = typeof response?.message?.content === 'string' ? response.message.content : '';
+
+      // No tool calls → final response. Strip any leaked thought blocks.
+      if (!toolCalls.length) {
+        lastContent = lastContent.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+        break;
+      }
+
+      // Max rounds reached with still tool calls — return what we have
+      if (round === MAX_TOOL_ROUNDS) {
+        logger.warn({ round }, 'agent-dispatch: max tool rounds reached');
+        break;
+      }
+
+      // Execute tool calls and append results to messages
+      const assistantMsg = { ...response.message };
+      messages.push(assistantMsg as any);
+
+      for (const tc of toolCalls) {
+        let toolResult: { result?: unknown; error?: { message: string } };
+        try {
+          toolResult = await executeToolCall(tc, {
+            requestId: reqId,
+            tenant,
+            agentDefinition: { id: definition.id, name: definition.name, tenantId: tenant.id, allowedTools: normalizeAllowedTools(definition.allowedTools) },
+            router,
+          });
+        } catch (err) {
+          toolResult = { error: { message: 'Tool execution failed' } };
+        }
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: toolResult.error
+            ? JSON.stringify({ error: toolResult.error.message })
+            : JSON.stringify(toolResult.result ?? null),
+        } as any);
+      }
     }
+
+    return reply.send({
+      instanceId: instance.id,
+      name: definition.name,
+      category: definition.category,
+      tags: definition.tags,
+      confidence: lowConfidence ? 'low' : 'high',
+      content: lastContent,
+      model: lastContent ? 'multi-step' : undefined,
+      usage: undefined,
+    });
   });
 }

@@ -922,7 +922,15 @@ export class Router {
     const allSubTasksFailed =
       result.subTaskResults.size > 0 &&
       Array.from(result.subTaskResults.values()).every((r) => !r.success);
-    if ((!aggregatedContent || aggregatedContent.trim().length === 0) && allSubTasksFailed) {
+    const someSubTasksSucceeded =
+      result.subTaskResults.size > 0 &&
+      Array.from(result.subTaskResults.values()).some((r) => r.success);
+    // Fallback triggers when:
+    // 1. All sub-tasks failed AND content is empty (original condition), OR
+    // 2. Some sub-tasks succeeded but content is still empty (models returned blanks)
+    const shouldFallback = (!aggregatedContent || aggregatedContent.trim().length === 0) &&
+      (allSubTasksFailed || (someSubTasksSucceeded && result.subTaskResults.size > 0));
+    if (shouldFallback) {
       // When every sub-task failed (typically because the decomposed sub-tasks
       // overflow the smaller context windows of the fanned-out specialist
       // models on large prompts), retry the ORIGINAL request as a single
