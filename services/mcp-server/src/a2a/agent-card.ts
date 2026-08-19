@@ -42,11 +42,48 @@ export interface AgentCardConfig {
   securitySchemes?: Record<string, unknown>;
   /** Security requirements referencing `securitySchemes` (spec 0.3.0) */
   security?: Array<Record<string, string[]>>;
+  /** Extra interfaces to advertise beyond the derived primary one (spec v1.0). */
+  additionalInterfaces?: AgentInterface[];
+  /** Protocol binding for the primary interface. Default `JSONRPC`. */
+  protocolBinding?: string;
+  /** Tenant routing id for the primary interface (spec v1.0). */
+  tenant?: string;
+  /** URL to an icon for this agent (spec v1.0 `icon_url`). */
+  iconUrl?: string;
 }
 
 export interface AgentProvider {
   organization: string;
   url: string;
+}
+
+/**
+ * One addressable endpoint for this agent (A2A spec v1.0 `AgentInterface`).
+ *
+ * v1.0 replaces the 0.3.0 flat `url` + `preferredTransport` pair with an
+ * ordered list of these; the first entry is the preferred one. Note that
+ * `protocolVersion` here is MAJOR.MINOR ("1.0", "0.3") per the spec's own
+ * examples — NOT the full patch version "1.0.1".
+ */
+export interface AgentInterface {
+  /** Absolute URL for this interface. HTTPS required in production. */
+  url: string;
+  /** Protocol binding: `JSONRPC` | `GRPC` | `HTTP+JSON` (open-form string). */
+  protocolBinding: string;
+  /** Opaque tenant routing id. Clients MUST echo it when set. */
+  tenant?: string;
+  /** A2A version this interface speaks, major.minor (e.g. "1.0"). */
+  protocolVersion: string;
+}
+
+/** JWS signature over the Agent Card (spec v1.0 `AgentCardSignature`). */
+export interface AgentCardSignature {
+  /** base64url-encoded protected JWS header. */
+  protected: string;
+  /** base64url-encoded signature. */
+  signature: string;
+  /** Unprotected JWS header values. */
+  header?: Record<string, unknown>;
 }
 
 export interface AgentCapabilities {
@@ -118,6 +155,16 @@ export interface AgentCard {
   defaultOutputModes: string[];
   /** Agent skills */
   skills: AgentSkill[];
+  /**
+   * Ordered interfaces, preferred first (spec v1.0, REQUIRED there).
+   * Emitted ALONGSIDE the legacy flat `url`/`preferredTransport` so 0.3.0
+   * consumers keep working.
+   */
+  supportedInterfaces: AgentInterface[];
+  /** Optional icon (spec v1.0). */
+  iconUrl?: string;
+  /** JWS signatures over this card (spec v1.0). */
+  signatures?: AgentCardSignature[];
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +178,22 @@ export interface AgentCard {
  * content it holds.
  */
 const TEXT = 'text/plain';
+
+/**
+ * A2A version advertised per-interface. MAJOR.MINOR only — the spec's own
+ * examples are "0.3" and "1.0", so the patch component of the v1.0.1 release
+ * tag must NOT appear here.
+ */
+const A2A_INTERFACE_VERSION = '1.0';
+
+/**
+ * Legacy top-level `protocolVersion`. Retained at 0.3.0 so existing 0.3.0
+ * consumers still match; v1.0 clients read `supportedInterfaces` instead.
+ */
+const A2A_LEGACY_CARD_VERSION = '0.3.0';
+
+/** Accepts exactly MAJOR.MINOR, e.g. "1.0" / "0.3". Rejects "1.0.1". */
+const MAJOR_MINOR = /^\d+\.\d+$/;
 
 const MODALITY_OUTPUT_TYPES: Record<string, string[]> = {
   image: ['image/png'],
@@ -192,13 +255,25 @@ export function buildAgentCard(
     return [...set];
   };
 
+  const resolvedUrl = config.url || 'http://localhost:47114';
+  const protocolBinding = config.protocolBinding || 'JSONRPC';
+
+  const primaryInterface: AgentInterface = {
+    url: resolvedUrl,
+    protocolBinding,
+    protocolVersion: A2A_INTERFACE_VERSION,
+  };
+  // Only emit `tenant` when set — an explicit `undefined` key would force
+  // every consumer to special-case it.
+  if (config.tenant) primaryInterface.tenant = config.tenant;
+
   const card: AgentCard = {
-    protocolVersion: '0.3.0',
+    protocolVersion: A2A_LEGACY_CARD_VERSION,
     name: config.name || 'DMR-X Agent',
     description: config.description || 'DMR-X MCP Server with intelligent routing',
     version: config.version || '0.5.0',
-    url: config.url || 'http://localhost:3100',
-    preferredTransport: 'JSONRPC',
+    url: resolvedUrl,
+    preferredTransport: protocolBinding,
     capabilities: config.capabilities || {
       streaming: true,
       pushNotifications: true,
@@ -208,6 +283,7 @@ export function buildAgentCard(
     defaultInputModes: config.defaultInputModes || union((s) => s.inputModes, [TEXT]),
     defaultOutputModes: config.defaultOutputModes || union((s) => s.outputModes, [TEXT]),
     skills,
+    supportedInterfaces: [primaryInterface, ...(config.additionalInterfaces ?? [])],
   };
 
   // Optional fields are omitted rather than emitted as `undefined`, so the
@@ -217,6 +293,7 @@ export function buildAgentCard(
   if (config.documentationUrl) card.documentationUrl = config.documentationUrl;
   if (config.securitySchemes) card.securitySchemes = config.securitySchemes;
   if (config.security) card.security = config.security;
+  if (config.iconUrl) card.iconUrl = config.iconUrl;
 
   return card;
 }
@@ -233,6 +310,23 @@ export function validateAgentCard(card: AgentCard): { valid: boolean; errors: st
   if (!card.url) errors.push('Agent URL is required');
   if (!card.protocolVersion) errors.push('protocolVersion is required');
   if (!card.preferredTransport) errors.push('preferredTransport is required');
+  if (!Array.isArray(card.supportedInterfaces) || card.supportedInterfaces.length === 0) {
+    errors.push('supportedInterfaces must be a non-empty array (A2A v1.0)');
+  } else {
+    card.supportedInterfaces.forEach((iface, i) => {
+      if (!iface?.url) errors.push(`supportedInterfaces[${i}] is missing url`);
+      if (!iface?.protocolBinding) {
+        errors.push(`supportedInterfaces[${i}] is missing protocolBinding`);
+      }
+      if (!iface?.protocolVersion) {
+        errors.push(`supportedInterfaces[${i}] is missing protocolVersion`);
+      } else if (!MAJOR_MINOR.test(iface.protocolVersion)) {
+        errors.push(
+          `supportedInterfaces[${i}].protocolVersion must be major.minor (e.g. "1.0"), got "${iface.protocolVersion}"`,
+        );
+      }
+    });
+  }
   if (!card.capabilities || typeof card.capabilities !== 'object') {
     errors.push('capabilities is required');
   }

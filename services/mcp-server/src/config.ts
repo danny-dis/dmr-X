@@ -216,6 +216,21 @@ export interface McpConfigFile {
       version?: string;
       /** Agent URL */
       url?: string;
+      /** Agent icon URL (A2A v1.0) */
+      iconUrl?: string;
+      /** Agent documentation URL (A2A v1.0) */
+      documentationUrl?: string;
+      /** Preferred transport protocol binding (A2A v1.0) */
+      protocolBinding?: string;
+      /** Tenant identifier (A2A v1.0) */
+      tenant?: string;
+      /** Additional transport interfaces (A2A v1.0) */
+      additionalInterfaces?: Array<{
+        url: string;
+        protocolBinding: string;
+        tenant?: string;
+        protocolVersion: string;
+      }>;
     };
   };
 

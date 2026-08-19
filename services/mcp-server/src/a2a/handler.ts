@@ -22,6 +22,7 @@ import {
   handleRpcStream,
   isStreamMethod,
   rpcError,
+  setAgentCardProvider,
   A2A_ERR,
   type JsonRpcRequest,
   type JsonRpcResponse,
@@ -48,6 +49,10 @@ export async function handleA2ARoutes(
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const path = url.pathname;
+
+  // Keep the RPC-facing card in step with the discovery endpoint — both build
+  // from the same config + live tool list.
+  setAgentCardProvider(() => buildAgentCard(config?.agentCard || {}, tools || []));
 
   // --- Agent Card discovery (current + legacy paths) ---
   if (

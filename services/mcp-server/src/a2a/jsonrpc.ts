@@ -38,6 +38,20 @@ export const A2A_ERR = {
   UNSUPPORTED_OPERATION: -32004,
 } as const;
 
+/**
+ * Supplies the current Agent Card to the `agent/getExtendedCard` method.
+ *
+ * The card is built in handler.ts from live config + the live tool list, which
+ * jsonrpc.ts has no access to. A registered provider keeps the card a single
+ * source of truth instead of rebuilding it here from stale inputs.
+ */
+type AgentCardProvider = () => unknown;
+let agentCardProvider: AgentCardProvider | null = null;
+
+export function setAgentCardProvider(provider: AgentCardProvider | null): void {
+  agentCardProvider = provider;
+}
+
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
   id?: string | number | null;
@@ -181,6 +195,35 @@ export async function handleRpc(
       return rpcResult(id, task);
     }
 
+    case 'tasks/list': {
+      const p = (req.params ?? {}) as {
+        contextId?: string;
+        status?: string;
+        pageSize?: number;
+        includeHistory?: boolean;
+      };
+
+      // Spec caps page_size at 100 (min 1). Reject out-of-range explicitly
+      // rather than silently clamping, so a client learns its request was wrong.
+      if (p.pageSize !== undefined) {
+        if (!Number.isInteger(p.pageSize) || p.pageSize < 1 || p.pageSize > 100) {
+          return rpcError(id, A2A_ERR.INVALID_PARAMS, 'pageSize must be an integer between 1 and 100');
+        }
+      }
+
+      const tasks = tm.listTasks({
+        state: p.status as never,
+        contextId: p.contextId,
+        limit: p.pageSize ?? 50, // spec default when unspecified
+        includeHistory: p.includeHistory === true,
+      });
+
+      // `nextPageToken` is omitted: TaskManager holds an in-memory map with no
+      // cursor, so real pagination would be a storage change. Returning no
+      // token is spec-legal (it signals "no further pages").
+      return rpcResult(id, { tasks });
+    }
+
     case 'tasks/pushNotificationConfig/set': {
       const taskId = req.params?.taskId ?? req.params?.id;
       const config = req.params?.pushNotificationConfig as PushNotificationConfig | undefined;
@@ -200,6 +243,15 @@ export async function handleRpc(
         return rpcError(id, A2A_ERR.INVALID_PARAMS, 'No push notification config set for this task');
       }
       return rpcResult(id, { taskId, pushNotificationConfig: config });
+    }
+
+    case 'agent/getExtendedCard':
+    // Alias — some clients use the 0.3.0-era name for the same operation.
+    case 'agent/authenticatedExtendedCard': {
+      if (!agentCardProvider) {
+        return rpcError(id, A2A_ERR.INTERNAL, 'Agent card provider not registered');
+      }
+      return rpcResult(id, agentCardProvider());
     }
 
     case 'message/stream':
