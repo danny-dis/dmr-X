@@ -121,7 +121,7 @@ export default async function extension(pi: any) {
       if (!list.length) {
         if (!CLIENT) await connect(1);
         if (CLIENT) {
-          try { list = TOOL_LIST; } catch {}
+          try { list = TOOL_LIST; } catch { /* ignore */ }
         }
       }
       const lines = list.map((t) => `- ${t.name}: ${t.description || "(no description)"}`);

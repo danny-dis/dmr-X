@@ -159,7 +159,7 @@ async function main() {
     const pr = await check('dmrx_preset_create creates a preset for dmrx_chat', 'dmrx_preset_create',
       { tool_name: 'dmrx_chat', defaults: { max_tokens: 77 }, description: 'mcp-verify-preset' }, okNoErr);
     let pid: string | undefined;
-    if (pr && !pr.isError) { try { const j = JSON.parse(pr.out); pid = j.preset?.id ?? j.id; } catch {} }
+    if (pr && !pr.isError) { try { const j = JSON.parse(pr.out); pid = j.preset?.id ?? j.id; } catch { /* ignore */ } }
     rec('preset id extracted', !!pid, `id=${pid}`);
     if (pid) {
       await check('dmrx_preset_list includes it', 'dmrx_preset_list', { tool_name: 'dmrx_chat' }, (o) => o.includes(pid!));
@@ -173,7 +173,7 @@ async function main() {
     const tr = await check('dmrx_template_create creates a template', 'dmrx_template_create',
       { name: tname, description: 'mcp verify', steps: [{ id: 's1', tool_name: 'dmrx_bash', parameters: { command: 'echo TPL_OK' } }] }, okNoErr);
     let tid: string | undefined;
-    if (tr && !tr.isError) { try { const j = JSON.parse(tr.out); tid = j.template?.id ?? j.id; } catch {} }
+    if (tr && !tr.isError) { try { const j = JSON.parse(tr.out); tid = j.template?.id ?? j.id; } catch { /* ignore */ } }
     rec('template id extracted', !!tid, `id=${tid}`);
     if (tid) {
       await check('dmrx_template_get retrieves it', 'dmrx_template_get', { id: tid }, (o) => o.includes(tname));
@@ -185,7 +185,7 @@ async function main() {
     // skills: list, then fetch a REAL id from that list
     const sl = await check('dmrx_list_skills returns skills', 'dmrx_list_skills', { limit: 3 }, okNoErr);
     let skid: string | undefined;
-    if (sl && !sl.isError) { try { skid = JSON.parse(sl.out).skills?.[0]?.id; } catch {} }
+    if (sl && !sl.isError) { try { skid = JSON.parse(sl.out).skills?.[0]?.id; } catch { /* ignore */ } }
     if (skid) await check('dmrx_get_skill fetches a REAL skill by id', 'dmrx_get_skill', { id: skid }, (o) => o.includes(skid!));
     await check('dmrx_get_skill rejects unknown id', 'dmrx_get_skill', { id: 'nope-000' }, (o, r) => r.isError || /not found/i.test(o));
 
@@ -201,7 +201,7 @@ async function main() {
     const jr = await check('dmrx_submit_job accepts a brief', 'dmrx_submit_job',
       { brief: 'Write one sentence about rain.', acceptanceCriteria: ['one sentence'], maxDepth: 1 }, okNoErr, 90000);
     let jid: string | undefined;
-    if (jr && !jr.isError) { try { const j = JSON.parse(jr.out); jid = j.jobId ?? j.job_id ?? j.job?.id ?? j.id; } catch {} }
+    if (jr && !jr.isError) { try { const j = JSON.parse(jr.out); jid = j.jobId ?? j.job_id ?? j.job?.id ?? j.id; } catch { /* ignore */ } }
     rec('job id extracted', !!jid, `jobId=${jid}`);
     if (jid) {
       await check('dmrx_job_status returns a status', 'dmrx_job_status', { jobId: jid }, okNoErr);

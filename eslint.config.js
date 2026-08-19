@@ -29,6 +29,8 @@ export default [
       '**/.dmrx-data/**',
       '**/.venv/**',
       '**/site-packages/**',
+      '**/vendored/**',
+      '**/patches/**',
     ],
   },
   {

@@ -211,6 +211,7 @@ jobs:
         env:
           DMRX_LOCAL_MODE: 'true'
           DMRX_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          DMRX_CORS_ORIGIN: 'http://127.0.0.1:3000'
           PORT: '3000'
         run: |
           bun apps/gateway/dist/main.js > /tmp/gateway.log 2>&1 &

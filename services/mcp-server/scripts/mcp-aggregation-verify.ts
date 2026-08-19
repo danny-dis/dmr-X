@@ -141,4 +141,4 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((e) => { try { copyFileSync(BAK, CFG); } catch {} console.error('HARNESS ERROR', e); process.exit(1); });
+main().catch((e) => { try { copyFileSync(BAK, CFG); } catch { /* ignore */ } console.error('HARNESS ERROR', e); process.exit(1); });

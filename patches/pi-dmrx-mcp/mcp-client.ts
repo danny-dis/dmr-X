@@ -17,7 +17,7 @@ export class McpClient {
       for (const frame of raw.split("\n\n")) {
         const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
         if (dataLine) {
-          try { return JSON.parse(dataLine.slice(5).trim()); } catch {}
+          try { return JSON.parse(dataLine.slice(5).trim()); } catch { /* ignore */ }
         }
       }
       return null;
