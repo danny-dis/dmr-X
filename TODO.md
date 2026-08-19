@@ -169,5 +169,5 @@ When you find a bug but don't fix it:
 
 ## Changelog
 
-- **2026-08-19** — B-006 fixed (`b661db6`): `restartGodmodeProxy()` in `apps/gateway/src/lib/godmode-guard.ts` now passes `api_key` through all 3 `setGodmodeConfig` calls (env key / live instance key / freshly-started key). Regression tests in `tests/unit/godmode-wrap-order.test.ts`. Live godmode service restarted via gateway lifecycle and verified: `/server/config` → `hasApiKey:true`, auto-free wrap returns 200.
+- **2026-08-19** — B-006 fixed (`3f96ef4`): `restartGodmodeProxy()` in `apps/gateway/src/lib/godmode-guard.ts` now passes `api_key` through all 3 `setGodmodeConfig` calls (env key / live instance key / freshly-started key). Regression tests in `tests/unit/godmode-wrap-order.test.ts`. Live godmode service restarted via gateway lifecycle and verified: `/server/config` → `hasApiKey:true`, auto-free wrap returns 200.
 - **2026-08-18** — D List hardening complete: burst test (12 concurrent, 10/12 pass), vault watchdog wired to cron (every 5 min), key_lookup_hash backfill verified (0 NULLs), rate-limit TTLs confirmed in code. Provider pruning deferred.
