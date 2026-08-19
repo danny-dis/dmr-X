@@ -137,5 +137,10 @@ turbo-output.txt
 *-build*.txt
 crypto-test.txt
 unit-test-full.txt
+test_output.txt
+test_v3.txt
+
+# ─── Damaged-file recovery snapshots (local triage only) ──────────────────
+.recovery/
 # Vendored upstream source (fork of modelcontextprotocol/servers) - clone on demand for catalog generation
 vendored/
