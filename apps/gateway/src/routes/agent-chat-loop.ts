@@ -1,3 +1,4 @@
+import { ProviderUnavailableError } from '@dmr-x/core';
 import type { ToolCall, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
 import {
@@ -647,6 +648,27 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     try {
       ({ response } = await completeAgentTurn(router, unifiedRequest, target, requestId, godmodeWrap));
     } catch (error) {
+      // When every provider in the router's pool is rate-limited or down,
+      // the router throws ProviderUnavailableError with a retryAfter hint.
+      // The agent loop must respect that hint and back off — retrying
+      // immediately just re-hits the same exhausted pool and fails again.
+      if (error instanceof ProviderUnavailableError && error.retryAfter > 0) {
+        const maxWaitMs = 30_000;
+        const waitMs = Math.min(error.retryAfter * 1000, maxWaitMs);
+        logger.warn(
+          { requestId, resolvedConversationId, waitMs, retryAfter: error.retryAfter },
+          'agent_run_provider_unavailable_backing_off',
+        );
+        if (stream) {
+          onStreamEvent('provider_backoff', {
+            resolvedConversationId,
+            waitMs,
+            retryAfter: error.retryAfter,
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+
       const decision = resolveFallbackForError(runtime, error, context.definition, model);
 
       if (!decision.retry) {
