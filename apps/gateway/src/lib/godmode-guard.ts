@@ -24,6 +24,23 @@ export const GODMODE_WRAP_ORDER = GODMODE_WRAP_FALLBACK;
 
 const DEFAULT_WRAP_CANDIDATE_LIMIT = 5;
 
+/**
+ * True when a completion carries no usable payload — no assistant text and no
+ * tool calls. Mirrors the generic-openai adapter's post-response guard
+ * (`generic-openai.adapter.ts`, "empty content and no tool calls"): some free
+ * upstreams answer HTTP 200 with `content: ""` instead of erroring, which does
+ * NOT throw and so cannot be detected by a try/catch alone.
+ */
+export function isEmptyCompletion(completion: unknown): boolean {
+  const message = (completion as any)?.choices?.[0]?.message;
+  if (!message) return true;
+  const hasContent =
+    typeof message.content === 'string' && message.content.length > 0;
+  const hasToolCalls =
+    Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+  return !hasContent && !hasToolCalls;
+}
+
 /** Reads DMRX_GODMODE_STRICT. When true, an `auto-free` request that cannot
  *  get the godmode proxy up hard-fails instead of silently degrading to an
  *  unwrapped plain provider. */
@@ -259,7 +276,7 @@ export async function wrapViaGodmode(
   let usedModel: string | undefined;
   for (const wrapModel of wrapOrder) {
     try {
-      completion = await godmode.chat({
+      const attempt = await godmode.chat({
         messages,
         model: wrapModel,
         temperature,
@@ -268,6 +285,20 @@ export async function wrapViaGodmode(
         ...(tools !== undefined ? { tools } : {}),
         ...(tool_choice !== undefined ? { tool_choice } : {}),
       });
+      // A 200 with no content and no tool calls does NOT throw, so without this
+      // check the loop would break on a blank completion and hand the caller an
+      // empty message. Treat it as a failed attempt and try the next model.
+      if (isEmptyCompletion(attempt)) {
+        wrapErr = new Error(
+          `godmode wrap returned HTTP 200 with empty content and no tool calls (model=${wrapModel})`,
+        );
+        logger.warn(
+          { requestId, wrapModel },
+          'godmode wrap returned empty content; trying next picked model',
+        );
+        continue;
+      }
+      completion = attempt;
       wrapErr = undefined;
       usedModel = wrapModel;
       break;
