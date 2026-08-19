@@ -289,13 +289,32 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       };
 
       let response: any;
-      try {
-        const routed = await router.route(unifiedRequest, { path: '/v1/agentic/dispatch' });
-        response = routed.response;
-      } catch (err) {
-        logger.error({ err, round }, 'agent-dispatch: route failed');
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const routed = await router.route(unifiedRequest, { path: '/v1/agentic/dispatch' });
+          response = routed.response;
+          lastErr = undefined;
+          break;
+        } catch (err) {
+          lastErr = err;
+          // Retry transient errors (rate limits, provider unavailable) after a short wait
+          const isTransient = /rate.?limit|503|502|overloaded|unavailable/i.test(err instanceof Error ? err.message : '');
+          if (isTransient && attempt === 0) {
+            await new Promise(r => setTimeout(r, 1500));
+            continue;
+          }
+          const errMsg = err instanceof Error ? err.message : 'Routing failed';
+          logger.error({ err, round, model, attempt }, 'agent-dispatch: route failed');
+          return reply.code(502).send({
+            error: { message: `Subagent execution failed: ${errMsg}`, instanceId: instance.id },
+          });
+        }
+      }
+      if (!response && lastErr) {
+        const errMsg = lastErr instanceof Error ? lastErr.message : 'Routing failed';
         return reply.code(502).send({
-          error: { message: 'Subagent execution failed', instanceId: instance.id },
+          error: { message: `Subagent execution failed: ${errMsg}`, instanceId: instance.id },
         });
       }
 

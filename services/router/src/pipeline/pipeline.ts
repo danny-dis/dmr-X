@@ -255,7 +255,8 @@ export async function runPipelineFromFiltered(input: {
 
   // Retry-with-wait: if all providers are rate-limited and wait is short, retry after reset
   if (filtered.length === 0 && retryWithWait !== false && rateLimitResult && rateLimitResult.earliestResetMs > 0) {
-    const maxWait = inputMaxWaitMs ?? 3000;
+    // Default 8s (free-tier windows are often 5-10s); override via DMRX_RATE_LIMIT_MAX_WAIT_MS
+    const maxWait = inputMaxWaitMs ?? (Number(process.env.DMRX_RATE_LIMIT_MAX_WAIT_MS) || 8000);
     const waitMs = Math.min(rateLimitResult.earliestResetMs, maxWait);
     if (waitMs > 0) {
       logger.info({ waitMs, rateLimitedCount: rateLimitResult.rateLimited.length }, 'All providers rate-limited, waiting for reset');

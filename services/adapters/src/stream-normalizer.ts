@@ -35,9 +35,15 @@ export function createOpenAISSEIterator(
         };
       }
 
-      // Handle SSE error events
+      // Handle SSE error events — mark as chunk error so the streaming route's
+      // catch block can distinguish a recoverable upstream error (free-tier
+      // providers emit trailing error frames) from a hard stream failure and
+      // fall back to the next candidate instead of emitting "Stream failed".
       if (msg.event === 'error') {
-        throw new Error(`SSE error from upstream: ${msg.data || 'Unknown error'}`);
+        const err = new Error(`SSE error from upstream: ${msg.data || 'Unknown error'}`) as Error & { code?: string; __streamChunkError?: boolean };
+        err.code = 'upstream_sse_error';
+        err.__streamChunkError = true;
+        throw err;
       }
 
       try {

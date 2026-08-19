@@ -708,8 +708,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           });
           (request as any).metrics = (request as any).metrics || {};
           (request as any).metrics.errorCode = (streamError as { code?: string })?.code ?? 'stream_error';
+          // Surface the actual upstream error to the client instead of a
+          // generic "Stream failed" — operators debugging provider issues
+          // need the real message (e.g. "rate_limit_exceeded", "context_length_exceeded").
+          const streamErrorMsg = streamError instanceof Error ? streamError.message : 'Unknown streaming error';
           if (!reply.raw.write(`data: ${JSON.stringify({
-            error: { message: 'Stream failed', type: 'stream_error' },
+            error: { message: streamErrorMsg, type: 'stream_error' },
           })}\n\n`)) {
             await new Promise<void>((resolve) => {
               const onDrain = () => { reply.raw.off('close', onClose); reply.raw.off('error', onError); resolve(); };
