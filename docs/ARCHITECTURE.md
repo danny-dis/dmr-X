@@ -228,7 +228,7 @@ dmr-x/
 │   └── operator/             # Kubernetes operator (MCP/federation/workflow CRDs)
 │
 ├── tests/
-│   ├── unit/                 # 54 unit test files
+│   ├── unit/                 # 86 unit test files (1248+ assertions)
 │   │   └── vitest.workspace.ts / vitest.workspace.js
 │   └── e2e/                  # Opt-in connectivity tests (4 files)
 │
@@ -296,7 +296,7 @@ SQLite via sql.js (WASM, zero native dependencies), exposed through `packages/db
 
 - **Debounced saves** — writes batched in a 100ms window to reduce I/O
 - **Shutdown flush** — `closeDb()` ensures all pending writes complete before exit
-- **Migrations** — 45 migration files in `packages/db/src/migrations/` run on startup
+- **Migrations** — 64 SQL migrations in `packages/db/src/migrations/` run on startup
 - **No ORM** — direct parameterized SQL queries throughout
 - **Data directory** — `~/.dmr-x/data.db` via `DMRX_DATA_DIR`; gateway writes hybrid .env sync for provider keys
 

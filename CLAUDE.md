@@ -65,7 +65,7 @@ bun run lint             # Lint all packages
 | `services/adapters/src/` | Provider adapters (openai, anthropic, ollama, generic-openai, etc.) |
 | `services/router/src/` | Routing pipeline, classifier, fallback, bandit |
 | `services/mcp-server/src/` | MCP tool server (tools.ts has tool definitions) |
-| `tests/unit/` | Unit test suites (41 files) |
+| `tests/unit/` | Unit test suites (86 files, 1248+ assertions) |
 
 ## Coding Conventions
 
@@ -139,6 +139,9 @@ When updating docs, keep them accurate to the actual codebase state. The authori
 - `docs/DISTRIBUTION.md` — binary packaging
 - `docs/MCP.md` — MCP server documentation
 - `docs/TESTING.md` — testing guide
+- `docs/ROADMAP.md` — consolidated roadmap across all workstreams
+- `docs/ROADMAP-STATUS.md` — feature/roadmap status checklist
+- `TODO.md` — day-to-day task board (multi-agent tracking)
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

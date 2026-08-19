@@ -54,22 +54,21 @@ Gateway starts on `PORT` (default 3000). Open `http://localhost:3000` for the ad
 
 ## Docker
 
-### Docker Compose (Recommended)
+### Docker Compose (Recommended for Production)
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-This uses the root `Dockerfile` and `docker-compose.yml`:
+This uses the production compose file which correctly persists data at `/app/data`:
 
 - Multi-stage build (builder + production)
 - `oven/bun:1-alpine` base image
 - Non-root user (`dmrx`)
 - Health check on `/healthz`
-- Resource limits: 2GB memory, 2 CPUs
-- Log rotation: 50MB max, 3 files
-- Persistent volume for data at `/app/data` (the Dockerfile sets
-  `DMRX_DATA_DIR=/app/data`; this is where the SQLite database is written)
+- Persistent volume for data at `/app/data`
+
+> **Note:** The default `docker-compose.yml` is configured for demo/development use. For production deployments, always use `docker-compose.prod.yml`.
 
 > **Important:** Use `docker compose stop` (graceful) rather than `docker kill` (forced) to ensure SQLite data is properly flushed. The gateway handles SIGTERM with a 30-second grace period for clean shutdown.
 
@@ -139,7 +138,7 @@ Download from the [Releases](https://github.com/danny-dis/dmr-X/releases) page:
 | macOS x64 | `dmrx-darwin-x64.tar.gz` |
 | Windows x64 | `dmrx-windows-x64.zip` |
 
-Each archive contains the binary, UI assets, and an install script.
+Each archive contains the compiled binary plus the built UI assets in `public/` only. There are no install scripts packaged inside the archives; unzip/untar and run the binary.
 
 See [DISTRIBUTION.md](DISTRIBUTION.md) for install script details and CI/CD workflow.
 

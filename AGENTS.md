@@ -13,6 +13,7 @@ This project is indexed by GitNexus as **dmr-X** (12834 symbols, 31814 relations
 - When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
 - For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+- **MUST update `TODO.md` when starting, finishing, or abandoning work.** See [Multi-Agent Tracking](#multi-agent-tracking) below.
 
 ## Never Do
 
@@ -20,6 +21,21 @@ This project is indexed by GitNexus as **dmr-X** (12834 symbols, 31814 relations
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
 - NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
 - NEVER commit changes without running `detect_changes()` to check affected scope.
+- NEVER start work on an item already marked `🔨 Working` in `TODO.md` without coordinating with that agent first.
+- NEVER leave a discovered bug out of `TODO.md`. If you find it, log it.
+
+## Multi-Agent Tracking
+
+Multiple agents work on this DMR-X codebase in parallel. To avoid duplicate work and track progress:
+
+1. **`TODO.md`** at the repository root is the single source of truth for all in-progress, pending, and recently completed work.
+2. **Before starting work:** check `TODO.md` for an existing item. If found, set its status to `🔨 Working` and set the **Agent** column to your identifier (e.g., `claude-code-1`, `mimo-3`, `opencode-review`). If not found, add a new entry.
+3. **When finishing:** set status to `✅ Done`, add finish date, and link to the commit/PR in **Notes**.
+4. **When abandoning:** set status back to `🔲 Pending` and clear the **Agent** column.
+5. **When discovering a bug:** add it to the **Backlog / Discovered Bugs** section at the bottom of `TODO.md` with file:line, severity, and a one-line description.
+6. **Do NOT** start work on an item already marked `🔨 Working` without coordinating with that agent first.
+
+`docs/ROADMAP.md` is the long-term consolidated roadmap. `TODO.md` is the day-to-day task board. Keep both in sync.
 
 ## Resources
 
