@@ -132,6 +132,7 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
       if (res.ok) {
         setGodmodeConfig({
           baseUrl: defaultUrl,
+          apiKey: process.env.GODMODE_API_KEY || undefined,
           openrouterApiKey: process.env.OPENROUTER_API_KEY,
           llmBaseUrl: `${gatewayUrl}/v1`,
           llmApiKey: process.env.DMRX_ADMIN_API_KEY || undefined,
@@ -152,6 +153,7 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
     if (liveHealthy) {
       setGodmodeConfig({
         baseUrl: live!.url ?? 'http://localhost:47115',
+        apiKey: live!.api_key ?? undefined,
         openrouterApiKey: '',
         llmBaseUrl: live!.llm_base_url ?? `${gatewayUrl}/v1`,
         llmApiKey: live!.llm_api_key ?? undefined,
@@ -168,6 +170,7 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
       });
       setGodmodeConfig({
         baseUrl: started.url ?? 'http://localhost:47115',
+        apiKey: started.api_key ?? undefined,
         openrouterApiKey: '',
         llmBaseUrl: started.llm_base_url ?? `${gatewayUrl}/v1`,
         llmApiKey: started.llm_api_key ?? undefined,
