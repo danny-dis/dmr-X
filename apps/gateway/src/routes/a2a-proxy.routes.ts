@@ -11,7 +11,7 @@ import { validateBaseUrlForSSRF } from './admin-ssrf.js';
 // ---------------------------------------------------------------------------
 //
 // The A2A implementation lives in the MCP sidecar, a separate process on
-// :3100. A browser served by the gateway on :3000 cannot reach it same-origin,
+// :47114. A browser served by the gateway on :3000 cannot reach it same-origin,
 // so the admin UI had no way to show an agent card, list tasks, or cancel one —
 // the A2A "page" was a static block of text describing endpoints nobody could
 // call.
@@ -62,7 +62,7 @@ function writeConfig(config: Record<string, unknown>): void {
 /** Base URL of the local sidecar. */
 function sidecarBase(): string {
   const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
-  const port = process.env.DMRX_MCP_PORT || '3100';
+  const port = process.env.DMRX_MCP_PORT || '47114';
   return `http://${host}:${port}`;
 }
 

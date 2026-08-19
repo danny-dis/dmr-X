@@ -195,6 +195,13 @@ const A2A_LEGACY_CARD_VERSION = '0.3.0';
 /** Accepts exactly MAJOR.MINOR, e.g. "1.0" / "0.3". Rejects "1.0.1". */
 const MAJOR_MINOR = /^\d+\.\d+$/;
 
+/**
+ * Path where the A2A JSON-RPC handler is mounted (see a2a/handler.ts).
+ * The Agent Card must advertise THIS, not the server root — clients POST
+ * directly at `supportedInterfaces[].url`.
+ */
+const A2A_RPC_PATH = '/a2a';
+
 const MODALITY_OUTPUT_TYPES: Record<string, string[]> = {
   image: ['image/png'],
   video: ['video/mp4'],
@@ -258,8 +265,20 @@ export function buildAgentCard(
   const resolvedUrl = config.url || 'http://localhost:47114';
   const protocolBinding = config.protocolBinding || 'JSONRPC';
 
+  // The interface url MUST be the JSON-RPC ENDPOINT, not the server root.
+  // Spec: AgentInterface.url is "the URL where this interface is available" —
+  // an A2A client POSTs its JSON-RPC envelope straight at it. DMR-X mounts the
+  // RPC handler at `/a2a`, so advertising the bare origin made every compliant
+  // client (verified against Hermes' own a2a plugin, which reads
+  // supportedInterfaces[].url) POST to `/` and get a 404.
+  // Appended only when the configured url has no path, so an operator who sets
+  // DMRX_A2A_AGENT_URL=https://host/custom/a2a keeps full control.
+  const rpcUrl = /^https?:\/\/[^/]+\/?$/.test(resolvedUrl)
+    ? resolvedUrl.replace(/\/$/, '') + A2A_RPC_PATH
+    : resolvedUrl;
+
   const primaryInterface: AgentInterface = {
-    url: resolvedUrl,
+    url: rpcUrl,
     protocolBinding,
     protocolVersion: A2A_INTERFACE_VERSION,
   };

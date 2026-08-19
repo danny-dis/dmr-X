@@ -11,7 +11,13 @@ import subprocess
 import sys
 
 BAK = ".hermes/backups/pre-delegation-20260819-195307/tracked.patch"
-AUTHORIZED = {"services/mcp-server/src/index.ts"}
+AUTHORIZED = {
+    "services/mcp-server/src/index.ts",
+    # Stale MCP port default 3100 -> 47114. This file's sidecar resolver was
+    # the reason a SECOND MCP instance kept appearing on :3100 next to the PM2
+    # one on :47114.
+    "apps/gateway/src/lib/sidecar-boot.ts",
+}
 
 raw = open(BAK, encoding="utf-8", errors="replace").read()
 

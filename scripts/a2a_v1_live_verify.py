@@ -62,8 +62,11 @@ else:
         fails.append("primary protocolVersion != '1.0' (got %r)" % p.get("protocolVersion"))
     if p.get("protocolBinding") != "JSONRPC":
         fails.append("primary protocolBinding != JSONRPC")
-    if p.get("url") != card.get("url"):
-        fails.append("primary url != legacy url")
+    if p.get("url") != card.get("url").rstrip("/") + "/a2a":
+        fails.append(
+            "primary interface url should be the legacy url + /a2a "
+            "(legacy=%r, iface=%r)" % (card.get("url"), p.get("url"))
+        )
     if "tenant" in p:
         fails.append("tenant emitted despite not being configured")
 
@@ -77,7 +80,37 @@ if len(card.get("skills", [])) < 300:
 # legacy alias must serve the same shape
 alias = get("/.well-known/agent.json")
 if alias.get("supportedInterfaces") != si:
-    fails.append("/.well-known/agent.json alias disagrees with agent-card.json")
+    fails.append("/.well-known/agent-card.json alias disagrees with agent-card.json")
+
+# --- 1b. The ADVERTISED endpoint must actually accept JSON-RPC ---
+# This is the check whose absence let a real interop bug ship: the card
+# advertised the bare origin while the handler is mounted at /a2a, so every
+# spec-compliant client (incl. Hermes' own a2a plugin, which POSTs at
+# supportedInterfaces[].url) got a 404. Never trust the card's own claim —
+# dial it.
+print("\n=== advertised endpoint reachable ===")
+if si:
+    adv = si[0].get("url", "")
+    body = json.dumps({"jsonrpc": "2.0", "id": 99, "method": "tasks/list",
+                       "params": {"pageSize": 1}}).encode()
+    req = urllib.request.Request(adv, data=body,
+                                 headers={"Content-Type": "application/json"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            probe = json.loads(r.read())
+        ok = "result" in probe
+        print("POST %s -> %s" % (adv, "result" if ok else probe))
+        if not ok:
+            fails.append("advertised interface url did not return a JSON-RPC result: %s"
+                         % json.dumps(probe)[:150])
+    except urllib.error.HTTPError as e:
+        print("POST %s -> HTTP %d" % (adv, e.code))
+        fails.append("advertised interface url %s returned HTTP %d — a compliant "
+                     "client would fail here" % (adv, e.code))
+    except Exception as e:
+        print("POST %s -> %s" % (adv, type(e).__name__))
+        fails.append("advertised interface url %s unreachable: %s" % (adv, type(e).__name__))
 
 # --- 2. tasks/list ---
 print("\n=== tasks/list ===")

@@ -6102,7 +6102,7 @@ COALESCE(
   server.get('/admin/mcp/status', async (request, reply) => {
     const transport = (process.env.DMRX_MCP_TRANSPORT || 'stdio').toLowerCase();
     const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
-    const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+    const port = parseInt(process.env.DMRX_MCP_PORT || '47114', 10);
     const hasApiKey = !!process.env.DMRX_MCP_API_KEY;
 
     // Always attempt the reachability probe — capped so a slow/unreachable
@@ -6192,7 +6192,7 @@ COALESCE(
   // MCP tools list endpoint that fetches from MCP server if possible
   server.get('/admin/mcp/tools', async () => {
     const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
-    const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+    const port = parseInt(process.env.DMRX_MCP_PORT || '47114', 10);
 
     const fallbackTools = [
       { name: 'dmrx_chat', description: 'Send a chat completion request through DMR-X. Automatically routes to the best available LLM based on quality, cost, and latency targets.' },
@@ -6531,7 +6531,7 @@ COALESCE(
     return {
       transport: process.env.DMRX_MCP_TRANSPORT || fileConfig.transport || 'stdio',
       host: process.env.DMRX_MCP_HOST || fileConfig.host || '127.0.0.1',
-      port: parseInt(process.env.DMRX_MCP_PORT || String(fileConfig.port || 3100), 10),
+      port: parseInt(process.env.DMRX_MCP_PORT || String(fileConfig.port || 47114), 10),
       hasApiKey: !!process.env.DMRX_MCP_API_KEY,
       toolSearch: {
         enabled: fileConfig.toolSearch?.enabled ?? true,

@@ -15,7 +15,7 @@
  * ```json
  * {
  *   "transport": "sse",
- *   "port": 3100,
+ *   "port": 47114,
  *   "host": "0.0.0.0",
  *   "apiKey": "your-secret-key",
  *   "router": {

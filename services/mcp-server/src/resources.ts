@@ -87,7 +87,7 @@ export function registerResources(server: McpServer, config: ResourceConfig = {}
           text: JSON.stringify({
             version: '0.1.0',
             transport: process.env.DMRX_MCP_TRANSPORT || 'stdio',
-            port: parseInt(process.env.DMRX_MCP_PORT || '3100', 10),
+            port: parseInt(process.env.DMRX_MCP_PORT || '47114', 10),
             host: process.env.DMRX_MCP_HOST || '127.0.0.1',
             auth: !!process.env.DMRX_MCP_API_KEY,
             cors: process.env.DMRX_MCP_CORS_ORIGIN || '*',

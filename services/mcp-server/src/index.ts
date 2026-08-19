@@ -9,14 +9,14 @@
  *   node dist/index.js
  *
  *   # SSE over HTTP
- *   DMRX_MCP_TRANSPORT=sse DMRX_MCP_PORT=3100 node dist/index.js
+ *   DMRX_MCP_TRANSPORT=sse DMRX_MCP_PORT=47114 node dist/index.js
  *
  *   # Streamable HTTP
- *   DMRX_MCP_TRANSPORT=http DMRX_MCP_PORT=3100 node dist/index.js
+ *   DMRX_MCP_TRANSPORT=http DMRX_MCP_PORT=47114 node dist/index.js
  *
  * Environment variables:
  *   DMRX_MCP_TRANSPORT  — Transport type: "stdio" (default), "sse", or "http"
- *   DMRX_MCP_PORT       — Port for SSE/HTTP transports (default: 3100)
+ *   DMRX_MCP_PORT       — Port for SSE/HTTP transports (default: 47114)
  *   DMRX_MCP_HOST       — Host for SSE/HTTP transports (default: 127.0.0.1)
  *   DMRX_MCP_API_KEY    — Bearer token(s) for SSE/HTTP transports. Comma-separated for multiple keys. Required in production.
  *
@@ -695,7 +695,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const sharedHandle = liveHandle;
 
   const configFile = loadConfigFile();
-  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
+  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 47114);
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof SSEServerTransport> }>();
@@ -873,7 +873,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const sharedHandle = liveHandle;
 
   const configFile = loadConfigFile();
-  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
+  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 47114);
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof NodeStreamableHTTPServerTransport> }>();

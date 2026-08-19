@@ -64,6 +64,45 @@ describe('A2A agent card — v1.0 dual shape', () => {
   });
 });
 
+describe('A2A agent card — interface URL must be the RPC endpoint', () => {
+  // Regression: the card advertised the bare origin while the JSON-RPC handler
+  // is mounted at /a2a, so a compliant client POSTing at
+  // supportedInterfaces[0].url got a 404. Verified live against the running
+  // server: `POST http://127.0.0.1:47114` -> 404, `.../a2a` -> result.
+  it('appends /a2a when the configured url is a bare origin', () => {
+    const card = buildAgentCard({ url: 'http://127.0.0.1:47114' }, TOOLS);
+    expect(card.supportedInterfaces[0].url).toBe('http://127.0.0.1:47114/a2a');
+  });
+
+  it('appends /a2a when the bare origin has a trailing slash', () => {
+    const card = buildAgentCard({ url: 'http://127.0.0.1:47114/' }, TOOLS);
+    expect(card.supportedInterfaces[0].url).toBe('http://127.0.0.1:47114/a2a');
+  });
+
+  it('appends /a2a to the default url too', () => {
+    const card = buildAgentCard({}, TOOLS);
+    expect(card.supportedInterfaces[0].url).toBe('http://localhost:47114/a2a');
+  });
+
+  it('does NOT double-append when the url already has a path', () => {
+    const card = buildAgentCard({ url: 'https://agent.example/a2a' }, TOOLS);
+    expect(card.supportedInterfaces[0].url).toBe('https://agent.example/a2a');
+  });
+
+  it('respects a custom operator-supplied path', () => {
+    const card = buildAgentCard({ url: 'https://gw.example/dmrx/rpc' }, TOOLS);
+    expect(card.supportedInterfaces[0].url).toBe('https://gw.example/dmrx/rpc');
+  });
+
+  it('leaves the legacy top-level url as the bare origin for 0.3.0 clients', () => {
+    // Legacy consumers treated `url` as the base; only the v1.0 interface
+    // carries the RPC path, so the two intentionally differ here.
+    const card = buildAgentCard({ url: 'http://127.0.0.1:47114' }, TOOLS);
+    expect(card.url).toBe('http://127.0.0.1:47114');
+    expect(card.supportedInterfaces[0].url).toBe('http://127.0.0.1:47114/a2a');
+  });
+});
+
 describe('A2A agent card — validation', () => {
   it('accepts a well-formed card', () => {
     const card = buildAgentCard({ url: 'https://agent.example/a2a' }, TOOLS);

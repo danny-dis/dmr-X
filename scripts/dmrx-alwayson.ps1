@@ -1,5 +1,5 @@
 # DMR-X always-on launcher.
-# Keeps the gateway running and the MCP+A2A (:3100) and G0DM0D3 (:7860)
+# Keeps the gateway running and the MCP+A2A (:47114) and G0DM0D3 (:7860)
 # companions alive alongside it. The gateway itself is started through PM2
 # (source code with all fixes) — the compiled binary lineage had
 # false-corruption detection and silent data loss on restart, so it is never
@@ -184,7 +184,7 @@ Write-Log "Bun path: $BunDir"
 Write-Log "Gateway port: $GwPort"
 
 # Reap a gateway stranded on our port by a previous run — but only ever one of
-# ours. Companion ports (3100 / 7860) are deliberately NOT cleared here: the
+# ours. Companion ports (47114 / 7860) are deliberately NOT cleared here: the
 # supervisor loop below adopts a healthy companion and restarts a dead one, so
 # killing them on every boot would cause avoidable downtime for no benefit.
 foreach ($p in (Get-PortOwnerPids $GwPort)) {
@@ -217,17 +217,24 @@ $script:GodmodeProc = $null
 $BunExe = Join-Path $BunDir 'bun.exe'
 
 function Start-Companions {
-    # Set MCP transport to SSE so it listens on port 3100, enable A2A
-    $env:DMRX_MCP_TRANSPORT = 'sse'
-    $env:DMRX_MCP_PORT = '3100'
+    # ONE MCP instance on :47114 serving BOTH MCP and A2A.
+    #
+    # This used to force SSE on :3100 while the PM2 entry ran streamable-http
+    # on :47114, so TWO MCP servers ran side by side from the same dist — the
+    # /mcp path only exists on streamable-http, so clients pointed at :3100
+    # failed the initialize handshake while :47114 worked. A2A shares the port
+    # with MCP by design (card at /.well-known/agent-card.json, JSON-RPC at
+    # /a2a), so there is no reason to split them.
+    $env:DMRX_MCP_TRANSPORT = 'http'
+    $env:DMRX_MCP_PORT = '47114'
     $env:DMRX_A2A_ENABLED = 'true'
     $env:GODMODE_RELAY = '1'
     $env:G0DM0D3_LLM_BASE_URL = "$env:DMRX_GATEWAY_URL/v1"
 
-    # Start MCP server (needs SSE transport to listen on port 3100)
+    # Start MCP server (streamable-http on :47114, A2A on the same port)
     $mcpEntry = Join-Path $ProjectRoot 'services\mcp-server\dist\index.js'
     if (Test-Path $mcpEntry) {
-        Write-Log "Starting MCP server (with A2A) on :3100 (SSE transport)..."
+        Write-Log "Starting MCP server (with A2A) on :47114 (streamable-http)..."
 
         # MCP must NOT open the gateway's SQLite file. Both processes run the
         # migrations and both persist through sql.js's debounced whole-file
@@ -288,10 +295,10 @@ function Start-Companions {
     $maxWait = 20
     for ($i = 0; $i -lt $maxWait; $i++) {
         Start-Sleep -Seconds 1
-        $mcpUp = Test-PortListen 3100
+        $mcpUp = Test-PortListen 47114
         $g0dUp  = Test-PortListen 7860
         if ($mcpUp -and $g0dUp) {
-            Write-Log "Companions healthy (MCP+A2A :3100, G0DM0D3 :7860)"
+            Write-Log "Companions healthy (MCP+A2A :47114, G0DM0D3 :7860)"
             return
         }
         if ($i -eq $maxWait - 1) {
@@ -395,7 +402,7 @@ while ($true) {
     # that process, so we only supervise its companions.
     if (Test-PortListen $GwPort) {
         Start-Sleep -Seconds 10
-        $mcpAlive  = Test-PortListen 3100
+        $mcpAlive  = Test-PortListen 47114
         $g0dAlive  = Test-PortListen 7860
         if (-not $mcpAlive -or -not $g0dAlive) {
             Write-Log "Companion(s) down (MCP=$mcpAlive, G0DM0D3=$g0dAlive) - restarting..."
@@ -419,7 +426,7 @@ while ($true) {
     # the gateway listens and returns to the outer loop when it goes away.
     while (Test-PortListen $GwPort) {
         Start-Sleep -Seconds 10
-        $mcpAlive = Test-PortListen 3100
+        $mcpAlive = Test-PortListen 47114
         $g0dAlive = Test-PortListen 7860
         if (-not $mcpAlive -or -not $g0dAlive) {
             Write-Log "Companion(s) down during gateway runtime (MCP=$mcpAlive, G0DM0D3=$g0dAlive) - restarting..."

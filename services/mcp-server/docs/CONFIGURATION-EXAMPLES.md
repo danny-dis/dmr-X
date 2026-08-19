@@ -268,7 +268,7 @@ Enable A2A protocol for agent-to-agent communication.
       "name": "DMR-X Image Generator",
       "description": "Specialized agent for image generation tasks",
       "version": "1.0.0",
-      "url": "http://localhost:3100"
+      "url": "http://localhost:47114"
     }
   },
   
@@ -280,14 +280,14 @@ Enable A2A protocol for agent-to-agent communication.
 
 ```bash
 # Discover agent capabilities
-curl http://localhost:3100/.well-known/agent.json
+curl http://localhost:47114/.well-known/agent-card.json
 
 # Response
 {
   "name": "DMR-X Image Generator",
   "description": "Specialized agent for image generation tasks",
   "version": "1.0.0",
-  "url": "http://localhost:3100",
+  "url": "http://localhost:47114",
   "capabilities": {
     "streaming": true
   },
@@ -325,7 +325,7 @@ EXPOSE 3100
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3100/health || exit 1
+  CMD curl -f http://localhost:47114/health || exit 1
 
 # Start server
 CMD ["node", "dist/index.js"]
@@ -355,7 +355,7 @@ services:
       - ./config:/app/config
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:47114/health"]
       interval: 30s
       timeout: 10s
       retries: 3

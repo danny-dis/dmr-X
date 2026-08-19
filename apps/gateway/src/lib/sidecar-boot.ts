@@ -271,7 +271,7 @@ export function reapStaleCompanions(): void {
 
   const ports = [
     Number(process.env.PORT || 3000),
-    Number(process.env.DMRX_MCP_PORT || 3100),
+    Number(process.env.DMRX_MCP_PORT || 47114),
     47115, // G0DM0D3
   ].filter((p) => Number.isInteger(p) && p > 0);
 
@@ -435,7 +435,7 @@ export async function deferMcpBoot(): Promise<void> {
   }
 
   const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
-  const port = process.env.DMRX_MCP_PORT || '3100';
+  const port = process.env.DMRX_MCP_PORT || "47114";
   const healthUrl = `http://${host}:${port}/health`;
 
   if (await httpOk(healthUrl)) {
@@ -515,9 +515,18 @@ export async function deferGodmodeBoot(): Promise<void> {
     }
     logger.info('G0DM0D3 companion boot starting…');
     const { getGodmodeService, setGodmodeConfig } = await import('@dmr-x/godmode');
+    // The godmode routes initialize the service from env config at registration
+    // time WITHOUT checking reachability, so `isInitialized()` alone is not
+    // proof the sidecar is actually up. Skip the spawn only when the proxy is
+    // genuinely reachable — otherwise an initialized-but-dead service would
+    // silently defeat autostart (the sidecar never gets spawned).
     if (getGodmodeService().isInitialized()) {
-      logger.info('G0DM0D3 proxy already initialized — skipping');
-      return;
+      const reachable = await getGodmodeService().healthCheck().catch(() => false);
+      if (reachable) {
+        logger.info('G0DM0D3 proxy already initialized and reachable — skipping');
+        return;
+      }
+      logger.info('G0DM0D3 proxy initialized but unreachable — booting sidecar');
     }
     const { serverManager } = await import('@dmr-x/server-manager');
     const live = serverManager.getRunningInstance();
@@ -541,8 +550,13 @@ export async function deferGodmodeBoot(): Promise<void> {
       const gatewayUrl = resolveGatewayUrl();
       setGodmodeConfig({
         baseUrl: 'http://localhost:47115',
+        // Same adoption rule as godmode-guard restartGodmodeProxy: fall back to
+        // the persisted row's key when no env key is set, so a gateway-managed
+        // orphaned sidecar is still called authenticated (B-006 follow-up).
+        apiKey: process.env.GODMODE_API_KEY || serverManager.getRunningInstance()?.api_key || undefined,
         openrouterApiKey: '',
         llmBaseUrl: `${gatewayUrl}/v1`,
+        llmApiKey: process.env.DMRX_ADMIN_API_KEY || undefined,
       });
       await getGodmodeService().initialize();
       logger.info({ url: 'http://localhost:47115' }, 'G0DM0D3 already listening — proxy wired');

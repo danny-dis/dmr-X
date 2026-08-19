@@ -33,7 +33,7 @@ const TOOL_CATALOG_TTL_MS = 60 * 1000; // 60s cache
 
 // MCP server config (same as admin route)
 const MCP_HOST = process.env.DMRX_MCP_HOST || '127.0.0.1';
-const MCP_PORT = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+const MCP_PORT = parseInt(process.env.DMRX_MCP_PORT || '47114', 10);
 const MCP_URL = `http://${MCP_HOST}:${MCP_PORT}/tools`;
 
 /** Invalidate the tool catalog cache. Call after registering a new tool. */
