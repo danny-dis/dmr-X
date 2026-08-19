@@ -298,6 +298,9 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     // would burn every attempt on the same credential.
     const firstKey = this.getCurrentKey();
     const startIndex = Math.max(0, this.apiKeys.indexOf(firstKey));
+    // Distinct keys rejected with an auth status (401/403). Two means the
+    // credential is bad provider-wide, so rotation is abandoned — see below.
+    let authFailures = 0;
 
     for (let i = 0; i < attempts; i++) {
       const key = i === 0 ? firstKey : this.apiKeys[(startIndex + i) % this.apiKeys.length];
@@ -307,6 +310,24 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         lastError = error;
         const status = (error as { statusCode?: number })?.statusCode;
         const isLast = i === attempts - 1;
+
+        // Provider-wide auth failure short-circuit. When the account itself is
+        // rejected, every key returns the same 401/403 and walking the pool only
+        // burns the caller's timeout (each attempt carries its own HTTP backoff),
+        // so the client sees a hang instead of the auth error. Stop on the second
+        // distinct auth failure and let the router try another PROVIDER.
+        // 429 keeps rotating — that is a real per-key quota signal.
+        if (status && GenericOpenAIAdapter.AUTH_STATUSES.has(status)) {
+          authFailures++;
+          if (authFailures >= 2) {
+            logger.warn(
+              { providerId: this.providerId, model: request.model, status, keysTried: i + 1, of: attempts },
+              'Provider-wide auth failure — abandoning key rotation so the router can fail over',
+            );
+            throw error;
+          }
+        }
+
         if (isLast || !status || !GenericOpenAIAdapter.KEY_SCOPED_STATUSES.has(status)) {
           throw error;
         }

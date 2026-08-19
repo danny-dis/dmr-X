@@ -162,6 +162,19 @@ export abstract class BaseAdapter implements ProviderAdapter {
   protected static readonly KEY_SCOPED_STATUSES: ReadonlySet<number> = new Set([401, 403, 404, 429]);
 
   /**
+   * Subset of KEY_SCOPED_STATUSES that indicates a CREDENTIAL problem rather
+   * than a quota or routing one.
+   *
+   * When two distinct keys both report one of these, the failure is
+   * provider-wide (revoked account / rejected credential) and rotating through
+   * the rest of the pool only burns the caller's timeout — so rotation stops.
+   * 429 is excluded on purpose: it is a genuine per-key quota signal and must
+   * keep failing over. 404 is excluded too — the model may legitimately exist
+   * on a different account in the pool.
+   */
+  protected static readonly AUTH_STATUSES: ReadonlySet<number> = new Set([401, 403]);
+
+  /**
    * Run `operation` against the key pool, advancing to the next key whenever
    * the failure is key-scoped.
    *
@@ -178,6 +191,10 @@ export abstract class BaseAdapter implements ProviderAdapter {
     if (attempts === 1) return operation();
 
     let lastError: unknown;
+    // Count of DISTINCT keys rejected with an auth status (401/403). Two such
+    // failures mean the credential problem is provider-wide, not key-scoped —
+    // see the short-circuit below.
+    let authFailures = 0;
     try {
       for (let i = 0; i < attempts; i++) {
         // First attempt uses normal quota-aware rotation; retries walk the pool.
@@ -187,6 +204,33 @@ export abstract class BaseAdapter implements ProviderAdapter {
         } catch (error) {
           lastError = error;
           const status = (error as { statusCode?: number })?.statusCode;
+
+          // Provider-wide auth failure short-circuit.
+          //
+          // 401/403 sit in KEY_SCOPED_STATUSES because ONE revoked key should
+          // fail over to the next. But when the whole account is revoked or the
+          // provider is rejecting the credential outright, EVERY key returns the
+          // same status and rotating is pure latency: each attempt also carries
+          // its own nested HTTP backoff, so a large pool consumes the caller's
+          // entire timeout and the client sees a hang instead of the auth error.
+          // (Observed: `tokenrouter` 403 on every model across a 7-key pool ->
+          // /v1/chat/completions hung ~57s and returned nothing.)
+          //
+          // Once a SECOND distinct key reports an auth status, stop and surface
+          // the error so the router can fail over to another PROVIDER promptly.
+          // 429 is deliberately excluded — that is a real per-key quota signal
+          // and must keep walking the pool.
+          if (status && BaseAdapter.AUTH_STATUSES.has(status)) {
+            authFailures++;
+            if (authFailures >= 2) {
+              logger.warn(
+                { providerId: this.providerId, status, keysTried: i + 1, of: attempts },
+                'Provider-wide auth failure — abandoning key rotation so the router can fail over',
+              );
+              throw error;
+            }
+          }
+
           if (
             i === attempts - 1 ||
             !status ||
