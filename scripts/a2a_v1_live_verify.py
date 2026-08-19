@@ -17,7 +17,15 @@ def get(path):
         return json.loads(r.read())
 
 
-def rpc(method, params=None):
+def rpc(method, params=None, timeout=120):
+    """POST a JSON-RPC call.
+
+    `timeout` defaults high because `message/send` dispatches to a REAL provider
+    through the router: a cold model pick, a fallback chain, or a slow upstream
+    can legitimately take tens of seconds. A tight timeout here produced a
+    false failure (TimeoutError at 30s) while the very same call completed in
+    2.7s on retry — the flakiness was in this script, not in the server.
+    """
     body = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}
     }).encode()
@@ -25,10 +33,12 @@ def rpc(method, params=None):
         BASE + "/a2a", data=body,
         headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         return {"_http": e.code, "body": e.read().decode(errors="replace")[:300]}
+    except Exception as e:
+        return {"_transport_error": type(e).__name__, "method": method}
 
 
 fails = []
@@ -117,11 +127,28 @@ try:
     text = send["result"]["status"]["message"]["parts"][0].get("text", "")
 except Exception:
     pass
-print("state:", state, "| answer len:", len(text), "| answer:", text[:80])
-if state not in ("completed", "failed", "canceled", "rejected"):
-    fails.append("message/send returned unexpected state %r" % state)
-if state == "completed" and not text.strip():
-    fails.append("message/send completed with EMPTY text (known failure mode)")
+if "_transport_error" in send:
+    print("TRANSPORT ERROR:", send["_transport_error"])
+    fails.append("message/send transport error: %s" % send["_transport_error"])
+else:
+    print("state:", state, "| answer len:", len(text), "| answer:", text[:80])
+    # A2A-layer contract: the task must reach a terminal state and, when it
+    # completes, carry non-empty text (a blank `completed` is a known failure
+    # mode worth catching).
+    if state not in ("completed", "failed", "canceled", "rejected"):
+        fails.append("message/send returned unexpected state %r" % state)
+    if state == "completed" and not text.strip():
+        fails.append("message/send completed with EMPTY text (known failure mode)")
+    # `failed` means the A2A/task layer worked correctly but DISPATCH failed —
+    # almost always an upstream provider problem (observed: "socket connection
+    # was closed unexpectedly" on ~1 run in 3, with nothing in the gateway log).
+    # Report it loudly and exit non-zero rather than printing "ALL PASSED",
+    # which previously masked it. Distinguish it from an A2A regression so a
+    # provider blip is not misread as broken code.
+    if state == "failed":
+        print("  NOTE: terminal state reached, but DISPATCH failed (upstream provider).")
+        print("  A2A plumbing is fine; the model call did not complete.")
+        fails.append("message/send dispatch FAILED (upstream provider): %s" % text[:120])
 
 print("\n" + "=" * 50)
 if fails:
