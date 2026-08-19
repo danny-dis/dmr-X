@@ -293,7 +293,7 @@ function handlePreflight(req: import('node:http').IncomingMessage, res: import('
 // Session idle timeout and cleanup
 // ---------------------------------------------------------------------------
 
-const SESSION_TIMEOUT_MS = resolveConfigInt(configFileForAuth, 'sessionTimeoutMs', 'DMRX_MCP_SESSION_TIMEOUT_MS', 5 * 60 * 1000); // 5 min default
+const SESSION_TIMEOUT_MS = resolveConfigInt(configFileForAuth, 'sessionTimeoutMs', 'DMRX_MCP_SESSION_TIMEOUT_MS', 1 * 60 * 1000); // 1 min default (was 5 min)
 
 // Module-level telemetry config (set in main())
 let telemetryConfig: TelemetryConfig = {
@@ -312,8 +312,23 @@ interface SessionEntry {
 
 const sessionActivityMap = new Map<string, SessionEntry>();
 
+/**
+ * Record activity for a session, refreshing its idle timer.
+ *
+ * `cleanup` is registered once, when the session is created. Later calls are
+ * bare keep-alive touches from request handling — they MUST NOT clobber the
+ * stored cleanup, or the sweep silently degrades into "delete the map entry
+ * and leak the McpServer": the session stays in the transport's `sessions`
+ * map, `/health` keeps reporting it, and `server.close()` is never called.
+ * (Observed live: 9 sessions still reported after 220s idle against a 60s
+ * timeout, because every touch after creation erased the closure.)
+ */
 function touchSession(sessionId: string, cleanup?: () => void): void {
-  sessionActivityMap.set(sessionId, { lastActivity: new Date(), cleanup });
+  const existing = sessionActivityMap.get(sessionId);
+  sessionActivityMap.set(sessionId, {
+    lastActivity: new Date(),
+    cleanup: cleanup ?? existing?.cleanup,
+  });
 }
 
 function removeSession(sessionId: string): void {
@@ -611,7 +626,12 @@ async function buildConfig(): Promise<BuiltConfig> {
           name: resolveConfig(configFile, 'a2a.agentCard.name', 'DMRX_A2A_AGENT_NAME', 'DMR-X Agent'),
           description: resolveConfig(configFile, 'a2a.agentCard.description', 'DMRX_A2A_AGENT_DESCRIPTION', 'DMR-X MCP Server with intelligent routing'),
           version: resolveConfig(configFile, 'a2a.agentCard.version', 'DMRX_A2A_AGENT_VERSION', '0.5.0'),
-          url: resolveConfig(configFile, 'a2a.agentCard.url', 'DMRX_A2A_AGENT_URL', 'http://localhost:3100'),
+          url: resolveConfig(configFile, 'a2a.agentCard.url', 'DMRX_A2A_AGENT_URL', 'http://localhost:47114'),
+          iconUrl: resolveConfig(configFile, 'a2a.agentCard.iconUrl', 'DMRX_A2A_AGENT_ICON_URL', ''),
+          documentationUrl: resolveConfig(configFile, 'a2a.agentCard.documentationUrl', 'DMRX_A2A_AGENT_DOCS_URL', ''),
+          protocolBinding: resolveConfig(configFile, 'a2a.agentCard.protocolBinding', 'DMRX_A2A_PROTOCOL_BINDING', 'JSONRPC'),
+          tenant: resolveConfig(configFile, 'a2a.agentCard.tenant', 'DMRX_A2A_TENANT', ''),
+          additionalInterfaces: configFile?.a2a?.agentCard?.additionalInterfaces ?? [],
         },
       },
       federation: {
@@ -730,6 +750,9 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 
       sessions.set(sessionId, { server, transport });
       touchSession(sessionId, () => {
+        // CRITICAL: close the server on cleanup to free memory.
+        const s = sessions.get(sessionId);
+        if (s?.server?.close) s.server.close().catch(() => { /* best-effort */ });
         sessions.delete(sessionId);
         unregisterActiveSession(sessionId);
       });
@@ -738,12 +761,16 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
         removeSession(sessionId);
         sessions.delete(sessionId);
         unregisterActiveSession(sessionId);
+        // CRITICAL: close the server to free memory.
+        server.close().catch(() => { /* best-effort */ });
       };
 
       res.on('close', () => {
         removeSession(sessionId);
         sessions.delete(sessionId);
         unregisterActiveSession(sessionId);
+        // CRITICAL: close the server to free memory.
+        server.close().catch(() => { /* best-effort */ });
       });
 
       registerActiveSession(sessionId, { id: sessionId, server, transport: transport as unknown as ActiveSession['transport'] });
@@ -900,8 +927,21 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
         return;
       }
 
-      // New session
+      // New session — create a fresh McpServer instance with a session limit
+      // to prevent memory exhaustion. The original crash was caused by unbounded
+      // server creation; we cap concurrent sessions and clean up closed ones.
       if (req.method === 'POST') {
+        // Enforce max concurrent sessions to prevent memory exhaustion
+        const MAX_CONCURRENT_SESSIONS = 50;
+        if (sessions.size >= MAX_CONCURRENT_SESSIONS) {
+          // Remove the oldest idle session
+          const oldestKey = sessions.keys().next().value;
+          if (oldestKey) {
+            removeSession(oldestKey);
+            sessions.delete(oldestKey);
+          }
+        }
+
         const { server, ready } = createDMRXMcpServer({
           ...config,
           allowedTools: authResult.allowedTools,
@@ -914,6 +954,9 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
           onsessioninitialized: (sid: string) => {
             sessions.set(sid, { server, transport });
             touchSession(sid, () => {
+              // CRITICAL: close the server on cleanup to free memory.
+              const s = sessions.get(sid);
+              if (s?.server?.close) s.server.close().catch(() => { /* best-effort */ });
               sessions.delete(sid);
               unregisterActiveSession(sid);
             });
@@ -927,6 +970,10 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
             sessions.delete(transport.sessionId);
             unregisterActiveSession(transport.sessionId);
           }
+          // CRITICAL: close the server to free memory. Each session creates a
+          // full McpServer + ServerState (adapters, search engine, etc.) that
+          // is ~0.4MB; without this, RSS grows unbounded under sustained load.
+          server.close().catch(() => { /* best-effort */ });
         };
 
         await server.connect(transport);
