@@ -27,10 +27,12 @@ let nativeEngine: { name: 'bun' | 'node'; open(filePath: string): BunDatabase } 
 async function getNativeEngine(): Promise<typeof nativeEngine> {
   if (nativeEngine) return nativeEngine;
   if (typeof (globalThis as Record<string, unknown>).Bun !== 'undefined') {
-    const { Database } = await import(/* @vite-ignore */ 'bun:sqlite') as any;
+    const sqliteSpecifier = 'bun:sqlite' as string;
+    const { Database } = await import(/* @vite-ignore */ sqliteSpecifier) as any;
     nativeEngine = { name: 'bun', open: (filePath: string) => new Database(filePath) };
   } else {
-    const { DatabaseSync } = await import('node:sqlite') as any;
+    const sqliteSpecifier = 'node:sqlite' as string;
+    const { DatabaseSync } = await import(sqliteSpecifier) as any;
     nativeEngine = {
       name: 'node',
       open: (filePath: string) => new DatabaseSync(filePath, { readBigInts: true }),
