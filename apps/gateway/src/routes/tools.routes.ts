@@ -1400,10 +1400,48 @@ export function registerCodingToolHandlers(): void {
       const { text, truncated, bytes } = await readBodyCapped(res);
       const plain = htmlToText(text);
       const cut = plain.length > WEB_FETCH_MAX_CHARS;
+
+      // A 200 is NOT proof of success. Redirect-prone doc hosts (Anthropic's
+      // docs.anthropic.com -> platform.claude.com is the canonical example)
+      // answer a dead slug with a cross-host 302 to a Next.js error shell that
+      // carries a plausible <title> and hundreds of KB of chrome. An agent that
+      // only sees `status` and `text` reads that shell as real content and cites
+      // a page that does not exist.
+      //
+      // So report the FINAL url and whether we were redirected, and flag the
+      // known error-shell markers. These are hints, not verdicts — the agent
+      // decides, but it can no longer be fooled silently.
+      const finalUrl = res.url || url;
+      let redirected = false;
+      try {
+        redirected = new URL(finalUrl).href !== new URL(url).href;
+      } catch {
+        redirected = finalUrl !== url;
+      }
+      const crossHost = (() => {
+        try {
+          return new URL(finalUrl).host !== new URL(url).host;
+        } catch {
+          return false;
+        }
+      })();
+
+      const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)?.[1]?.trim().slice(0, 200);
+      const shellMarkers: string[] = [];
+      if (/__next_error__/.test(text)) shellMarkers.push('__next_error__');
+      if (title && /\b(not found|page not found|404)\b/i.test(title)) {
+        shellMarkers.push(`title="${title}"`);
+      }
+      if (plain.length < 200) shellMarkers.push(`only ${plain.length} chars of text`);
+
       return {
         url,
+        finalUrl,
+        redirected,
+        crossHostRedirect: crossHost,
         status: res.status,
         contentType: res.headers.get('content-type') ?? undefined,
+        title,
         text: cut ? plain.slice(0, WEB_FETCH_MAX_CHARS) : plain,
         truncated: truncated || cut,
         truncatedReason: cut
@@ -1412,6 +1450,12 @@ export function registerCodingToolHandlers(): void {
             ? `body truncated at ${WEB_FETCH_MAX_BYTES} bytes`
             : undefined,
         bytes,
+        // Present ONLY when something looks wrong despite a 2xx.
+        suspectedErrorShell: shellMarkers.length > 0 ? shellMarkers : undefined,
+        suspectedErrorShellHint:
+          shellMarkers.length > 0
+            ? 'This looks like an error/placeholder page despite the HTTP status. Treat the content as unreliable and try a variant URL instead of citing it.'
+            : undefined,
       };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -1555,7 +1599,15 @@ export function registerCodingToolHandlers(): void {
     },
   });
   registerToolDefinition('web_fetch', {
-    description: 'Fetch a URL and return its readable text content (HTML stripped to plain text, capped at 20k chars). SSRF-protected: private/loopback/link-local hosts and redirects to them are refused.',
+    description:
+      'Fetch a URL and return its readable text (HTML stripped to plain text, capped at 20k chars). ' +
+      'SSRF-protected: private/loopback/link-local hosts and redirects to them are refused. ' +
+      'Returns status, finalUrl, redirected, crossHostRedirect, title and bytes. ' +
+      'IMPORTANT: a 200 does NOT mean the page exists — dead doc URLs often 302 to another host and ' +
+      'serve an error shell with a plausible title. Check finalUrl and suspectedErrorShell; when it is ' +
+      'set, do NOT cite the content, try a variant URL instead. If you do not know the exact URL, ' +
+      'guess the canonical one and fetch it (see the url-hunting-recovery skill) — do not fetch a ' +
+      "search engine's results page, it returns no usable links.",
     parameters: {
       type: 'object',
       properties: {
