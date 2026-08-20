@@ -79,8 +79,21 @@ const isBun = typeof Bun !== 'undefined';
 
 // Production-hardening defaults — overridable via env in apps/gateway/src/main.ts
 const BODY_LIMIT = parseBodyLimit(process.env.DMRX_BODY_LIMIT, 10 * 1024 * 1024);
-const REQUEST_TIMEOUT = parseInt(process.env.DMRX_REQUEST_TIMEOUT || '60000', 10);
-const KEEPALIVE_TIMEOUT = parseInt(process.env.DMRX_KEEPALIVE_TIMEOUT || '65000', 10);
+// Request timeout must exceed the WORK budget it fronts, or the transport kills
+// the connection while the handler is still legitimately running.
+//
+// The agentic loop allows DMRX_AGENTIC_TURN_TIMEOUT_MS (default 120s) PER TURN
+// and runs up to maxSteps turns, so a 60s requestTimeout guaranteed a
+// mid-flight socket close on any multi-turn agent task. Measured against the
+// DMR-X agent fleet: 6 of 24 delegated tasks died at exactly ~58s with
+// RemoteDisconnected — the client sees a dropped connection, not an error, and
+// the tokens are already spent.
+//
+// 300s covers a 2-turn task at the default per-turn ceiling. Operators running
+// deeper loops should raise both knobs together; keepAlive stays just above so
+// idle-connection reaping never pre-empts an in-flight request.
+const REQUEST_TIMEOUT = parseInt(process.env.DMRX_REQUEST_TIMEOUT || '300000', 10);
+const KEEPALIVE_TIMEOUT = parseInt(process.env.DMRX_KEEPALIVE_TIMEOUT || '305000', 10);
 const CONNECTION_TIMEOUT = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || '10000', 10);
 const MAX_PARAM_LENGTH = parseInt(process.env.DMRX_MAX_PARAM_LENGTH || '200', 10);
 const MEMORY_LIMIT = parseBodyLimit(process.env.DMRX_MEMORY_LIMIT, 1_500 * 1024 * 1024);

@@ -17,6 +17,8 @@ AUTHORIZED = {
     # the reason a SECOND MCP instance kept appearing on :3100 next to the PM2
     # one on :47114.
     "apps/gateway/src/lib/sidecar-boot.ts",
+    # Empty-reply-after-tool-use fix found by the agent fleet load test.
+    "apps/gateway/src/routes/agent-chat-loop.ts",
 }
 
 raw = open(BAK, encoding="utf-8", errors="replace").read()
