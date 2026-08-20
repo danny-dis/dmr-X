@@ -48,14 +48,51 @@ interface AgentChatBody {
  * `allowedTools`. When the agent lists no tools, the FULL registered standard
  * set is used ("tools always on"): an absent/empty allowedTools means "give the
  * agent everything", not "tool-less". An explicit non-empty list narrows.
+ *
+ * Unresolvable names are SKIPPED by getRegisteredToolDefinitions() and were
+ * previously dropped in complete silence, which hid a real capability gap:
+ * 16 of the 17 agents that restrict their tools ask for `WebFetch`/`WebSearch`,
+ * and NEITHER exists in the registry (nor does any equivalent — the only
+ * web-ish entries are MCP agent wrappers and `search_files`, which searches the
+ * local filesystem). Those agents therefore ran with file tools only. A
+ * "Trend Researcher" with no way to reach the web still answers confidently
+ * from model priors, so nothing looked broken.
+ *
+ * We cannot invent the capability here, so the next best thing is to make the
+ * gap LOUD: log exactly which requested tools did not resolve, and surface the
+ * count so the caller can act. Callers keep the resolvable subset — narrowing
+ * behaviour is unchanged, so this is observability, not a behaviour change.
  */
-function buildAgentTools(allowedTools: unknown): any[] | undefined {
+function buildAgentTools(
+  allowedTools: unknown,
+  agentName?: string,
+): { defs: any[] | undefined; missing: string[] } {
   const names = normalizeAllowedTools(allowedTools);
   const defs =
     names.length === 0
       ? getRegisteredToolDefinitions()
       : getRegisteredToolDefinitions(names);
-  return defs.length > 0 ? defs : undefined;
+
+  // Only an EXPLICIT list can go unresolved; the empty case asks for whatever
+  // is registered, so by definition nothing is missing there.
+  let missing: string[] = [];
+  if (names.length > 0) {
+    const resolved = new Set(defs.map((d) => d?.function?.name).filter(Boolean));
+    missing = names.filter((n) => !resolved.has(n));
+    if (missing.length > 0) {
+      logger.warn(
+        {
+          agent: agentName,
+          requested: names.length,
+          resolved: resolved.size,
+          missing,
+        },
+        'agent requested tools that are not registered — it will run WITHOUT them',
+      );
+    }
+  }
+
+  return { defs: defs.length > 0 ? defs : undefined, missing };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +135,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const definition = context.definition;
     const model = body.model ?? agentRuntimeService.resolveModel(definition);
     const agentTools = normalizeAllowedTools(definition.allowedTools);
-    const agentToolDefs = buildAgentTools(agentTools);
+    const { defs: agentToolDefs } = buildAgentTools(agentTools, definition.name);
 
     // Acquire conversation lock. Key per-conversation (not per-instance) so
     // concurrent external agents can run the same subagent in parallel without
@@ -372,7 +409,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       const definition = context.definition;
       const model = body.model ?? agentRuntimeService.resolveModel(definition);
       const agentTools = normalizeAllowedTools(definition.allowedTools);
-      const agentToolDefs = buildAgentTools(agentTools);
+      const { defs: agentToolDefs } = buildAgentTools(agentTools, definition.name);
 
       const result = await runAgentChatLoop({
         conversation,
