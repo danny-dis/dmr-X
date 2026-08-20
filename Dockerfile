@@ -66,7 +66,7 @@ FROM oven/bun:${BUN_VERSION}-alpine AS production-node
 LABEL org.opencontainers.image.title="DMR-X Gateway" \
       org.opencontainers.image.description="Universal AI routing and orchestration platform" \
       org.opencontainers.image.source="https://github.com/danny-dis/dmr-X" \
-      org.opencontainers.image.licenses="BSL-1.1" \
+      org.opencontainers.image.licenses="GPL-2.0" \
       org.opencontainers.image.vendor="DMR-X"
 
 # Install wget for HEALTHCHECK (Alpine ships curl too but wget has nicer
@@ -140,7 +140,7 @@ RUN addgroup -g 65532 -S nonroot && adduser -S nonroot -u 65532 -G nonroot
 LABEL org.opencontainers.image.title="DMR-X Gateway (binary)" \
       org.opencontainers.image.description="Universal AI routing and orchestration platform — single static binary" \
       org.opencontainers.image.source="https://github.com/danny-dis/dmr-X" \
-      org.opencontainers.image.licenses="BSL-1.1" \
+      org.opencontainers.image.licenses="GPL-2.0" \
       org.opencontainers.image.vendor="DMR-X"
 
 WORKDIR /app

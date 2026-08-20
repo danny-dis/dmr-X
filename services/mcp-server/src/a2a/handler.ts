@@ -22,6 +22,7 @@ import {
   handleRpcStream,
   isStreamMethod,
   rpcError,
+  setAgentCardProvider,
   A2A_ERR,
   type JsonRpcRequest,
   type JsonRpcResponse,
@@ -48,6 +49,10 @@ export async function handleA2ARoutes(
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const path = url.pathname;
+
+  // Keep the RPC-facing card in step with the discovery endpoint — both build
+  // from the same config + live tool list.
+  setAgentCardProvider(() => buildAgentCard(config?.agentCard || {}, tools || []));
 
   // --- Agent Card discovery (current + legacy paths) ---
   if (
@@ -135,6 +140,10 @@ async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
       sendJson(res, 200, rpcError(null, A2A_ERR.INVALID_REQUEST, 'Invalid JSON-RPC request'));
+      return true;
+    }
+    if (parsed.length > MAX_BATCH_SIZE) {
+      sendJson(res, 200, rpcError(null, A2A_ERR.INVALID_REQUEST, `Batch too large — max ${MAX_BATCH_SIZE} requests`));
       return true;
     }
     const responses: JsonRpcResponse[] = [];
@@ -246,7 +255,7 @@ async function legacyShim(
 
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(data, null, 2));
+  res.end(JSON.stringify(data));
 }
 
 /**
@@ -263,7 +272,7 @@ function sendJsonAndClose(
   data: unknown,
 ): void {
   res.writeHead(status, { 'Content-Type': 'application/json', Connection: 'close' });
-  res.end(JSON.stringify(data, null, 2), () => {
+  res.end(JSON.stringify(data), () => {
     req.destroy();
   });
 }
@@ -294,6 +303,9 @@ class PayloadTooLargeError extends Error {
 
 /** Default max A2A request body (bytes). Override with DMRX_A2A_MAX_BODY_BYTES. */
 const DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+/** Max JSON-RPC batch size — prevents a client from flooding the event loop. */
+const MAX_BATCH_SIZE = 100;
 
 function maxBodyBytes(): number {
   const raw = Number(process.env.DMRX_A2A_MAX_BODY_BYTES);

@@ -47,9 +47,13 @@
   can ever be routed to them.
 - **Hybrid tool search (BM25 + semantic, RRF)** — ✅ **Shipped** (`services/tool-search`, `DMRX_TOOL_SEARCH_*`).
 
-## Kubernetes / Operator (formerly "PHASE3-FEATURES")
+## SLO / Alerting
 
-- **Helm chart** — ✅ **Shipped** (`helm/dmr-x`).
+- **Burn-rate SLO alerts** — ✅ **Shipped.** `monitoring/prometheus-alerts.yml`
+  now has multi-window burn-rate rules (fast burn: 14.4x in 1h; slow burn: 6x in 6h).
+- **Benchmark SLO alerts** — 🔲 **Planned.** No benchmark failure rate alert exists. (O16)
+
+## Kubernetes / Operator (formerly \"PHASE3-FEATURES\")
 - **Kubernetes Operator** — ✅ **Shipped** (`services/operator`).
 - **Workflow engine (CRDs / Workflow API)** — ✅ **Shipped** (`services/operator`: `WorkflowSpec` +
   `generateWorkflowManifest()`; CRDs in `helm/`).
@@ -68,7 +72,7 @@ and all agent/MCP/federation routes are **registered** in `server.ts`.
 
 - Provider adapter count is **57+** (not 18). See `docs/AI_PROVIDER_REFERENCE.md`.
 - Provider catalogs are *research snapshots* (mid-2026) — verify against upstream provider docs before use.
-- Migration count: **64 SQL migrations**. Test count: **86 unit test files / 1248 tests**,
+- Migration count: **75 SQL migrations** (versions 1–78). Test count: **86 unit test files / 1248 tests**,
   plus 4 E2E files that are skipped unless `DMRX_RUN_E2E=true` (CI never sets it).
   `apps/ui` has **no tests at all**.
 - Last clean full-suite baseline: **2026-08-06 — 86/86 files, 1248/1248 tests passed,

@@ -74,6 +74,59 @@ export interface PipelineOutput {
 export async function runPipeline(input: PipelineInput): Promise<PipelineOutput> {
   const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler, routingStrategy = 'thompson' } = input;
 
+  // Stage 1-2.5: Deterministic filters (pure functions of candidates + taskProfile)
+  const preRateLimit = runDeterministicFilters(candidates, taskProfile, providerPreferences);
+
+  // Stage 3-7: Rate-limit, policy, quota, scoring, selection
+  return runPipelineFromFiltered({
+    preRateLimit,
+    taskProfile,
+    epsilon,
+    rateLimitService,
+    quotaService,
+    policyService,
+    tenantId,
+    estimatedTokens,
+    freeTierStrategy,
+    providerPreferences,
+    metaModelFilteredFree,
+    thompsonSampler,
+    routingStrategy,
+    retryWithWait: input.retryWithWait,
+    maxWaitMs: input.maxWaitMs,
+  });
+}
+
+/**
+ * Run the deterministic filtering stages (1-2.5) that are pure functions of
+ * candidates + taskProfile. These can be cached and reused across retries
+ * since they don't depend on mutable state like rate-limit counters.
+ *
+ * Stages included:
+ *   1. Capability filter
+ *   1.5. Provider preference filter
+ *   2. Availability filter (isHealthy)
+ *   2.5. Circuit breaker filter
+ */
+export function runDeterministicFilters(
+  candidates: CandidateSet,
+  taskProfile: TaskProfile,
+  providerPreferences?: ProviderPreferences,
+): CandidateSet {
+  // Diagnostic: count distinct providers at each stage. A collapsed pool
+  // (every candidate sharing one providerId) is the difference between a
+  // fallback chain that survives an upstream outage and a bare 502, and it
+  // was previously invisible — set DMRX_ROUTER_TRACE=true to see where the
+  // candidate set narrows.
+  const trace = process.env.DMRX_ROUTER_TRACE === 'true';
+  const shape = (set: CandidateSet): string => {
+    const byProvider = new Map<string, number>();
+    for (const c of set) {
+      byProvider.set(c.providerName ?? c.providerId, (byProvider.get(c.providerName ?? c.providerId) ?? 0) + 1);
+    }
+    return `${set.length} models / ${byProvider.size} providers ${JSON.stringify(Object.fromEntries(byProvider))}`;
+  };
+
   // Stage 1: Capability Filter
   let filtered = capabilityFilter(
     candidates,
@@ -81,14 +134,43 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     taskProfile.modality,
     taskProfile.requiredCapabilityTier,
   );
+  if (trace) {
+    logger.info(
+      {
+        stage: 'capability',
+        capabilities: taskProfile.capabilities,
+        modality: taskProfile.modality,
+        tier: taskProfile.requiredCapabilityTier,
+        before: shape(candidates),
+        after: shape(filtered),
+      },
+      'router trace: capability filter',
+    );
+  }
 
   // Stage 1.5: Provider Preference Filter
   if (providerPreferences) {
+    const before = filtered;
     filtered = applyProviderPreferences(filtered, providerPreferences);
+    if (trace) {
+      logger.info(
+        { stage: 'provider-preference', before: shape(before), after: shape(filtered) },
+        'router trace: provider preference filter',
+      );
+    }
   }
 
   // Stage 2: Availability Filter
-  filtered = availabilityFilter(filtered);
+  {
+    const before = filtered;
+    filtered = availabilityFilter(filtered);
+    if (trace) {
+      logger.info(
+        { stage: 'availability', before: shape(before), after: shape(filtered) },
+        'router trace: availability filter',
+      );
+    }
+  }
 
   // Stage 2.5: Circuit Breaker Filter — exclude providers/models with open circuits
   const providerBreaker = getProviderCircuitBreaker();
@@ -99,12 +181,63 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     const modelKey = `${m.providerId}:${m.modelId}`;
     return providerBreaker.isAvailable(providerKey) && modelBreaker.isAvailable(modelKey) && connectionBreaker.isAvailable(providerKey);
   });
+  if (trace) {
+    logger.info(
+      { stage: 'circuit-breaker', after: shape(filtered) },
+      'router trace: circuit breaker filter (final deterministic pool)',
+    );
+  }
+
+  return filtered;
+}
+
+/**
+ * Run the remaining pipeline stages (3-7) from pre-filtered candidates.
+ * This is the function to call when retrying — only the rate-limit filter
+ * (stage 3) needs to re-run; policy/quota are tenant-scoped and don't change
+ * in a short window.
+ */
+export async function runPipelineFromFiltered(input: {
+  preRateLimit: CandidateSet;
+  taskProfile: TaskProfile;
+  epsilon?: number;
+  rateLimitService?: RateLimitService;
+  quotaService?: QuotaService;
+  policyService?: PolicyService;
+  tenantId?: string;
+  estimatedTokens?: number;
+  freeTierStrategy?: FreeTierStrategy;
+  providerPreferences?: ProviderPreferences;
+  metaModelFilteredFree?: boolean;
+  thompsonSampler?: ThompsonSamplerLike;
+  routingStrategy?: RoutingStrategy;
+  retryWithWait?: boolean;
+  maxWaitMs?: number;
+}): Promise<PipelineOutput> {
+  const {
+    preRateLimit,
+    taskProfile,
+    epsilon = 0.05,
+    rateLimitService,
+    quotaService,
+    policyService,
+    tenantId,
+    estimatedTokens = 0,
+    freeTierStrategy = 'none',
+    providerPreferences,
+    metaModelFilteredFree,
+    thompsonSampler,
+    routingStrategy = 'thompson',
+    retryWithWait = true,
+    maxWaitMs: inputMaxWaitMs,
+  } = input;
 
   // Save pre-rate-limit candidates for retry logic
-  const preRateLimitCandidates = [...filtered];
+  const preRateLimitCandidates = [...preRateLimit];
 
   // Stage 3: Rate-Limit Filter (filters candidates that would exceed free-tier limits)
   let rateLimitResult: RateLimitFilterResult | undefined;
+  let filtered = preRateLimit;
   if (rateLimitService) {
     rateLimitResult = await rateLimitFilter(filtered, rateLimitService, estimatedTokens);
     filtered = rateLimitResult.allowed;
@@ -121,16 +254,19 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   }
 
   // Retry-with-wait: if all providers are rate-limited and wait is short, retry after reset
-  if (filtered.length === 0 && input.retryWithWait !== false && rateLimitResult && rateLimitResult.earliestResetMs > 0) {
-    const maxWait = input.maxWaitMs ?? 3000;
+  if (filtered.length === 0 && retryWithWait !== false && rateLimitResult && rateLimitResult.earliestResetMs > 0) {
+    // Default 8s (free-tier windows are often 5-10s); override via DMRX_RATE_LIMIT_MAX_WAIT_MS
+    const maxWait = inputMaxWaitMs ?? (Number(process.env.DMRX_RATE_LIMIT_MAX_WAIT_MS) || 8000);
     const waitMs = Math.min(rateLimitResult.earliestResetMs, maxWait);
     if (waitMs > 0) {
       logger.info({ waitMs, rateLimitedCount: rateLimitResult.rateLimited.length }, 'All providers rate-limited, waiting for reset');
       await new Promise(resolve => setTimeout(resolve, waitMs));
-      // Re-run rate-limit + policy + quota with candidates that existed before rate-limit filtering
+      // Re-run rate-limit with candidates that existed before rate-limit filtering
       const recheck = await rateLimitFilter(preRateLimitCandidates, rateLimitService!, estimatedTokens);
       filtered = recheck.allowed;
-      // Re-apply policy filter
+      // Re-apply policy filter (tenant-scoped, doesn't change in a 3s window —
+      // but re-applying is cheap and avoids staleness if the caller's policy
+      // was updated)
       if (policyService && tenantId) {
         filtered = await policyService.filterByPolicy(filtered, tenantId, taskProfile);
       }
@@ -142,7 +278,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   }
 
   if (filtered.length === 0) {
-    const tried = candidates.map(c => `${c.providerId}/${c.modelId}`);
+    const tried = preRateLimitCandidates.map(c => `${c.providerId}/${c.modelId}`);
     // Convert earliestResetMs to seconds for ProviderUnavailableError
     const retryAfterSeconds = rateLimitResult?.earliestResetMs ? Math.ceil(rateLimitResult.earliestResetMs / 1000) : 30;
     throw new ProviderUnavailableError(tried, retryAfterSeconds);
@@ -335,9 +471,42 @@ function buildFallbackChain(
       return aFree - bFree;
     });
   }
-  // Allow more fallbacks when many free providers are available
-  const maxFallbacks = remaining.length > 20 ? 8 : remaining.length > 10 ? 6 : 3;
-  return crossProvider.slice(0, maxFallbacks).map((model, index) => ({
+  // Allow more fallbacks when many free providers are available.
+  // Raised from 3/2 → 8/4: the live pool is heavily dominated by ONE upstream
+  // (google supplies most top-scored candidates), so a google-wide HTTP 400
+  // defeated the whole chain and surfaced ALL_PROVIDERS_FAILED while hundreds
+  // of healthy openrouter-free / tokenrouter / nvidia-nim candidates sat
+  // further down. Measured: 20/117 providers reachable, ~4 attempts per
+  // request → intermittent 502/503 on auto, auto-coding and auto-agentic.
+  const maxFallbacks = remaining.length > 10 ? 8 : 4;
+
+  // PROVIDER DIVERSITY: `remaining` is score-ordered, and the top slots are
+  // routinely all the SAME provider (e.g. every candidate is a google/gemini
+  // model). Slicing the top N then gave a chain whose every step shared one
+  // upstream, so a single provider-wide failure (google returning HTTP 400 /
+  // "200 with empty content") burned all fallbacks and surfaced
+  // AllProvidersFailedError — the whole point of a fallback chain is to
+  // survive exactly that. Take the best model per DISTINCT provider first,
+  // then backfill with the next-best remaining models if the chain is still
+  // short. Same chain length, same latency budget, but the steps can no
+  // longer be defeated by one bad upstream.
+  const seenProviders = new Set<string>([primary.providerId]);
+  const diversified: ProviderModel[] = [];
+  for (const model of crossProvider) {
+    if (diversified.length >= maxFallbacks) break;
+    if (seenProviders.has(model.providerId)) continue;
+    seenProviders.add(model.providerId);
+    diversified.push(model);
+  }
+  if (diversified.length < maxFallbacks) {
+    for (const model of crossProvider) {
+      if (diversified.length >= maxFallbacks) break;
+      if (diversified.includes(model)) continue;
+      diversified.push(model);
+    }
+  }
+
+  return diversified.map((model, index) => ({
     provider: {
       providerId: model.providerId,
       modelId: model.modelId,

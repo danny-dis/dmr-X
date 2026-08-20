@@ -258,7 +258,7 @@ function topmostOurAncestor(pid: number, table: Map<number, ProcInfo>): number {
  *  - Port ownership catches the case the ledger CANNOT: G0DM0D3 runs as
  *    `bun x tsx` → `tsx/cli.mjs` → `node`, and the recorded top-level wrapper
  *    dies together with the gateway. Its two descendants survive, get
- *    reparented, and keep both 7860 and the *inherited* gateway socket open —
+ *    reparented, and keep both 47115 and the *inherited* gateway socket open —
  *    unreachable from the recorded PID, so a ledger-only reap left the gateway
  *    permanently unable to bind.
  */
@@ -271,8 +271,8 @@ export function reapStaleCompanions(): void {
 
   const ports = [
     Number(process.env.PORT || 3000),
-    Number(process.env.DMRX_MCP_PORT || 3100),
-    7860, // G0DM0D3
+    Number(process.env.DMRX_MCP_PORT || 47114),
+    47115, // G0DM0D3
   ].filter((p) => Number.isInteger(p) && p > 0);
 
   for (const pid of pidsListeningOn(ports)) candidates.add(pid);
@@ -435,7 +435,7 @@ export async function deferMcpBoot(): Promise<void> {
   }
 
   const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
-  const port = process.env.DMRX_MCP_PORT || '3100';
+  const port = process.env.DMRX_MCP_PORT || "47114";
   const healthUrl = `http://${host}:${port}/health`;
 
   if (await httpOk(healthUrl)) {
@@ -515,9 +515,18 @@ export async function deferGodmodeBoot(): Promise<void> {
     }
     logger.info('G0DM0D3 companion boot starting…');
     const { getGodmodeService, setGodmodeConfig } = await import('@dmr-x/godmode');
+    // The godmode routes initialize the service from env config at registration
+    // time WITHOUT checking reachability, so `isInitialized()` alone is not
+    // proof the sidecar is actually up. Skip the spawn only when the proxy is
+    // genuinely reachable — otherwise an initialized-but-dead service would
+    // silently defeat autostart (the sidecar never gets spawned).
     if (getGodmodeService().isInitialized()) {
-      logger.info('G0DM0D3 proxy already initialized — skipping');
-      return;
+      const reachable = await getGodmodeService().healthCheck().catch(() => false);
+      if (reachable) {
+        logger.info('G0DM0D3 proxy already initialized and reachable — skipping');
+        return;
+      }
+      logger.info('G0DM0D3 proxy initialized but unreachable — booting sidecar');
     }
     const { serverManager } = await import('@dmr-x/server-manager');
     const live = serverManager.getRunningInstance();
@@ -537,15 +546,20 @@ export async function deferGodmodeBoot(): Promise<void> {
       return;
     }
     // Also accept a live process even if server_instances row is missing (fresh DB).
-    if (await httpOk('http://127.0.0.1:7860/v1/health', 2000)) {
+    if (await httpOk('http://127.0.0.1:47115/v1/health', 2000)) {
       const gatewayUrl = resolveGatewayUrl();
       setGodmodeConfig({
-        baseUrl: 'http://localhost:7860',
+        baseUrl: 'http://localhost:47115',
+        // Same adoption rule as godmode-guard restartGodmodeProxy: fall back to
+        // the persisted row's key when no env key is set, so a gateway-managed
+        // orphaned sidecar is still called authenticated (B-006 follow-up).
+        apiKey: process.env.GODMODE_API_KEY || serverManager.getRunningInstance()?.api_key || undefined,
         openrouterApiKey: '',
         llmBaseUrl: `${gatewayUrl}/v1`,
+        llmApiKey: process.env.DMRX_ADMIN_API_KEY || undefined,
       });
       await getGodmodeService().initialize();
-      logger.info({ url: 'http://localhost:7860' }, 'G0DM0D3 already listening — proxy wired');
+      logger.info({ url: 'http://localhost:47115' }, 'G0DM0D3 already listening — proxy wired');
       return;
     }
 
@@ -555,7 +569,8 @@ export async function deferGodmodeBoot(): Promise<void> {
       llmBaseUrl: `${gatewayUrl}/v1`,
     });
     setGodmodeConfig({
-      baseUrl: started.url ?? 'http://localhost:7860',
+      baseUrl: started.url ?? 'http://localhost:47115',
+      apiKey: started.api_key ?? undefined,
       openrouterApiKey: '',
       llmBaseUrl: started.llm_base_url ?? `${gatewayUrl}/v1`,
       llmApiKey: started.llm_api_key ?? undefined,
@@ -572,8 +587,8 @@ export async function deferGodmodeBoot(): Promise<void> {
  * Stop the gateway-managed G0DM0D3 child.
  *
  * The gateway shutdown path previously tore down only the MCP sidecar, so every
- * restart orphaned the G0DM0D3 process tree still holding port 7860. The next
- * boot then adopted that orphan (deferGodmodeBoot treats a healthy 7860 as
+ * restart orphaned the G0DM0D3 process tree still holding port 47115. The next
+ * boot then adopted that orphan (deferGodmodeBoot treats a healthy 47115 as
  * "already listening"), which hid the leak: one live server, but no supervisor
  * owned it any more. Best-effort — a failure here must never block shutdown.
  */

@@ -29,6 +29,9 @@ app = FastAPI(title="Needle 2 Router", version="0.3.0")
 # and caches; if it (or the package) is missing the server still boots.
 _PACKAGE = None
 _PACKAGE_LOCK = asyncio.Lock()
+# True once a throwaway inference has completed, so the engine is resident and
+# the next real request won't pay the ~14s cold-start.
+_WARMED = False
 
 # Simple TTL cache for identical (query, tools) pairs.
 _CACHE: dict[str, tuple[float, Any]] = {}
@@ -290,7 +293,51 @@ async def health():
         "status": "ok",
         "package_loaded": _PACKAGE is not None,
         "model": "needle2",
+        "warmed": _WARMED,
     }
+
+
+@app.on_event("startup")
+async def _warm_on_startup() -> None:
+    """Load the package and run one throwaway inference at boot.
+
+    The first real request costs ~14s because `Needle(tools=...)` fetches and
+    initialises the engine on demand. DMR-X's pre-filter budget is 1500ms
+    (DMRX_NEEDLE_TIMEOUT_MS), so that first caller always times out and
+    silently bypasses the pre-filter. Paying the cost here instead means the
+    very first production request is already fast.
+
+    Deliberately fire-and-forget: uvicorn must finish binding the port and
+    start serving /health immediately, and a warmup failure must never stop
+    the service from booting (the endpoints already degrade to 503/normal
+    routing on their own).
+    """
+    async def _warm() -> None:
+        global _WARMED
+        try:
+            await _ensure_package()
+            if _PACKAGE is None:
+                logger.warning("Warmup skipped: cactus-needle not importable.")
+                return
+            started = time.time()
+
+            def _infer():
+                agent = _PACKAGE.Needle(
+                    tools=[{
+                        "name": "warmup",
+                        "description": "Warmup probe.",
+                        "parameters": {"q": {"type": "string", "required": False}},
+                    }]
+                )
+                return agent.complete("warmup", max_new_tokens=1)
+
+            await asyncio.to_thread(_infer)
+            _WARMED = True
+            logger.info("Needle 2 warmed in %.1fs — pre-filter is live.", time.time() - started)
+        except Exception as exc:  # noqa: BLE001 - warmup must never break boot
+            logger.warning("Needle 2 warmup failed (%s). First request will load lazily.", exc)
+
+    asyncio.create_task(_warm())
 
 
 if __name__ == "__main__":

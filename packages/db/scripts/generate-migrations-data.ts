@@ -47,8 +47,11 @@ const lines: string[] = [
 ];
 
 for (const mig of migrations) {
-  // Escape backticks in SQL by replacing ` with \`
-  const escapedSql = mig.sql.replace(/`/g, '\\`');
+  // Escape backticks and `${` in SQL before embedding into a template
+  // literal: backticks would terminate the literal, and an unescaped `${`
+  // would be interpolated as JS (migration 071 embeds `${providerId}:${modelId}`
+  // in a comment, which previously broke compilation of the generated file).
+  const escapedSql = mig.sql.replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
   lines.push(`  ${mig.version}: {`);
   lines.push(`    filename: '${mig.filename}',`);
   lines.push(`    sql: \`${escapedSql}\`,`);

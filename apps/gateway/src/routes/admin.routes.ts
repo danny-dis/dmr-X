@@ -102,17 +102,12 @@ function upsertEnvVar(envPath: string, key: string, value: string): void {
  * Looks up the provider's catalog entry to find the correct env-var name.
  */
 function syncApiKeyToEnvFile(providerName: string, apiKey: string | undefined): void {
-  if (!apiKey) return; // Don't write empty keys — only sync actual secrets
-
-  // Find the catalog entry to get the envKey
-  const template = PROVIDER_CATALOG.find(t => t.id === providerName);
-  if (!template?.envKey) return; // No env-var mapping for this provider
-
-  const envPath = findEnvFile();
-  if (!envPath) return; // No .env file found — skip silently
-
-  upsertEnvVar(envPath, template.envKey, apiKey);
-  logger.info({ provider: providerName, envKey: template.envKey, envPath }, 'Synced API key to .env file');
+  // M4 — provider keys are stored encrypted in the `provider_keys` table.
+  // Writing them to .env in plaintext defeats encryption at rest and feeds
+  // C1/C2 (the gateway process can read its own .env). This function is now
+  // a no-op; keys are loaded from the DB at boot (server.ts seed path).
+  void providerName;
+  void apiKey;
 }
 
 /**
@@ -170,7 +165,17 @@ const CreateProviderSchema = z.object({
   name: z.string().min(1),
   adapter_type: z.string().min(1),
   base_url: z.string().url().optional().nullable(),
-  api_key_ref: z.string().optional().nullable(),
+  // M3 — api_key_ref is used as an environment-variable name (process.env[row.api_key_ref]).
+  // Block sensitive names so an admin can't exfiltrate DMRX_ENCRYPTION_KEY or other
+  // secrets by pointing base_url at a public host that receives them as Authorization.
+  api_key_ref: z.string().optional().nullable().refine(
+    (val) => {
+      if (!val) return true;
+      const blocked = ['DMRX_ENCRYPTION_KEY', 'DMRX_ADMIN_API_KEY', 'DMRX_MCP_API_KEY', 'OPENROUTER_API_KEY'];
+      return !blocked.includes(val.toUpperCase());
+    },
+    { message: 'api_key_ref cannot reference sensitive environment variables (DMRX_ENCRYPTION_KEY, DMRX_ADMIN_API_KEY, etc.)' }
+  ),
   // The `providers` table has no dedicated columns for these, so the route
   // handler merges them into the `config` JSON blob. The dialog sends
   // them as top-level fields because that's what the UI form model carries.
@@ -6097,7 +6102,7 @@ COALESCE(
   server.get('/admin/mcp/status', async (request, reply) => {
     const transport = (process.env.DMRX_MCP_TRANSPORT || 'stdio').toLowerCase();
     const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
-    const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+    const port = parseInt(process.env.DMRX_MCP_PORT || '47114', 10);
     const hasApiKey = !!process.env.DMRX_MCP_API_KEY;
 
     // Always attempt the reachability probe — capped so a slow/unreachable
@@ -6187,7 +6192,7 @@ COALESCE(
   // MCP tools list endpoint that fetches from MCP server if possible
   server.get('/admin/mcp/tools', async () => {
     const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
-    const port = parseInt(process.env.DMRX_MCP_PORT || '3100', 10);
+    const port = parseInt(process.env.DMRX_MCP_PORT || '47114', 10);
 
     const fallbackTools = [
       { name: 'dmrx_chat', description: 'Send a chat completion request through DMR-X. Automatically routes to the best available LLM based on quality, cost, and latency targets.' },
@@ -6526,7 +6531,7 @@ COALESCE(
     return {
       transport: process.env.DMRX_MCP_TRANSPORT || fileConfig.transport || 'stdio',
       host: process.env.DMRX_MCP_HOST || fileConfig.host || '127.0.0.1',
-      port: parseInt(process.env.DMRX_MCP_PORT || String(fileConfig.port || 3100), 10),
+      port: parseInt(process.env.DMRX_MCP_PORT || String(fileConfig.port || 47114), 10),
       hasApiKey: !!process.env.DMRX_MCP_API_KEY,
       toolSearch: {
         enabled: fileConfig.toolSearch?.enabled ?? true,

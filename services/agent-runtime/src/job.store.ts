@@ -49,6 +49,7 @@ export interface Job {
   status: JobStatus;
   budgetUsd?: number | null;
   budgetTokens?: number | null;
+  budgetDurationMs?: number | null;
   deadlineAt?: string | null;
   maxDepth: number;
   spentUsd: number;
@@ -71,6 +72,7 @@ export interface CreateJobInput {
   status?: JobStatus;
   budgetUsd?: number | null;
   budgetTokens?: number | null;
+  budgetDurationMs?: number | null;
   deadlineAt?: string | null;
   maxDepth?: number;
   plan?: unknown;
@@ -83,6 +85,7 @@ export interface JobPatch {
   status?: JobStatus;
   budgetUsd?: number | null;
   budgetTokens?: number | null;
+  budgetDurationMs?: number | null;
   deadlineAt?: string | null;
   maxDepth?: number;
   plan?: unknown;
@@ -115,6 +118,8 @@ export interface JobTask {
   status: JobTaskStatus;
   dependsOn?: string[];
   attempt: number;
+  maxRetries: number;
+  retryAfter?: string | null;
   output?: unknown;
   createdAt: string;
   updatedAt: string;
@@ -136,6 +141,7 @@ export interface CreateTaskInput {
   assignedModel?: string | null;
   status?: JobTaskStatus;
   dependsOn?: string[];
+  maxRetries?: number;
 }
 
 /** Partial patch for `updateTask`. Only fields present are updated. */
@@ -147,6 +153,8 @@ export interface TaskPatch {
   status?: JobTaskStatus;
   dependsOn?: string[];
   attempt?: number;
+  maxRetries?: number;
+  retryAfter?: string | null;
   output?: unknown;
   assignedAgentDefId?: string | null;
   assignedAgentVersion?: string | null;
@@ -176,9 +184,9 @@ export class JobStore {
     db.prepare(
       `INSERT INTO jobs (
          id, tenant_id, submitted_by, source, brief, acceptance_criteria, status,
-         budget_usd, budget_tokens, deadline_at, max_depth, spent_usd, spent_tokens,
+         budget_usd, budget_tokens, budget_duration_ms, deadline_at, max_depth, spent_usd, spent_tokens,
          plan, result, decision_log, pin_agents, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.id,
       input.tenantId,
@@ -189,6 +197,7 @@ export class JobStore {
       input.status ?? 'intake',
       input.budgetUsd ?? null,
       input.budgetTokens ?? null,
+      input.budgetDurationMs ?? null,
       input.deadlineAt ?? null,
       input.maxDepth ?? 3,
       0,
@@ -279,6 +288,10 @@ export class JobStore {
       sets.push('budget_tokens = ?');
       params.push(patch.budgetTokens ?? null);
     }
+    if (patch.budgetDurationMs !== undefined) {
+      sets.push('budget_duration_ms = ?');
+      params.push(patch.budgetDurationMs ?? null);
+    }
     if (patch.deadlineAt !== undefined) {
       sets.push('deadline_at = ?');
       params.push(patch.deadlineAt ?? null);
@@ -351,8 +364,8 @@ export class JobStore {
       `INSERT INTO job_tasks (
          id, job_id, parent_task_id, seq, title, description, deliverable, acceptance,
          assigned_agent_def_id, assigned_agent_version, assigned_instance_id, session_id,
-         assigned_model, status, depends_on, attempt, output, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         assigned_model, status, depends_on, attempt, max_retries, output, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.id,
       input.jobId,
@@ -370,6 +383,7 @@ export class JobStore {
       input.status ?? 'pending',
       input.dependsOn !== undefined ? JSON.stringify(input.dependsOn) : null,
       0,
+      input.maxRetries ?? 3,
       null,
       now,
       now,
@@ -467,6 +481,14 @@ export class JobStore {
       sets.push('attempt = ?');
       params.push(patch.attempt ?? 0);
     }
+    if (patch.maxRetries !== undefined) {
+      sets.push('max_retries = ?');
+      params.push(patch.maxRetries ?? 3);
+    }
+    if (patch.retryAfter !== undefined) {
+      sets.push('retry_after = ?');
+      params.push(patch.retryAfter);
+    }
     if (patch.output !== undefined) {
       sets.push('output = ?');
       params.push(patch.output === null ? null : JSON.stringify(patch.output));
@@ -545,6 +567,7 @@ function rowToJob(row: any): Job {
     status: row.status,
     budgetUsd: row.budget_usd ?? null,
     budgetTokens: row.budget_tokens ?? null,
+    budgetDurationMs: row.budget_duration_ms ?? null,
     deadlineAt: row.deadline_at ?? null,
     maxDepth: row.max_depth ?? 3,
     spentUsd: row.spent_usd ?? 0,
@@ -552,7 +575,7 @@ function rowToJob(row: any): Job {
     plan: safeJsonParse(row.plan),
     result: safeJsonParse(row.result),
     decisionLog: safeJsonParse(row.decision_log),
-    pinAgents: !!row.pin_agents,
+    pinAgents: row.pin_agents === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -576,6 +599,8 @@ function rowToTask(row: any): JobTask {
     status: row.status,
     dependsOn: safeJsonParse(row.depends_on) as string[] | undefined,
     attempt: row.attempt ?? 0,
+    maxRetries: row.max_retries ?? 3,
+    retryAfter: row.retry_after ?? null,
     output: safeJsonParse(row.output),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

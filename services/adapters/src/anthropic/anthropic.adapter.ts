@@ -110,7 +110,8 @@ export class AnthropicAdapter extends BaseAdapter {
           stop_sequences: request.stop,
           stream: false,
         }),
-        timeoutMs: options?.timeoutMs ?? 60000,
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       });
 
       if (!response.ok) {

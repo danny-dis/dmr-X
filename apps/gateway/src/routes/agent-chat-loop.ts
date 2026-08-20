@@ -1,3 +1,4 @@
+import { ProviderUnavailableError } from '@dmr-x/core';
 import type { ToolCall, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
 import {
@@ -15,6 +16,164 @@ import type { AgentDefinition } from '@dmr-x/agent-registry';
 
 import { executeToolCall } from './tools.routes.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+
+// ---------------------------------------------------------------------------
+// Tool call retry helper
+//
+// Retries a tool call up to maxRetries times with exponential backoff.
+// A tool call fails with tr.error — we classify the error as transient
+// (retryable) or persistent (non-retryable). Persistent errors like
+// schema validation or missing parameters are NOT retried since they
+// will fail the same way. Transient errors (provider errors, timeouts)
+// are retried with exponential backoff.
+// ---------------------------------------------------------------------------
+async function executeToolCallWithRetry(
+  tc: ToolCall,
+  ctx: {
+    requestId: string;
+    tenant?: { id: string; name: string };
+    agentDefinition: { id: string; name: string; tenantId: string; allowedTools: string[] };
+    router: Router;
+    loadedSkills: string[];
+    conversationId: string;
+  },
+  maxRetries: number,
+  baseDelayMs: number,
+) {
+  let lastResult: any = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await executeToolCall(tc, ctx);
+    if (!result.error) return result;
+    lastResult = result;
+    // Don't retry on the last attempt
+    if (attempt === maxRetries) break;
+    // Only retry transient errors: ProviderUnavailableError, timeouts
+    const errName = result.error?.constructor?.name ?? '';
+    const isTransient =
+      errName === 'ProviderUnavailableError' ||
+      errName === 'TimeoutError' ||
+      (result.error?.message && /timeout|econnreset|socket|network|rate.?limit|429|503|502/i.test(result.error.message));
+    if (!isTransient) break;
+    const delay = baseDelayMs * Math.pow(2, attempt);
+    logger.warn(
+      { toolCallId: tc.id, attempt: attempt + 1, delayMs: delay, error: result.error?.message },
+      'agent-chat-loop: retrying tool call',
+    );
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return lastResult;
+}
+
+// ---------------------------------------------------------------------------
+// Tool call dedupe
+//
+// Observed on live runs: models re-issue the SAME tool call inside one turn
+// AND across turns, burning the step budget re-asking a question they already
+// have the answer to. A 'Codebase Archaeologist' run with maxSteps=4 produced
+// `recall, recall, list_files, list_files, search_files, search_files` — every
+// tool executed twice with near-identical arguments.
+//
+// Two defences, both keyed on (tool name + NORMALIZED arguments):
+//   1. within-turn : execute once, fan the single result out to every
+//                    tool_call_id that asked for it.
+//   2. cross-turn  : replay the cached earlier result instead of re-executing.
+//
+// CRITICAL: the OpenAI tool protocol requires exactly one tool message per
+// tool_call_id. Dedupe therefore never DROPS a call — it only avoids the
+// second EXECUTION, and always emits a result row per id.
+//
+// Gated by DMRX_AGENT_TOOL_DEDUPE (default on; set to 0/false/off to disable).
+// ---------------------------------------------------------------------------
+
+/** Recursively sort object keys so {"a":1,"b":2} and {"b":2,"a":1} normalize equal. */
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === 'object') {
+    const src = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(src).sort()) out[k] = sortKeysDeep(src[k]);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Canonical form of a tool call's argument string. Parses JSON and sorts keys
+ * so key order and whitespace do not defeat the comparison. Unparseable
+ * arguments fall back to the trimmed raw string (still a valid equality test).
+ */
+export function normalizeToolArguments(raw: string | undefined | null): string {
+  const text = (raw ?? '').trim();
+  if (!text) return '{}';
+  try {
+    return JSON.stringify(sortKeysDeep(JSON.parse(text)));
+  } catch {
+    return text;
+  }
+}
+
+/** Identity of a tool call for dedupe purposes: name + normalized arguments. */
+export function toolCallDedupeKey(tc: ToolCall): string {
+  return `${tc.function.name}\u0000${normalizeToolArguments(tc.function.arguments)}`;
+}
+
+function isToolDedupeEnabled(): boolean {
+  const raw = (process.env.DMRX_AGENT_TOOL_DEDUPE ?? '').trim().toLowerCase();
+  if (!raw) return true; // default ON
+  return !(raw === '0' || raw === 'false' || raw === 'off' || raw === 'no');
+}
+
+type ToolExecResult = {
+  tool_call_id: string;
+  tool_name: string;
+  result: unknown;
+  error?: { message: string };
+  /** Set when this row was fanned out from another execution rather than executed. */
+  deduped?: 'within_turn' | 'cross_turn';
+  /** The tool_call_id whose real execution produced this row. */
+  deduped_from?: string;
+};
+
+/**
+ * Split a turn's allowed calls into the ones that must really execute and the
+ * ones whose result can be copied (same turn) or replayed (earlier turn).
+ */
+function planToolExecution(
+  allowedCalls: ToolCall[],
+  cache: Map<string, ToolExecResult>,
+  enabled: boolean,
+): {
+  toExecute: ToolCall[];
+  withinTurnAliases: Array<{ tc: ToolCall; key: string }>;
+  crossTurnReplays: Array<{ tc: ToolCall; key: string }>;
+  keyOf: Map<string, string>;
+} {
+  const toExecute: ToolCall[] = [];
+  const withinTurnAliases: Array<{ tc: ToolCall; key: string }> = [];
+  const crossTurnReplays: Array<{ tc: ToolCall; key: string }> = [];
+  const keyOf = new Map<string, string>();
+  const firstSeen = new Set<string>();
+
+  for (const tc of allowedCalls) {
+    if (!enabled) {
+      toExecute.push(tc);
+      continue;
+    }
+    const key = toolCallDedupeKey(tc);
+    keyOf.set(tc.id, key);
+    if (cache.has(key)) {
+      crossTurnReplays.push({ tc, key });
+      continue;
+    }
+    if (firstSeen.has(key)) {
+      withinTurnAliases.push({ tc, key });
+      continue;
+    }
+    firstSeen.add(key);
+    toExecute.push(tc);
+  }
+  return { toExecute, withinTurnAliases, crossTurnReplays, keyOf };
+}
 
 // ---------------------------------------------------------------------------
 // Shared agentic loop engine for the /agents/:instanceId/chat route.
@@ -159,14 +318,30 @@ function resolveFallbackForError(
 }
 
 // ---------------------------------------------------------------------------
-// Opt-in agentic upgrades (both default OFF — existing agents are unchanged)
+// Opt-in agentic upgrades ported from /agentic/chat (all default OFF)
 // ---------------------------------------------------------------------------
 
 // Once the transcript grows past this many messages, compact the early
 // tool-activity turns into a single rolling summary (history-compaction mode).
-const COMPACTION_THRESHOLD = 24;
-// Always keep this many of the most recent messages verbatim (recency matters).
-const COMPACTION_KEEP_RECENT = 8;
+// These are defaults; AgentDefinition.compactionThreshold overrides.
+const DEFAULT_COMPACTION_THRESHOLD = 24;
+const DEFAULT_COMPACTION_KEEP_RECENT = 8;
+const DEFAULT_COMPACTION_MIN_HEAD = 8;
+
+/**
+ * Resolve effective compaction parameters from agent definition.
+ * Falls back to defaults when the definition doesn't override them.
+ */
+function resolveCompactionParams(definition: { compactionThreshold?: number; compactionKeepRecent?: number }): {
+  threshold: number;
+  keepRecent: number;
+  minHead: number;
+} {
+  const threshold = definition.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
+  const keepRecent = definition.compactionKeepRecent ?? DEFAULT_COMPACTION_KEEP_RECENT;
+  const minHead = DEFAULT_COMPACTION_MIN_HEAD;
+  return { threshold, keepRecent, minHead };
+}
 
 /**
  * Plan-then-execute phase. Makes exactly ONE tool-free model call asking for a
@@ -218,7 +393,7 @@ async function runPlanPhase(args: {
 /**
  * Summarize the early portion of a transcript into a single system message.
  * Non-fatal: any failure returns the original messages unchanged. Keeps the
- * most recent COMPACTION_KEEP_RECENT messages verbatim.
+ * most recent keepRecent messages verbatim.
  */
 async function summarizeHistory(args: {
   router: Router;
@@ -226,13 +401,14 @@ async function summarizeHistory(args: {
   tenant: { id: string; name: string };
   requestId: string;
   messages: any[];
+  keepRecent: number;
 }): Promise<{ messages: any[]; summary: string } | null> {
-  const { router, model, tenant, requestId, messages } = args;
+  const { router, model, tenant, requestId, messages, keepRecent } = args;
   // messages[0] is the live system prompt; we compact the user/assistant/tool
   // turns that precede the recent tail.
-  const head = messages.slice(1, messages.length - COMPACTION_KEEP_RECENT);
-  const tail = messages.slice(messages.length - COMPACTION_KEEP_RECENT);
-  if (head.length < COMPACTION_KEEP_RECENT) return null;
+  const head = messages.slice(1, messages.length - keepRecent);
+  const tail = messages.slice(messages.length - keepRecent);
+  if (head.length < keepRecent) return null;
 
   const transcript = head
     .map((m) => `[${m.role}] ${typeof m.content === 'string' ? m.content.slice(0, 2000) : '[non-text]'}`)
@@ -584,9 +760,23 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   let totalCost = 0;
   let budgetExceeded = false;
   let awaitingApproval = false;
+  // Set when the loop exits on the step limit while the model was still asking
+  // for tools — the signal that the agent did work but was never given a turn
+  // to report it. Drives the FINAL SUMMARY turn after the loop.
+  let stepLimitedWithPendingTools = false;
   let finalUsage: any;
   const allSteps: AgentChatLoopResult['allSteps'] = [];
   const allStepResults: StepResult[] = [];
+
+  // Run-scoped tool-result cache for CROSS-TURN repeat detection, keyed on
+  // (tool name + normalized arguments). Populated only with results that were
+  // really executed in this run; errors are cached too so a failing call is not
+  // hammered every turn (the reflection prompt already tells the model to change
+  // its approach). Lives for the duration of one runAgentChatLoop call only.
+  const toolResultCache = new Map<string, ToolExecResult>();
+  const toolDedupeEnabled = isToolDedupeEnabled();
+  let dedupedCallCount = 0;
+
   const sdkStopConditions = buildStopConditions(
     stopConditions,
     () => lastResponseText,
@@ -630,6 +820,27 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     try {
       ({ response } = await completeAgentTurn(router, unifiedRequest, target, requestId, godmodeWrap));
     } catch (error) {
+      // When every provider in the router's pool is rate-limited or down,
+      // the router throws ProviderUnavailableError with a retryAfter hint.
+      // The agent loop must respect that hint and back off — retrying
+      // immediately just re-hits the same exhausted pool and fails again.
+      if (error instanceof ProviderUnavailableError && error.retryAfter > 0) {
+        const maxWaitMs = 30_000;
+        const waitMs = Math.min(error.retryAfter * 1000, maxWaitMs);
+        logger.warn(
+          { requestId, resolvedConversationId, waitMs, retryAfter: error.retryAfter },
+          'agent_run_provider_unavailable_backing_off',
+        );
+        if (stream) {
+          onStreamEvent('provider_backoff', {
+            resolvedConversationId,
+            waitMs,
+            retryAfter: error.retryAfter,
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+
       const decision = resolveFallbackForError(runtime, error, context.definition, model);
 
       if (!decision.retry) {
@@ -666,9 +877,19 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     }
 
     const toolCalls = response.message?.tool_calls ?? [];
-    const responseText =
+    let responseText =
       typeof response.message?.content === 'string' ? response.message.content : '';
-    lastResponseText = responseText;
+    responseText = responseText.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+    // Only OVERWRITE the running reply when this turn actually produced prose.
+    //
+    // Providers emit `content: ''` (or null) on a pure tool-call turn. Since the
+    // loop breaks when `turn === maxSteps - 1`, a step-limited run ends on such a
+    // turn — and an unconditional assignment wiped whatever the agent had already
+    // said, handing the caller an empty reply after real work. Observed across the
+    // DMR-X agent fleet: every agent that invoked a tool returned 0 characters.
+    if (responseText) {
+      lastResponseText = responseText;
+    }
     finalUsage = response.usage;
 
     if (response.usage) {
@@ -713,6 +934,16 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     allStepResults.push(stepResult);
 
     // Stop if no tool calls, at step limit, or a stop condition is met.
+    //
+    // NOTE ON THE STEP LIMIT: reaching `maxSteps - 1` with tool calls pending
+    // means this turn's tool calls are DISCARDED (tool_results is empty below)
+    // and the model never gets a turn to speak about them. That is why a
+    // maxSteps=2 fleet run produced only synthesised "reached the step limit"
+    // text for every tool-using agent: turn 0 called tools, turn 1 called tools
+    // again, and the loop exited with no prose ever generated. A final
+    // summarisation turn is issued after this loop (see FINAL SUMMARY below)
+    // so a step-limited run still returns the agent's own words.
+    const hitStepLimit = turn === maxSteps - 1 && toolCalls.length > 0;
     if (
       toolCalls.length === 0 ||
       turn === maxSteps - 1 ||
@@ -726,6 +957,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         tool_calls: toolCalls,
         tool_results: [],
       });
+      if (hitStepLimit) stepLimitedWithPendingTools = true;
       onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
       break;
     }
@@ -799,33 +1031,131 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       break;
     }
 
-    // Execute tool calls
-    const assistantMessage = { ...response.message };
-    messages.push(assistantMessage);
+    // Execute tool calls with automatic retry for transient failures.
+    // A tool call can fail for transient reasons (network timeout, provider
+    // rate limit) or persistent reasons (bad input, syntax error). We retry
+    // transient failures up to MAX_TOOL_RETRIES times with exponential backoff.
+    // Persistent errors are reported back to the model immediately so it can
+    // self-correct on the next turn.
+    const MAX_TOOL_RETRIES = 2;
+    const TOOL_RETRY_BASE_MS = 1000;
 
-    const executionPromises = allowedCalls.map((tc: ToolCall) =>
-      executeToolCall(tc, {
+    // ---------------------------------------------------------------- DEDUPE
+    // Plan the turn: which calls really execute, which are duplicates of a call
+    // in THIS turn, and which repeat a call already executed in an EARLIER turn.
+    const { toExecute, withinTurnAliases, crossTurnReplays } = planToolExecution(
+      allowedCalls,
+      toolResultCache,
+      toolDedupeEnabled,
+    );
+
+    if (withinTurnAliases.length > 0 || crossTurnReplays.length > 0) {
+      dedupedCallCount += withinTurnAliases.length + crossTurnReplays.length;
+      logger.info(
+        {
+          turn,
+          requestId,
+          executed: toExecute.length,
+          withinTurnDuplicates: withinTurnAliases.length,
+          crossTurnRepeats: crossTurnReplays.length,
+          names: [...withinTurnAliases, ...crossTurnReplays].map((a) => a.tc.function.name),
+        },
+        'agent-chat-loop: deduped redundant tool calls',
+      );
+      if (stream) {
+        onStreamEvent('tool_deduped', {
+          turn,
+          within_turn: withinTurnAliases.map((a) => ({ id: a.tc.id, name: a.tc.function.name })),
+          cross_turn: crossTurnReplays.map((a) => ({ id: a.tc.id, name: a.tc.function.name })),
+        });
+      }
+    }
+
+    const executionPromises = toExecute.map((tc: ToolCall) =>
+      executeToolCallWithRetry(tc, {
         requestId,
         tenant,
         agentDefinition,
         router,
         loadedSkills: loadedSkillIds,
-        // Key the coding sandbox on the conversation, not the request, so
-        // every turn of this (possibly resumed) session shares one workspace.
         conversationId: resolvedConversationId,
-      }),
+      }, MAX_TOOL_RETRIES, TOOL_RETRY_BASE_MS),
     );
 
     const settled = await Promise.allSettled(executionPromises);
-    const stepResults = settled
+    const executedResults = settled
       .filter(
         (s): s is PromiseFulfilledResult<Awaited<ReturnType<typeof executeToolCall>>> =>
           s.status === 'fulfilled',
       )
-      .map((s) => s.value);
+      .map((s) => s.value)
+      .filter((v): v is ToolExecResult => v != null);
+
+    // Cache every real execution under its dedupe key so a later turn asking the
+    // identical question gets the cached answer instead of a second execution.
+    const executedByKey = new Map<string, ToolExecResult>();
+    for (const tc of toExecute) {
+      const row = executedResults.find((r) => r?.tool_call_id === tc.id);
+      if (!row) continue; // rejected promise — no result to fan out or cache
+      const key = toolCallDedupeKey(tc);
+      executedByKey.set(key, row);
+      if (toolDedupeEnabled && !toolResultCache.has(key)) toolResultCache.set(key, row);
+    }
+
+    // TRANSCRIPT INTEGRITY: the OpenAI protocol demands one tool message per
+    // tool_call_id, so every duplicate id still gets its own result row — a copy
+    // of the single execution, re-stamped with the duplicate's own id.
+    const dedupedRows: ToolExecResult[] = [];
+    for (const { tc, key } of withinTurnAliases) {
+      const source = executedByKey.get(key);
+      if (!source) continue;
+      dedupedRows.push({
+        ...source,
+        tool_call_id: tc.id,
+        deduped: 'within_turn',
+        deduped_from: source.tool_call_id,
+      });
+    }
+    for (const { tc, key } of crossTurnReplays) {
+      const source = toolResultCache.get(key);
+      if (!source) continue;
+      dedupedRows.push({
+        ...source,
+        tool_call_id: tc.id,
+        deduped: 'cross_turn',
+        deduped_from: source.tool_call_id,
+      });
+    }
+
+    // Emit results in the ORIGINAL tool_calls order so the transcript mirrors
+    // the assistant message that requested them.
+    const resultById = new Map<string, ToolExecResult>();
+    for (const r of [...executedResults, ...dedupedRows]) {
+      if (r?.tool_call_id) resultById.set(r.tool_call_id, r);
+    }
+    const stepResults = allowedCalls
+      .map((tc: ToolCall) => resultById.get(tc.id))
+      .filter((r): r is ToolExecResult => r != null);
 
     if (stream) {
       onStreamEvent('tool_results', { turn, results: stepResults });
+    }
+
+    // If any tool failed after retries, inject a reflection prompt asking
+    // the model to acknowledge the error and propose a fix. This nudges
+    // self-correction instead of ignoring the error.
+    // Only reflect on errors from calls that REALLY executed this turn — a
+    // deduped copy of an already-reported failure would repeat the same
+    // reflection prompt every turn.
+    const failedResults = stepResults.filter((tr) => tr.error && !tr.deduped);
+    if (failedResults.length > 0) {
+      const errorSummary = failedResults.map((tr) =>
+        `Tool call ${tr.tool_call_id} failed: ${tr.error?.message ?? 'unknown error'}`
+      ).join('\n');
+      messages.push({
+        role: 'system',
+        content: `⚠️ TOOL EXECUTION ERROR(S):\n${errorSummary}\n\nReview the above error(s) and correct your approach. If a file was written with incorrect content, rewrite it. If a command failed, fix the syntax and retry.`,
+      });
     }
 
     allSteps.push({
@@ -835,14 +1165,26 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       tool_results: stepResults,
     });
 
-    // Add tool results to messages
+    // Add tool results to messages. Every tool_call_id gets exactly one tool
+    // message — including deduped ids — or the provider rejects the transcript.
+    // Repeats carry a short note so the model can see it already asked this.
     for (const tr of stepResults) {
+      let content: string;
+      if (tr.deduped) {
+        const note =
+          tr.deduped === 'cross_turn'
+            ? 'Duplicate call: you already ran this exact tool with these exact arguments earlier in this run. This is the cached prior result — do not request it again; use it or make a different call.'
+            : 'Duplicate call within the same turn: the tool ran once and this is that same result.';
+        content = JSON.stringify(
+          tr.error ? { error: tr.error.message, _dmrx_note: note } : { result: tr.result, _dmrx_note: note },
+        );
+      } else {
+        content = tr.error ? JSON.stringify({ error: tr.error.message }) : JSON.stringify(tr.result);
+      }
       messages.push({
         role: 'tool',
         tool_call_id: tr.tool_call_id,
-        content: tr.error
-          ? JSON.stringify({ error: tr.error.message })
-          : JSON.stringify(tr.result),
+        content,
       });
     }
 
@@ -851,8 +1193,11 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // Opt-in history compaction: once the transcript is large, fold the early
     // tool-activity turns into a single rolling summary. Non-fatal — on any
     // failure we keep the full transcript (ReAct behavior unchanged).
-    if (historyCompaction && messages.length > COMPACTION_THRESHOLD) {
-      const compacted = await summarizeHistory({ router, model, tenant, requestId, messages });
+    // Compaction thresholds live in the loop engine (see migration 058);
+    // AgentDefinition only carries the on/off `historyCompaction` flag.
+    const { threshold, keepRecent } = resolveCompactionParams({});
+    if (historyCompaction && messages.length > threshold) {
+      const compacted = await summarizeHistory({ router, model, tenant, requestId, messages, keepRecent });
       if (compacted) {
         messages.length = 0;
         messages.push(...compacted.messages);
@@ -860,6 +1205,84 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           onStreamEvent('context_compacted', { resolvedConversationId, summary: compacted.summary });
         }
       }
+    }
+  }
+
+  // ------------------------------------------------------------------ FINAL
+  // FINAL SUMMARY TURN
+  //
+  // The ReAct loop exits the instant `turn === maxSteps - 1`, even when that
+  // turn was a pure tool-call turn. The model therefore never gets to speak
+  // about what it just did, and the caller receives no prose at all.
+  //
+  // Measured on the DMR-X agent fleet (24 agents, maxSteps=2): all 10
+  // tool-using agents returned only a synthesised placeholder, while the 7
+  // agents that answered directly (no tools) returned 972-7479 characters.
+  // "0 empty replies" was true only because a placeholder was standing in for
+  // the agent's actual answer.
+  //
+  // So: ask the model ONE more time, with the tool results already in the
+  // transcript and tools withheld, to state its findings. This costs one extra
+  // completion on step-limited runs only, and is what makes the reply real
+  // rather than fabricated by the gateway. Failures here are non-fatal — the
+  // placeholder below still guards the empty-string case.
+  if (stepLimitedWithPendingTools && !budgetExceeded && !awaitingApproval && !lastResponseText.trim()) {
+    try {
+      messages.push({
+        role: 'user',
+        content:
+          'You have reached your tool-use step limit. Do not request any more tools. ' +
+          'Using only what you already know from this conversation, give your final ' +
+          'answer to the original request now.',
+      });
+      const summaryRequest = toUnifiedRequest(
+        {
+          model,
+          messages,
+          // No `tools` — withholding them forces prose instead of another
+          // tool-call turn, which is the failure we are correcting.
+          temperature: body.temperature,
+          max_tokens: body.maxTokens,
+          stream: false,
+        },
+        requestId,
+        tenant,
+      );
+      const { response: summaryResponse } = await completeAgentTurn(
+        router,
+        summaryRequest,
+        target,
+        requestId,
+        godmodeWrap,
+      );
+      let summaryText =
+        typeof summaryResponse.message?.content === 'string' ? summaryResponse.message.content : '';
+      summaryText = summaryText.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+      if (summaryText) {
+        lastResponseText = summaryText;
+        if (summaryResponse.message) messages.push(summaryResponse.message);
+        allSteps.push({
+          turn: allSteps.length,
+          message: summaryResponse.message,
+          tool_calls: [],
+          tool_results: [],
+        });
+        if (summaryResponse.usage) {
+          totalTokensUsed += summaryResponse.usage.total_tokens ?? 0;
+          totalCost +=
+            (summaryResponse.usage as any).cost ?? (summaryResponse.usage as any).total_cost ?? 0;
+          finalUsage = summaryResponse.usage;
+        }
+        commitConversationState(conversation, messages, 'completed');
+        if (stream) {
+          onStreamEvent('final_summary', { resolvedConversationId, content: summaryText });
+        }
+      }
+    } catch (summaryError) {
+      logger.warn(
+        { resolvedConversationId, error: summaryError },
+        'final summarisation turn failed — falling back to synthesised text',
+      );
     }
   }
 
@@ -882,6 +1305,45 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     }
   } catch (persistenceError) {
     logger.warn({ resolvedConversationId, executionId, error: persistenceError }, 'failed_to_persist_telemetry');
+  }
+
+  // Last-resort guard: never hand the caller a silently empty reply.
+  //
+  // Reached only when the FINAL SUMMARY turn above was skipped or itself failed
+  // to produce prose. This text is the GATEWAY speaking, not the agent — it is
+  // deliberately worded so it can never be mistaken for an agent's answer in a
+  // benchmark or a UI. Treat its presence as a failure to report on, not a
+  // success: a run whose reply matches this shape produced no model output.
+  // The tool calls themselves remain in `allSteps` for callers wanting detail.
+  if (!lastResponseText.trim()) {
+    const namesUsed = Array.from(
+      new Set(
+        allSteps.flatMap((s) =>
+          (s.tool_calls ?? []).map((tc: any) => tc.function?.name ?? tc.name).filter(Boolean),
+        ),
+      ),
+    );
+    if (namesUsed.length > 0) {
+      lastResponseText =
+        `[dmr-x] No agent output produced. The ${maxSteps}-step limit was reached after calling: ` +
+        `${namesUsed.join(', ')}, and the final summarisation turn did not return text. ` +
+        'Raise maxSteps so the agent can report its findings.';
+    } else if (budgetExceeded) {
+      lastResponseText = '[dmr-x] No agent output produced: cost budget exceeded before a reply.';
+    }
+    if (lastResponseText) {
+      logger.warn(
+        { resolvedConversationId, maxSteps, toolsUsed: namesUsed, budgetExceeded },
+        'agent loop produced no model prose — returned a gateway placeholder',
+      );
+    }
+  }
+
+  if (dedupedCallCount > 0) {
+    logger.info(
+      { resolvedConversationId, requestId, dedupedCallCount, uniqueToolCalls: toolResultCache.size },
+      'agent-chat-loop: run finished with deduped tool calls',
+    );
   }
 
   return {

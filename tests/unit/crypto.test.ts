@@ -218,10 +218,12 @@ describe('Crypto: encryptConfigApiKey fallback', () => {
     }
   });
 
-  it('should leave apiKey unchanged when no encryption key', () => {
+  it('should throw when no encryption key is configured', () => {
     delete process.env.DMRX_ENCRYPTION_KEY;
     const config = { apiKey: 'plaintext-key' };
-    encryptConfigApiKey(config);
+    // L3: encryptConfigApiKey fails loudly instead of silently storing
+    // plaintext at rest when DMRX_ENCRYPTION_KEY is not configured.
+    expect(() => encryptConfigApiKey(config)).toThrow(/DMRX_ENCRYPTION_KEY is not configured/);
     expect(config.apiKey).toBe('plaintext-key');
   });
 

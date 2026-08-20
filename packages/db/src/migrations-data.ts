@@ -2032,37 +2032,26 @@ ALTER TABLE api_keys ADD COLUMN role TEXT NOT NULL DEFAULT 'developer';
 `,
   },
   64: {
-    filename: '064_api_key_lookup_hash.sql',
-    sql: `-- Deterministic API-key lookup hash for O(1) auth, instead of scanning
--- every active key and calling verifyApiKey() on each (the old hot path).
+    filename: '064_key_lookup_hash.sql',
+    sql: `-- Migration 064: Add key_lookup_hash column + index for O(1) API key lookup.
 --
--- key_hash stores either a legacy unsalted SHA-256 ("<hex>") or the current
--- salted format ("<salt>:<hash>"). Neither is directly queryable from the
--- plaintext key. key_lookup_hash is a THIRD value: plain SHA-256 of the raw
--- key, computed at creation time and indexed, so auth can do:
+-- The current auth middleware performs a full table scan or relies on
+-- key_hash (which is salted and cannot be looked up directly). Adding a
+-- plain SHA-256 hash of the raw key enables O(1) indexed lookups without
+-- storing the raw key itself.
 --
---   SELECT ... WHERE key_lookup_hash = ?  (indexed, single row)
---
--- and then constant-time verifyApiKey() against the stored salted key_hash
--- to rule out collisions (SHA-256 preimage resistance makes them
--- impossible in practice; the verify is kept for defense in depth).
---
--- Security note: key_lookup_hash is unsalted SHA-256 of a 64-hex-char
--- random key (256 bits of entropy), so it is not brute-forceable even if
--- the DB leaks. It is stored ONLY for indexing; verification always uses
--- the salted key_hash.
---
--- Backfill: any existing row whose key_hash is the legacy unsalted format
--- (no colon) has key_lookup_hash := key_hash, since both are SHA-256 of the
--- same key. Salted rows cannot be backfilled without the plaintext key;
--- they fall back to the legacy scan path (bounded to rows that still have
--- key_lookup_hash IS NULL) until the key is rotated.
+-- Backfill: legacy rows with unsalted key_hash (no colon) get key_lookup_hash
+-- = key_hash. Salted rows (colon present) cannot be backfilled — the plaintext
+-- key is not available — and remain NULL, reachable only via the bounded
+-- fallback scan (key_lookup_hash IS NULL).
+
 ALTER TABLE api_keys ADD COLUMN key_lookup_hash TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_lookup_hash
   ON api_keys(key_lookup_hash)
-  WHERE key_lookup_hash IS NOT NULL;
+  WHERE key_lookup_hash IS NULL;
 
+-- Backfill legacy unsalted rows
 UPDATE api_keys
    SET key_lookup_hash = key_hash
  WHERE key_lookup_hash IS NULL
@@ -2071,38 +2060,27 @@ UPDATE api_keys
   },
   65: {
     filename: '065_agentic_sessions.sql',
-    sql: `-- Durable /agentic/chat conversations (remediation #13 second half).
--- The /agentic/chat route used a bare in-process Map with a 30-minute TTL,
--- so a gateway restart or idle period destroyed every conversation's state
--- (approval gates, pending tool calls, message history). It cannot reuse
--- agent_sessions because that table's agent_instance_id is a NOT NULL FK to
--- agent_instances, while /agentic/chat is an instance-less generic endpoint.
+    sql: `-- Migration 065: Agentic session store (durable /agentic/chat state).
 --
--- This table persists the same ConversationState JSON, keyed by conversation
--- id and scoped to a tenant, with a machine-readable status so an
--- 'awaiting_approval' conversation can be resumed after a restart.
+-- Persists conversation state so /agentic/chat can be PAUSED (e.g. awaiting
+-- tool approval) and RESUMED across gateway restarts. Scoped to the
+-- instance-less agentic endpoint: agent_sessions requires agent_instance_id.
 
 CREATE TABLE IF NOT EXISTS agentic_sessions (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  -- Full ConversationState serialized as JSON
   state TEXT NOT NULL,
-  -- Arbitrary metadata (model, request id, token counts)
   metadata TEXT,
-  -- Machine status: 'in_progress' | 'awaiting_approval' | 'interrupted' | 'completed' | 'error'
   status TEXT NOT NULL DEFAULT 'in_progress',
-  -- Free-text reason for an interrupted/awaiting state
   status_reason TEXT,
-  -- Which agent turn was last executed
   last_turn INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  -- Optional hard expiry; NULL = live until completed/cancelled
   expires_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agentic_sessions_tenant
-  ON agentic_sessions(tenant_id, id);
+  ON agentic_sessions(tenant_id, updated_at DESC);
 `,
   },
   66: {
@@ -2114,6 +2092,77 @@ CREATE INDEX IF NOT EXISTS idx_agentic_sessions_tenant
 -- Defaults to 0 (off) so existing agents keep their current routing behavior.
 
 ALTER TABLE agent_definitions ADD COLUMN godmode_wrap INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  70: {
+    filename: '070_jobs.sql',
+    sql: `-- Agent Jobs: durable, resumable multi-step jobs.
+-- A job captures a raw request (brief) from the api / ui / mcp entry
+-- points and tracks it through the intake -> planning -> running ->
+-- blocked -> verifying -> delivered / failed / cancelled lifecycle.
+-- The plan, result, and decision log are stored as JSON text; spend
+-- and budget are tracked so a job can be gated on cost like an agent run.
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  submitted_by TEXT,
+  source TEXT NOT NULL,             -- 'api' | 'ui' | 'mcp'
+  brief TEXT NOT NULL,
+  acceptance_criteria TEXT,         -- JSON
+  status TEXT NOT NULL DEFAULT 'intake',
+    -- intake | planning | running | blocked | verifying | delivered | failed | cancelled
+  budget_usd REAL,
+  budget_tokens INTEGER,
+  deadline_at TEXT,
+  max_depth INTEGER NOT NULL DEFAULT 3,
+  spent_usd REAL NOT NULL DEFAULT 0,
+  spent_tokens INTEGER NOT NULL DEFAULT 0,
+  plan TEXT,                        -- JSON
+  result TEXT,                      -- JSON
+  decision_log TEXT,                -- JSON
+  pin_agents INTEGER NOT NULL DEFAULT 0,  -- 1 = keep agents pinned across turns
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_tenant
+ON jobs(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status
+ON jobs(status);
+
+-- Job tasks: ordered steps within a job, optionally nested via
+-- parent_task_id for subtask trees. Execution order within a level is
+-- by seq; depends_on holds a JSON array of task ids that must finish
+-- first. assigned_model is the concrete model resolved at dispatch.
+CREATE TABLE IF NOT EXISTS job_tasks (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  parent_task_id TEXT REFERENCES job_tasks(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  deliverable TEXT,
+  acceptance TEXT,
+  assigned_agent_def_id TEXT,
+  assigned_agent_version TEXT,
+  assigned_instance_id TEXT,
+  session_id TEXT,
+  assigned_model TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  depends_on TEXT,                  -- JSON array of task ids
+  attempt INTEGER NOT NULL DEFAULT 0,
+  output TEXT,                      -- JSON
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_tasks_job
+ON job_tasks(job_id);
+
+CREATE INDEX IF NOT EXISTS idx_job_tasks_status
+ON job_tasks(status);
 `,
   },
   71: {
@@ -2143,6 +2192,534 @@ CREATE TABLE IF NOT EXISTS bandit_arms (
 
 CREATE INDEX IF NOT EXISTS idx_bandit_arms_provider
 ON bandit_arms(provider_id);
+`,
+  },
+  72: {
+    filename: '072_job_task_retry.sql',
+    sql: `-- Add retry tracking to job_tasks for task-level retry with exponential backoff.
+-- When a task fails with a transient error, it is reset to 'pending' with
+-- retry_after set to a future timestamp; the scheduler's readyTasks skips it
+-- until backoff elapses.
+
+ALTER TABLE job_tasks ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE job_tasks ADD COLUMN retry_after TEXT;
+`,
+  },
+  73: {
+    filename: '073_scheduler_running.sql',
+    sql: `-- Add \`running\` column to agent_scheduled_jobs for at-most-once delivery.
+-- When a scheduler instance claims a job via atomic CAS, it sets running = 1.
+-- If the instance crashes, running stays 1; on restart, the scheduler detects
+-- stuck jobs (running = 1 but no active process) and resets them.
+
+ALTER TABLE agent_scheduled_jobs ADD COLUMN running INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  74: {
+    filename: '074_job_time_budget.sql',
+    sql: `-- Add time-based budget to jobs (budgetDurationMs).
+-- A job with budgetDurationMs set will be blocked once
+-- Date.now() - createdAt >= budgetDurationMs.
+
+ALTER TABLE jobs ADD COLUMN budget_duration_ms INTEGER;
+`,
+  },
+  75: {
+    filename: '075_mcp_audit_log.sql',
+    sql: `-- MCP Server audit log for tool invocations, policy decisions, and auth events.
+-- Persists the AuditTrailEngine output so events survive process restarts
+-- (compliance requirement for SOC 2 / GDPR).
+--
+-- This table is written by the MCP server's own DMRX_DATA_DIR database,
+-- separate from the gateway's encrypted data.db — the MCP server has its
+-- own isolated DB file to avoid contention with the gateway.
+
+CREATE TABLE IF NOT EXISTS mcp_audit_log (
+  id TEXT PRIMARY KEY,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  event_type TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  message TEXT NOT NULL,
+  actor_type TEXT NOT NULL DEFAULT 'service',
+  actor_id TEXT NOT NULL DEFAULT 'anonymous',
+  actor_ip TEXT,
+  target_type TEXT,
+  target_id TEXT,
+  metadata TEXT,
+  request TEXT,
+  response TEXT,
+  previous_hash TEXT,
+  hash TEXT NOT NULL
+);
+
+-- Most common query: time-ordered recent events
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_log_timestamp
+  ON mcp_audit_log(timestamp DESC);
+
+-- Filter by event type (e.g., all policy.deny events)
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_log_type
+  ON mcp_audit_log(event_type, timestamp DESC);
+
+-- Filter by actor (e.g., all events for a specific user)
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_log_actor
+  ON mcp_audit_log(actor_id, timestamp DESC);
+
+-- Filter by target tool
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_log_target
+  ON mcp_audit_log(target_type, target_id, timestamp DESC);
+`,
+  },
+  76: {
+    filename: '076_agent_capabilities_receptionist.sql',
+    sql: `-- Receptionist: agent capability declarations + the __receptionist coordinator.
+--
+-- 1) agent_definitions.capabilities: structured JSON declaration of what an
+--    agent can do (domains, deliverables, languages, seniority, summary,
+--    accepts, escalatesTo). Consumed by the Receptionist's find_agents matcher
+--    when it ranks agents for a task. Nullable — agents without a declaration
+--    keep being matched on the legacy category/tags fields.
+--
+-- 2) The platform "system" tenant + the \`__receptionist\` agent definition.
+--    The Receptionist is a meta-agent: it decomposes incoming jobs into
+--    tasks, assigns them to capability-matching agents, verifies deliverables
+--    against acceptance criteria, and escalates to humans. Definitions whose
+--    name starts with \`__\` are system-owned and may not be deleted or renamed.
+
+ALTER TABLE agent_definitions ADD COLUMN capabilities TEXT;
+
+-- Deterministic system tenant for platform-owned definitions.
+INSERT INTO tenants (id, name)
+SELECT '00000000-0000-0000-0000-000000000001', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE id = '00000000-0000-0000-0000-000000000001');
+
+-- The __receptionist coordinator definition (idempotent seed).
+INSERT INTO agent_definitions (
+  id, tenant_id, name, description, version, system_prompt,
+  personality, preferred_model, model_tier, allowed_tools,
+  custom_tools, workflow, triggers, visibility, tags, category, icon,
+  skills, human_name, skill_nudge_interval, verify_on_stop, plan_mode,
+  history_compaction, godmode_wrap, capabilities
+)
+SELECT
+  '00000000-0000-0000-0000-000000000002',
+  '00000000-0000-0000-0000-000000000001',
+  '__receptionist',
+  'Meta-agent coordinator: decomposes jobs into tasks, assigns them to capability-matching agents, verifies deliverables against acceptance criteria, and escalates out-of-scope work to humans.',
+  '1.0.0',
+  'You are the DMR-X Receptionist, the meta-agent that coordinates all work in the system.
+
+Your job is to take a raw job brief and drive it to delivery:
+
+1. job_decompose — break the brief into ordered, dependency-aware tasks with acceptance criteria, and hand the plan to the job planner (POST /v1/jobs/:id/plan). Never skip this step for a new job.
+2. find_agents — for each task, find the best agent for the job by capability: match task language/domain/deliverable keywords against agent capability declarations (domains, deliverables, languages, summary), fall back to category and tags. Return the top candidates ranked by score. Never assign yourself — you coordinate, you do not execute.
+3. assign_task — pin the chosen agent to the task and move it out of the intake queue.
+4. read_job_board — review job/task state before assigning, verifying, or escalating. Re-read the board when circumstances change.
+5. request_verification — when a task deliverable is ready, move it to verifying so the acceptance criteria are checked.
+6. deliver_job — mark the job delivered with the verification record (which criteria passed, which failed, evidence) in the result.
+7. escalate_to_human — when a job is out of scope, blocked, or the accepting agent escalated it, move it to blocked with a clear reason so a human can intervene.
+
+Rules:
+- Always decompose before assigning; never assign an agent you have not checked against the task requirements.
+- Never mark a job delivered unless its acceptance criteria have been verified.
+- Keep the decision log current on every transition.
+- Never delete, rename, or modify agent definitions — you coordinate the agents, you are not their administrator.',
+  'Professional, precise, decisive. Coordinates without micromanaging.',
+  NULL,
+  'premium',
+  '["job_decompose","find_agents","assign_task","read_job_board","request_verification","deliver_job","escalate_to_human"]',
+  '[]',
+  NULL,
+  '[]',
+  'private',
+  '["system","coordinator"]',
+  'coordination',
+  'receptionist',
+  '[]',
+  'Receptionist',
+  8,
+  1,
+  1,
+  1,
+  0,
+  '{"domains":["coordination","decomposition","assignment","verification","escalation"],"deliverables":["job plans","task assignments","verification reports"],"languages":["typescript","python","javascript","sql","markdown","natural language"],"seniority":"principal","summary":"Meta-agent that decomposes jobs, assigns tasks to capability-matching agents, verifies deliverables against acceptance criteria, and escalates out-of-scope work to humans.","accepts":["coordination","decomposition","assignment","verification","escalation"],"escalatesTo":[]}'
+WHERE NOT EXISTS (
+  SELECT 1 FROM agent_definitions
+  WHERE id = '00000000-0000-0000-0000-000000000002'
+);
+`,
+  },
+  77: {
+    filename: '077_agent_compaction_thresholds.sql',
+    sql: `-- Per-agent conversation-history compaction thresholds.
+--
+-- a98920e made the compaction thresholds configurable per agent definition,
+-- but the fields were never added to the schema/persistence layer — the loop
+-- engine always fell back to its defaults and the gateway typecheck was
+-- broken. These columns complete that intent:
+--   AgentDefinition.compactionThreshold / compactionKeepRecent
+-- NULL means "fall back to the loop-engine defaults" (24 / 8).
+
+ALTER TABLE agent_definitions ADD COLUMN compaction_threshold INTEGER;
+ALTER TABLE agent_definitions ADD COLUMN compaction_keep_recent INTEGER;`,
+  },
+  78: {
+    filename: '078_request_logs_pruning.sql',
+    sql: `-- R1 — Prune request_logs to prevent unbounded DB growth.
+-- The audit found that at 1 req/s, request_logs reaches 500k rows in ~6 days,
+-- causing 2-second event-loop-blocking saves that never recover.
+-- This migration adds a retention policy: rows older than 7 days are pruned
+-- by the heartbeat timer in client.ts.
+
+-- No schema change needed — pruning is done via DELETE FROM request_logs
+-- WHERE timestamp < datetime('now', '-7 days'). This migration records
+-- the retention policy as a pragma comment for documentation.
+
+-- Retention period in days (configurable via DMRX_REQUEST_LOGS_RETENTION_DAYS).
+-- The heartbeat timer in client.ts reads this and prunes accordingly.
+
+-- Add a comment table entry for the retention policy
+INSERT OR IGNORE INTO schema_version (version, filename, applied_at) VALUES (78, '078_request_logs_pruning.sql', datetime('now'));
+`,
+  },
+  79: {
+    filename: '079_seed_web_research_skills.sql',
+    sql: `-- 079_seed_web_research_skills.sql
+--
+-- Make the web-research workflow skills PERMANENT.
+--
+-- Why this is a migration and not an API call:
+--   Skills live in the \`skills\` table (migration 045). Creating one via
+--   POST /v1/skills writes a single DB row, so it is lost the moment the
+--   database is reset, recreated on a fresh clone, or moved to another machine.
+--   Agents would silently go back to having no research methodology — the exact
+--   class of invisible failure this content exists to prevent.
+--
+-- Why the seed targets tenants BY NAME, not by id:
+--   The default tenant id is generated with crypto.randomUUID() on first boot
+--   (apps/gateway/src/server.ts), and is therefore different on every install.
+--   Nothing can hardcode it. We seed EVERY existing tenant instead, which is
+--   also what makes this correct for multi-tenant deployments.
+--
+-- Idempotency:
+--   \`skills\` has UNIQUE(tenant_id, name) (migration 045), and every INSERT below
+--   is guarded by NOT EXISTS, so re-running is a no-op and hand-edited copies of
+--   these skills are never overwritten.
+--
+-- Deliberately NOT using \`source = 'builtin'\`:
+--   'builtin' is the column default and is already used by user-imported rows on
+--   this install. These use source = 'seed' so an operator can tell
+--   platform-shipped methodology from imported/authored skills, and so a future
+--   migration can safely UPDATE its own rows without touching user content.
+
+-- ---------------------------------------------------------------------------
+-- url-hunting-recovery
+-- ---------------------------------------------------------------------------
+-- Teaches an agent to find and VERIFY a page when it has no search engine.
+-- The critical lesson is that HTTP 200 does not mean the page exists: dead doc
+-- URLs answer with a cross-host redirect to an error shell carrying a plausible
+-- <title> and hundreds of KB of chrome. Verified live against
+-- docs.anthropic.com -> platform.claude.com (404, 675 KB, title
+-- "Documentation | Claude Platform", marker __next_error__).
+
+INSERT INTO skills (id, tenant_id, name, description, content, tags, source)
+SELECT
+  lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+  substr(lower(hex(randomblob(2))), 2) || '-a' ||
+  substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))),
+  t.id,
+  'url-hunting-recovery',
+  'Find and verify web pages without a search engine: guess canonical URLs, detect 200-but-dead error shells via finalUrl/suspectedErrorShell, recover from 404s, and never fabricate a source.',
+  '# URL Hunting & Recovery — finding a page when you don''t know its address
+
+You have \`web_fetch\` (read a URL you name) and \`web_search\` (only if the operator
+configured \`DMRX_SEARCH_API_KEY\`). If \`web_search\` returns
+\`web_search unavailable: DMRX_SEARCH_API_KEY not configured\`, you have **no
+search engine** — and this file is how you work anyway.
+
+**Never fabricate a source.** Reporting "I could not reach it" is always better
+than inventing a page, a quote, or a statistic. A confident wrong answer is worse
+than an honest gap.
+
+## Rule 1 — never fetch a search engine''s results page
+
+Do **not** call \`web_fetch\` on \`duckduckgo.com/html/?q=...\`,
+\`bing.com/search?q=...\`, or \`google.com/search?q=...\`.
+
+Those pages build their results with JavaScript. \`web_fetch\` returns the raw
+markup, so you get a 12–120 KB page containing **zero result links** — often an
+HTTP \`202\` challenge page. Measured directly:
+
+\`\`\`
+https://html.duckduckgo.com/html/?q=...   -> 202, 14200 bytes, 0 result links
+https://lite.duckduckgo.com/lite/?q=...   -> 202, 14232 bytes, 0 result links
+\`\`\`
+
+There is nothing in it to follow. Skip straight to Rule 2.
+
+## Rule 2 — guess the canonical URL and fetch it directly
+
+You usually know more than you think. Documentation lives at predictable
+addresses.
+
+| You want | Try |
+|---|---|
+| A library''s docs | \`https://docs.<project>.com/\`, \`https://<project>.dev/docs\` |
+| A GitHub project | \`https://github.com/<org>/<repo>\`, \`.../blob/main/README.md\` |
+| A Python package | \`https://pypi.org/project/<name>/\` |
+| An npm package | \`https://www.npmjs.com/package/<name>\` |
+| A paper | \`https://arxiv.org/abs/<id>\` (the \`/abs/\` form is citation-ready) |
+| A blog post | fetch the blog **index** first, then read its links |
+
+Fetch 2–4 candidates, then judge them by \`status\` and \`bytes\`.
+
+## Rule 3 — a 200 does NOT mean the page exists
+
+This is the trap that produces fake citations.
+
+Dead documentation URLs frequently redirect to a **different host** that serves
+an error shell — with a plausible \`<title>\` and hundreds of KB of page chrome.
+A real measured example:
+
+\`\`\`
+requested : https://docs.anthropic.com/en/docs/build-with-claude/agentic-design-patterns
+finalUrl  : https://platform.claude.com/docs/en/build-with-claude/agentic-design-patterns
+status    : 404
+bytes     : 675781          <- large! looks like real content
+title     : "Documentation | Claude Platform"   <- looks legitimate!
+marker    : __next_error__   <- the giveaway
+\`\`\`
+
+675 KB and a sensible title, but the page does not exist. **Always check these
+fields before you trust or cite anything:**
+
+- \`status\` — 404/403/5xx means stop.
+- \`finalUrl\` and \`crossHostRedirect\` — if you were redirected to another host, be
+  suspicious. You asked for A and got B.
+- \`suspectedErrorShell\` — present ONLY when the tool spotted a problem despite
+  the HTTP status (an \`__next_error__\` marker, a "Not Found" title, or almost no
+  text). **When this field is present, do not cite the content.** Treat the URL
+  as dead and try a variant.
+- \`bytes\` vs text length — a big body that strips to very little text is
+  navigation chrome, not an article.
+
+## Rule 4 — when a URL fails, hunt the right slug
+
+Do not retry the identical URL; it will fail identically. Change something:
+
+1. **Fetch the index and read its links.** If \`site.com/2025/07/02/thing.html\`
+   404s, fetch \`site.com/blog/\` and look for the real post URL in the text.
+2. **Try path variants:** \`-\` <-> \`_\`, singular <-> plural, with/without trailing
+   slash, \`/docs/x\` <-> \`/x/docs\`, \`docs.\` subdomain <-> root domain.
+3. **Drop to a parent path.** If \`/docs/a/b/c\` fails, try \`/docs/a/b\`, then
+   \`/docs/a\`. A section index will usually name the page you want.
+4. **Use \`sitemap.xml\`** — many sites serve a plain-text list of every URL.
+
+Cap the hunt at roughly 4–5 fetches. Then report honestly what you tried.
+
+## Rule 5 — report what actually happened
+
+End research with a sources list carrying the **real** outcome of each fetch:
+
+\`\`\`
+[OK]   https://arxiv.org/abs/2407.16833          200, 48k, read
+[DEAD] https://docs.anthropic.com/en/docs/...    404 via cross-host redirect (error shell)
+[WARN] https://example.com/guide                 200 but suspectedErrorShell — not cited
+\`\`\`
+
+Separate what you **read** from what you **infer**. If a claim rests on your own
+prior knowledge rather than a page you actually fetched, label it clearly as
+unverified. That distinction is the whole value of doing the research.
+
+## Quick checklist
+
+1. Need a specific page? -> \`web_fetch\` it.
+2. Don''t know the URL? -> guess canonical candidates (Rule 2), never a search page.
+3. Got a response? -> check \`status\`, \`finalUrl\`, \`suspectedErrorShell\` **before**
+   reading the text.
+4. Failed? -> change the URL (Rule 4), max ~5 tries.
+5. Report real statuses; never invent a source.
+',
+  '["research","web","fetch","citations","verification"]',
+  'seed'
+FROM tenants t
+WHERE NOT EXISTS (
+  SELECT 1 FROM skills s WHERE s.tenant_id = t.id AND s.name = 'url-hunting-recovery'
+);
+
+-- ---------------------------------------------------------------------------
+-- grounded-research-brief
+-- ---------------------------------------------------------------------------
+-- The companion discipline: having fetched real pages, produce an answer whose
+-- claims are traceable, and mark the gaps instead of smoothing over them.
+
+INSERT INTO skills (id, tenant_id, name, description, content, tags, source)
+SELECT
+  lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+  substr(lower(hex(randomblob(2))), 2) || '-a' ||
+  substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))),
+  t.id,
+  'grounded-research-brief',
+  'Turn fetched pages into a cited brief: separate read-from-source facts from inference, record each URL''s real HTTP outcome, and label unverified claims instead of hiding them.',
+  '# Grounded Research Brief — answering from sources, not from memory
+
+Use with \`url-hunting-recovery\`. That skill gets you real pages; this one turns
+them into an answer a reviewer can trust.
+
+## The rule that matters
+
+**Every factual claim is either (a) supported by a page you actually fetched in
+this run, or (b) explicitly labelled as unverified.** There is no third category.
+Fluent prose that blends the two is the single most damaging thing you can
+produce, because the reader cannot tell which parts to check.
+
+## Workflow
+
+1. **Fetch first, write second.** Never draft from memory and then look for links
+   to justify it. That is backwards and it produces citations that do not say
+   what you claim.
+2. **Quote or paraphrase only what is in the fetched text.** If you cannot point
+   at the sentence, you do not have the fact.
+3. **Note the fetch outcome as you go**: URL, status, and whether
+   \`suspectedErrorShell\` was set. A page you could not read is evidence about the
+   gap, not something to quietly drop.
+4. **Write the brief**, leading with a definition or taxonomy — tables beat prose
+   for options and failure modes.
+5. **Close with a sources list** giving each URL''s real result.
+
+## Structure
+
+\`\`\`
+## Answer
+<lead with the direct answer, 2-3 sentences>
+
+## Detail
+<one section per sub-question actually asked>
+
+## Unverified
+<claims from prior knowledge, NOT from a fetched page — say so plainly>
+
+## Sources
+[OK]   <url>  200, <bytes>, read
+[DEAD] <url>  404 (or cross-host redirect to an error shell)
+[WARN] <url>  200 but suspectedErrorShell — not cited
+\`\`\`
+
+## Honesty requirements
+
+- **Never invent a URL, title, author, date, or statistic.** If you did not fetch
+  it, you do not have it.
+- **Do not claim breadth you do not have.** Three fetched pages is "based on
+  three sources", not "the current consensus".
+- **If everything failed, say so.** "I could not reach any source for this; here
+  is what I tried and what I believe from prior knowledge, unverified" is a
+  legitimate and useful answer. A confident fabricated brief is not.
+- **Recency:** you cannot know today''s events from training data. Anything
+  time-sensitive must come from a fetched page or be marked unverified.
+- **Contradictions are findings.** If two sources disagree, report the
+  disagreement rather than silently picking one.
+
+## Anti-patterns
+
+| Looks like | Actually is |
+|---|---|
+| Citing a URL you did not fetch | fabrication |
+| "Studies show..." with no source | unverified claim dressed as fact |
+| Dropping a 404 from the sources list | hiding a gap |
+| Citing a page whose \`suspectedErrorShell\` was set | citing an error page |
+| Fetching a search results page and reporting nothing found | wrong method (see Rule 1 of url-hunting-recovery) |
+',
+  '["research","citations","honesty","verification","writing"]',
+  'seed'
+FROM tenants t
+WHERE NOT EXISTS (
+  SELECT 1 FROM skills s WHERE s.tenant_id = t.id AND s.name = 'grounded-research-brief'
+);
+`,
+  },
+  80: {
+    filename: '080_attach_research_skills_to_web_agents.sql',
+    sql: `-- 080_attach_research_skills_to_web_agents.sql
+--
+-- Attach the seeded research skills (migration 079) to the agents that actually
+-- do web work.
+--
+-- Which agents, and why these:
+--   NOT a keyword match on the agent name — that sweeps in "Blockchain Security
+--   Auditor" and "Accessibility Auditor", which never touch the web. Instead we
+--   use the agents' OWN declaration: every agent whose allowed_tools names
+--   WebFetch or WebSearch. On this install that is exactly 16 agents (Trend
+--   Researcher, SEO Specialist, Pricing Analyst, Content Creator, Growth Hacker,
+--   Search Query Analyst, and the paid-media/product roles). They asked for web
+--   access, so they are the ones who need the methodology for using it.
+--
+-- Why attaching still matters even though discovery exists:
+--   The runtime now DISCOVERS tenant skills, so every agent can see and load
+--   these. Declared skills are additionally listed FIRST in the advertisement
+--   block, which is the difference between "available somewhere" and "this is
+--   your job's toolkit". Attaching expresses intent and survives any future
+--   tightening of discovery.
+--
+-- Shape of agent_definitions.skills:
+--   A JSON array stored as TEXT (e.g. '[]' or '["a","b"]'), read by
+--   buildSystemPrompt as definition.skills. We append by NAME because skill ids
+--   are random per install (migration 079 generates them with randomblob), while
+--   names are stable. SkillLoader.resolveSkills matches on id OR name.
+--
+-- Idempotency:
+--   Each UPDATE is guarded with a LIKE check for the skill name, so re-running
+--   never double-appends. Agents that already list the skill are untouched.
+
+-- ---------------------------------------------------------------------------
+-- url-hunting-recovery -> agents that requested web tools
+-- ---------------------------------------------------------------------------
+
+-- Case 1: skills is empty/NULL/'[]' -> becomes a single-element array.
+UPDATE agent_definitions
+SET skills = '["url-hunting-recovery"]',
+    updated_at = strftime('%s', 'now')
+WHERE (skills IS NULL OR trim(skills) = '' OR trim(skills) = '[]')
+  AND (
+    lower(COALESCE(allowed_tools, '')) LIKE '%webfetch%'
+    OR lower(COALESCE(allowed_tools, '')) LIKE '%websearch%'
+  );
+
+-- Case 2: skills already holds entries -> append before the closing bracket.
+UPDATE agent_definitions
+SET skills = substr(trim(skills), 1, length(trim(skills)) - 1) || ',"url-hunting-recovery"]',
+    updated_at = strftime('%s', 'now')
+WHERE trim(skills) LIKE '[%]'
+  AND trim(skills) <> '[]'
+  AND skills NOT LIKE '%url-hunting-recovery%'
+  AND (
+    lower(COALESCE(allowed_tools, '')) LIKE '%webfetch%'
+    OR lower(COALESCE(allowed_tools, '')) LIKE '%websearch%'
+  );
+
+-- ---------------------------------------------------------------------------
+-- grounded-research-brief -> same set
+-- ---------------------------------------------------------------------------
+-- Runs after the block above, so these agents now have a non-empty array and
+-- only the append case can apply.
+
+UPDATE agent_definitions
+SET skills = '["grounded-research-brief"]',
+    updated_at = strftime('%s', 'now')
+WHERE (skills IS NULL OR trim(skills) = '' OR trim(skills) = '[]')
+  AND (
+    lower(COALESCE(allowed_tools, '')) LIKE '%webfetch%'
+    OR lower(COALESCE(allowed_tools, '')) LIKE '%websearch%'
+  );
+
+UPDATE agent_definitions
+SET skills = substr(trim(skills), 1, length(trim(skills)) - 1) || ',"grounded-research-brief"]',
+    updated_at = strftime('%s', 'now')
+WHERE trim(skills) LIKE '[%]'
+  AND trim(skills) <> '[]'
+  AND skills NOT LIKE '%grounded-research-brief%'
+  AND (
+    lower(COALESCE(allowed_tools, '')) LIKE '%webfetch%'
+    OR lower(COALESCE(allowed_tools, '')) LIKE '%websearch%'
+  );
 `,
   },
 };

@@ -56,11 +56,26 @@ const speedPrior = (c: any): number => {
 const isFree = (c: any) => {
   if (c.pricingTier === 'free' || c.pricingTier === 'free_with_limits') return true;
   if (c.freeTierMetadata) return true;
-  if (FREE_PROVIDERS_ENV.includes(c.providerName) || FREE_PROVIDERS_ENV.includes(c.providerId)) return true;
   // Providers that namespace their free tier in the model id (OpenRouter's
   // `…:free`, opencode-zen's `…-free`).
   const id = String(c.modelId ?? '');
   if (/:free$|-free$/.test(id)) return true;
+  // DMRX_FREE_PROVIDERS is an operator declaration that a provider's KEY is a
+  // free-tier key — it is NOT a claim that every model that provider serves is
+  // free. Treating it as provider-wide marked genuinely paid flagship models
+  // (opencode-zen `claude-opus-4-8`, tokenrouter's paid pool) as free, so the
+  // free-only aliases elected them and the request died on the provider's own
+  // billing error ("No payment method", "Insufficient credits", "credit limit
+  // is insufficient") instead of routing to a model that actually costs
+  // nothing. Honour the declaration only when the model itself carries no
+  // positive price, which keeps the operator override working for providers
+  // whose catalog nominally prices a free-tier key while refusing to promote a
+  // model the catalog explicitly prices.
+  const declaredFreeProvider =
+    FREE_PROVIDERS_ENV.includes(c.providerName) || FREE_PROVIDERS_ENV.includes(c.providerId);
+  const hasPositivePrice =
+    (c.costPerInputToken ?? 0) > 0 || (c.costPerOutputToken ?? 0) > 0;
+  if (declaredFreeProvider && !hasPositivePrice) return true;
   // KNOWN LIMITATION: model_profiles.input_cost_per_1k is REAL NOT NULL
   // DEFAULT 0, so a model whose provider publishes no pricing is stored as 0 —
   // indistinguishable from a genuinely free one, and most /v1/models endpoints
@@ -68,8 +83,7 @@ const isFree = (c: any) => {
   // contract (tests/unit/meta-models.test.ts, "should exclude paid models when
   // costFilter=free"); dropping it broke that for callers who supply real
   // pricing. Closing the ambiguity needs a migration making the cost columns
-  // nullable so "unpriced" and "free" stop sharing a representation. Until
-  // then DMRX_FREE_PROVIDERS is the authoritative operator-side override.
+  // nullable so "unpriced" and "free" stop sharing a representation.
   if ((c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0) return true;
   return false;
 };
@@ -454,9 +468,92 @@ export function isMetaModel(model: string): boolean {
   return META_MODELS.some(m => m.alias === model);
 }
 
+// ---------------------------------------------------------------------------
+// Meta-model ranking cache
+// ---------------------------------------------------------------------------
+//
+// Every meta-model ranker does filter → map → sort → map on **every** request,
+// even though the candidate pool only changes when provider health flips, keys
+// are added/removed, or new models are discovered — all event-driven and
+// infrequent. The ranker functions are pure, so we cache the result per
+// (alias, costFilter, candidateSignature) and invalidate when the candidate
+// set changes.
+//
+// The candidateSignature is a fast hash of the fields the rankers actually
+// read. It does NOT need to be cryptographic — it only needs to change when
+// the ranking would change.
+
+/** Fields that any meta-model ranker reads from a candidate */
+const SIGNATURE_FIELDS = [
+  'providerId', 'modelId', 'providerName', 'qualityScore', 'costPerInputToken',
+  'costPerOutputToken', 'avgLatencyMs', 'contextLength', 'capabilityTier',
+  'isHealthy', 'pricingTier', 'freeTierMetadata', 'capabilities', 'taskCategories',
+  'modality',
+] as const;
+
+/**
+ * Compute a signature for the candidate set. This is intentionally cheap —
+ * we only hash the fields that rankers read, not the whole object.
+ * Uses FNV-1a for speed (no crypto overhead, no string allocation per field).
+ */
+function candidateSetSignature(candidates: CandidateSet): string {
+  let hash = 0x811c9dc5;
+  for (const c of candidates) {
+    for (const field of SIGNATURE_FIELDS) {
+      const value = (c as any)[field];
+      if (value === undefined || value === null) continue;
+      const str = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      for (let i = 0; i < str.length; i++) {
+        hash ^= str.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      // Separator between fields
+      hash ^= 0x2c; // ','
+      hash = Math.imul(hash, 0x01000193);
+    }
+    // Separator between candidates
+    hash ^= 0x3b; // ';'
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // Include length so [a,b] ≠ [a,b,]
+  hash ^= candidates.length;
+  return (hash >>> 0).toString(36);
+}
+
+interface CacheEntry {
+  signature: string;
+  result: CandidateSet;
+}
+
+const rankerCache = new Map<string, CacheEntry>();
+
+/** Maximum number of cache entries (prevents unbounded growth if candidate sets vary a lot) */
+const MAX_CACHE_ENTRIES = 64;
+
+/** Current cache generation — for bulk invalidation if needed */
+let cacheGeneration = 0;
+
+/**
+ * Invalidate the entire meta-model ranking cache.
+ * Caller should invoke this when the candidate set changes (provider health flip,
+ * key rotation, model discovery, etc.).
+ */
+export function invalidateRankerCache(): void {
+  rankerCache.clear();
+  cacheGeneration++;
+}
+
+/** Get current cache stats for observability */
+export function getRankerCacheStats(): { size: number; generation: number } {
+  return { size: rankerCache.size, generation: cacheGeneration };
+}
+
 /**
  * Resolve a meta-model alias to the best available candidate.
  * Returns null if the model is not a meta-model or no candidates match.
+ *
+ * Results are cached per (alias, costFilter, candidateSignature) and reused
+ * when the candidate set hasn't changed.
  *
  * @param costFilterOverride - Override the meta-model's default cost filter ('all' or 'free').
  *   When 'free', the ranker filters to zero-cost providers only.
@@ -472,8 +569,26 @@ export function resolveMetaModel(
   if (!metaModel) return null;
 
   const effectiveFilter = costFilterOverride ?? metaModel.costFilter;
+
+  // Check cache first
+  const signature = candidateSetSignature(candidates);
+  const cacheKey = `${metaModel.alias}:${effectiveFilter}`;
+  const cached = rankerCache.get(cacheKey);
+  if (cached && cached.signature === signature) {
+    return { resolved: cached.result, metaModel, costFilter: effectiveFilter, godmode: Boolean(metaModel.godmode) };
+  }
+
+  // Cache miss — run the ranker
   const ranked = metaModel.ranker(candidates, effectiveFilter);
   if (ranked.length === 0) return null;
+
+  // Store in cache (with LRU eviction if full)
+  if (rankerCache.size >= MAX_CACHE_ENTRIES) {
+    // Evict the oldest entry (Map preserves insertion order)
+    const firstKey = rankerCache.keys().next().value;
+    if (firstKey !== undefined) rankerCache.delete(firstKey);
+  }
+  rankerCache.set(cacheKey, { signature, result: ranked });
 
   return { resolved: ranked, metaModel, costFilter: effectiveFilter, godmode: Boolean(metaModel.godmode) };
 }

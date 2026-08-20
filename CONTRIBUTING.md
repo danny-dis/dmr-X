@@ -50,6 +50,7 @@ When adding features or making changes:
 - Update relevant documentation in `docs/`
 - Keep `README.md` accurate if the change affects user-facing behavior
 - Update `docs/CHANGELOG.md` with notable changes
+- Update `TODO.md` when starting, finishing, or abandoning work (see `AGENTS.md` for multi-agent tracking rules)
 
 ## License
 

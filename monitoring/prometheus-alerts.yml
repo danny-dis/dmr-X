@@ -58,6 +58,41 @@ groups:
             All upstream providers are reporting unhealthy. The gateway will return
             503 for every request. Check network egress and provider status pages.
 
+  - name: dmr-x.slo
+    interval: 30s
+    rules:
+      - alert: DmrxSloAvailabilityFastBurn
+        # Fast burn: 14.4x of budget consumed in 1h, 2% SLO breach in <1d
+        expr: |
+          (
+            sum(rate(dmr_request_count_total{status_code=~"5.."}[1h]))
+            /
+            sum(rate(dmr_request_count_total[1h]))
+          ) > (1 - 0.999) * 14.4
+        for: 2m
+        labels:
+          severity: page
+          slo: availability
+        annotations:
+          summary: "Availability SLO fast burn (>14.4x budget in 1h)"
+          description: "We're consuming error budget at 14.4x the steady-state rate. Page immediately."
+
+      - alert: DmrxSloAvailabilitySlowBurn
+        # Slow burn: 6x of budget consumed in 24h, 2% SLO breach in ~5d
+        expr: |
+          (
+            sum(rate(dmr_request_count_total{status_code=~"5.."}[6h]))
+            /
+            sum(rate(dmr_request_count_total[6h]))
+          ) > (1 - 0.999) * 6
+        for: 30m
+        labels:
+          severity: ticket
+          slo: availability
+        annotations:
+          summary: "Availability SLO slow burn (>6x budget in 6h)"
+          description: "Slow leak in availability. Investigate within the business day."
+
   - name: dmr-x.latency
     interval: 30s
     rules:

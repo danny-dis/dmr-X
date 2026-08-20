@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, GenericAnthropicAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter, AntigravityAdapter } from '@dmr-x/adapters';
+import { AdapterRegistry, OpenAIAdapter, AnthropicAdapter, OllamaAdapter, ReplicateAdapter, StabilityAdapter, ElevenLabsAdapter, DeepgramAdapter, CohereAdapter, JinaAdapter, GenericOpenAIAdapter, GenericAnthropicAdapter, FalAdapter, VeoAdapter, RunwayAdapter, ComfyUIAdapter, createAudioSeparationAdapter, createOcrAdapter, PollinationsImageAdapter, BedrockAdapter, AzureOpenAIAdapter, VertexAIAdapter, GroqAdapter, DeepSeekAdapter, XAIAdapter, OpenRouterAdapter, HuggingFaceAdapter, PerplexityAdapter, TogetherAdapter, FireworksAdapter, CerebrasAdapter, DatabricksAdapter, VLLMAdapter, SambanovaAdapter, NebiusAdapter, NovitaAdapter, MoonshotAdapter, MiniMaxAdapter, GeminiAPIAdapter, LMStudioAdapter, VolcengineAdapter, DashscopeAdapter, NVIDIANIMAdapter, AntigravityAdapter } from '@dmr-x/adapters';
 import { BenchmarkService, JudgeService } from '@dmr-x/benchmark';
 import type { UnifiedRequest } from '@dmr-x/core';
 import { Router, loadBanditArms, startBanditPersistence } from '@dmr-x/router';
@@ -13,9 +13,9 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 
-import { getTelemetryService, contentCaptureService } from '@dmr-x/telemetry';
+import { getTelemetryService, contentCaptureService, retentionService } from '@dmr-x/telemetry';
 import { ProviderUnavailableError } from '@dmr-x/core';
-import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, syncClassifications, classifyFreeProviderModels } from '@dmr-x/registry';
+import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, repairModelProfiles, syncClassifications, classifyFreeProviderModels } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
 import { agentScheduler } from '@dmr-x/agent-runtime';
 import { quotaService, getRateLimitService } from '@dmr-x/quota';
@@ -52,6 +52,7 @@ import { ocrRoutes } from './routes/ocr.routes.js';
 import { rerankRoutes } from './routes/rerank.routes.js';
 import { moderationRoutes } from './routes/moderation.routes.js';
 import { toolsRoutes, registerToolHandler, registerBuiltinToolHandlers, registerCodingToolHandlers, sweepStaleSandboxes } from './routes/tools.routes.js';
+import { registerReceptionistToolHandlers } from './lib/receptionist-tools.js';
 import { videoRoutes } from './routes/video.routes.js';
 import { geminiRoutes, geminiNativeRoutes } from './routes/gemini.routes.js';
 import conversationRoutes from './routes/conversation.routes.js';
@@ -78,9 +79,27 @@ const isBun = typeof Bun !== 'undefined';
 
 // Production-hardening defaults — overridable via env in apps/gateway/src/main.ts
 const BODY_LIMIT = parseBodyLimit(process.env.DMRX_BODY_LIMIT, 10 * 1024 * 1024);
-const REQUEST_TIMEOUT = parseInt(process.env.DMRX_REQUEST_TIMEOUT || '60000', 10);
-const KEEPALIVE_TIMEOUT = parseInt(process.env.DMRX_KEEPALIVE_TIMEOUT || '65000', 10);
-const CONNECTION_TIMEOUT = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || '10000', 10);
+// Request timeout must exceed the WORK budget it fronts, or the transport kills
+// the connection while the handler is still legitimately running.
+//
+// The agentic loop allows DMRX_AGENTIC_TURN_TIMEOUT_MS (default 120s) PER TURN
+// and runs up to maxSteps turns, so a 60s requestTimeout guaranteed a
+// mid-flight socket close on any multi-turn agent task. Measured against the
+// DMR-X agent fleet: 6 of 24 delegated tasks died at exactly ~58s with
+// RemoteDisconnected — the client sees a dropped connection, not an error, and
+// the tokens are already spent.
+//
+// 300s covers a 2-turn task at the default per-turn ceiling. Operators running
+// deeper loops should raise both knobs together; keepAlive stays just above so
+// idle-connection reaping never pre-empts an in-flight request.
+const REQUEST_TIMEOUT = parseInt(process.env.DMRX_REQUEST_TIMEOUT || '300000', 10);
+const KEEPALIVE_TIMEOUT = parseInt(process.env.DMRX_KEEPALIVE_TIMEOUT || '305000', 10);
+// Socket-level (Node `server.timeout`). MUST stay above REQUEST_TIMEOUT: it
+// fires on socket inactivity with no regard for a running handler, so a lower
+// value severs live agent turns with RemoteDisconnected — a dropped connection
+// rather than an error response, with the provider tokens already spent.
+// validateStartupConfig() in main.ts refuses to boot on a violation.
+const CONNECTION_TIMEOUT = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || '310000', 10);
 const MAX_PARAM_LENGTH = parseInt(process.env.DMRX_MAX_PARAM_LENGTH || '200', 10);
 const MEMORY_LIMIT = parseBodyLimit(process.env.DMRX_MEMORY_LIMIT, 1_500 * 1024 * 1024);
 const TRUST_PROXY = parseTrustProxy(process.env.DMRX_TRUST_PROXY);
@@ -105,6 +124,10 @@ export async function createServer() {
     },
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
+    // L1 — strip client-supplied x-request-id to prevent log injection /
+    // correlation-id spoofing. Always generate a server-side UUID instead
+    // of trusting client input that could contain control characters.
+    // Clients needing correlation should generate their own UUID.
     // Production-grade request limits
     bodyLimit: BODY_LIMIT,
     requestTimeout: REQUEST_TIMEOUT,
@@ -167,6 +190,7 @@ export async function createServer() {
   adapterRegistry.register(new FireworksAdapter());
   adapterRegistry.register(new HuggingFaceAdapter());
   adapterRegistry.register(new DatabricksAdapter());
+  adapterRegistry.register(new GeminiAPIAdapter());
   adapterRegistry.register(new VLLMAdapter());
   adapterRegistry.register(new NebiusAdapter());
   adapterRegistry.register(new NovitaAdapter());
@@ -427,11 +451,42 @@ export async function createServer() {
 
   // Start health checker — delay initial run to allow all adapters (including
   // those loaded from DB and auto-registered) to fully initialise.
+  //
+  // Scoped to DMRX_PROVIDER_ALLOWLIST when one is set. Probing EVERY
+  // registered adapter is what made the gateway fall over: the catalog
+  // registers 40+ providers, each probe retries to attempt 4 on failure, so
+  // one 30s tick fired 160+ concurrent outbound requests. That exhausted
+  // sockets and killed the process; pm2 restarted it, and any in-flight agent
+  // turn saw a dead socket — surfaced to callers as the misleading
+  // "All providers currently unavailable". Multi-step agent runs (10 turns)
+  // hit the storm repeatedly, which is why job tasks died while a
+  // single-turn direct call survived.
+  //
+  // getCandidates() already honours the allowlist, so unlisted providers can
+  // never be routed to. Health-probing them was pure overhead against
+  // credentials the operator does not have.
   const healthChecker = new HealthChecker({ intervalMs: 30_000 });
   server.addHook('onListen', async () => {
     // Register health checks for all providers after a short delay
     setTimeout(async () => {
-      for (const id of adapterRegistry.list()) {
+      const allowlist = (process.env.DMRX_PROVIDER_ALLOWLIST ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const registered = adapterRegistry.list();
+      const monitored = allowlist.length
+        ? registered.filter((id) => allowlist.includes(id))
+        : registered;
+
+      if (allowlist.length && monitored.length < registered.length) {
+        logger.info(
+          { monitored: monitored.length, registered: registered.length, allowlist },
+          'Health checks scoped to DMRX_PROVIDER_ALLOWLIST',
+        );
+      }
+
+      for (const id of monitored) {
         const adapter = adapterRegistry.peek(id);
         if (adapter) {
           healthChecker.startProviderCheck(id, async () => {
@@ -644,6 +699,7 @@ void (async () => {
    await server.register(toolsRoutes, { prefix: '/v1' });
    registerBuiltinToolHandlers();
    registerCodingToolHandlers();
+   registerReceptionistToolHandlers();
    sweepStaleSandboxes();
     logger.info('Registering route: agenticRoutes');
     await server.register(agenticRoutes, { prefix: '/v1' });
@@ -938,6 +994,23 @@ void (async () => {
         }
       } catch (err) {
         logger.warn({ err }, 'Failed to enrich existing models');
+      }
+
+      // 2.75) Repair/sanitize persisted model_profiles: zero negative pricing
+      //       (OpenRouter's "-1" sentinel stored as -1000), deactivate
+      //       OpenRouter's virtual routing models, and backfill capabilities
+      //       + free-tier metadata for rows written before the discovery
+      //       pipeline carried them.
+      try {
+        const repaired = await repairModelProfiles();
+        if (repaired > 0) {
+          logger.info(
+            { count: repaired },
+            'Repaired model profiles (negative pricing, virtuals, capability/free-tier backfill)',
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to repair model profiles');
       }
 
       // 3) Load all registered providers from DB and initialise adapters

@@ -1,3 +1,25 @@
+// Load .env before anything else reads process.env.
+// The gateway has no dotenv loader, so env vars from .env (GODMODE_*,
+// DMRX_GODMODE_*, provider keys, etc.) never reached the process. This
+// inline parser brings them in so the godmode companion boots on startup.
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+try {
+  const envPath = resolve(process.cwd(), '.env');
+  const envFile = readFileSync(envPath, 'utf8');
+  for (const line of envFile.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim();
+    if (!(key in process.env)) process.env[key] = val;
+  }
+} catch {
+  // .env missing — ignore, use process.env as-is
+}
+
 // sql.js returns BigInt for INTEGER columns. JSON.stringify cannot serialize
 // BigInt, which causes 500s with empty bodies when Fastify tries to send the
 // response. Patch the prototype before anything else loads.
@@ -12,6 +34,7 @@ import { federationService } from '@dmr-x/federation';
 import { memoryService } from '@dmr-x/memory';
 import { logger, parseBodyLimit, parseTrustProxy } from '@dmr-x/utils';
 import { workersService } from '@dmr-x/workers';
+import { retentionService } from '@dmr-x/telemetry';
 
 import { createServer } from './server.js';
 import { connectPersistedMcpServers } from './routes/mcp-admin.routes.js';
@@ -24,9 +47,15 @@ import type { Server as HttpsServer } from 'node:https';
 
 const MIN_ADMIN_API_KEY_LENGTH = 32;
 const DEFAULT_BODY_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;          // 60 s
-const DEFAULT_KEEPALIVE_TIMEOUT_MS = 65_000;        // 65 s
-const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;       // 10 s
+// Timeout defaults must satisfy the ordering enforced in validateStartupConfig:
+//   connection >= keepAlive >= request
+// `connectionTimeout` is Node's `server.timeout` — a socket-level kill that
+// ignores in-flight handlers — so anything below requestTimeout severs live
+// agent requests with RemoteDisconnected instead of a clean error. These
+// defaults front a 2-turn agent loop at the 120s-per-turn default budget.
+const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;         // 300 s
+const DEFAULT_KEEPALIVE_TIMEOUT_MS = 305_000;       // 305 s
+const DEFAULT_CONNECTION_TIMEOUT_MS = 310_000;      // 310 s
 const DEFAULT_MAX_PARAM_LENGTH = 200;
 const DEFAULT_MEMORY_LIMIT_BYTES = 1_500 * 1024 * 1024; // 1.5 GB
 
@@ -56,8 +85,41 @@ function validateStartupConfig(): void {
     errors.push('DMRX_KEEPALIVE_TIMEOUT must be between 1000 and 600000 ms');
   }
   const connTimeout = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || String(DEFAULT_CONNECTION_TIMEOUT_MS), 10);
-  if (!Number.isFinite(connTimeout) || connTimeout < 1000 || connTimeout > 300_000) {
-    errors.push('DMRX_CONNECTION_TIMEOUT must be between 1000 and 300000 ms');
+  // Cap matches DMRX_REQUEST_TIMEOUT / DMRX_KEEPALIVE_TIMEOUT (600s): this
+  // value must be able to sit ABOVE requestTimeout (see the ordering check
+  // below), so a lower ceiling here would make a valid long-request config
+  // impossible to express.
+  if (!Number.isFinite(connTimeout) || connTimeout < 1000 || connTimeout > 600_000) {
+    errors.push('DMRX_CONNECTION_TIMEOUT must be between 1000 and 600000 ms');
+  }
+
+  // The three timeouts must be ORDERED, not merely in range.
+  //
+  // `connectionTimeout` maps to Node's `server.timeout`: a SOCKET-level kill
+  // that fires on socket inactivity regardless of whether a handler is still
+  // legitimately running. A long-poll agent turn produces no bytes until the
+  // provider replies, so a connectionTimeout shorter than requestTimeout
+  // destroys the socket mid-request. The client sees RemoteDisconnected — not
+  // a 503 — so the failure is indistinguishable from a crash, and the tokens
+  // are already spent.
+  //
+  // Measured on the DMR-X agent fleet (24 agents, concurrency 6): with
+  // DMRX_CONNECTION_TIMEOUT=60000 and DMRX_REQUEST_TIMEOUT=120000, 7 of 24
+  // delegated tasks died in a tight 56.5-60.4s band with RemoteDisconnected.
+  // Raising requestTimeout alone did nothing, because the socket layer wins.
+  if (Number.isFinite(connTimeout) && Number.isFinite(reqTimeout) && connTimeout < reqTimeout) {
+    errors.push(
+      `DMRX_CONNECTION_TIMEOUT (${connTimeout}ms) must be >= DMRX_REQUEST_TIMEOUT (${reqTimeout}ms). ` +
+      'connectionTimeout is a socket-level timeout and will sever in-flight requests ' +
+      'before the request timeout can return a proper error.',
+    );
+  }
+  // keepAlive must sit above requestTimeout so idle-connection reaping never
+  // pre-empts a request that is still within its allowed budget.
+  if (Number.isFinite(keepAlive) && Number.isFinite(reqTimeout) && keepAlive < reqTimeout) {
+    errors.push(
+      `DMRX_KEEPALIVE_TIMEOUT (${keepAlive}ms) must be >= DMRX_REQUEST_TIMEOUT (${reqTimeout}ms).`,
+    );
   }
   const maxParam = parseInt(process.env.DMRX_MAX_PARAM_LENGTH || String(DEFAULT_MAX_PARAM_LENGTH), 10);
   if (!Number.isFinite(maxParam) || maxParam < 1 || maxParam > 4096) {
@@ -104,7 +166,6 @@ function validateStartupConfig(): void {
 
   const adminApiKey = process.env.DMRX_ADMIN_API_KEY;
   const encryptionKey = process.env.DMRX_ENCRYPTION_KEY;
-  const corsOrigin = process.env.DMRX_CORS_ORIGIN;
 
   if (
     !adminApiKey?.trim() ||
@@ -117,7 +178,17 @@ function validateStartupConfig(): void {
   if (!encryptionKey || !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
     errors.push('DMRX_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) in production for AES-256-GCM encryption. Generate with: openssl rand -hex 32');
   }
+}
 
+function validateProductionConfig(): void {
+  const errors: string[] = [];
+
+  const corsOrigin = process.env.DMRX_CORS_ORIGIN;
+
+  // H2 — CORS must NEVER accept a wildcard/empty origin, even when NODE_ENV
+  // is not 'production'. The audit found the old gate let non-production boots
+  // (dev, staging, unset) accept DMRX_CORS_ORIGIN=*, which in a real deploy
+  // opens the API to any browser origin. Validate unconditionally.
   if (!corsOrigin || corsOrigin.split(',').some(origin => {
     const value = origin.trim();
     return value.length === 0 || value === '*';
@@ -139,6 +210,7 @@ function failIfInvalid(errors: string[]): void {
 
 async function main(): Promise<void> {
   validateStartupConfig();
+  validateProductionConfig();
   const port = parseInt(process.env.PORT || '3000', 10);
 
   // Initialize SQLite database (async — loads WASM, runs migrations)
@@ -155,6 +227,9 @@ async function main(): Promise<void> {
   workersService.start();
   federationService.start();
   logger.info('Platform services started');
+
+  // O5 — start data retention service to prune unbounded tables
+  retentionService.start();
 
   // Start server
   const { server, runBackgroundInit } = await createServer();
@@ -253,7 +328,7 @@ async function main(): Promise<void> {
     }
 
     // Tear down G0DM0D3 too, otherwise its process tree outlives every restart
-    // and keeps port 7860 held by a process nothing supervises.
+    // and keeps port 47115 held by a process nothing supervises.
     try {
       await stopGodmode();
     } catch (err) {
@@ -264,6 +339,7 @@ async function main(): Promise<void> {
       memoryService.stop();
       workersService.stop();
       federationService.stop();
+      retentionService.stop();
     } catch (err) {
       logger.error({ err }, 'Error stopping platform services');
     }
@@ -279,7 +355,7 @@ async function main(): Promise<void> {
       logger.error({ err }, 'Error during closeDb()');
     }
     logger.info('Shutdown complete');
-    process.exit(0);
+    process.exit(1);
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));

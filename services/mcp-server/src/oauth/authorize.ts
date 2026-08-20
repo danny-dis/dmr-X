@@ -127,7 +127,9 @@ export class OAuthAuthorizationServer {
   constructor(config?: OAuthConfig) {
     this.config = {
       enabled: false,
-      issuer: 'http://localhost:3100',
+      // Must match the port the MCP server actually listens on, since the
+      // issuer is echoed in discovery metadata and validated by clients.
+      issuer: 'http://localhost:47114',
       storage: 'memory',
       storagePath: './data/oauth.db',
       accessTokenExpiry: 3600, // 1 hour

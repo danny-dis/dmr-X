@@ -65,7 +65,7 @@ bun run lint             # Lint all packages
 | `services/adapters/src/` | Provider adapters (openai, anthropic, ollama, generic-openai, etc.) |
 | `services/router/src/` | Routing pipeline, classifier, fallback, bandit |
 | `services/mcp-server/src/` | MCP tool server (tools.ts has tool definitions) |
-| `tests/unit/` | Unit test suites (41 files) |
+| `tests/unit/` | Unit test suites (86 files, 1248+ assertions) |
 
 ## Coding Conventions
 
@@ -139,11 +139,14 @@ When updating docs, keep them accurate to the actual codebase state. The authori
 - `docs/DISTRIBUTION.md` — binary packaging
 - `docs/MCP.md` — MCP server documentation
 - `docs/TESTING.md` — testing guide
+- `docs/ROADMAP.md` — consolidated roadmap across all workstreams
+- `docs/ROADMAP-STATUS.md` — feature/roadmap status checklist
+- `TODO.md` — day-to-day task board (multi-agent tracking)
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dmr-X** (12219 symbols, 30158 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dmr-X** (13489 symbols, 33110 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

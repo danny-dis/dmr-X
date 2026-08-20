@@ -4,8 +4,8 @@ import type { CapabilityTier, ArchitectureTier } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
 
-import { discoverOpenAIModels, type DiscoveredModel } from './model-discovery.js';
-import { PROVIDER_CATALOG, type ProviderTemplate, type ModelTemplate } from './provider-catalog.js';
+import { discoverOpenAIModels, type DiscoveredModel, OPENROUTER_VIRTUAL_MODEL_IDS } from './model-discovery.js';
+import { PROVIDER_CATALOG, type ProviderTemplate, type ModelTemplate, getBenchmarkIntelligenceRank } from './provider-catalog.js';
 
 /**
  * Build a lookup map of catalog models keyed by `${providerId}/${modelId}`.
@@ -42,12 +42,39 @@ function enrichFromCatalog(
     modality: model.modality || tmpl.modalities[0] || 'llm',
     contextWindow: model.contextWindow ?? tmpl.contextWindow ?? null,
     maxOutputTokens: model.maxOutputTokens ?? tmpl.maxOutputTokens ?? null,
-    inputCostPer1M: model.inputCostPer1M || tmpl.inputCostPer1M || 0,
-    outputCostPer1M: model.outputCostPer1M || tmpl.outputCostPer1M || 0,
-    costPerImage: model.costPerImage || tmpl.costPerImage || 0,
-    capabilities: model.capabilities.length > 0 ? model.capabilities : tmpl.capabilities,
-    specializations: model.specializations.length > 0 ? model.specializations : tmpl.specializations,
+    // Union costs: prefer the discovered value when it is a positive number,
+    // otherwise fall back to the catalog. Clamp negatives (OpenRouter's "-1"
+    // sentinel) so a bad upstream price can never reach model_profiles.
+    inputCostPer1M:
+      Number.isFinite(model.inputCostPer1M) && model.inputCostPer1M > 0
+        ? model.inputCostPer1M
+        : Math.max(0, tmpl.inputCostPer1M ?? 0),
+    outputCostPer1M:
+      Number.isFinite(model.outputCostPer1M) && model.outputCostPer1M > 0
+        ? model.outputCostPer1M
+        : Math.max(0, tmpl.outputCostPer1M ?? 0),
+    costPerImage: Math.max(0, model.costPerImage || tmpl.costPerImage || 0),
+    // Union capabilities. Discovery always returns at least ['streaming'] —
+    // the old `length > 0` check meant the catalog's richer capability set
+    // (tool_use, json_mode, reasoning, ...) was silently discarded for every
+    // discovered model, starving them in the capability-filtered rankers
+    // (auto-agentic / auto-coding / free-agentic).
+    capabilities: Array.from(new Set([...model.capabilities, ...tmpl.capabilities])),
+    specializations: Array.from(new Set([...model.specializations, ...tmpl.specializations])),
     subscriptionOnly: tmpl.subscriptionOnly,
+    // Carry free-tier metadata from the catalog into the profile. The
+    // discovery path used to drop it entirely, so free-tier models had no
+    // intelligenceRank/speedRank → no freeTierMetadata → quality stayed at
+    // the bare tier baseline.
+    rateLimits: model.rateLimits ?? tmpl.freeTier?.rateLimits,
+    monthlyTokenBudget: model.monthlyTokenBudget ?? tmpl.freeTier?.monthlyTokenBudget,
+    // Benchmark-first intelligence rank: the hand-set catalog rank is inflated
+    // for several free gateways (nemotron-3-ultra-550b-a55b:free is catalog
+    // rank 9 but scores 38.3 on Artificial Analysis ≈ rank 6). When OpenRouter
+    // publishes a benchmark for this model id, that measured rank wins; only
+    // models with no benchmark fall through to the catalog guess.
+    intelligenceRank: getBenchmarkIntelligenceRank(model.modelId) ?? model.intelligenceRank ?? tmpl.freeTier?.intelligenceRank,
+    speedRank: model.speedRank ?? tmpl.freeTier?.speedRank,
   };
 }
 
@@ -999,5 +1026,162 @@ export async function enrichExistingModels(): Promise<number> {
     logger.info({ count: updated, total: stale.length }, 'Enriched existing models with catalog data');
   }
   return updated;
+}
+
+/**
+ * One-time repair/sanitize pass for already-persisted model_profiles rows.
+ * Runs at startup, after enrichExistingModels. Fixes three classes of damage
+ * caused by upstream quirks that shipped to the DB before the discovery
+ * pipeline clamped them:
+ *
+ *  1. Negative pricing (OpenRouter's "-1" sentinel persisted as -1000).
+ *     Any negative price is a sentinel, never a real cost — zero it so the
+ *     cost scorers (which divide by maxCost and clamp at 1) can't explode.
+ *  2. OpenRouter's virtual routing models (openrouter/auto, openrouter/fusion,
+ *     ...). They delegate routing back to OpenRouter's server-side router and
+ *     publish the "-1" pricing sentinel — deactivate them so they can never
+ *     be picked as routing candidates.
+ *  3. Capability-blind / free-tier-starved rows. Rows written before the
+ *     enrichFromCatalog fix have only ['streaming'] from discovery (the
+ *     catalog's tool_use/json_mode/reasoning caps were discarded), no
+ *     intelligence/speed rank, and no rate limits — so they classify into a
+ *     weaker tier and score at the bare tier baseline. Re-union capabilities
+ *     from the catalog template and backfill the free-tier metadata.
+ *
+ * Returns the number of rows touched.
+ */
+export async function repairModelProfiles(): Promise<number> {
+  const db = getDb();
+  const catalogLookup = buildCatalogLookup();
+  let touched = 0;
+
+  // 1) Zero negative pricing — sentinels, never real costs.
+  const neg = db.prepare(
+    `UPDATE model_profiles
+     SET input_cost_per_1k = 0, output_cost_per_1k = 0, cost_per_image = 0,
+         updated_at = datetime('now')
+     WHERE input_cost_per_1k < 0 OR output_cost_per_1k < 0 OR cost_per_image < 0`,
+  ).run();
+  if (neg.changes > 0) {
+    touched += neg.changes;
+    logger.info({ count: neg.changes }, 'Repaired negative model pricing (zeroed sentinel values)');
+  }
+
+  // 2) Deactivate OpenRouter virtual routing models.
+  const virt = db.prepare(
+    `UPDATE model_profiles SET is_active = 0, updated_at = datetime('now')
+     WHERE is_active = 1 AND model_id IN (${OPENROUTER_VIRTUAL_MODEL_IDS.map(() => '?').join(',')})`,
+  ).run(...OPENROUTER_VIRTUAL_MODEL_IDS);
+  if (virt.changes > 0) {
+    touched += virt.changes;
+    logger.info({ count: virt.changes, models: OPENROUTER_VIRTUAL_MODEL_IDS }, 'Deactivated OpenRouter virtual routing models');
+  }
+
+  // 3) Backfill capabilities + free-tier metadata for rows that have a catalog
+  //    template but were written capability-blind / starved.
+  const blind = db.prepare(
+    `SELECT mp.id, mp.provider_id, mp.model_id, p.name as provider_name,
+            mp.supports_streaming, mp.supports_vision, mp.supports_tool_use,
+            mp.supports_json_mode, mp.supports_function_call, mp.supports_reasoning
+     FROM model_profiles mp
+     JOIN providers p ON p.id = mp.provider_id
+     WHERE mp.is_active = 1`,
+  ).all() as Array<{
+    id: string; provider_id: string; model_id: string; provider_name: string;
+    supports_streaming: number; supports_vision: number; supports_tool_use: number;
+    supports_json_mode: number; supports_function_call: number; supports_reasoning: number;
+  }>;
+
+  const update = db.prepare(
+    `UPDATE model_profiles SET
+       supports_streaming = ?, supports_vision = ?, supports_tool_use = ?,
+       supports_json_mode = ?, supports_function_call = ?, supports_reasoning = ?,
+       rate_limit_rpm = COALESCE(?, rate_limit_rpm),
+       rate_limit_rpd = COALESCE(?, rate_limit_rpd),
+       rate_limit_tpm = COALESCE(?, rate_limit_tpm),
+       rate_limit_tpd = COALESCE(?, rate_limit_tpd),
+       monthly_token_budget = COALESCE(?, monthly_token_budget),
+       intelligence_rank = COALESCE(?, intelligence_rank),
+       speed_rank = COALESCE(?, speed_rank),
+       capability_tier = ?, quality_score = ?,
+       updated_at = datetime('now')
+     WHERE id = ?`,
+  );
+
+  for (const row of blind) {
+    const key = `${row.provider_name}/${row.model_id}`;
+    const tmpl = catalogLookup.get(key);
+    if (!tmpl) continue;
+
+    const tmplCaps = new Set(tmpl.capabilities);
+    // Union: a capability is on if the DB row OR the template claims it.
+    const caps = {
+      streaming: row.supports_streaming === 1 || tmplCaps.has('streaming'),
+      vision: row.supports_vision === 1 || tmplCaps.has('vision'),
+      tool_use: row.supports_tool_use === 1 || tmplCaps.has('tool_use'),
+      json_mode: row.supports_json_mode === 1 || tmplCaps.has('json_mode'),
+      function_call: row.supports_function_call === 1 || tmplCaps.has('function_call'),
+      reasoning: row.supports_reasoning === 1 || tmplCaps.has('reasoning'),
+    };
+
+    const ft = tmpl.freeTier;
+    // Proceed only when the row actually needs repair: a capability the
+    // template provides is missing on the row, or the template carries
+    // free-tier metadata (ranks / limits / budget) the row lacks. Keeps the
+    // pass idempotent — rows inserted post-fix with full caps + ranks are
+    // left untouched.
+    const needsCapBackfill =
+      (tmplCaps.has('streaming') && row.supports_streaming !== 1) ||
+      (tmplCaps.has('vision') && row.supports_vision !== 1) ||
+      (tmplCaps.has('tool_use') && row.supports_tool_use !== 1) ||
+      (tmplCaps.has('json_mode') && row.supports_json_mode !== 1) ||
+      (tmplCaps.has('function_call') && row.supports_function_call !== 1) ||
+      (tmplCaps.has('reasoning') && row.supports_reasoning !== 1);
+    const needsTierBackfill =
+      !!ft &&
+      (ft.intelligenceRank != null || ft.speedRank != null || ft.rateLimits || ft.monthlyTokenBudget != null);
+    if (!needsCapBackfill && !needsTierBackfill) continue;
+
+    // Reclassify tier + baseline quality from the unioned capability set, so a
+    // formerly capability-blind row (e.g. kimi-k3-free stuck at 'balanced')
+    // upgrades to the tier its real capabilities deserve.
+    const capabilityTier = classifyCapabilityTier({
+      modelId: row.model_id,
+      displayName: tmpl.id,
+      modality: tmpl.modalities[0] || 'llm',
+      contextWindow: tmpl.contextWindow ?? null,
+      maxOutputTokens: tmpl.maxOutputTokens ?? null,
+      inputCostPer1M: Math.max(0, tmpl.inputCostPer1M ?? 0),
+      outputCostPer1M: Math.max(0, tmpl.outputCostPer1M ?? 0),
+      costPerImage: Math.max(0, tmpl.costPerImage ?? 0),
+      capabilities: Object.entries(caps).filter(([, on]) => on).map(([name]) => name),
+      specializations: tmpl.specializations,
+    });
+
+    const result = update.run(
+      caps.streaming ? 1 : 0,
+      caps.vision ? 1 : 0,
+      caps.tool_use ? 1 : 0,
+      caps.json_mode ? 1 : 0,
+      caps.function_call ? 1 : 0,
+      caps.reasoning ? 1 : 0,
+      ft?.rateLimits?.rpm ?? null,
+      ft?.rateLimits?.rpd ?? null,
+      ft?.rateLimits?.tpm ?? null,
+      ft?.rateLimits?.tpd ?? null,
+      ft?.monthlyTokenBudget ?? null,
+      ft?.intelligenceRank ?? null,
+      ft?.speedRank ?? null,
+      capabilityTier,
+      getInitialQualityScore(capabilityTier),
+      row.id,
+    );
+    if (result.changes > 0) touched++;
+  }
+
+  if (touched > 0) {
+    logger.info({ count: touched }, 'Repaired model profiles (negative pricing, virtuals, capability/free-tier backfill)');
+  }
+  return touched;
 }
 

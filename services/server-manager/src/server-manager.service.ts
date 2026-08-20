@@ -80,7 +80,7 @@ const G0DM0D3_REF = process.env.DMRX_GODMODE_REF || 'f6301765fb90eb7b336bdf36531
 const G0DM0D3_UPSTREAM =
   process.env.DMRX_GODMODE_UPSTREAM || 'https://github.com/elder-plinius/G0DM0D3';
 const SERVER_TYPE = 'g0dm0d3';
-const DEFAULT_PORT = 7860;
+const DEFAULT_PORT = 47115;
 const CONTAINER_NAME = 'dmrx-g0dm0d3';
 const IMAGE_TAG = 'dmrx-g0dm0d3';
 
@@ -157,7 +157,7 @@ function isBun(): boolean {
  * Kill a process AND its descendants.
  *
  * G0DM0D3 runs three processes deep (`bun x tsx` → `tsx/cli.mjs` → `node`), so
- * killing only the direct child orphans the two that actually hold port 7860.
+ * killing only the direct child orphans the two that actually hold port 47115.
  * On Windows there are no process groups, and `process.kill(-pid)` throws
  * outright — `taskkill /T` is the only way to reach the whole tree.
  */
@@ -450,8 +450,12 @@ class ServerManagerService {
     llmApiKey: string;
   } {
     const openrouterKey = opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '';
-    const llmBaseUrl = opts.llmBaseUrl ?? '';
-    const llmApiKey = opts.llmApiKey ?? '';
+    // Inherit relay settings from process.env when not explicitly passed.
+    // This ensures G0DM0D3 children spawned by the gateway (or via the
+    // scheduled task) automatically pick up relay mode from .env without
+    // requiring every caller to thread the flags through.
+    const llmBaseUrl = opts.llmBaseUrl ?? process.env.G0DM0D3_LLM_BASE_URL ?? '';
+    const llmApiKey = opts.llmApiKey ?? process.env.G0DM0D3_LLM_API_KEY ?? '';
     return { openrouterKey, llmBaseUrl, llmApiKey };
   }
 
@@ -622,7 +626,7 @@ class ServerManagerService {
     } else {
       // Kill by recorded PID, not just the in-memory handle. After a gateway
       // restart the previous G0DM0D3 is adopted (deferGodmodeBoot sees port
-      // 7860 already healthy and wires the proxy to it) without repopulating
+      // 47115 already healthy and wires the proxy to it) without repopulating
       // `this.child` — so a handle-only stop left the process running forever
       // while marking the row 'stopped'. That is how ghosts accumulated.
       const known = this.getRunningInstance();

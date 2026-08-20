@@ -67,3 +67,8 @@ export {
   type LogEvent,
   type LoggingIntegration,
 } from './logging-integrations.js';
+
+export {
+  retentionService,
+  RetentionService,
+} from './retention.js';

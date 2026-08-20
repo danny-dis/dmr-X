@@ -20,6 +20,7 @@ import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 import { getGodmodeService, setGodmodeConfig } from '@dmr-x/godmode';
 import { serverManager, getGodmodeRepoInfo, getInstalledGodmodeRef } from '@dmr-x/server-manager';
 import { checkGodmodeUpstream } from '../lib/godmode-upstream.js';
+import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 import type {
   GodmodeChatRequest,
   UltraplinianRequest,
@@ -103,9 +104,41 @@ function replyError(err: unknown): { error: string; message: string } {
   return { error: 'server_operation_failed', message };
 }
 
+/**
+ * Self-heal guard for godmode inference routes: if the sidecar is not up,
+ * bring it online via the shared godmode-guard (the same restart path the
+ * `auto-free` flow uses). Without this, every godmode panel request dies
+ * with a connection error whenever the sidecar is down — e.g. after a
+ * gateway restart while DMRX_GODMODE_AUTOSTART was false, which is exactly
+ * how "godmode stopped working through dmrx" surfaced.
+ */
+async function ensureGodmodeProxyReady(): Promise<boolean> {
+  const { ensureGodmodeProxy } = await import('../lib/godmode-guard.js');
+  return ensureGodmodeProxy('godmode-route').catch(() => false);
+}
+
+/** 503 reply when the proxy could not be brought online. */
+function proxyUnavailableReply(reply: {
+  status: (code: number) => { send: (payload: unknown) => unknown };
+}) {
+  return reply.status(503).send({
+    error: 'godmode_unavailable',
+    message: 'G0DM0D3 proxy unavailable — not running and auto-start failed',
+  });
+}
+
 
 export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   const service = getGodmodeService();
+
+  // Ensure service is initialized before handling requests
+  if (!service.isInitialized()) {
+    try {
+      await service.initialize();
+    } catch (err) {
+      logger.warn({ err }, 'GodmodeService initialization deferred — will retry on first request');
+    }
+  }
 
   // Health check
   server.get('/godmode/health', async () => {
@@ -131,6 +164,12 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data as GodmodeChatRequest;
+
+    // Self-heal: ensure the sidecar is up before touching it (chat relays
+    // inference through the gateway vault, so a down sidecar must restart).
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
 
     // No model supplied → let DMR-X's own algorithm pick (pick-then-wrap):
     // rank the live vault candidates with the same picker the `auto-free`
@@ -180,6 +219,10 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
 
     const body = parsed.data as UltraplinianRequest & { stream?: boolean };
 
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
+
     if (body.stream) {
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -213,6 +256,10 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
 
     const body = parsed.data as ConsortiumRequest & { stream?: boolean };
 
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
+
     if (body.stream) {
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -243,17 +290,24 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   server.post('/godmode/server/install', async (request) => {
     try {
       const body = (request.body ?? {}) as { openrouterApiKey?: string; llmBaseUrl?: string; llmApiKey?: string };
+      // C4 — SSRF: validate llmBaseUrl against private/loopback ranges before
+      // passing it to serverManager.install(). The godmode lifecycle endpoints
+      // are tenant-authenticated, not admin-authenticated, so any tenant key
+      // could point the relay at an internal host without this check.
+      if (body.llmBaseUrl) {
+        await validateBaseUrlForSSRF(body.llmBaseUrl);
+      }
       const res = await serverManager.install({
         openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
         llmBaseUrl: body.llmBaseUrl,
-        llmApiKey: body.llmApiKey,
+        llmApiKey: body.llmApiKey
       });
       const relay = res.openrouter_key_ref?.startsWith('relay:')
         ? res.openrouter_key_ref.slice('relay:'.length)
         : null;
       // Point the proxy at the freshly-launched server.
       setGodmodeConfig({
-        baseUrl: res.url ?? 'http://localhost:7860',
+        baseUrl: res.url ?? 'http://localhost:47115',
         apiKey: res.api_key ?? undefined,
         openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
         llmBaseUrl: relay ?? undefined,
@@ -275,17 +329,21 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       // DMR-X itself (reuses the host's provider vault, incl. LOCAL MODE).
       const gatewayUrl = resolveGatewayUrl();
       const useRelay = !body.openrouterApiKey && !process.env.OPENROUTER_API_KEY;
+      // C4 — SSRF: validate llmBaseUrl before passing to serverManager.start()
+      if (body.llmBaseUrl) {
+        await validateBaseUrlForSSRF(body.llmBaseUrl);
+      }
       const llmBaseUrl = body.llmBaseUrl ?? (useRelay ? `${gatewayUrl}/v1` : undefined);
       const res = await serverManager.start({
         openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
         llmBaseUrl,
-        llmApiKey: body.llmApiKey,
+        llmApiKey: body.llmApiKey
       });
       const relay = res.openrouter_key_ref?.startsWith('relay:')
         ? res.openrouter_key_ref.slice('relay:'.length)
         : null;
       setGodmodeConfig({
-        baseUrl: res.url ?? 'http://localhost:7860',
+        baseUrl: res.url ?? 'http://localhost:47115',
         apiKey: res.api_key ?? undefined,
         openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
         llmBaseUrl: relay ?? undefined,
@@ -369,35 +427,44 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // AutoTune analyze
-  server.post('/godmode/autotune', async (request) => {
+  server.post('/godmode/autotune', async (request, reply) => {
     const parsed = AutotuneAnalyzeSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
     const body = parsed.data as AutotuneAnalyzeRequest;
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
     return service.autotuneAnalyze(body);
   });
 
   // Parseltongue encode
-  server.post('/godmode/parseltongue', async (request) => {
+  server.post('/godmode/parseltongue', async (request, reply) => {
     const parsed = ParseltongueEncodeSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
     const body = parsed.data as ParseltongueEncodeRequest;
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
     return service.parseltongueEncode(body);
   });
 
   // STM transform
-  server.post('/godmode/transform', async (request) => {
+  server.post('/godmode/transform', async (request, reply) => {
     const parsed = TransformSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
     const body = parsed.data as TransformRequest;
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
     return service.transform(body);
   });
 }

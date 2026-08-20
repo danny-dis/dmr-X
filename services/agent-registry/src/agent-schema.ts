@@ -30,6 +30,34 @@ export const AgentTriggerSchema = z.discriminatedUnion('type', [
 
 export type AgentTriggerInput = z.infer<typeof AgentTriggerSchema>;
 
+// ---------------------------------------------------------------------------
+// Agent capability schema
+//
+// Structured declaration of what an agent can do, used by the meta-agent
+// coordinator (the Receptionist) to match tasks to agents. Optional and
+// additive: agents that declare no capabilities are matched on the legacy
+// category/tag/keyword fields alone.
+// ---------------------------------------------------------------------------
+
+export const AgentCapabilitiesSchema = z.object({
+  /** Functional domains the agent works in, e.g. 'typescript', 'marketing'. */
+  domains: z.array(z.string()).optional().default([]),
+  /** Kinds of artifact the agent produces, e.g. 'code', 'migration plan'. */
+  deliverables: z.array(z.string()).optional().default([]),
+  /** Human languages the agent can work in. */
+  languages: z.array(z.string()).optional().default([]),
+  /** Experience level: drives task-size assignment decisions. */
+  seniority: z.enum(['junior', 'mid', 'senior', 'principal']).optional(),
+  /** Free-form summary of capability, shown to the coordinator when ranking. */
+  summary: z.string().max(2000).optional(),
+  /** Task types this agent is willing to accept (otherwise escalates). */
+  accepts: z.array(z.string()).optional().default([]),
+  /** Agent (definition) names this agent hands work up to when out of scope. */
+  escalatesTo: z.array(z.string()).optional().default([]),
+});
+
+export type AgentCapabilities = z.infer<typeof AgentCapabilitiesSchema>;
+
 export const AgentDefinitionCreateSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(2000).optional(),
@@ -83,10 +111,18 @@ export const AgentDefinitionCreateSchema = z.object({
   planMode: z.boolean().optional().default(false),
   // Opt-in: compact early tool-activity turns once the transcript grows large.
   historyCompaction: z.boolean().optional().default(false),
+  // Opt-in: per-agent compaction thresholds (loop engine falls back to its
+  // defaults when these are omitted).
+  compactionThreshold: z.number().int().min(4).max(100000).optional(),
+  compactionKeepRecent: z.number().int().min(1).max(50000).optional(),
   // Opt-in: route the agent's per-turn model calls through the godmode wrap
   // (router-resolved concrete model, any family). Defaults to off — the agent
   // uses normal router routing.
   godmodeWrap: z.boolean().optional().default(false),
+  // Structured capability declaration (see AgentCapabilitiesSchema above).
+  // Consumed by the Receptionist's find_agents matcher when it ranks agents
+  // for a task.
+  capabilities: AgentCapabilitiesSchema.optional(),
 });
 
 export type AgentDefinitionCreate = z.infer<typeof AgentDefinitionCreateSchema>;
@@ -122,6 +158,7 @@ export const AgentChatRequestSchema = z.object({
   stream: z.boolean().optional().default(false),
   maxTokens: z.number().min(1).max(1000000).optional(),
   temperature: z.number().min(0).max(2).optional(),
+  model: z.string().max(256).optional(),
   // Optional client-supplied conversation id. When omitted a per-request
   // conversation is created, so concurrent callers never share a transcript.
   conversationId: z.string().min(1).max(256).optional(),

@@ -138,6 +138,17 @@ export class GuardrailEngine {
   }
 
   /**
+   * Check whether any plugins are registered for this tenant.
+   * Use this as a fast-path check before calling checkMessages to avoid
+   * the overhead of message serialization + span creation when no plugins
+   * are configured.
+   */
+  hasPlugins(tenantId?: string): boolean {
+    const plugins = this.getPlugins(tenantId);
+    return plugins.length > 0;
+  }
+
+  /**
    * Check multiple messages (e.g., a conversation).
    */
   async checkMessages(
@@ -152,6 +163,12 @@ export class GuardrailEngine {
 
     const fullContext: GuardrailCheckContext = { ...context, direction };
     const plugins = this.getPlugins(context.tenantId);
+
+    // Fast-path: no plugins registered → nothing to check, return immediately
+    if (plugins.length === 0) {
+      return { allowed: true, violations: [] };
+    }
+
     const allViolations: GuardrailViolation[] = [];
 
     for (const plugin of plugins) {

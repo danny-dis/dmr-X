@@ -9,14 +9,14 @@
  *   node dist/index.js
  *
  *   # SSE over HTTP
- *   DMRX_MCP_TRANSPORT=sse DMRX_MCP_PORT=3100 node dist/index.js
+ *   DMRX_MCP_TRANSPORT=sse DMRX_MCP_PORT=47114 node dist/index.js
  *
  *   # Streamable HTTP
- *   DMRX_MCP_TRANSPORT=http DMRX_MCP_PORT=3100 node dist/index.js
+ *   DMRX_MCP_TRANSPORT=http DMRX_MCP_PORT=47114 node dist/index.js
  *
  * Environment variables:
  *   DMRX_MCP_TRANSPORT  — Transport type: "stdio" (default), "sse", or "http"
- *   DMRX_MCP_PORT       — Port for SSE/HTTP transports (default: 3100)
+ *   DMRX_MCP_PORT       — Port for SSE/HTTP transports (default: 47114)
  *   DMRX_MCP_HOST       — Host for SSE/HTTP transports (default: 127.0.0.1)
  *   DMRX_MCP_API_KEY    — Bearer token(s) for SSE/HTTP transports. Comma-separated for multiple keys. Required in production.
  *
@@ -45,7 +45,7 @@ import {
   type McpConfigFile,
 } from './config.js';
 import { createDMRXMcpServer, reconcileExternalTools, type DMRXMcpServerConfig } from './server.js';
-import { reconcileAggregationServers } from './aggregation-reconcile.js';
+import { handleOAuthRoutes } from './oauth/routes.js';
 
 // Re-export for programmatic use
 export { createDMRXMcpServer, type DMRXMcpServerConfig } from './server.js';
@@ -293,7 +293,7 @@ function handlePreflight(req: import('node:http').IncomingMessage, res: import('
 // Session idle timeout and cleanup
 // ---------------------------------------------------------------------------
 
-const SESSION_TIMEOUT_MS = resolveConfigInt(configFileForAuth, 'sessionTimeoutMs', 'DMRX_MCP_SESSION_TIMEOUT_MS', 5 * 60 * 1000); // 5 min default
+const SESSION_TIMEOUT_MS = resolveConfigInt(configFileForAuth, 'sessionTimeoutMs', 'DMRX_MCP_SESSION_TIMEOUT_MS', 1 * 60 * 1000); // 1 min default (was 5 min)
 
 // Module-level telemetry config (set in main())
 let telemetryConfig: TelemetryConfig = {
@@ -312,8 +312,23 @@ interface SessionEntry {
 
 const sessionActivityMap = new Map<string, SessionEntry>();
 
+/**
+ * Record activity for a session, refreshing its idle timer.
+ *
+ * `cleanup` is registered once, when the session is created. Later calls are
+ * bare keep-alive touches from request handling — they MUST NOT clobber the
+ * stored cleanup, or the sweep silently degrades into "delete the map entry
+ * and leak the McpServer": the session stays in the transport's `sessions`
+ * map, `/health` keeps reporting it, and `server.close()` is never called.
+ * (Observed live: 9 sessions still reported after 220s idle against a 60s
+ * timeout, because every touch after creation erased the closure.)
+ */
 function touchSession(sessionId: string, cleanup?: () => void): void {
-  sessionActivityMap.set(sessionId, { lastActivity: new Date(), cleanup });
+  const existing = sessionActivityMap.get(sessionId);
+  sessionActivityMap.set(sessionId, {
+    lastActivity: new Date(),
+    cleanup: cleanup ?? existing?.cleanup,
+  });
 }
 
 function removeSession(sessionId: string): void {
@@ -373,6 +388,67 @@ let liveHandle: LiveServerHandle | null = null;
 let liveConfig: DMRXMcpServerConfig | null = null;
 
 const MCP_CONFIG_WATCH_INTERVAL = 2000; // 2 seconds
+
+// ---------------------------------------------------------------------------
+// Active session registry (for graceful shutdown)
+// ---------------------------------------------------------------------------
+
+interface ActiveSession {
+  id: string;
+  transport: { handlePostMessage?: (...args: unknown[]) => Promise<void>; handleRequest?: (...args: unknown[]) => Promise<void>; close?: () => void | Promise<void> };
+  server: { close?: () => void | Promise<void> };
+}
+
+const activeSessions = new Map<string, ActiveSession>();
+
+function registerActiveSession(id: string, session: ActiveSession): void {
+  activeSessions.set(id, session);
+}
+
+function unregisterActiveSession(id: string): void {
+  activeSessions.delete(id);
+}
+
+/**
+ * Gracefully close all active SSE / Streamable HTTP sessions.
+ * Called during shutdown so clients get a clean disconnect instead of a TCP RST.
+ */
+async function drainSessions(timeoutMs: number = 5000): Promise<void> {
+  if (activeSessions.size === 0) return;
+
+  console.error(`[shutdown] Draining ${activeSessions.size} active session(s)...`);
+  const deadline = Date.now() + timeoutMs;
+
+  const closers: Array<Promise<void>> = [];
+  for (const [id, session] of activeSessions) {
+    try {
+      const closer = async () => {
+        try {
+          if (session.transport.close) {
+            await session.transport.close();
+          }
+        } catch { /* best-effort */ }
+        try {
+          if (session.server.close) {
+            await session.server.close();
+          }
+        } catch { /* best-effort */ }
+        activeSessions.delete(id);
+      };
+      closers.push(closer());
+    } catch { /* best-effort */ }
+  }
+
+  // Wait for all closes or until timeout
+  await Promise.race([
+    Promise.all(closers),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+
+  if (activeSessions.size > 0) {
+    console.error(`[shutdown] ${activeSessions.size} session(s) did not drain cleanly — forcing exit`);
+  }
+}
 
 async function buildConfig(): Promise<BuiltConfig> {
   const configFile = loadConfigFile();
@@ -550,7 +626,12 @@ async function buildConfig(): Promise<BuiltConfig> {
           name: resolveConfig(configFile, 'a2a.agentCard.name', 'DMRX_A2A_AGENT_NAME', 'DMR-X Agent'),
           description: resolveConfig(configFile, 'a2a.agentCard.description', 'DMRX_A2A_AGENT_DESCRIPTION', 'DMR-X MCP Server with intelligent routing'),
           version: resolveConfig(configFile, 'a2a.agentCard.version', 'DMRX_A2A_AGENT_VERSION', '0.5.0'),
-          url: resolveConfig(configFile, 'a2a.agentCard.url', 'DMRX_A2A_AGENT_URL', 'http://localhost:3100'),
+          url: resolveConfig(configFile, 'a2a.agentCard.url', 'DMRX_A2A_AGENT_URL', 'http://localhost:47114'),
+          iconUrl: resolveConfig(configFile, 'a2a.agentCard.iconUrl', 'DMRX_A2A_AGENT_ICON_URL', ''),
+          documentationUrl: resolveConfig(configFile, 'a2a.agentCard.documentationUrl', 'DMRX_A2A_AGENT_DOCS_URL', ''),
+          protocolBinding: resolveConfig(configFile, 'a2a.agentCard.protocolBinding', 'DMRX_A2A_PROTOCOL_BINDING', 'JSONRPC'),
+          tenant: resolveConfig(configFile, 'a2a.agentCard.tenant', 'DMRX_A2A_TENANT', ''),
+          additionalInterfaces: configFile?.a2a?.agentCard?.additionalInterfaces ?? [],
         },
       },
       federation: {
@@ -600,6 +681,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const { SSEServerTransport } = await import('@modelcontextprotocol/server-legacy/sse');
   const http = await import('node:http');
   const { handleA2ARoutes } = await import('./a2a/handler.js');
+  const { handleOAuthRoutes } = await import('./oauth/routes.js');
 
   // Share ONE McpServer/external-client handle across all SSE sessions so that
   // hot-reload (config watcher) and the upstream liveness sweeper operate on a
@@ -613,7 +695,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const sharedHandle = liveHandle;
 
   const configFile = loadConfigFile();
-  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
+  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 47114);
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof SSEServerTransport> }>();
@@ -647,6 +729,12 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
+    // Handle OAuth routes
+    if (url.pathname.startsWith('/oauth/') || url.pathname === '/.well-known/oauth-authorization-server') {
+      const oauthHandled = await handleOAuthRoutes(req, res, config.oauth);
+      if (oauthHandled) return;
+    }
+
     if (url.pathname === '/sse' && req.method === 'GET') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
@@ -662,18 +750,30 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 
       sessions.set(sessionId, { server, transport });
       touchSession(sessionId, () => {
+        // CRITICAL: close the server on cleanup to free memory.
+        const s = sessions.get(sessionId);
+        if (s?.server?.close) s.server.close().catch(() => { /* best-effort */ });
         sessions.delete(sessionId);
+        unregisterActiveSession(sessionId);
       });
 
       transport.onclose = () => {
         removeSession(sessionId);
         sessions.delete(sessionId);
+        unregisterActiveSession(sessionId);
+        // CRITICAL: close the server to free memory.
+        server.close().catch(() => { /* best-effort */ });
       };
 
       res.on('close', () => {
         removeSession(sessionId);
         sessions.delete(sessionId);
+        unregisterActiveSession(sessionId);
+        // CRITICAL: close the server to free memory.
+        server.close().catch(() => { /* best-effort */ });
       });
+
+      registerActiveSession(sessionId, { id: sessionId, server, transport: transport as unknown as ActiveSession['transport'] });
 
       await server.connect(transport);
       return;
@@ -773,7 +873,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const sharedHandle = liveHandle;
 
   const configFile = loadConfigFile();
-  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 3100);
+  const port = resolveConfigInt(configFile, 'port', 'DMRX_MCP_PORT', 47114);
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof NodeStreamableHTTPServerTransport> }>();
@@ -807,6 +907,12 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
+    // Handle OAuth routes
+    if (url.pathname.startsWith('/oauth/') || url.pathname === '/.well-known/oauth-authorization-server') {
+      const oauthHandled = await handleOAuthRoutes(req, res, config.oauth);
+      if (oauthHandled) return;
+    }
+
     if (url.pathname === '/mcp') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
@@ -821,8 +927,21 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
         return;
       }
 
-      // New session
+      // New session — create a fresh McpServer instance with a session limit
+      // to prevent memory exhaustion. The original crash was caused by unbounded
+      // server creation; we cap concurrent sessions and clean up closed ones.
       if (req.method === 'POST') {
+        // Enforce max concurrent sessions to prevent memory exhaustion
+        const MAX_CONCURRENT_SESSIONS = 50;
+        if (sessions.size >= MAX_CONCURRENT_SESSIONS) {
+          // Remove the oldest idle session
+          const oldestKey = sessions.keys().next().value;
+          if (oldestKey) {
+            removeSession(oldestKey);
+            sessions.delete(oldestKey);
+          }
+        }
+
         const { server, ready } = createDMRXMcpServer({
           ...config,
           allowedTools: authResult.allowedTools,
@@ -835,8 +954,13 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
           onsessioninitialized: (sid: string) => {
             sessions.set(sid, { server, transport });
             touchSession(sid, () => {
+              // CRITICAL: close the server on cleanup to free memory.
+              const s = sessions.get(sid);
+              if (s?.server?.close) s.server.close().catch(() => { /* best-effort */ });
               sessions.delete(sid);
+              unregisterActiveSession(sid);
             });
+            registerActiveSession(sid, { id: sid, server, transport: transport as unknown as ActiveSession['transport'] });
           },
         });
 
@@ -844,7 +968,12 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
           if (transport.sessionId) {
             removeSession(transport.sessionId);
             sessions.delete(transport.sessionId);
+            unregisterActiveSession(transport.sessionId);
           }
+          // CRITICAL: close the server to free memory. Each session creates a
+          // full McpServer + ServerState (adapters, search engine, etc.) that
+          // is ~0.4MB; without this, RSS grows unbounded under sustained load.
+          server.close().catch(() => { /* best-effort */ });
         };
 
         await server.connect(transport);
@@ -924,6 +1053,10 @@ async function disposeAndExit(client: MCPClient | null, code: number): Promise<v
       console.error('Error disposing external MCP client:', err);
     }
   }
+
+  // Gracefully drain active SSE / Streamable HTTP sessions
+  await drainSessions(5000);
+
   // Flush the MCP server's own DB, then close A2A persistence. Both are
   // best-effort — a failure must never block the process from exiting.
   try {
@@ -1063,30 +1196,32 @@ function startUpstreamLivenessWatcher(): void {
   }
 
   const LIVENESS_INTERVAL_MS = 15_000; // 15s sweep
+  const LIVENESS_TIMEOUT_MS = 5_000; // per-upstream probe timeout
   const registry = client.getRegistry();
 
   const timer = setInterval(async () => {
     try {
       const connectedIds = client.listServers();
-      for (const id of connectedIds) {
-        const server = registry.get(id);
-        if (!server) continue;
-        try {
-          await server.client.listTools();
-        } catch (err) {
-          // Log the message only. Passing the raw error made Bun print the
-          // offending source line ("615 | return new Promise(...)") in place of
-          // anything diagnostic about the upstream.
-          const reason = err instanceof Error ? err.message : String(err);
-          console.error(`[upstream-watcher] Upstream '${id}' unresponsive, scheduling reconnect: ${reason}`);
-          // Drop it from the live map so reconnect re-adds it, then reconnect.
+      await Promise.allSettled(
+        connectedIds.map(async (id) => {
+          const server = registry.get(id);
+          if (!server) return;
           try {
-            await client.disconnectServer(id);
-          } catch { /* best-effort */ }
-          registry.scheduleReconnect(server.config);
-          reconcileExternalTools(handle.server, handle.state);
-        }
-      }
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), LIVENESS_TIMEOUT_MS);
+            await server.client.listTools();
+            clearTimeout(timer);
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            console.error(`[upstream-watcher] Upstream '${id}' unresponsive, scheduling reconnect: ${reason}`);
+            try {
+              await client.disconnectServer(id);
+            } catch { /* best-effort */ }
+            registry.scheduleReconnect(server.config);
+            reconcileExternalTools(handle.server, handle.state);
+          }
+        })
+      );
     } catch (err) {
       console.error('[upstream-watcher] Sweep error:', err);
     }
@@ -1163,30 +1298,33 @@ function startConfigWatcher(): void {
         console.error('[config-watcher] Aggregation enabled at runtime — created external MCP client');
       }
 
-      // Disconnect servers no longer in config
+      // Disconnect removed servers and connect new ones in parallel
       if (currentClient) {
+        const removals: Array<Promise<void>> = [];
+        const additions: Array<Promise<void>> = [];
+        const currentServers = new Set(currentClient.listServers());
+
         for (const id of knownServerIds) {
-          if (!desiredIds.has(id) && currentClient.listServers().includes(id)) {
-            try {
-              await currentClient.disconnectServer(id);
-              console.error(`[config-watcher] Disconnected server: ${id}`);
-            } catch (err) {
-              console.error(`[config-watcher] Error disconnecting server ${id}:`, err);
-            }
+          if (!desiredIds.has(id) && currentServers.has(id)) {
+            removals.push(
+              currentClient.disconnectServer(id)
+                .then(() => console.error(`[config-watcher] Disconnected server: ${id}`))
+                .catch((err) => console.error(`[config-watcher] Error disconnecting server ${id}:`, err))
+            );
           }
         }
 
-        // Connect new servers from config
         for (const serverCfg of desiredServers) {
-          if (!knownServerIds.has(serverCfg.id) && !currentClient.listServers().includes(serverCfg.id)) {
-            try {
-              await currentClient.connectServer(serverCfg);
-              console.error(`[config-watcher] Connected server: ${serverCfg.id}`);
-            } catch (err) {
-              console.error(`[config-watcher] Error connecting server ${serverCfg.id}:`, err);
-            }
+          if (!knownServerIds.has(serverCfg.id) && !currentServers.has(serverCfg.id)) {
+            additions.push(
+              currentClient.connectServer(serverCfg)
+                .then(() => console.error(`[config-watcher] Connected server: ${serverCfg.id}`))
+                .catch((err) => console.error(`[config-watcher] Error connecting server ${serverCfg.id}:`, err))
+            );
           }
         }
+
+        await Promise.all([...removals, ...additions]);
       }
 
       // Update known IDs

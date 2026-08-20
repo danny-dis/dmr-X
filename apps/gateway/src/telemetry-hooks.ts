@@ -302,7 +302,6 @@ export function registerTelemetryHooks(server: FastifyInstance, telemetry: any):
         } catch (telemetryErr) {
           logger.debug({ err: telemetryErr }, 'telemetry event emission failed');
         }
-      }
 
         // Content capture: record the call event for ML-ready streaming
         if (contentCaptureService.isEnabled()) {

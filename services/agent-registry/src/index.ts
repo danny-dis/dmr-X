@@ -8,6 +8,9 @@ export {
   type AgentListing,
   type AgentInstall,
   type AgentEvaluation,
+  isSystemAgentName,
+  SYSTEM_AGENT_PREFIX,
+  getDefinitionByName,
 } from './agent-registry.service.js';
 
 // NOTE: createEvaluation / listEvaluations / getEvaluation / deleteEvaluation
@@ -32,6 +35,7 @@ export {
   AgentImportRequestSchema,
   AgentImportResultSchema,
   ImportedAgentSchema,
+  AgentCapabilitiesSchema,
   AGENT_CATEGORIES,
   type AgentDefinitionCreate,
   type AgentDefinitionUpdate,
@@ -43,6 +47,7 @@ export {
   type MarketplaceQuery,
   type AgentImportRequest,
   type AgentImportResult,
+  type AgentCapabilities,
 } from './agent-schema.js';
 
 export {

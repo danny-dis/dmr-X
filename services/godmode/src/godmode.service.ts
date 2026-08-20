@@ -598,10 +598,13 @@ const instance: GodmodeService | null = null;
 export function getGodmodeService(): GodmodeService {
   let inst = getGodmodeInstance();
   if (!inst) {
+    const relayBaseUrl = process.env.G0DM0D3_LLM_BASE_URL;
     const config: GodmodeConfig = {
-      baseUrl: process.env.GODMODE_API_URL || 'http://localhost:7860',
+      baseUrl: process.env.GODMODE_API_URL || 'http://localhost:47115',
       apiKey: process.env.GODMODE_API_KEY,
       openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+      llmBaseUrl: relayBaseUrl || undefined,
+      llmApiKey: process.env.G0DM0D3_LLM_API_KEY ?? undefined,
     };
     inst = new GodmodeService(config);
     setGodmodeInstance(inst);
@@ -623,10 +626,13 @@ export function createGodmodeService(config: GodmodeConfig): GodmodeService {
 export function setGodmodeConfig(config: Partial<GodmodeConfig>): GodmodeService {
   const inst = getGodmodeInstance();
   if (!inst) {
+    const relayBaseUrl = process.env.G0DM0D3_LLM_BASE_URL;
     return createGodmodeService({
-      baseUrl: config.baseUrl ?? process.env.GODMODE_API_URL ?? 'http://localhost:7860',
+      baseUrl: config.baseUrl ?? process.env.GODMODE_API_URL ?? 'http://localhost:47115',
       apiKey: config.apiKey ?? process.env.GODMODE_API_KEY,
       openrouterApiKey: config.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '',
+      llmBaseUrl: config.llmBaseUrl ?? (relayBaseUrl || undefined),
+      llmApiKey: config.llmApiKey ?? process.env.G0DM0D3_LLM_API_KEY ?? undefined,
     });
   }
   inst.setConfig(config);

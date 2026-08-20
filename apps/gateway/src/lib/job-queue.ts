@@ -111,15 +111,27 @@ class JobQueue {
    * with no queue entry behind it would otherwise sit untouched forever.
    * runJobPass reclaims any task stranded in 'running', so a re-queued job
    * resumes rather than double-running the interrupted task.
+   *
+   * `blocked` jobs are recovered too, but only when a pending task still has
+   * retry attempts left. A transient provider outage parks tasks with a future
+   * `retryAfter` and flips the job to 'blocked'; without this, that job stayed
+   * blocked forever even once the provider recovered. A job blocked by a real
+   * deadlock (cycle, dangling dependency) has no retryable task and is left
+   * alone, so it does not churn the queue on every restart.
    */
   recoverInterrupted(tenantIds: string[]): number {
     let recovered = 0;
     for (const tenantId of tenantIds) {
       let jobs: ReturnType<typeof jobStore.listJobs>;
       try {
-        jobs = jobStore.listJobs(tenantId, { status: 'running' });
+        jobs = [
+          ...jobStore.listJobs(tenantId, { status: 'running' }),
+          ...jobStore.listJobs(tenantId, { status: 'blocked' }).filter((job) =>
+            this.hasRetryableTask(tenantId, job.id),
+          ),
+        ];
       } catch (error) {
-        logger.error({ err: error, tenantId }, 'job-queue: failed to list running jobs');
+        logger.error({ err: error, tenantId }, 'job-queue: failed to list recoverable jobs');
         continue;
       }
       for (const job of jobs) {
@@ -132,6 +144,21 @@ class JobQueue {
       logger.info({ recovered }, 'job-queue: re-queued jobs interrupted by a restart');
     }
     return recovered;
+  }
+
+  /**
+   * True when a job has at least one pending task that has not exhausted its
+   * retry budget — i.e. driving the job again could still make progress.
+   */
+  private hasRetryableTask(tenantId: string, jobId: string): boolean {
+    try {
+      return jobStore
+        .listTasks(tenantId, jobId)
+        .some((t) => t.status === 'pending' && (t.attempt ?? 0) <= (t.maxRetries ?? 3));
+    } catch (error) {
+      logger.warn({ err: error, jobId }, 'job-queue: failed to inspect tasks for recovery');
+      return false;
+    }
   }
 
   /** Stop accepting work and wait for in-flight jobs, up to a timeout. */

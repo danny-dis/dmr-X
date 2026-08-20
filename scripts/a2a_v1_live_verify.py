@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Live A2A v1.0 verification against the running MCP server.
+
+Written as a FILE (not an inline heredoc) because git-bash mangles JSON quoting
+in curl -d and produces false -32700 parse errors.
+"""
+import json
+import sys
+import urllib.request
+import urllib.error
+
+BASE = "http://127.0.0.1:47114"
+
+
+def get(path):
+    with urllib.request.urlopen(BASE + path, timeout=15) as r:
+        return json.loads(r.read())
+
+
+def rpc(method, params=None, timeout=120):
+    """POST a JSON-RPC call.
+
+    `timeout` defaults high because `message/send` dispatches to a REAL provider
+    through the router: a cold model pick, a fallback chain, or a slow upstream
+    can legitimately take tens of seconds. A tight timeout here produced a
+    false failure (TimeoutError at 30s) while the very same call completed in
+    2.7s on retry — the flakiness was in this script, not in the server.
+    """
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}
+    }).encode()
+    req = urllib.request.Request(
+        BASE + "/a2a", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return {"_http": e.code, "body": e.read().decode(errors="replace")[:300]}
+    except Exception as e:
+        return {"_transport_error": type(e).__name__, "method": method}
+
+
+fails = []
+
+# --- 1. Agent card dual shape ---
+card = get("/.well-known/agent-card.json")
+print("=== AGENT CARD ===")
+print("legacy protocolVersion :", card.get("protocolVersion"))
+print("legacy url             :", card.get("url"))
+print("legacy preferredTransport:", card.get("preferredTransport"))
+print("supportedInterfaces    :", json.dumps(card.get("supportedInterfaces")))
+print("skills                 :", len(card.get("skills", [])))
+print("iconUrl present        :", "iconUrl" in card)
+
+si = card.get("supportedInterfaces")
+if not isinstance(si, list) or not si:
+    fails.append("supportedInterfaces missing/empty")
+else:
+    p = si[0]
+    if p.get("protocolVersion") != "1.0":
+        fails.append("primary protocolVersion != '1.0' (got %r)" % p.get("protocolVersion"))
+    if p.get("protocolBinding") != "JSONRPC":
+        fails.append("primary protocolBinding != JSONRPC")
+    if p.get("url") != card.get("url").rstrip("/") + "/a2a":
+        fails.append(
+            "primary interface url should be the legacy url + /a2a "
+            "(legacy=%r, iface=%r)" % (card.get("url"), p.get("url"))
+        )
+    if "tenant" in p:
+        fails.append("tenant emitted despite not being configured")
+
+if card.get("protocolVersion") != "0.3.0":
+    fails.append("legacy protocolVersion regressed (got %r)" % card.get("protocolVersion"))
+if "iconUrl" in card:
+    fails.append("iconUrl emitted despite empty-string default (truthiness guard broken)")
+if len(card.get("skills", [])) < 300:
+    fails.append("skill count dropped to %d (expected ~323)" % len(card.get("skills", [])))
+
+# legacy alias must serve the same shape
+alias = get("/.well-known/agent.json")
+if alias.get("supportedInterfaces") != si:
+    fails.append("/.well-known/agent-card.json alias disagrees with agent-card.json")
+
+# --- 1b. The ADVERTISED endpoint must actually accept JSON-RPC ---
+# This is the check whose absence let a real interop bug ship: the card
+# advertised the bare origin while the handler is mounted at /a2a, so every
+# spec-compliant client (incl. Hermes' own a2a plugin, which POSTs at
+# supportedInterfaces[].url) got a 404. Never trust the card's own claim —
+# dial it.
+print("\n=== advertised endpoint reachable ===")
+if si:
+    adv = si[0].get("url", "")
+    body = json.dumps({"jsonrpc": "2.0", "id": 99, "method": "tasks/list",
+                       "params": {"pageSize": 1}}).encode()
+    req = urllib.request.Request(adv, data=body,
+                                 headers={"Content-Type": "application/json"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            probe = json.loads(r.read())
+        ok = "result" in probe
+        print("POST %s -> %s" % (adv, "result" if ok else probe))
+        if not ok:
+            fails.append("advertised interface url did not return a JSON-RPC result: %s"
+                         % json.dumps(probe)[:150])
+    except urllib.error.HTTPError as e:
+        print("POST %s -> HTTP %d" % (adv, e.code))
+        fails.append("advertised interface url %s returned HTTP %d — a compliant "
+                     "client would fail here" % (adv, e.code))
+    except Exception as e:
+        print("POST %s -> %s" % (adv, type(e).__name__))
+        fails.append("advertised interface url %s unreachable: %s" % (adv, type(e).__name__))
+
+# --- 2. tasks/list ---
+print("\n=== tasks/list ===")
+r = rpc("tasks/list", {"pageSize": 5})
+print("ok:", "result" in r, "| keys:", list(r.get("result", {}).keys()) if "result" in r else r)
+if "result" not in r or "tasks" not in r.get("result", {}):
+    fails.append("tasks/list did not return result.tasks: %s" % json.dumps(r)[:200])
+
+bad = rpc("tasks/list", {"pageSize": 5000})
+print("pageSize=5000 ->", bad.get("error", {}).get("code"))
+if bad.get("error", {}).get("code") != -32602:
+    fails.append("tasks/list pageSize=5000 should be -32602, got %s" % json.dumps(bad)[:200])
+
+# --- 3. agent/getExtendedCard ---
+print("\n=== agent/getExtendedCard ===")
+ext = rpc("agent/getExtendedCard")
+if "result" in ext:
+    print("name:", ext["result"].get("name"))
+    print("has supportedInterfaces:", "supportedInterfaces" in ext["result"])
+    if "supportedInterfaces" not in ext["result"]:
+        fails.append("extended card lacks supportedInterfaces")
+else:
+    print("ERROR:", json.dumps(ext)[:250])
+    fails.append("agent/getExtendedCard failed: %s" % json.dumps(ext)[:200])
+
+alias2 = rpc("agent/authenticatedExtendedCard")
+if "result" not in alias2:
+    fails.append("authenticatedExtendedCard alias failed")
+
+# --- 4. regression: unknown method still -32601 ---
+unk = rpc("tasks/definitelyNotAMethod")
+if unk.get("error", {}).get("code") != -32601:
+    fails.append("unknown method should be -32601, got %s" % json.dumps(unk)[:150])
+
+# --- 5. regression: 0.3.0 message/send still works (kind:text + messageId) ---
+print("\n=== message/send (0.3.0 regression) ===")
+send = rpc("message/send", {
+    "message": {
+        "messageId": "m-verify-1",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "What is 2+2? Reply with just the number."}],
+    }
+})
+state = send.get("result", {}).get("status", {}).get("state")
+text = ""
+try:
+    text = send["result"]["status"]["message"]["parts"][0].get("text", "")
+except Exception:
+    pass
+if "_transport_error" in send:
+    print("TRANSPORT ERROR:", send["_transport_error"])
+    fails.append("message/send transport error: %s" % send["_transport_error"])
+else:
+    print("state:", state, "| answer len:", len(text), "| answer:", text[:80])
+    # A2A-layer contract: the task must reach a terminal state and, when it
+    # completes, carry non-empty text (a blank `completed` is a known failure
+    # mode worth catching).
+    if state not in ("completed", "failed", "canceled", "rejected"):
+        fails.append("message/send returned unexpected state %r" % state)
+    if state == "completed" and not text.strip():
+        fails.append("message/send completed with EMPTY text (known failure mode)")
+    # `failed` means the A2A/task layer worked correctly but DISPATCH failed —
+    # almost always an upstream provider problem (observed: "socket connection
+    # was closed unexpectedly" on ~1 run in 3, with nothing in the gateway log).
+    # Report it loudly and exit non-zero rather than printing "ALL PASSED",
+    # which previously masked it. Distinguish it from an A2A regression so a
+    # provider blip is not misread as broken code.
+    if state == "failed":
+        print("  NOTE: terminal state reached, but DISPATCH failed (upstream provider).")
+        print("  A2A plumbing is fine; the model call did not complete.")
+        fails.append("message/send dispatch FAILED (upstream provider): %s" % text[:120])
+
+print("\n" + "=" * 50)
+if fails:
+    print("FAILURES (%d):" % len(fails))
+    for f in fails:
+        print("  -", f)
+    sys.exit(1)
+print("ALL LIVE CHECKS PASSED")

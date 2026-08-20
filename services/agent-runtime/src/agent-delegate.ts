@@ -1,4 +1,4 @@
-import { agentRegistryService } from '@dmr-x/agent-registry';
+import { agentRegistryService, getDefinitionByName } from '@dmr-x/agent-registry';
 import { generateRequestId } from '@dmr-x/utils';
 import type { AgentDefinition } from '@dmr-x/agent-registry';
 import type { AgentRuntimeService } from './agent-runtime.js';
@@ -45,36 +45,29 @@ export interface DelegateResult {
 /**
  * Resolve a subagent definition by id, name, or "<parentName>/<subName>",
  * scoped to the parent's tenant. Returns null when no match.
+ *
+ * Uses a single tenant-scoped lookup instead of listing all definitions.
  */
 export async function resolveSubagent(
   tenantId: string,
   parent: AgentDefinition,
   ref: string,
 ): Promise<AgentDefinition | null> {
-  let candidates: AgentDefinition[] = [];
-  if (typeof agentRegistryService.listDefinitions === 'function') {
-    const res = await agentRegistryService.listDefinitions(tenantId, {
-      page: 1,
-      limit: 1000,
-    });
-    candidates = res.items;
-  }
-
+  // Extract subname from "parentName/subName" syntax
   const norm = ref.toLowerCase();
   const subName = norm.includes('/') ? norm.split('/').pop()! : norm;
 
-  const hit = candidates.find((d: AgentDefinition) => {
-    if (d.tenantId !== tenantId) return false;
-    return (
-      d.id.toLowerCase() === norm ||
-      d.name.toLowerCase() === norm ||
-      d.name.toLowerCase() === subName
-    );
-  });
+  // Try direct lookup by ref first (id or name), scoped to tenant
+  const direct = await getDefinitionByName(tenantId, ref);
+  if (direct && direct.id !== parent.id) return direct;
 
-  // The resolved subagent must NOT be the parent itself.
-  if (!hit || hit.id === parent.id) return null;
-  return hit;
+  // If ref contained a "/", try by the subName portion
+  if (subName !== norm) {
+    const bySubName = await getDefinitionByName(tenantId, subName);
+    if (bySubName && bySubName.id !== parent.id) return bySubName;
+  }
+
+  return null;
 }
 
 /**

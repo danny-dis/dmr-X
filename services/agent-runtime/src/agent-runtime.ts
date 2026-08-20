@@ -101,16 +101,42 @@ export class AgentRuntimeService {
     }
 
     // 4. Skills — progressive disclosure
+    //
+    // Two sources, in priority order:
+    //   (a) skills the agent DECLARES in definition.skills, and
+    //   (b) skills DISCOVERED in the tenant's skills table.
+    //
+    // (b) exists because a declared-only model meant an agent with an empty
+    // `skills` array was told nothing existed — which is every agent on a fresh
+    // install. `load_skill` was never restricted to the declared list, so the
+    // bodies were always reachable; only discovery was missing. An agent cannot
+    // ask for a procedure it was never told about.
     const skillIds: string[] = (definition.skills ?? []).filter(Boolean);
-    if (skillIds.length > 0) {
-      // 4a. Always advertise each skill's description as a hint.
-      const adverts = skillLoader.advertise(definition.tenantId, skillIds);
-      const advertSection = skillLoader.advertismentSection(adverts);
+    const declaredAdverts = skillIds.length > 0
+      ? skillLoader.advertise(definition.tenantId, skillIds)
+      : [];
+
+    // Discovered skills fill in whatever the agent did not declare. Declared
+    // entries win on name collision so an explicit assignment is never
+    // shadowed by the tenant-wide list.
+    const declaredNames = new Set(declaredAdverts.map((a) => a.name.toLowerCase()));
+    const discovered = skillLoader
+      .discover(definition.tenantId)
+      .filter((a) => !declaredNames.has(a.name.toLowerCase()));
+
+    const allAdverts = [...declaredAdverts, ...discovered];
+    if (allAdverts.length > 0) {
+      // 4a. Advertise every reachable skill as a one-line hint.
+      const advertSection = skillLoader.advertismentSection(allAdverts);
       if (advertSection) parts.push(advertSection);
 
       // 4b. Inline ONLY the bodies of skills that have been explicitly loaded.
-      const loaded = skillIds.filter((id) =>
-        loadedSkillIds.includes(id) || loadedSkillIds.includes(id.toLowerCase()),
+      // Loaded skills are matched against everything advertised, not just the
+      // declared set, or a discovered skill could be loaded via load_skill and
+      // then silently dropped from the prompt on the following turn.
+      const loadableRefs = [...skillIds, ...discovered.map((a) => a.name)];
+      const loaded = loadableRefs.filter((ref) =>
+        loadedSkillIds.includes(ref) || loadedSkillIds.includes(ref.toLowerCase()),
       );
       if (loaded.length > 0) {
         const skillBlocks = skillLoader.resolveBody
@@ -161,7 +187,14 @@ export class AgentRuntimeService {
         definition.id ?? definition.name,
       );
       if (memories && memories.trim().length > 0) {
-        parts.push(`Relevant memory:\n\n${memories}`);
+        // Cap injected memory to avoid silently ballooning the context window.
+        // A large memory store could push the prompt near its limit with no
+        // guardrail; truncate and note how many memories were omitted.
+        const maxChars = 2000;
+        const truncated = memories.length > maxChars
+          ? memories.slice(0, maxChars) + `\n[truncated ${memories.length - maxChars} chars of memory]`
+          : memories;
+        parts.push(`Relevant memory:\n\n${truncated}`);
       }
     } catch {
       // Memory prefetch is best-effort; never block the run on it.
@@ -177,7 +210,6 @@ export class AgentRuntimeService {
     const toolNames = normalizeAllowedTools(definition.allowedTools);
     if (toolNames.length > 0) {
       parts.push(`You have access to these tools: ${toolNames.join(', ')}. Only use the tools listed here.`);
-    }
     }
 
     // 6. Verify-on-stop self-check nudge (opt-in)

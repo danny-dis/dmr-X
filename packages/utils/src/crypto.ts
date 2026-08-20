@@ -239,14 +239,21 @@ export function decrypt(encryptedHex: string): string {
 
 /**
  * Encrypt the `apiKey` field inside a config object (in-place).
- * If DMRX_ENCRYPTION_KEY is not set, the value passes through unchanged.
+ * Throws if DMRX_ENCRYPTION_KEY is not set — storing plaintext at rest
+ * defeats encryption (L3). No-op when apiKey is absent or not a string.
  */
 export function encryptConfigApiKey(config: Record<string, unknown>): Record<string, unknown> {
   if (typeof config.apiKey === 'string' && config.apiKey.length > 0) {
     try {
       config.apiKey = encrypt(config.apiKey);
-    } catch {
-      // DMRX_ENCRYPTION_KEY not configured — leave apiKey unchanged
+    } catch (err) {
+      // L3 — DMRX_ENCRYPTION_KEY not configured. Storing plaintext defeats
+      // encryption at rest. Fail loudly instead of silently storing plaintext.
+      throw new Error(
+        `Cannot encrypt provider API key: DMRX_ENCRYPTION_KEY is not configured. ` +
+        `Set DMRX_ENCRYPTION_KEY (64 hex chars) before adding provider keys. ` +
+        `Original error: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
   return config;

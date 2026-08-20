@@ -182,7 +182,8 @@ export class AntigravityAdapter extends BaseAdapter {
               Authorization: `Bearer ${this.apiKey}`,
             },
             body: JSON.stringify(envelope),
-            timeoutMs: options?.timeoutMs ?? 60000,
+            timeoutMs: options?.timeoutMs ?? 120000,
+            signal: options?.signal,
           },
         );
 

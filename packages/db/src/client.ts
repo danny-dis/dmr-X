@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveDataDir } from '@dmr-x/utils';
 import { fileURLToPath } from 'node:url';
 
 // sql.js is retained as the engine for the exported migration runner and the
@@ -27,19 +27,12 @@ let nativeEngine: { name: 'bun' | 'node'; open(filePath: string): BunDatabase } 
 async function getNativeEngine(): Promise<typeof nativeEngine> {
   if (nativeEngine) return nativeEngine;
   if (typeof (globalThis as Record<string, unknown>).Bun !== 'undefined') {
-    // @ts-ignore — `bun:sqlite` types ship with @types/bun, which this repo
-    // does not install; the runtime module exists under Bun.
-    const { Database } = await import(/* @vite-ignore */ 'bun:sqlite');
+    const sqliteSpecifier = 'bun:sqlite' as string;
+    const { Database } = await import(/* @vite-ignore */ sqliteSpecifier) as any;
     nativeEngine = { name: 'bun', open: (filePath: string) => new Database(filePath) };
   } else {
-    // @ts-ignore — node:sqlite types ship with @types/node 22.5+; this repo
-    // has no coverage for the module, and the runtime module exists under
-    // Node. readBigInts: true keeps large INTEGER values as bigint instead of
-    // throwing RangeError ("Value is too large to be represented as a
-    // JavaScript number") on read — parity with bun:sqlite, which silently
-    // rounds to a double. The wrapper's coerceBigInt normalizes them back to
-    // numbers exactly like it does for sql.js's bigint rows.
-    const { DatabaseSync } = await import('node:sqlite');
+    const sqliteSpecifier = 'node:sqlite' as string;
+    const { DatabaseSync } = await import(sqliteSpecifier) as any;
     nativeEngine = {
       name: 'node',
       open: (filePath: string) => new DatabaseSync(filePath, { readBigInts: true }),
@@ -694,9 +687,11 @@ export function runMigrations(
     .sort((a, b) => a.version - b.version);
 
   // Phase 1: apply SQL for each pending migration
+  const appliedMigrations: Array<{ version: number; filename: string; sql: string }> = [];
   for (const mig of pendingMigrations) {
     try {
       db.exec(mig.sql);
+      appliedMigrations.push(mig);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('duplicate column name')) {
@@ -711,6 +706,7 @@ export function runMigrations(
           `Migration ${mig.filename}: FTS5 module unavailable, applying migration without the search index`,
         );
         const statements = splitFt5(mig.sql);
+        let fts5Failed = false;
         for (const stmt of statements) {
           if (!stmt.trim()) continue;
           try {
@@ -718,7 +714,11 @@ export function runMigrations(
           } catch (e2: unknown) {
             const m2 = e2 instanceof Error ? e2.message : String(e2);
             log.warn(`Migration ${mig.filename}: skipping statement (${m2})`);
+            fts5Failed = true;
           }
+        }
+        if (!fts5Failed) {
+          appliedMigrations.push(mig);
         }
       } else {
         log.error(`Migration ${mig.filename} failed:`, err);
@@ -732,9 +732,10 @@ export function runMigrations(
   // tracking it via the migrations list.
   const hasChecksumColumn = tableHasColumn(db, 'schema_version', 'checksum');
 
-  // Phase 3: record each newly applied migration in schema_version.
-  // The INSERT shape depends on whether the checksum column exists.
-  for (const mig of pendingMigrations) {
+  // Phase 3: record each successfully applied migration in schema_version.
+  // Only migrations that were actually applied (not skipped due to errors)
+  // are recorded. This prevents marking partially-applied migrations as complete.
+  for (const mig of appliedMigrations) {
     const checksum = computeChecksum(mig.sql);
     insertSchemaVersionRow(db, mig.version, mig.filename, checksum, hasChecksumColumn);
     result.applied.push(mig.version);
@@ -821,6 +822,31 @@ export function runMigrations(
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// R1 — request_logs pruning to prevent unbounded DB growth.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_REQUEST_LOGS_RETENTION_DAYS = Number(
+  process.env.DMRX_REQUEST_LOGS_RETENTION_DAYS || '7'
+);
+
+export async function pruneRequestLogs(): Promise<void> {
+  const retentionDays = Math.max(1, DEFAULT_REQUEST_LOGS_RETENTION_DAYS);
+  try {
+    const db = getDbHandle();
+    if (!db) return;
+    const stmt = db.prepare(
+      `DELETE FROM request_logs WHERE timestamp < datetime('now', ?);`
+    );
+    const result = stmt.run(`-${retentionDays} days`);
+    if (result.changes > 0) {
+      log.info(`Pruned ${result.changes} request_logs rows older than ${retentionDays} days`);
+    }
+  } catch (err) {
+    log.warn(`request_logs prune failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export function initDb(): Promise<DatabaseWrapper> {
@@ -987,7 +1013,7 @@ async function recoverFromCorruptDb(
 }
 
 async function doInitDb(): Promise<DatabaseWrapper> {
-  const dataDir = process.env.DMRX_DATA_DIR || path.join(os.homedir(), '.dmr-x');
+  const dataDir = resolveDataDir();
   fs.mkdirSync(dataDir, { recursive: true });
   setDbPath(path.join(dataDir, 'data.db'));
   cleanupStaleArtifacts(dataDir);
@@ -1231,9 +1257,17 @@ async function doInitDb(): Promise<DatabaseWrapper> {
   // signal, so without this the newest state could sit un-persisted for an
   // unbounded time. unref() is critical: the timer must not hold the process
   // open at shutdown.
+  let heartbeatTicks = 0;
   heartbeatTimer = setInterval(() => {
+    heartbeatTicks++;
     if (dirty && Date.now() - lastSaveAt >= MAX_STALE_MS) {
       void flush();
+    }
+    // R1 — prune request_logs every ~60s to prevent unbounded DB growth.
+    // At 1 req/s, request_logs reaches 500k rows in ~6 days, causing 2-second
+    // event-loop-blocking saves. Pruning keeps it bounded to ~7 days of data.
+    if (heartbeatTicks % 60 === 0) {
+      void pruneRequestLogs();
     }
   }, Math.max(250, Math.floor(MAX_STALE_MS / 2)));
   heartbeatTimer.unref();
@@ -1257,10 +1291,12 @@ export async function closeDb() {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    // R3 — await the in-flight flush before closing the DB handle. The audit
+    // found that a shutdown-time flush() could early-return `if (saving)`
+    // without awaiting, then closeDb() called raw.close() which freed the
+    // WASM heap out from under an in-flight export() — dropping the newest
+    // writes (billing deductions, quota counters, conversation messages).
     await flush();
-    // Tune the connection/release statistics before closing so the next open
-    // starts from a leaner schema (sqlite.org/pragma.html#pragma_optimize).
-    // A no-op on failure — must never block close.
     try {
       getDbHandle()!.exec('PRAGMA optimize;');
     } catch {

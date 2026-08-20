@@ -23,11 +23,9 @@ SLO. At 99.9%, that's **43.83 minutes per 30-day window**.
 
 ### Burn rate alerts
 
-> **Not yet implemented.** `monitoring/prometheus-alerts.yml` currently contains
-> **no** multi-window burn-rate rules, despite what this page previously
-> claimed. The rules below (Google SRE workbook style) are the intended
-> implementation — add them to `monitoring/prometheus-alerts.yml` before
-> relying on error-budget alerting. (O16)
+> **Implemented.** `monitoring/prometheus-alerts.yml` now contains multi-window
+> burn-rate rules (fast burn: 14.4x in 1h; slow burn: 6x in 6h). These were
+> added as part of the Tier 2 ops fixes. (O16)
 
 ```yaml
 groups:

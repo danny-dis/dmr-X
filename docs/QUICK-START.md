@@ -10,7 +10,7 @@ admin surface.
 
 ```bash
 # Clone
-git clone https://github.com/dmr-x/dmr-x.git
+git clone https://github.com/danny-dis/dmr-X.git
 cd dmr-x
 
 # Dependencies
@@ -27,7 +27,7 @@ cp .env.example .env
 
 ```bash
 # Linux / macOS
-curl -sL https://github.com/dmr-x/dmr-x/releases/latest/download/dmrx-linux-x64.tar.gz | tar xz
+curl -sL https://github.com/danny-dis/dmr-X/releases/latest/download/dmrx-linux-x64.tar.gz | tar xz
 ./dmrx
 
 # Windows

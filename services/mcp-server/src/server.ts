@@ -182,6 +182,8 @@ export interface DMRXMcpServerConfig {
     enabled?: boolean;
     agentCard?: AgentCardConfig;
   };
+  /** OAuth 2.1 authorization server configuration */
+  oauth?: import('./oauth/routes.js').OAuthRoutesConfig;
   /** Federation configuration for multi-instance tool sharing */
   federation?: FederationConfig;
   /** DMR-X gateway URL used to expose defined subagents as MCP tools */
@@ -2902,7 +2904,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       try {
         const limit = params.limit || 20;
         const cacheStore = getContextStore();
-        const keys = cacheStore.keys(`context:*`);
+        const keys = cacheStore.keys(`context:`);
 
         const contexts: Array<{ id: string; user: string; created_at: string; preview: string }> = [];
         for (const key of keys) {
@@ -3577,7 +3579,12 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   // Best-effort zero-config tenant isolation: if neither a per-client header
   // nor the legacy shared key is set, auto-create a dedicated tenant + API key.
   // Fire-and-forget so createDMRXMcpServer stays synchronous.
-  autoProvisionTenantKey(gatewayUrl);
+  // Track whether we already attempted to avoid redundant calls per session.
+  let attemptedTenantProvision = false;
+  if (!resolveGatewayKey()) {
+    attemptedTenantProvision = true;
+    autoProvisionTenantKey(gatewayUrl);
+  }
 
   function slugifyAgentName(name: string): string {
     return name
@@ -4941,6 +4948,116 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
   );
 
   // -----------------------------------------------------------------------
+  // Tool: dmrx_plan_job
+  //
+  // Decomposes a submitted job into executable tasks (POST /v1/jobs/:id/plan).
+  // A job created via dmrx_submit_job sits in "intake" status until planned.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.PLAN_JOB,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.PLAN_JOB],
+      inputSchema: {
+        jobId: z.string().describe('The id of the job to plan'),
+      } as any,
+      annotations: { title: 'Plan Job', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/plan`, {});
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job plan failed',
+            'GATEWAY_JOB_PLAN_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+        const json = res.json ?? {};
+        const result = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          status: json.status ?? null,
+          taskCount: json.taskCount ?? null,
+          tasks: json.tasks ?? null,
+        };
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'PLAN_JOB_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_run_job
+  //
+  // Enqueues a planned job for execution (POST /v1/jobs/:id/run).
+  // A job must have tasks (via dmrx_plan_job) before it can run.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.RUN_JOB,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.RUN_JOB],
+      inputSchema: {
+        jobId: z.string().describe('The id of the planned job to run'),
+      } as any,
+      annotations: { title: 'Run Job', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/run`, {});
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (res.status === 422) {
+          return toolError(
+            'Job has no tasks — call dmrx_plan_job first',
+            'JOB_NOT_PLANNED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+        if (!res.ok) {
+          return toolError(
+            'Gateway job run failed',
+            'GATEWAY_JOB_RUN_FAILED',
+            requestId,
+            JSON.stringify({ status: res.status, error: res.json })
+          );
+        }
+        const json = res.json ?? {};
+        const result = {
+          jobId: json.jobId ?? json.id ?? params.jobId,
+          status: json.status ?? null,
+          queuePosition: json.queuePosition ?? null,
+          poll: `/v1/jobs/${params.jobId}`,
+        };
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'RUN_JOB_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
   // Tool: dmrx_get_skill
   //
   // Fetches a single skill (with full content) from the gateway
@@ -5298,7 +5415,12 @@ async function executeDMRXTool(
       modality = '3d';
       break;
     default:
-      throw new Error(`Unsupported tool in batch: ${toolName}`);
+      throw new Error(
+        `Tool not supported in workflow/batch steps: ${toolName}. ` +
+        `Only routed inference tools can be composed here (dmrx_chat, dmrx_generate_image, ` +
+        `dmrx_embed, dmrx_transcribe, dmrx_speak, dmrx_rerank, dmrx_generate_video, ` +
+        `dmrx_generate_music, dmrx_generate_3d). Call filesystem/bash/state tools directly.`
+      );
   }
 
   const response = await routeViaGateway(gatewayUrl, modality, params);

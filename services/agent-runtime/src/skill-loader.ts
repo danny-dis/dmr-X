@@ -39,6 +39,42 @@ export class SkillLoader {
   }
 
   /**
+   * Discover skills natively from the tenant's `skills` table, independent of
+   * what an agent happens to declare in `definition.skills`.
+   *
+   * Why this exists: `advertise()` only describes an agent's DECLARED skills, so
+   * an agent with an empty `skills` array was told nothing existed — and every
+   * one of the 271 agents on this install has an empty array. Meanwhile
+   * `load_skill` was never gated by the declared list: it resolves any skill in
+   * the tenant. So the bodies were reachable the whole time and only DISCOVERY
+   * was missing. Agents could not ask for what they were never told about.
+   *
+   * Ordering is deterministic (platform `source='seed'` methodology first, then
+   * alphabetical) so the prompt is stable across turns and cache-friendly.
+   * `limit` bounds the prompt cost: skills advertise as one short line each, but
+   * a tenant with hundreds of skills should not push out the agent's own
+   * instructions.
+   */
+  discover(tenantId: string, limit = 40): SkillAdvert[] {
+    try {
+      const db = getDb();
+      const rows = db
+        .prepare(
+          `SELECT name, description FROM skills
+           WHERE tenant_id = ?
+           ORDER BY CASE WHEN source = 'seed' THEN 0 ELSE 1 END, name
+           LIMIT ?`,
+        )
+        .all(tenantId, limit) as Array<{ name: string; description: string | null }>;
+      return rows.map((r) => ({ name: r.name, description: r.description ?? '' }));
+    } catch (err) {
+      // Non-fatal: discovery is an enhancement, never a hard dependency.
+      logger.warn({ tenantId, err }, 'SkillLoader: skill discovery failed');
+      return [];
+    }
+  }
+
+  /**
    * Resolve a skill by id or name to its full body. Returns null if the
    * skill cannot be resolved or does not belong to the tenant. Non-fatal:
    * a missing skill simply yields null (caller decides what to do).

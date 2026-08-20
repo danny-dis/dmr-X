@@ -140,7 +140,7 @@ dmr-x/
 │   ├── godmode/          # G0DM0D3 integration (ULTRAPLINIAN, CONSORTIUM, etc.)
 │   └── operator/         # Kubernetes operator (MCP/federation/workflow CRDs)
 ├── tests/
-│   ├── unit/             # Unit tests (54 test files)
+│   ├── unit/             # 86 unit test files
 │   └── e2e/              # Opt-in end-to-end connectivity tests
 ├── scripts/              # Install scripts, release packaging, backup, loadtest, dev
 ├── docs/                 # Documentation
@@ -370,7 +370,7 @@ bun run test
 
 **Security:** Since v0.2.0, DMR-X has patched a cross-tenant data leak, an SSRF DNS-rebinding bypass, and 11 CVEs. See [SECURITY.md](SECURITY.md).
 
-54 unit test files (50+ suites, 1200+ assertions) covering:
+86 unit test files (1200+ assertions) covering:
 
 - Routing pipeline (capability filter, availability, cost/latency scoring, final selector, fallback)
 - Anthropic converter and stream serializer
@@ -408,12 +408,12 @@ CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that build
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
 | [SECURITY.md](SECURITY.md) | Security policy, supported versions, and vulnerability disclosure |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operational runbook and incident response |
-| [docs/ROADMAP-STATUS.md](docs/ROADMAP-STATUS.md) | Feature/roadmap status checklist (supersedes old planning & wiring docs) |
+| [docs/ROADMAP-STATUS.md](docs/ROADMAP-STATUS.md) | Feature/roadmap status checklist |
+| [TODO.md](TODO.md) | **Day-to-day task board** — multi-agent in-progress/pending/completed tracking |
 | [docs/TRANSPARENCY-VERIFICATION.md](docs/TRANSPARENCY-VERIFICATION.md) | Provider transparency verification |
 | [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Canonical all-models provider reference (57+ adapters / 100+ providers) |
 | [docs/FREE_API_PROVIDERS_REPORT.md](docs/FREE_API_PROVIDERS_REPORT.md) | Free-tier provider report |
 | [docs/AGENTS_PLUGANDPLAY.md](docs/AGENTS_PLUGANDPLAY.md) | External MCP client connectivity and agent key resolution |
-| [docs/ROADMAP-STATUS.md](docs/ROADMAP-STATUS.md) | Agent/runtime/wiring verification status |
 
 ## Contributing
 

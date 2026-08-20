@@ -410,6 +410,8 @@ export const TOOL_NAMES = {
   DISPATCH_TASK: 'dmrx_dispatch_task',
   // Job submission + tracking tools
   SUBMIT_JOB: 'dmrx_submit_job',
+  PLAN_JOB: 'dmrx_plan_job',
+  RUN_JOB: 'dmrx_run_job',
   JOB_STATUS: 'dmrx_job_status',
   JOB_TASKS: 'dmrx_job_tasks',
   CANCEL_JOB: 'dmrx_cancel_job',
@@ -977,8 +979,10 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     'Submit a job to DMR-X and get back its job id (POST /v1/jobs). A job is a WHOLE OUTCOME delegated ' +
     'to DMR-X — e.g. "implement feature X", "fix all failing tests", or "write the migration plan" — not a ' +
     'single turn of work. Jobs run ASYNCHRONOUSLY: this tool returns as soon as the gateway has accepted the ' +
-    'job, NOT when the work is done, so do not expect any result in the response. After submitting, poll ' +
-    'dmrx_job_status (and dmrx_job_tasks for per-task progress) until the job reaches a terminal status. ' +
+    'job, NOT when the work is done. ' +
+    'IMPORTANT: after submitting, you MUST call dmrx_plan_job to decompose the brief into tasks, ' +
+    'then dmrx_run_job to enqueue the tasks for execution. A submitted job sits in "intake" until planned and run. ' +
+    'After running, poll dmrx_job_status (and dmrx_job_tasks for per-task progress) until the job reaches a terminal status. ' +
     'The gateway generates the job id — do not pass one. The brief is required; acceptance criteria and ' +
     'budget/max-depth caps are optional. Contrast with dmrx_dispatch_task, which runs a single task ' +
     'synchronously and returns its output in the same call. Requires a configured gateway URL and tenant ' +
@@ -1005,4 +1009,17 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     'submission; the response reports the job id and its (updated) status. Returns JOB_NOT_FOUND if the ' +
     'job id does not exist. For a single synchronous task, use dmrx_dispatch_task instead. Requires a ' +
     'configured gateway URL and tenant API key.',
+  dmrx_plan_job:
+    'Decompose a submitted job into executable tasks (POST /v1/jobs/:id/plan). A job created via ' +
+    'dmrx_submit_job sits in "intake" status until planned — this tool asks the planner to break the ' +
+    'brief into tasks and assign each to the best-matching agent. After planning, the job moves to ' +
+    '"planned" status. Call dmrx_run_job afterward to enqueue the tasks for execution. Returns the ' +
+    'number of tasks created plus their ids. Returns JOB_NOT_FOUND if the job id does not exist. ' +
+    'Requires a configured gateway URL and tenant API key.',
+  dmrx_run_job:
+    'Enqueue a planned job for execution (POST /v1/jobs/:id/run). A job must have tasks (via ' +
+    'dmrx_plan_job) before it can run — dmrx_submit_job alone leaves it in "intake". Returns the ' +
+    'job id and its new status ("queued"). Poll dmrx_job_status and dmrx_job_tasks to track progress ' +
+    'until the job reaches a terminal status ("delivered", "failed", or "cancelled"). Returns ' +
+    'JOB_NOT_FOUND if the job id does not found. Requires a configured gateway URL and tenant API key.',
 };

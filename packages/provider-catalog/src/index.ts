@@ -5,6 +5,8 @@
  * Users can add any of these via: dmrx add-provider <provider-id>
  */
 
+import { MODEL_BENCHMARKS } from './benchmarks.generated.js';
+
 export interface OAuthProviderConfig {
   flow: 'authorization_code' | 'client_credentials' | 'device_code';
   authorizationUrl?: string;
@@ -235,8 +237,7 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       { id: 'gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
       { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
       { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 }, sharedPool: { rpm: 30, rpd: 1500, tpm: 1000000, tpd: 50000000 } },
-      // gemini-2.5-flash-lite removed: the API returns 404 "no longer available to new users".
-      { id: 'gemini-2.0-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'] },
+      // gemini-2.0-flash removed: API returns 404 "This model is no longer available"
       { id: 'text-embedding-004', modalities: ['embedding'], capabilities: ['embedding'], specializations: ['embedding'] },
       { id: 'imagen-3.0', modalities: ['diffusion'], capabilities: ['text2img'], specializations: ['creative'] },
       // Gemma on the Gemini API: only the gemma-4 pair is served. The gemma-3-*
@@ -261,6 +262,36 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
       tokenResponseType: 'access_refresh',
     },
   },
+
+  {
+    id: 'google_native',
+    name: 'Google Gemini (Native API)',
+    category: 'cloud_llm',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    authMethod: 'bearer',
+    apiFormat: 'openai',
+    modalities: ['llm', 'embedding'],
+    models: [
+      { id: 'gemini-3.6-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-3.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-3.5-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 10 } },
+      { id: 'gemini-3-flash-preview', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.1, outputCostPer1M: 0.4, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 } },
+      { id: 'gemini-3.1-flash-lite', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.075, outputCostPer1M: 0.3, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 15, rpd: 500, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 9 } },
+      { id: 'gemini-2.5-pro', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 1.25, outputCostPer1M: 5, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['reasoning', 'general'] },
+      { id: 'gemini-2.5-flash', modalities: ['llm'], contextWindow: 1000000, inputCostPer1M: 0.15, outputCostPer1M: 0.6, capabilities: ['vision', 'tool_use', 'streaming'], specializations: ['fast', 'cheap'], freeTier: { rateLimits: { rpm: 5, rpd: 20, tpm: 250000, tpd: 0 }, monthlyTokenBudget: 0, intelligenceRank: 8, speedRank: 9 }, sharedPool: { rpm: 30, rpd: 1500, tpm: 1000000, tpd: 50000000 } },
+      // gemini-2.0-flash removed: API returns 404 "This model is no longer available"
+      { id: 'gemma-4-31b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 8 } },
+      { id: 'gemma-4-26b-a4b-it', modalities: ['llm'], contextWindow: 128000, inputCostPer1M: 0, outputCostPer1M: 0, capabilities: ['streaming', 'tool_use'], specializations: ['general'], freeTier: { rateLimits: { rpm: 15, rpd: 1500, tpm: 1000000, tpd: 50000000 }, monthlyTokenBudget: 0, intelligenceRank: 7, speedRank: 7 } },
+    ],
+    streaming: true,
+    toolCalling: true,
+    envKey: 'GOOGLE_API_KEY',
+    description: 'Gemini models via native API (streamGenerateContent). Primary for Gemini streaming.',
+    region: 'us',
+    signupUrl: 'https://aistudio.google.com/',
+  },
+
+  // google_native provider entry - veo follows
 
   {
     id: 'veo',
@@ -2880,6 +2911,40 @@ for (const provider of PROVIDER_CATALOG) {
  */
 export function getProviderTemplate(id: string): ProviderTemplate | undefined {
   return PROVIDER_CATALOG.find((p) => p.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Artificial Analysis benchmark reranking (see scripts/sync-benchmarks.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map an Artificial Analysis intelligence index to a 1-10 rank on the same
+ * scale as the hand-set catalog `freeTier.intelligenceRank`.
+ *
+ * Calibration (measured 2026-08-19 from OpenRouter's published data, 141
+ * models): index range 5.5–63.1, median 37.8. rank = clamp(round(index/6), 1, 10)
+ * yields: claude-opus-5 63.1 → 10, kimi-k3 59.7 → 10, gemini-3.6-flash 51.6
+ * → 9, nemotron-3-ultra-550b-a55b:free 38.3 → 6 (catalog had it at 9 — the
+ * inflation this layer exists to correct), median ~38 → 6.
+ */
+export function benchmarkIndexToRank(intelligenceIndex: number): number {
+  if (!Number.isFinite(intelligenceIndex) || intelligenceIndex <= 0) return 0;
+  return Math.max(1, Math.min(10, Math.round(intelligenceIndex / 6)));
+}
+
+/**
+ * Look up a model's benchmark-derived intelligence rank (1-10) by its id.
+ * Returns `undefined` when the model id has no Artificial Analysis benchmark.
+ *
+ * The id must match the key OpenRouter publishes (e.g.
+ * `nvidia/nemotron-3-ultra-550b-a55b:free`). The registry's enrichFromCatalog
+ * overrides the hand-set catalog rank with this value when it exists.
+ */
+export function getBenchmarkIntelligenceRank(modelId: string): number | undefined {
+  const entry = MODEL_BENCHMARKS[modelId];
+  if (!entry) return undefined;
+  const rank = benchmarkIndexToRank(entry.intelligenceIndex);
+  return rank >= 1 ? rank : undefined;
 }
 
 /**

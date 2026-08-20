@@ -298,6 +298,9 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     // would burn every attempt on the same credential.
     const firstKey = this.getCurrentKey();
     const startIndex = Math.max(0, this.apiKeys.indexOf(firstKey));
+    // Distinct keys rejected with an auth status (401/403). Two means the
+    // credential is bad provider-wide, so rotation is abandoned — see below.
+    let authFailures = 0;
 
     for (let i = 0; i < attempts; i++) {
       const key = i === 0 ? firstKey : this.apiKeys[(startIndex + i) % this.apiKeys.length];
@@ -307,6 +310,24 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         lastError = error;
         const status = (error as { statusCode?: number })?.statusCode;
         const isLast = i === attempts - 1;
+
+        // Provider-wide auth failure short-circuit. When the account itself is
+        // rejected, every key returns the same 401/403 and walking the pool only
+        // burns the caller's timeout (each attempt carries its own HTTP backoff),
+        // so the client sees a hang instead of the auth error. Stop on the second
+        // distinct auth failure and let the router try another PROVIDER.
+        // 429 keeps rotating — that is a real per-key quota signal.
+        if (status && GenericOpenAIAdapter.AUTH_STATUSES.has(status)) {
+          authFailures++;
+          if (authFailures >= 2) {
+            logger.warn(
+              { providerId: this.providerId, model: request.model, status, keysTried: i + 1, of: attempts },
+              'Provider-wide auth failure — abandoning key rotation so the router can fail over',
+            );
+            throw error;
+          }
+        }
+
         if (isLast || !status || !GenericOpenAIAdapter.KEY_SCOPED_STATUSES.has(status)) {
           throw error;
         }
@@ -340,7 +361,8 @@ export class GenericOpenAIAdapter extends BaseAdapter {
         method: 'POST',
         headers,
         body: JSON.stringify(this.buildChatBody(request, false)),
-        timeoutMs: options?.timeoutMs ?? 60000,
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal,
       });
     } catch (error) {
       throw this.handleAdapterError(error, 'chat');
@@ -433,6 +455,27 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       );
     }
 
+    // Empty-content guard (mirror chat.routes.ts streaming path, ~L517).
+    // A 200 with zero content tokens AND no tool calls is a silent
+    // free-tier failure (e.g. gemini-3.5-flash spending its whole budget
+    // on reasoning, or a model ignoring tool_choice). Throw a
+    // ProviderError so the fallback chain picks the next candidate
+    // instead of delivering an empty body to the caller.
+    const guardMessage = data.choices?.[0]?.message;
+    const hasContent =
+      guardMessage?.content &&
+      typeof guardMessage.content === 'string' &&
+      guardMessage.content.length > 0;
+    const hasToolCalls =
+      Array.isArray(guardMessage?.tool_calls) && guardMessage.tool_calls.length > 0;
+    if (!hasContent && !hasToolCalls) {
+      throw new ProviderError(
+        `${this.providerId} chat: upstream returned HTTP ${response.status} with empty content and no tool calls`,
+        this.providerId,
+        502,
+      );
+    }
+
     const latencyMs = Date.now() - start;
 
     return {
@@ -447,6 +490,18 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       finishReason: data.choices?.[0]?.finish_reason,
       latencyMs,
     };
+  }
+
+  /**
+   * Provider-specific extra fields for the /embeddings request body.
+   *
+   * Default is empty so every existing provider keeps its exact wire format.
+   * Subclasses override this when their embedding endpoint needs a parameter
+   * that is not part of the OpenAI schema (see NVIDIANIMAdapter: NVIDIA's
+   * asymmetric retrieval models reject a request without `input_type`).
+   */
+  protected embeddingRequestExtras(_request: UnifiedRequest): Record<string, unknown> {
+    return {};
   }
 
   private async executeEmbedding(
@@ -472,6 +527,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
           input: request.input,
           encoding_format: request.encoding_format,
           dimensions: request.dimensions,
+          ...this.embeddingRequestExtras(request),
         }),
         timeoutMs: options?.timeoutMs ?? 30000,
       });

@@ -281,11 +281,18 @@ Google's Agent-to-Agent (A2A) protocol for agent discovery and inter-agent commu
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/.well-known/agent.json` | GET | Agent Card discovery |
-| `/a2a/tasks/send` | POST | Send a task to the agent |
-| `/a2a/tasks/get` | POST | Get task status |
-| `/a2a/tasks/cancel` | POST | Cancel a task |
-| `/a2a/tasks/{taskId}` | GET | Get task by ID |
+| `/.well-known/agent-card.json` | GET | Agent Card discovery (v1.0 canonical path) |
+| `/.well-known/agent.json` | GET | Legacy card path, still answered for pre-1.0 clients |
+| `/a2a` | POST | **All** JSON-RPC methods go here (single endpoint) |
+
+A2A is JSON-RPC 2.0 over a **single** endpoint — there are no per-method REST
+paths. The method name goes in the request body, not the URL. The card's
+`supportedInterfaces[0].url` already points at `/a2a`; clients should POST there
+rather than constructing paths themselves.
+
+Supported methods: `message/send`, `message/stream` (SSE), `tasks/get`,
+`tasks/list`, `tasks/cancel`, `tasks/resubscribe`, `agent/getExtendedCard`,
+`tasks/pushNotificationConfig/set`, `tasks/pushNotificationConfig/get`.
 
 ### Agent Card
 
@@ -296,7 +303,7 @@ The Agent Card advertises the agent's capabilities to other agents.
   "name": "DMR-X Agent",
   "description": "DMR-X MCP Server with intelligent routing",
   "version": "0.5.0",
-  "url": "http://localhost:3100",
+  "url": "http://localhost:47114",
   "capabilities": {
     "streaming": true,
     "pushNotifications": false,
@@ -339,7 +346,7 @@ canceled / failed / rejected
       "name": "My DMR-X Agent",
       "description": "Custom agent description",
       "version": "0.5.0",
-      "url": "http://localhost:3100"
+      "url": "http://localhost:47114"
     }
   }
 }
@@ -488,7 +495,7 @@ Automatically discover peers on the local network:
       "name": "DMR-X Agent",
       "description": "DMR-X MCP Server with intelligent routing",
       "version": "0.5.0",
-      "url": "http://localhost:3100"
+      "url": "http://localhost:47114"
     }
   },
   
@@ -547,20 +554,27 @@ Automatically discover peers on the local network:
 
 ```bash
 # Get Agent Card
-curl http://localhost:3100/.well-known/agent.json
+curl http://localhost:47114/.well-known/agent-card.json
 
-# Send a task
-curl -X POST http://localhost:3100/a2a/tasks/send \
+# Send a task — JSON-RPC 2.0 at the single /a2a endpoint.
+# Note: parts use "kind" (not "type"), and messageId is REQUIRED.
+curl -X POST http://localhost:47114/a2a \
   -H "Content-Type: application/json" \
   -d '{
-    "message": {
-      "role": "user",
-      "parts": [
-        {
-          "type": "text",
-          "text": "Generate an image of a sunset"
-        }
-      ]
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "msg-1",
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Generate an image of a sunset"
+          }
+        ]
+      }
     }
   }'
 ```
@@ -569,7 +583,7 @@ curl -X POST http://localhost:3100/a2a/tasks/send \
 
 ```bash
 # Health check shows federation status
-curl http://localhost:3100/health
+curl http://localhost:47114/health
 
 # Response
 {

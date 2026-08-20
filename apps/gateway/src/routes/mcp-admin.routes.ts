@@ -252,12 +252,18 @@ async function testConnection(
  */
 export async function connectPersistedMcpServers(): Promise<void> {
   const servers = readServers();
-  for (const server of servers) {
-    if (server.enabled === false || !server.id) continue;
-    try {
-      await registry.connect(toRegistryConfig(server as McpServerInput & { id: string }));
-    } catch (err) {
-      logger.warn({ err, id: server.id }, 'Failed to connect persisted MCP server at startup');
+  const enabled = servers.filter((s) => s.enabled !== false && s.id);
+  if (enabled.length === 0) return;
+
+  const results = await Promise.allSettled(
+    enabled.map((server) =>
+      registry.connect(toRegistryConfig(server as McpServerInput & { id: string }))
+    )
+  );
+
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === 'rejected') {
+      logger.warn({ err: (results[i] as PromiseRejectedResult).reason, id: enabled[i].id }, 'Failed to connect persisted MCP server at startup');
     }
   }
 }

@@ -11,8 +11,8 @@
  * — `Read`, `Write`, `Bash` — while this gateway registers `read_file`,
  * `write_file`, `bash`. Without a translation every imported agent resolves to
  * zero tools, so an agent whose whole purpose is editing files silently gets
- * none. Names with no local equivalent (WebFetch, WebSearch, Task) are
- * deliberately absent and are dropped later by the tool-existence filter.
+ * none. Names with no local equivalent (Task) are deliberately absent and are
+ * dropped later by the tool-existence filter.
  */
 const IMPORTED_TOOL_ALIASES: Record<string, string> = {
   read: 'read_file',
@@ -27,6 +27,8 @@ const IMPORTED_TOOL_ALIASES: Record<string, string> = {
   list: 'list_files',
   grep: 'search_files',
   search: 'search_files',
+  webfetch: 'web_fetch',
+  websearch: 'web_search',
 };
 
 /**

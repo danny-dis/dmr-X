@@ -5,8 +5,9 @@ import { trace } from '@opentelemetry/api';
 
 import { getStickyProvider, breakStickySession } from './sticky/sticky-session.js';
 import { executeWithFallback, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
-import { runPipeline } from './pipeline/pipeline.js';
+import { runPipeline, type PipelineOutput } from './pipeline/pipeline.js';
 import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
+import type { TaskProfile } from '@dmr-x/core';
 import { planStayOrSwitch } from './planner/ev-planner.js';
 import type { ThompsonSampler } from './bandit/thompson-sampler.js';
 import type { RouterConfig, Router } from './router.service.js';
@@ -21,7 +22,24 @@ export interface StickySessionHandlerParams {
   router: Router;
   conversationHash: string | undefined;
   modelTarget: { providerName?: string; modelId: string };
+  /** Pre-computed estimated tokens for the request (avoids re-computing in the handler) */
+  estimatedTokens?: number;
 }
+
+/**
+ * Result returned by the sticky session handler.
+ *
+ * - `used: true` → the handler executed the request using the sticky pin.
+ * - `used: false` with `pipelineResult` → the handler ran the pipeline for the
+ *   planner's STAY/SWITCH comparison and decided to SWITCH. The caller can
+ *   reuse this result instead of running the pipeline a second time (which
+ *   would repeat the same classify → filter → score → select work).
+ * - `used: false` without `pipelineResult` → no sticky pin existed or it was
+ *   broken before any pipeline ran; the caller runs the pipeline normally.
+ */
+export type StickySessionHandlerResult =
+  | { used: true; result: { plan: RoutingPlan; response: UnifiedResponse } }
+  | { used: false; pipelineResult?: PipelineOutput; taskProfile?: TaskProfile };
 
 function extractPrompt(request: UnifiedRequest): string {
   if (request.messages) {
@@ -33,16 +51,10 @@ function extractPrompt(request: UnifiedRequest): string {
   return request.prompt || '';
 }
 
-function estimateTokens(request: UnifiedRequest): number {
-  const prompt = extractPrompt(request);
-  const maxTokens = request.max_tokens || 4096;
-  return Math.ceil(prompt.length / 4) + maxTokens;
-}
-
 export async function handleStickySession(
   params: StickySessionHandlerParams
-): Promise<{ used: true; result: { plan: RoutingPlan; response: UnifiedResponse } } | { used: false }> {
-  const { request, options, candidates, adapterExecutor, config, thompsonSampler, router, conversationHash, modelTarget } = params;
+): Promise<StickySessionHandlerResult> {
+  const { request, options, candidates, adapterExecutor, config, thompsonSampler, router, conversationHash, modelTarget, estimatedTokens: providedTokens } = params;
 
   if (!conversationHash) return { used: false };
 
@@ -51,6 +63,12 @@ export async function handleStickySession(
   const requestId = options.requestId || (request as any).metadata?.requestId;
   const tenantId = (request as any).metadata?.tenant?.id;
   const enablePlanner = config.enablePlanner !== false;
+  // Use provided token estimate or fall back to computing it
+  const estimatedTokens = providedTokens ?? (() => {
+    const prompt = extractPrompt(request);
+    const maxTokens = request.max_tokens || 4096;
+    return Math.ceil(prompt.length / 4) + maxTokens;
+  })();
 
   const sticky = await getStickyProvider(
     conversationHash,
@@ -72,6 +90,10 @@ export async function handleStickySession(
   // must not be re-called: the sticky plan carries no fallback chain, so the
   // request would hard-fail with 502 instead of being routed normally.
   if (isModelOnErrorCooldown(sticky.providerId, sticky.modelId)) {
+    logger.warn(
+      { providerId: sticky.providerId, modelId: sticky.modelId },
+      'Sticky session broken — pinned model is on error cooldown'
+    );
     await breakStickySession(conversationHash, 'Pinned model is on error cooldown');
     return { used: false };
   }
@@ -85,7 +107,7 @@ export async function handleStickySession(
 
   // Check rate limits before using sticky provider
   if (config.rateLimitService) {
-    const check = config.rateLimitService.checkLimit(sticky.providerId, sticky.modelId, estimateTokens(request));
+    const check = config.rateLimitService.checkLimit(sticky.providerId, sticky.modelId, estimatedTokens);
     if (!check.allowed) {
       // Break sticky session and fall through to normal routing
       await breakStickySession(conversationHash, `Rate limited: ${check.reason}`);
@@ -94,7 +116,9 @@ export async function handleStickySession(
 
     // Planner-aware sticky session decision
     if (enablePlanner) {
-      // Run the routing pipeline to get a fresh decision for comparison
+      // Run the routing pipeline to get a fresh decision for comparison.
+      // This result is also returned to the caller so it can be reused
+      // (avoiding a redundant pipeline run) when the planner decides SWITCH.
       const taskProfile = classifyTask(request, options);
       const pipelineResult = await runPipeline({
         taskProfile,
@@ -104,7 +128,7 @@ export async function handleStickySession(
         quotaService: config.quotaService,
         policyService: config.policyService,
         tenantId,
-        estimatedTokens: estimateTokens(request),
+        estimatedTokens,
         freeTierStrategy: effectiveFreeTierStrategy,
         thompsonSampler,
       });
@@ -129,7 +153,7 @@ export async function handleStickySession(
             tier: { level: 'mid', quality: freshCandidate.qualityScore || 0.5, costPer1K: (freshCandidate.costPerInputToken || 0) + (freshCandidate.costPerOutputToken || 0) },
             costPer1K: (freshCandidate.costPerInputToken || 0) + (freshCandidate.costPerOutputToken || 0),
           },
-          estimatedTokens: estimateTokens(request),
+          estimatedTokens,
           remainingTurns: 5, // Estimate remaining turns
           summarizationAvailable: !!config.summarizationExecutor,
           summarizationCost: 0, // Will be computed if summarization is triggered
@@ -145,16 +169,31 @@ export async function handleStickySession(
           'Planner decision'
         );
 
-        // If planner says SWITCH, break sticky and use fresh decision
+        // If planner says SWITCH, break sticky and return the pipeline result
+        // so the caller can reuse it instead of running the pipeline again.
         if (plannerResult.decision === 'SWITCH') {
           await breakStickySession(conversationHash, `Planner: ${plannerResult.reason}`);
-          return { used: false };
+          return { used: false, pipelineResult, taskProfile };
         }
       }
     }
 
     // If we're still in sticky mode (planner said STAY or planner disabled)
     if (!enablePlanner || (await getStickyProvider(conversationHash, config.rateLimitService, freeTierStrategy, () => false))) {
+      // Re-verify the pin is not on an error cooldown before the chain-less
+      // fast path re-calls a dead model: the pipeline run above can be slow
+      // enough that the pinned model enters cooldown between the first check
+      // and this point, and getStickyProvider only checks rate limits, not
+      // the error cooldown.
+      if (isModelOnErrorCooldown(sticky.providerId, sticky.modelId)) {
+        logger.warn(
+          { providerId: sticky.providerId, modelId: sticky.modelId },
+          'Sticky session broken — pinned model is on error cooldown'
+        );
+        await breakStickySession(conversationHash, 'Pinned model is on error cooldown');
+        return { used: false };
+      }
+
       logger.info(
         { providerId: sticky.providerId, modelId: sticky.modelId },
         'Using sticky session'

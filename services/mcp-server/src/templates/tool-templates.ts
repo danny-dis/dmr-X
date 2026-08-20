@@ -114,7 +114,7 @@ export class ToolTemplatesService {
   getTemplate(id: string): ToolTemplate | null {
     const db = getDb();
     const row = db.prepare(`
-      SELECT * FROM tool_templates WHERE id = ?
+      SELECT * FROM tool_templates WHERE id = ? AND is_active = 1
     `).get(id) as any;
 
     return row ? this.mapTemplateRow(row) : null;
@@ -199,6 +199,29 @@ export class ToolTemplatesService {
     const db = getDb();
     const id = crypto.randomUUID();
 
+    // UNIQUE(tenant_id, tool_name) is enforced by the schema and deletePreset is a
+    // SOFT delete, so a previously deleted preset still occupies the slot. Revive
+    // that row instead of failing with a constraint error.
+    const stale = db.prepare(`
+      SELECT id FROM tool_presets WHERE tenant_id = ? AND tool_name = ?
+    `).get(preset.tenant_id, preset.tool_name) as { id?: string } | undefined;
+
+    if (stale?.id) {
+      db.prepare(`
+        UPDATE tool_presets
+        SET defaults = ?, overrides = ?, priority = ?, description = ?, is_active = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(
+        JSON.stringify(preset.defaults),
+        preset.overrides ? JSON.stringify(preset.overrides) : null,
+        preset.priority,
+        preset.description || null,
+        preset.is_active ? 1 : 0,
+        stale.id
+      );
+      return this.getPreset(stale.id)!;
+    }
+
     db.prepare(`
       INSERT INTO tool_presets
       (id, tenant_id, tool_name, defaults, overrides, priority, description, created_by, is_active)
@@ -224,7 +247,7 @@ export class ToolTemplatesService {
   getPreset(id: string): ToolPreset | null {
     const db = getDb();
     const row = db.prepare(`
-      SELECT * FROM tool_presets WHERE id = ?
+      SELECT * FROM tool_presets WHERE id = ? AND is_active = 1
     `).get(id) as any;
 
     return row ? this.mapPresetRow(row) : null;

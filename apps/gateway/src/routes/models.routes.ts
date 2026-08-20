@@ -2,8 +2,18 @@ import { getDb } from '@dmr-x/db';
 import type { FastifyInstance } from 'fastify';
 import { classifyModel } from '@dmr-x/registry';
 
+// Simple in-memory cache for /v1/models — 30s TTL avoids SQLite + JSON
+// serialization on every dashboard refresh. ponytail: 30s TTL, extend if
+// stale data causes user complaints.
+let modelsCache: { data: any; expiresAt: number } | null = null;
+const MODELS_CACHE_TTL = 30_000;
+
 export async function modelsRoutes(server: FastifyInstance): Promise<void> {
   server.get('/models', async () => {
+    if (modelsCache && Date.now() < modelsCache.expiresAt) {
+      return modelsCache.data;
+    }
+
     const rows = getDb().prepare(
       `SELECT mp.model_id, mp.display_name, mp.modality, p.name as provider_name,
               mp.context_window, mp.max_output_tokens, mp.supports_streaming, mp.supports_vision,
@@ -16,7 +26,7 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
        ORDER BY mp.modality, mp.model_id`
     ).all() as any[];
 
-    return {
+    const result = {
       object: 'list',
       data: rows.map((row) => {
         const classification = classifyModel(row.provider_name?.toLowerCase() || '', row.model_id);
@@ -45,6 +55,9 @@ export async function modelsRoutes(server: FastifyInstance): Promise<void> {
         };
       }),
     };
+
+    modelsCache = { data: result, expiresAt: Date.now() + MODELS_CACHE_TTL };
+    return result;
   });
 
   server.get('/models/:modelId', async (request, reply) => {

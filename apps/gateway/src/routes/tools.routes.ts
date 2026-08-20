@@ -21,8 +21,78 @@ import { ChatMessageSchema, ToolSchema, ToolCallSchema } from './shared-schemas.
 import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
-// Tool handler registry (server-side tool execution)
+// Tool catalog cache (SDK + MCP combined)
 // ---------------------------------------------------------------------------
+interface ToolCatalogCache {
+  tools: any[];
+  ts: number;
+  source: 'live' | 'fallback' | 'mcp-down';
+}
+let _toolCatalogCache: ToolCatalogCache | null = null;
+const TOOL_CATALOG_TTL_MS = 60 * 1000; // 60s cache
+
+// MCP server config (same as admin route)
+const MCP_HOST = process.env.DMRX_MCP_HOST || '127.0.0.1';
+const MCP_PORT = parseInt(process.env.DMRX_MCP_PORT || '47114', 10);
+const MCP_URL = `http://${MCP_HOST}:${MCP_PORT}/tools`;
+
+/** Invalidate the tool catalog cache. Call after registering a new tool. */
+export function invalidateToolCatalog(): void {
+  _toolCatalogCache = null;
+}
+
+/** Fetch live tool catalog from MCP server, with cache */
+async function fetchToolCatalog(): Promise<ToolCatalogCache> {
+  if (_toolCatalogCache && Date.now() - _toolCatalogCache.ts < TOOL_CATALOG_TTL_MS) {
+    return _toolCatalogCache;
+  }
+
+  const sdkDefs = getRegisteredToolDefinitions();
+  const sdkTools = sdkDefs.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.function.name,
+      description: t.function.description,
+      parameters: t.function.parameters,
+    },
+    source: 'sdk' as const,
+  }));
+
+  let mcpTools: any[] = [];
+  let source: 'live' | 'fallback' | 'mcp-down' = 'live';
+  try {
+    const headers: Record<string, string> = {};
+    if (process.env.DMRX_MCP_API_KEY) {
+      headers.Authorization = `Bearer ${process.env.DMRX_MCP_API_KEY}`;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(MCP_URL, { signal: controller.signal, headers });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data: any = await res.json();
+      if (data.tools && Array.isArray(data.tools)) {
+        mcpTools = data.tools.map((t: any) => ({
+          type: 'function',
+          function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.params || { type: 'object', properties: {} },
+          },
+          source: t.source || ('mcp' as const),
+        }));
+      }
+    } else {
+      source = 'mcp-down';
+    }
+  } catch {
+    source = 'mcp-down';
+  }
+
+  const allTools = [...sdkTools, ...mcpTools];
+  _toolCatalogCache = { tools: allTools, ts: Date.now(), source };
+  return _toolCatalogCache;
+}
 
 export type ToolHandler = (
   args: Record<string, unknown>,
@@ -77,6 +147,7 @@ export function registerToolHandler(
       parameters: definition?.parameters ?? { type: 'object', properties: {} },
     },
   });
+  invalidateToolCatalog();
 }
 
 /**
@@ -695,6 +766,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { Agent } from 'undici';
+
+import { validateBaseUrlForSSRF } from './admin-ssrf.js';
 
 const execAsync = promisify(exec);
 
@@ -739,12 +813,42 @@ export const ALLOWED_BASH_COMMANDS = new Set([
  * allowlisted binary; command substitution, backgrounding, and redirects to
  * system paths are blocked.
  */
+/**
+ * Binaries that can execute arbitrary code from a string argument. The
+ * allowlist intentionally includes these (they're needed for builds/tests),
+ * but ONLY for their standard invocation — never with a code-execution flag.
+ * `node -e`, `python -c`, `bun x`, and `npx` all bypass the allowlist's
+ * intent by running attacker-supplied code instead of a project script.
+ *
+ * C1 — without this, any tenant key yields arbitrary code execution on the
+ * gateway host via the bash tool.
+ */
+const ARBITRARY_CODE_FLAGS: { binary: string; pattern: RegExp; flag: string }[] = [
+  { binary: 'node', pattern: /node\s+(-e|--eval|-p|--print)\s/, flag: '-e/--eval/-p/--print' },
+  { binary: 'python', pattern: /python3?\s+-[cm]\s/, flag: '-c/-m' },
+  { binary: 'python3', pattern: /python3?\s+-[cm]\s/, flag: '-c/-m' },
+  { binary: 'bun', pattern: /bun\s+(x|run)\s+/, flag: 'x/run' },
+  { binary: 'deno', pattern: /deno\s+(eval|run)\s/, flag: 'eval/run' },
+  { binary: 'npx', pattern: /npx\s+/, flag: 'npx (downloads + runs arbitrary packages)' },
+];
+
 export function isBashCommandAllowed(command: string): { allowed: boolean; reason?: string } {
   const trimmed = command.trim();
 
   // Block command substitution patterns
   if (/\$\(|`[^`]*`|\$\{/.test(trimmed)) {
     return { allowed: false, reason: 'Command substitution not allowed' };
+  }
+
+  // Block arbitrary-code-execution flags on runtime binaries. The allowlist
+  // includes node/python/bun/deno/npx for legitimate build/test use, but
+  // `node -e 'require("child_process").exec(...)'` would otherwise pass —
+  // any tenant key could run arbitrary code on the host via the bash tool.
+  for (const { binary, pattern, flag } of ARBITRARY_CODE_FLAGS) {
+    const firstWord = trimmed.split(/\s+/)[0]?.split('/').pop() || '';
+    if (firstWord === binary && pattern.test(trimmed)) {
+      return { allowed: false, reason: `'${binary}' flag '${flag}' allows arbitrary code execution and is blocked` };
+    }
   }
 
   // Split into statement segments on ; && || | and newlines. Every segment
@@ -920,11 +1024,108 @@ export function safePath(filePath: string, tenantId?: string, workspaceKey?: str
   const normalizedWorkspace = workspace.replace(/\\/g, '/');
   const normalizedReal = realPath.replace(/\\/g, '/');
 
-  if (!normalizedReal.startsWith(normalizedWorkspace)) {
+  // M2 — containment: require a trailing separator so workspace /sandbox/req1
+  // does NOT also admit /sandbox/req11. Without it, startsWith passes paths
+  // that merely share a prefix with the workspace dir.
+  if (normalizedReal !== normalizedWorkspace && !normalizedReal.startsWith(normalizedWorkspace + '/')) {
     throw new Error('Path outside workspace');
   }
 
   return realPath;
+}
+
+// ---------------------------------------------------------------------------
+// web_fetch / web_search — LLM-driven web access tools
+// ---------------------------------------------------------------------------
+//
+// An LLM picks the URL, so these are server-side request forgery primitives:
+// EVERY outbound fetch MUST go through validateBaseUrlForSSRF() and the
+// returned pinned `lookup` must be wired into undici's Agent dispatcher, so
+// the outbound connection can only reach the IP that was validated. Redirects
+// are followed manually (`redirect: 'manual'`) and each hop is re-validated,
+// capped at 3. Response bodies are streamed with a 2MB cap and the extracted
+// text is trimmed to ~20k chars so a hostile page cannot blow the agent's
+// context budget. Failures return `{ error }` — never throw; the agent loop
+// reports tool errors back to the model for self-correction.
+
+const WEB_FETCH_TIMEOUT_MS = 10_000; // 10s hard timeout per request
+const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024; // 2MB streamed body cap
+const WEB_FETCH_MAX_CHARS = 20_000; // ~20k chars of extracted text
+const WEB_FETCH_MAX_REDIRECTS = 3; // re-validated redirect hops
+
+/** Strip <script>/<style> blocks, then tags, then collapse whitespace. */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Fetch a URL with SSRF validation on the initial URL and on every redirect
+ * hop (max 3). The connection is pinned to the validated IP via the lookup
+ * returned by validateBaseUrlForSSRF, closing the DNS-rebinding window.
+ * Returns the Response for a non-redirect status, or null when the redirect
+ * chain exceeded the cap. Throws for blocked destinations (private IPs,
+ * non-http(s) schemes, unresolvable hosts).
+ */
+async function fetchValidated(urlStr: string, signal: AbortSignal): Promise<Response | null> {
+  let current = urlStr;
+  for (let hop = 0; ; hop++) {
+    const v = await validateBaseUrlForSSRF(current);
+    const dispatcher = new Agent({ connect: { lookup: v.lookup } });
+    const res = await fetch(v.url, { dispatcher, redirect: 'manual', signal });
+    if (res.status >= 300 && res.status < 400) {
+      // Manual redirect: re-validate the next hop before following it.
+      if (hop >= WEB_FETCH_MAX_REDIRECTS) return null;
+      const loc = res.headers.get('location');
+      if (!loc) return null;
+      current = new URL(loc, v.url).toString();
+      continue;
+    }
+    return res;
+  }
+}
+
+/**
+ * Stream a response body, aborting past the 2MB cap so an oversized body is
+ * truncated rather than buffered whole. Returns the (possibly partial) text.
+ */
+async function readBodyCapped(res: Response): Promise<{ text: string; truncated: boolean; bytes: number }> {
+  if (!res.body) {
+    const text = await res.text();
+    return { text, truncated: false, bytes: Buffer.byteLength(text, 'utf-8') };
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      // Cap check BEFORE retaining the chunk: the over-limit chunk is
+      // discarded, so `bytes` stays bounded by the cap and the body is
+      // truncated rather than buffered whole.
+      if (bytes + value.byteLength > WEB_FETCH_MAX_BYTES) {
+        truncated = true;
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      bytes += value.byteLength;
+      chunks.push(value);
+    }
+  }
+  const buf = Buffer.concat(chunks);
+  return { text: buf.toString('utf-8'), truncated, bytes };
 }
 
 export function registerCodingToolHandlers(): void {
@@ -1176,6 +1377,157 @@ export function registerCodingToolHandlers(): void {
     }
   });
 
+  // ---- web_fetch -----------------------------------------------------------
+  registerToolHandler('web_fetch', async (args) => {
+    const { url } = args as { url?: string };
+    if (!url || typeof url !== 'string') {
+      return { error: 'url is required' };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
+    try {
+      let res: Response | null;
+      try {
+        res = await fetchValidated(url, controller.signal);
+      } catch (err) {
+        // SSRF rejection / DNS failure / bad scheme — surfaced as a normal
+        // tool error, never a throw.
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      if (!res) {
+        return { error: `Too many redirects (max ${WEB_FETCH_MAX_REDIRECTS})` };
+      }
+      const { text, truncated, bytes } = await readBodyCapped(res);
+      const plain = htmlToText(text);
+      const cut = plain.length > WEB_FETCH_MAX_CHARS;
+
+      // A 200 is NOT proof of success. Redirect-prone doc hosts (Anthropic's
+      // docs.anthropic.com -> platform.claude.com is the canonical example)
+      // answer a dead slug with a cross-host 302 to a Next.js error shell that
+      // carries a plausible <title> and hundreds of KB of chrome. An agent that
+      // only sees `status` and `text` reads that shell as real content and cites
+      // a page that does not exist.
+      //
+      // So report the FINAL url and whether we were redirected, and flag the
+      // known error-shell markers. These are hints, not verdicts — the agent
+      // decides, but it can no longer be fooled silently.
+      const finalUrl = res.url || url;
+      let redirected = false;
+      try {
+        redirected = new URL(finalUrl).href !== new URL(url).href;
+      } catch {
+        redirected = finalUrl !== url;
+      }
+      const crossHost = (() => {
+        try {
+          return new URL(finalUrl).host !== new URL(url).host;
+        } catch {
+          return false;
+        }
+      })();
+
+      const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)?.[1]?.trim().slice(0, 200);
+      const shellMarkers: string[] = [];
+      if (/__next_error__/.test(text)) shellMarkers.push('__next_error__');
+      if (title && /\b(not found|page not found|404)\b/i.test(title)) {
+        shellMarkers.push(`title="${title}"`);
+      }
+      if (plain.length < 200) shellMarkers.push(`only ${plain.length} chars of text`);
+
+      return {
+        url,
+        finalUrl,
+        redirected,
+        crossHostRedirect: crossHost,
+        status: res.status,
+        contentType: res.headers.get('content-type') ?? undefined,
+        title,
+        text: cut ? plain.slice(0, WEB_FETCH_MAX_CHARS) : plain,
+        truncated: truncated || cut,
+        truncatedReason: cut
+          ? `text truncated at ${WEB_FETCH_MAX_CHARS} characters`
+          : truncated
+            ? `body truncated at ${WEB_FETCH_MAX_BYTES} bytes`
+            : undefined,
+        bytes,
+        // Present ONLY when something looks wrong despite a 2xx.
+        suspectedErrorShell: shellMarkers.length > 0 ? shellMarkers : undefined,
+        suspectedErrorShellHint:
+          shellMarkers.length > 0
+            ? 'This looks like an error/placeholder page despite the HTTP status. Treat the content as unreliable and try a variant URL instead of citing it.'
+            : undefined,
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
+  // ---- web_search ----------------------------------------------------------
+  registerToolHandler('web_search', async (args) => {
+    const { query, count } = args as { query?: string; count?: number };
+    const apiKey = process.env.DMRX_SEARCH_API_KEY;
+    if (!apiKey) {
+      return { error: 'web_search unavailable: DMRX_SEARCH_API_KEY not configured' };
+    }
+    if (!query || typeof query !== 'string') {
+      return { error: 'query is required' };
+    }
+    const provider = (process.env.DMRX_SEARCH_PROVIDER || 'brave').toLowerCase();
+    if (provider !== 'brave') {
+      return { error: `web_search unavailable: unsupported provider '${provider}' (supported: brave)` };
+    }
+
+    const url = new URL('https://api.search.brave.com/res/v1/web/search');
+    url.searchParams.set('q', query);
+    url.searchParams.set('count', String(Math.min(Math.max(Math.trunc(count ?? 5), 1), 20)));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
+    try {
+      // Same SSRF treatment as web_fetch: validate the endpoint, pin the
+      // connection to the validated IP, and re-validate any redirect hop.
+      let res: Response | null;
+      try {
+        res = await fetchValidated(url.toString(), controller.signal);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      if (!res) {
+        return { error: `Too many redirects (max ${WEB_FETCH_MAX_REDIRECTS})` };
+      }
+      const { text, truncated, bytes } = await readBodyCapped(res);
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // Non-JSON response — leave results empty; rawText below still surfaces
+        // the API's own message instead of fabricating results.
+      }
+      const raw = parsed?.web?.results ?? parsed?.results ?? parsed?.items;
+      const results: Array<{ title: string; url: string; snippet: string }> = Array.isArray(raw)
+        ? raw.slice(0, 10).map((r: any) => ({
+            title: String(r.title ?? r.name ?? ''),
+            url: String(r.url ?? r.link ?? ''),
+            snippet: String(r.description ?? r.snippet ?? r.content ?? ''),
+          }))
+        : [];
+      return {
+        query,
+        provider,
+        results,
+        total: results.length,
+        truncated,
+        rawText: results.length === 0 && text ? text.slice(0, WEB_FETCH_MAX_CHARS) : undefined,
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   registerToolDefinition('read_file', {
     description: 'Read a text file from the agent sandbox, optionally a slice of lines. Returns content with line offsets.',
     parameters: {
@@ -1246,8 +1598,37 @@ export function registerCodingToolHandlers(): void {
       required: ['pattern'],
     },
   });
+  registerToolDefinition('web_fetch', {
+    description:
+      'Fetch a URL and return its readable text (HTML stripped to plain text, capped at 20k chars). ' +
+      'SSRF-protected: private/loopback/link-local hosts and redirects to them are refused. ' +
+      'Returns status, finalUrl, redirected, crossHostRedirect, title and bytes. ' +
+      'IMPORTANT: a 200 does NOT mean the page exists — dead doc URLs often 302 to another host and ' +
+      'serve an error shell with a plausible title. Check finalUrl and suspectedErrorShell; when it is ' +
+      'set, do NOT cite the content, try a variant URL instead. If you do not know the exact URL, ' +
+      'guess the canonical one and fetch it (see the url-hunting-recovery skill) — do not fetch a ' +
+      "search engine's results page, it returns no usable links.",
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Absolute http(s) URL to fetch.' },
+      },
+      required: ['url'],
+    },
+  });
+  registerToolDefinition('web_search', {
+    description: 'Search the web via a search API (requires DMRX_SEARCH_API_KEY). Returns ranked results with title/url/snippet.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query.' },
+        count: { type: 'number', description: 'Max results (default 5, max 20).' },
+      },
+      required: ['query'],
+    },
+  });
 
-  logger.info('Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files');
+  logger.info('Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files, web_fetch, web_search');
 }
 
 // ---------------------------------------------------------------------------
@@ -1313,6 +1694,68 @@ function toUnifiedRequest(
 // ---------------------------------------------------------------------------
 
 export async function toolsRoutes(server: FastifyInstance): Promise<void> {
+  /**
+   * GET /v1/tools
+   *
+   * Returns the combined tool catalog: SDK handlers (13 native tools)
+   * plus MCP-aggregated tools (50+ from services/mcp-server). Cached
+   * for 60s, proxies MCP server when available.
+   *
+   * Response format (OpenAI-compatible):
+   * {
+   *   "tools": [
+   *     { "type": "function", "function": { "name": "...", "description": "...", "parameters": {...} }, "source": "sdk|mcp" },
+   *     ...
+   *   ],
+   *   "total": 63,
+   *   "source": "live|mcp-down",
+   *   "cached_at": 1786963464000
+   * }
+   *
+   * The Gemini and Anthropic converters can both derive their native tool
+   * format from this — OpenAI uses it directly, Gemini maps function_declarations,
+   * Anthropic maps to their tool schema.
+   */
+  server.get('/tools', async () => {
+    const catalog = await fetchToolCatalog();
+    return {
+      tools: catalog.tools,
+      total: catalog.tools.length,
+      source: catalog.source,
+      cached_at: catalog.ts,
+    };
+  });
+
+  /**
+   * GET /tools/sdk
+   *
+   * Returns only the SDK (native) tools — no MCP dependency.
+   */
+  server.get('/tools/sdk', async () => {
+    const defs = getRegisteredToolDefinitions();
+    const tools = defs.map((t) => ({
+      type: 'function',
+      function: {
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
+      },
+      source: 'sdk' as const,
+    }));
+    return { tools, total: tools.length };
+  });
+
+  /**
+   * GET /v1/tools/mcp
+   *
+   * Returns only the MCP-aggregated tools.
+   */
+  server.get('/tools/mcp', async () => {
+    const catalog = await fetchToolCatalog();
+    const tools = catalog.tools.filter((t: any) => t.source === 'mcp' || t.source === 'external');
+    return { tools, total: tools.length, source: catalog.source };
+  });
+
   /**
    * POST /tools/execute
    *
