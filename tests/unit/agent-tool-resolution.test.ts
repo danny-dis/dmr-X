@@ -8,21 +8,25 @@ import { normalizeAllowedTools } from '../../packages/core/src/agent-tools.js';
  * far fewer capabilities than its definition asks for and nothing would say so.
  *
  * Measured against the live DMR-X fleet: of the 17 agents that restrict their
- * tools, 16 request `WebFetch` and `WebSearch`. Neither is registered, and no
- * equivalent exists — the only web-ish entries in the catalog are MCP agent
- * wrappers (`dmrx_agent_*`) and `search_files`, which searches the local
- * filesystem. So e.g. "Trend Researcher" resolves to exactly
- * ['read_file','write_file','edit_file'] and has NO way to reach the internet,
+ * tools, 16 request `WebFetch` and `WebSearch`. Neither existed in the registry,
+ * and no equivalent existed — the only web-ish entries in the catalog were MCP
+ * agent wrappers (`dmrx_agent_*`) and `search_files`, which searches the local
+ * filesystem. So e.g. "Trend Researcher" resolved to exactly
+ * ['read_file','write_file','edit_file'] and had NO way to reach the internet,
  * while still answering confidently from model priors.
+ *
+ * This is fixed: `webfetch`/`websearch` are now mapped in IMPORTED_TOOL_ALIASES
+ * to the real `web_fetch`/`web_search` tools, so the stored string
+ * 'WebFetch, WebSearch, Read, Write, Edit' resolves 5/5 with zero DB changes.
  *
  * These tests pin two things:
  *  1. normalizeAllowedTools handles the shapes actually stored in the DB — a
  *     bare comma-separated STRING, not just an array — and maps the documented
  *     aliases. (A naive reader that iterates the raw string yields single
  *     characters; that bug is already fixed and must stay fixed.)
- *  2. `WebFetch`/`WebSearch` do NOT silently become something else. If a real
- *     web tool is added later, the alias map should map them deliberately and
- *     this test should be updated on purpose rather than passing by accident.
+ *  2. `WebFetch`/`WebSearch` resolve to the real web tools deliberately — not
+ *     by accident. If the tools are ever removed again, this test fails on
+ *     purpose rather than passing by accident.
  */
 
 /** The 20 SDK tools actually handed to agents (source:'sdk' in /v1/tools). */
@@ -46,6 +50,8 @@ const REGISTERED_SDK_TOOLS = [
   'search_files',
   'skill_create',
   'skill_patch',
+  'web_fetch',
+  'web_search',
   'write_file',
 ];
 
@@ -87,30 +93,30 @@ describe('allowedTools normalization', () => {
   });
 });
 
-describe('the WebFetch/WebSearch capability gap', () => {
-  it('leaves WebFetch and WebSearch unresolved rather than silently aliasing them', () => {
+describe('the WebFetch/WebSearch capability gap is closed', () => {
+  it('resolves WebFetch and WebSearch to the real web tools', () => {
     const names = normalizeAllowedTools('WebFetch, WebSearch, Read, Write, Edit');
     const { hit, missing } = resolve(names);
 
-    // The file tools resolve...
-    expect(hit).toEqual(['read_file', 'write_file', 'edit_file']);
-    // ...and the two web tools do not exist. If this ever fails because a real
-    // web tool was registered, update the expectation deliberately.
-    expect(missing).toEqual(['WebFetch', 'WebSearch']);
+    // Every requested name now resolves against the registry.
+    expect(hit).toEqual(['web_fetch', 'web_search', 'read_file', 'write_file', 'edit_file']);
+    expect(missing).toEqual([]);
   });
 
-  it('a research agent ends up with file tools only — the gap we must not hide', () => {
+  it('a research agent now has a route to the internet, not file tools only', () => {
     // "Trend Researcher" as actually stored.
     const names = normalizeAllowedTools('WebFetch, WebSearch, Read, Write, Edit');
     const { hit } = resolve(names);
-    expect(hit).toHaveLength(3);
-    expect(hit.some((t) => /web|fetch|http|url/i.test(t))).toBe(false);
+    expect(hit).toHaveLength(5);
+    expect(hit).toContain('web_fetch');
+    expect(hit).toContain('web_search');
   });
 
-  it('search_files is NOT a web tool — it searches the local filesystem', () => {
-    // Guards against "close enough" aliasing in a future change.
+  it('search_files is NOT a web tool — WebSearch resolves to web_search, not search_files', () => {
+    // Guards against "close enough" aliasing: the filesystem searcher must not
+    // masquerade as a web tool.
     expect(REGISTERED_SDK_TOOLS).toContain('search_files');
     const names = normalizeAllowedTools('WebSearch');
-    expect(resolve(names).hit).toEqual([]);
+    expect(resolve(names).hit).toEqual(['web_search']);
   });
 });

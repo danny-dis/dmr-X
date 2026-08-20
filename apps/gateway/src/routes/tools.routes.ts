@@ -766,6 +766,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { Agent } from 'undici';
+
+import { validateBaseUrlForSSRF } from './admin-ssrf.js';
 
 const execAsync = promisify(exec);
 
@@ -1031,6 +1034,100 @@ export function safePath(filePath: string, tenantId?: string, workspaceKey?: str
   return realPath;
 }
 
+// ---------------------------------------------------------------------------
+// web_fetch / web_search — LLM-driven web access tools
+// ---------------------------------------------------------------------------
+//
+// An LLM picks the URL, so these are server-side request forgery primitives:
+// EVERY outbound fetch MUST go through validateBaseUrlForSSRF() and the
+// returned pinned `lookup` must be wired into undici's Agent dispatcher, so
+// the outbound connection can only reach the IP that was validated. Redirects
+// are followed manually (`redirect: 'manual'`) and each hop is re-validated,
+// capped at 3. Response bodies are streamed with a 2MB cap and the extracted
+// text is trimmed to ~20k chars so a hostile page cannot blow the agent's
+// context budget. Failures return `{ error }` — never throw; the agent loop
+// reports tool errors back to the model for self-correction.
+
+const WEB_FETCH_TIMEOUT_MS = 10_000; // 10s hard timeout per request
+const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024; // 2MB streamed body cap
+const WEB_FETCH_MAX_CHARS = 20_000; // ~20k chars of extracted text
+const WEB_FETCH_MAX_REDIRECTS = 3; // re-validated redirect hops
+
+/** Strip <script>/<style> blocks, then tags, then collapse whitespace. */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Fetch a URL with SSRF validation on the initial URL and on every redirect
+ * hop (max 3). The connection is pinned to the validated IP via the lookup
+ * returned by validateBaseUrlForSSRF, closing the DNS-rebinding window.
+ * Returns the Response for a non-redirect status, or null when the redirect
+ * chain exceeded the cap. Throws for blocked destinations (private IPs,
+ * non-http(s) schemes, unresolvable hosts).
+ */
+async function fetchValidated(urlStr: string, signal: AbortSignal): Promise<Response | null> {
+  let current = urlStr;
+  for (let hop = 0; ; hop++) {
+    const v = await validateBaseUrlForSSRF(current);
+    const dispatcher = new Agent({ connect: { lookup: v.lookup } });
+    const res = await fetch(v.url, { dispatcher, redirect: 'manual', signal });
+    if (res.status >= 300 && res.status < 400) {
+      // Manual redirect: re-validate the next hop before following it.
+      if (hop >= WEB_FETCH_MAX_REDIRECTS) return null;
+      const loc = res.headers.get('location');
+      if (!loc) return null;
+      current = new URL(loc, v.url).toString();
+      continue;
+    }
+    return res;
+  }
+}
+
+/**
+ * Stream a response body, aborting past the 2MB cap so an oversized body is
+ * truncated rather than buffered whole. Returns the (possibly partial) text.
+ */
+async function readBodyCapped(res: Response): Promise<{ text: string; truncated: boolean; bytes: number }> {
+  if (!res.body) {
+    const text = await res.text();
+    return { text, truncated: false, bytes: Buffer.byteLength(text, 'utf-8') };
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      // Cap check BEFORE retaining the chunk: the over-limit chunk is
+      // discarded, so `bytes` stays bounded by the cap and the body is
+      // truncated rather than buffered whole.
+      if (bytes + value.byteLength > WEB_FETCH_MAX_BYTES) {
+        truncated = true;
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      bytes += value.byteLength;
+      chunks.push(value);
+    }
+  }
+  const buf = Buffer.concat(chunks);
+  return { text: buf.toString('utf-8'), truncated, bytes };
+}
+
 export function registerCodingToolHandlers(): void {
   // ---- read_file -----------------------------------------------------------
   registerToolHandler('read_file', async (args, context) => {
@@ -1280,6 +1377,113 @@ export function registerCodingToolHandlers(): void {
     }
   });
 
+  // ---- web_fetch -----------------------------------------------------------
+  registerToolHandler('web_fetch', async (args) => {
+    const { url } = args as { url?: string };
+    if (!url || typeof url !== 'string') {
+      return { error: 'url is required' };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
+    try {
+      let res: Response | null;
+      try {
+        res = await fetchValidated(url, controller.signal);
+      } catch (err) {
+        // SSRF rejection / DNS failure / bad scheme — surfaced as a normal
+        // tool error, never a throw.
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      if (!res) {
+        return { error: `Too many redirects (max ${WEB_FETCH_MAX_REDIRECTS})` };
+      }
+      const { text, truncated, bytes } = await readBodyCapped(res);
+      const plain = htmlToText(text);
+      const cut = plain.length > WEB_FETCH_MAX_CHARS;
+      return {
+        url,
+        status: res.status,
+        contentType: res.headers.get('content-type') ?? undefined,
+        text: cut ? plain.slice(0, WEB_FETCH_MAX_CHARS) : plain,
+        truncated: truncated || cut,
+        truncatedReason: cut
+          ? `text truncated at ${WEB_FETCH_MAX_CHARS} characters`
+          : truncated
+            ? `body truncated at ${WEB_FETCH_MAX_BYTES} bytes`
+            : undefined,
+        bytes,
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
+  // ---- web_search ----------------------------------------------------------
+  registerToolHandler('web_search', async (args) => {
+    const { query, count } = args as { query?: string; count?: number };
+    const apiKey = process.env.DMRX_SEARCH_API_KEY;
+    if (!apiKey) {
+      return { error: 'web_search unavailable: DMRX_SEARCH_API_KEY not configured' };
+    }
+    if (!query || typeof query !== 'string') {
+      return { error: 'query is required' };
+    }
+    const provider = (process.env.DMRX_SEARCH_PROVIDER || 'brave').toLowerCase();
+    if (provider !== 'brave') {
+      return { error: `web_search unavailable: unsupported provider '${provider}' (supported: brave)` };
+    }
+
+    const url = new URL('https://api.search.brave.com/res/v1/web/search');
+    url.searchParams.set('q', query);
+    url.searchParams.set('count', String(Math.min(Math.max(Math.trunc(count ?? 5), 1), 20)));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
+    try {
+      // Same SSRF treatment as web_fetch: validate the endpoint, pin the
+      // connection to the validated IP, and re-validate any redirect hop.
+      let res: Response | null;
+      try {
+        res = await fetchValidated(url.toString(), controller.signal);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      if (!res) {
+        return { error: `Too many redirects (max ${WEB_FETCH_MAX_REDIRECTS})` };
+      }
+      const { text, truncated, bytes } = await readBodyCapped(res);
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // Non-JSON response — leave results empty; rawText below still surfaces
+        // the API's own message instead of fabricating results.
+      }
+      const raw = parsed?.web?.results ?? parsed?.results ?? parsed?.items;
+      const results: Array<{ title: string; url: string; snippet: string }> = Array.isArray(raw)
+        ? raw.slice(0, 10).map((r: any) => ({
+            title: String(r.title ?? r.name ?? ''),
+            url: String(r.url ?? r.link ?? ''),
+            snippet: String(r.description ?? r.snippet ?? r.content ?? ''),
+          }))
+        : [];
+      return {
+        query,
+        provider,
+        results,
+        total: results.length,
+        truncated,
+        rawText: results.length === 0 && text ? text.slice(0, WEB_FETCH_MAX_CHARS) : undefined,
+      };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   registerToolDefinition('read_file', {
     description: 'Read a text file from the agent sandbox, optionally a slice of lines. Returns content with line offsets.',
     parameters: {
@@ -1350,8 +1554,29 @@ export function registerCodingToolHandlers(): void {
       required: ['pattern'],
     },
   });
+  registerToolDefinition('web_fetch', {
+    description: 'Fetch a URL and return its readable text content (HTML stripped to plain text, capped at 20k chars). SSRF-protected: private/loopback/link-local hosts and redirects to them are refused.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Absolute http(s) URL to fetch.' },
+      },
+      required: ['url'],
+    },
+  });
+  registerToolDefinition('web_search', {
+    description: 'Search the web via a search API (requires DMRX_SEARCH_API_KEY). Returns ranked results with title/url/snippet.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query.' },
+        count: { type: 'number', description: 'Max results (default 5, max 20).' },
+      },
+      required: ['query'],
+    },
+  });
 
-  logger.info('Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files');
+  logger.info('Registered coding tool handlers: read_file, write_file, edit_file, list_files, bash, search_files, web_fetch, web_search');
 }
 
 // ---------------------------------------------------------------------------

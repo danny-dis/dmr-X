@@ -61,6 +61,7 @@ const backendAlias = {
   // resolved from the store dynamically so bumps don't break resolution.
   'fastify': resolveStorePath('fastify', 'fastify'),
   '@fastify/compress': resolveStorePath('@fastify+compress', '@fastify/compress'),
+  'undici': resolveStorePath('undici', 'undici'),
   'zod': zodRoot,
   'zod/v4': resolve(zodRoot, 'v4'),
 };
