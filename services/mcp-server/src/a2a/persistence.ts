@@ -177,10 +177,8 @@ export function initPersistence(config: A2APersistenceConfig = {}): void {
   // Prefer Bun's native `bun:sqlite` (the actual runtime). Fall back to
   // Node's `node:sqlite` only when the import is unavailable or the open or
   // schema setup fails. Keeps the original in-memory fallback intact.
-  // @ts-ignore — `bun:sqlite` types ship with @types/bun, which this repo does
-  // not install; the runtime module exists under Bun.
-  import('bun:sqlite')
-    .then(({ Database }) => {
+  import('bun:sqlite' as string)
+    .then(({ Database }: { Database: new (path: string) => any }) => {
       try {
         db = openDatabaseWithRecovery(() => new Database(cfg.dbPath as string), 'bun:sqlite');
         if (db) setupDb(db);

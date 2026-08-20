@@ -427,7 +427,7 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // AutoTune analyze
-  server.post('/godmode/autotune', async (request) => {
+  server.post('/godmode/autotune', async (request, reply) => {
     const parsed = AutotuneAnalyzeSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
@@ -441,7 +441,7 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // Parseltongue encode
-  server.post('/godmode/parseltongue', async (request) => {
+  server.post('/godmode/parseltongue', async (request, reply) => {
     const parsed = ParseltongueEncodeSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
@@ -455,7 +455,7 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // STM transform
-  server.post('/godmode/transform', async (request) => {
+  server.post('/godmode/transform', async (request, reply) => {
     const parsed = TransformSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });

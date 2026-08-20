@@ -27,19 +27,10 @@ let nativeEngine: { name: 'bun' | 'node'; open(filePath: string): BunDatabase } 
 async function getNativeEngine(): Promise<typeof nativeEngine> {
   if (nativeEngine) return nativeEngine;
   if (typeof (globalThis as Record<string, unknown>).Bun !== 'undefined') {
-    // @ts-ignore — `bun:sqlite` types ship with @types/bun, which this repo
-    // does not install; the runtime module exists under Bun.
-    const { Database } = await import(/* @vite-ignore */ 'bun:sqlite');
+    const { Database } = await import(/* @vite-ignore */ 'bun:sqlite') as { Database: new (path: string) => BunDatabase };
     nativeEngine = { name: 'bun', open: (filePath: string) => new Database(filePath) };
   } else {
-    // @ts-ignore — node:sqlite types ship with @types/node 22.5+; this repo
-    // has no coverage for the module, and the runtime module exists under
-    // Node. readBigInts: true keeps large INTEGER values as bigint instead of
-    // throwing RangeError ("Value is too large to be represented as a
-    // JavaScript number") on read — parity with bun:sqlite, which silently
-    // rounds to a double. The wrapper's coerceBigInt normalizes them back to
-    // numbers exactly like it does for sql.js's bigint rows.
-    const { DatabaseSync } = await import('node:sqlite');
+    const { DatabaseSync } = await import('node:sqlite') as { DatabaseSync: new (path: string, opts?: { readBigInts?: boolean }) => BunDatabase };
     nativeEngine = {
       name: 'node',
       open: (filePath: string) => new DatabaseSync(filePath, { readBigInts: true }),
