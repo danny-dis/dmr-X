@@ -125,6 +125,7 @@ When you find a bug but don't fix it:
 | # | Item | Agent | Started | ETA | Notes |
 |---|------|-------|---------|-----|-------|
 | G-1 | Fix `restartGodmodeProxy` apiKey drop (B-006) + test | opencode | 2026-08-19 | 2026-08-19 | ✅ Done — pass `api_key` through all 3 `setGodmodeConfig` calls; 3 regression tests added; live service re-verified (no more 401s) |
+| G-2 | Per-model diversity cap (final-selector) + sticky cooldown fast-path (sticky-session-handler) | opencode | 2026-08-19 | 2026-08-19 | ✅ Done — additive: `MAX_MODEL_SHARE=0.25` + `recordModel`/`modelShare`, combined model-first diversity; cooldown re-check on both sticky fast-path gates. Not committed |
 
 ---
 
@@ -169,5 +170,6 @@ When you find a bug but don't fix it:
 
 ## Changelog
 
+- **2026-08-19** — G-2 (uncommitted): per-model diversity cap in `services/router/src/pipeline/final-selector.ts` (`MAX_MODEL_SHARE=0.25`, `recordModel`/`modelShare`, model-first combined diversity) + sticky fast-path cooldown re-check in `services/router/src/sticky-session-handler.ts` (both `getStickyProvider` gates). pipeline.test.ts 25/25, final-selector.test.ts 5/5, fallback-executor.test.ts 2 pre-existing failures (B-003).
 - **2026-08-19** — B-006 fixed (`3f96ef4`): `restartGodmodeProxy()` in `apps/gateway/src/lib/godmode-guard.ts` now passes `api_key` through all 3 `setGodmodeConfig` calls (env key / live instance key / freshly-started key). Regression tests in `tests/unit/godmode-wrap-order.test.ts`. Live godmode service restarted via gateway lifecycle and verified: `/server/config` → `hasApiKey:true`, auto-free wrap returns 200.
 - **2026-08-18** — D List hardening complete: burst test (12 concurrent, 10/12 pass), vault watchdog wired to cron (every 5 min), key_lookup_hash backfill verified (0 NULLs), rate-limit TTLs confirmed in code. Provider pruning deferred.

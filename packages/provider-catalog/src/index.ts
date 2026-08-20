@@ -5,6 +5,8 @@
  * Users can add any of these via: dmrx add-provider <provider-id>
  */
 
+import { MODEL_BENCHMARKS } from './benchmarks.generated.js';
+
 export interface OAuthProviderConfig {
   flow: 'authorization_code' | 'client_credentials' | 'device_code';
   authorizationUrl?: string;
@@ -2909,6 +2911,40 @@ for (const provider of PROVIDER_CATALOG) {
  */
 export function getProviderTemplate(id: string): ProviderTemplate | undefined {
   return PROVIDER_CATALOG.find((p) => p.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Artificial Analysis benchmark reranking (see scripts/sync-benchmarks.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map an Artificial Analysis intelligence index to a 1-10 rank on the same
+ * scale as the hand-set catalog `freeTier.intelligenceRank`.
+ *
+ * Calibration (measured 2026-08-19 from OpenRouter's published data, 141
+ * models): index range 5.5–63.1, median 37.8. rank = clamp(round(index/6), 1, 10)
+ * yields: claude-opus-5 63.1 → 10, kimi-k3 59.7 → 10, gemini-3.6-flash 51.6
+ * → 9, nemotron-3-ultra-550b-a55b:free 38.3 → 6 (catalog had it at 9 — the
+ * inflation this layer exists to correct), median ~38 → 6.
+ */
+export function benchmarkIndexToRank(intelligenceIndex: number): number {
+  if (!Number.isFinite(intelligenceIndex) || intelligenceIndex <= 0) return 0;
+  return Math.max(1, Math.min(10, Math.round(intelligenceIndex / 6)));
+}
+
+/**
+ * Look up a model's benchmark-derived intelligence rank (1-10) by its id.
+ * Returns `undefined` when the model id has no Artificial Analysis benchmark.
+ *
+ * The id must match the key OpenRouter publishes (e.g.
+ * `nvidia/nemotron-3-ultra-550b-a55b:free`). The registry's enrichFromCatalog
+ * overrides the hand-set catalog rank with this value when it exists.
+ */
+export function getBenchmarkIntelligenceRank(modelId: string): number | undefined {
+  const entry = MODEL_BENCHMARKS[modelId];
+  if (!entry) return undefined;
+  const rank = benchmarkIndexToRank(entry.intelligenceIndex);
+  return rank >= 1 ? rank : undefined;
 }
 
 /**

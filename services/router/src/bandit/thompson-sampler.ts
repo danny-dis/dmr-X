@@ -21,7 +21,11 @@ interface ArmState {
 export class ThompsonSampler {
   private arms = new Map<string, ArmState>();
 
-  constructor(private readonly priorAlpha: number = 1, private readonly priorBeta: number = 1) {}
+  constructor(
+    private readonly priorAlpha: number = 1,
+    private readonly priorBeta: number = 1,
+    private readonly getPenaltyPoints?: (providerId: string, modelId: string) => number,
+  ) {}
 
   /**
    * Select the best candidate using Thompson Sampling
@@ -207,13 +211,21 @@ export class ThompsonSampler {
 
     // Normalize scores
     const qualityScore = candidate.qualityScore;
+    // Penalties from the RateLimitService (e.g. repeated 429s) are now visible
+    // to the bandit: each penalty point shaves 5% off the effective quality,
+    // so an arm that keeps rate-limiting is demoted even when its raw quality
+    // score would otherwise make it the best arm.
+    const effectiveQuality =
+      this.getPenaltyPoints && qualityScore != null
+        ? Math.max(0, qualityScore - this.getPenaltyPoints(candidate.providerId, candidate.modelId) * 0.05)
+        : qualityScore;
     const costScore = Math.max(0, 1 - (candidate.costPerInputToken || 0) / 0.01); // Normalize to 0.01, clamped to [0, 1]
     const latencyScore = Math.max(0, 1 - (candidate.avgLatencyMs || 0) / 5000); // Normalize to 5s, clamped to [0, 1]
 
     // Combine Thompson sample with quality/cost/latency scores
     const combinedScore =
       sample * 0.3 + // Exploration
-      qualityScore * weights.quality +
+      effectiveQuality * weights.quality +
       costScore * weights.cost +
       latencyScore * weights.latency;
 

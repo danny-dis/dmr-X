@@ -90,7 +90,9 @@ export class Router {
   constructor(private readonly config: RouterConfig = {}) {
     this.taskDecomposer = new TaskDecomposer();
     this.specialistRouter = new SpecialistRouter();
-    this.thompsonSampler = new ThompsonSampler();
+    // Wire the bandit to the rate-limit penalty signal so arms that keep
+    // 429ing are demoted in selection (see ThompsonSampler.adjustByQualityTarget).
+    this.thompsonSampler = new ThompsonSampler(undefined, undefined, (p, m) => this.config.rateLimitService?.getPenaltyPoints(p, m) ?? 0);
     this.clusterScorer = new ClusterScorer();
     this.handoverSummarizer = new HandoverSummarizer();
     this.guardrailEngine = getGuardrailEngine();
@@ -218,6 +220,26 @@ export class Router {
           : {},
       );
       this.thompsonSampler.update(candidate, reward);
+
+      // When the request SUCCEEDED via a fallback chain entry — the served
+      // candidate is not plan.primary (providerId AND modelId differ) — the
+      // primary FAILED and was rescued by a fallback. Record a failure (reward 0)
+      // against the primary so its bandit arm cools down and stops being picked;
+      // otherwise it stays hot, keeps getting chosen as primary, fails again,
+      // and every request pays for its failure before falling back.
+      if (success && response) {
+        const primaryCandidate = this.getCandidate(
+          plan.primary.providerId,
+          plan.primary.modelId,
+        );
+        if (
+          primaryCandidate &&
+          (candidate.providerId !== plan.primary.providerId ||
+            candidate.modelId !== plan.primary.modelId)
+        ) {
+          this.thompsonSampler.update(primaryCandidate, 0);
+        }
+      }
     } catch (err) {
       logger.debug({ err }, 'Failed to record Thompson sampler reward');
     }

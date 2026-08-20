@@ -10,7 +10,7 @@
  * Used by OpenAI /v1/chat/completions and Anthropic /v1/messages.
  */
 import type { CandidateSet } from '@dmr-x/core';
-import { resolveMetaModel } from '@dmr-x/router';
+import { isMetaModel, resolveMetaModel } from '@dmr-x/router';
 import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 
 /** Last-resort concrete models when the vault has no `auto-free` candidates. */
@@ -94,9 +94,16 @@ export function buildWrapOrderForModel(
 
   if (order.length > 0) return order;
 
-  // Not a meta-model (or it ranked zero candidates): treat the model as a
-  // concrete id and wrap it directly. Only when it is blank too do we fall
-  // back to the emergency list.
+  // A KNOWN meta-model alias that ranked zero candidates (e.g. an empty
+  // vault) must NOT be treated as a concrete model id — wrapping it would
+  // re-enter the meta-model and loop. Fall back to the emergency list.
+  if (isMetaModel(model)) {
+    logger.warn({ model }, 'godmode wrap: meta-model ranked zero candidates — using emergency fallbacks');
+    return [...GODMODE_WRAP_FALLBACK];
+  }
+
+  // Not a meta-model: treat the model as a concrete id and wrap it directly.
+  // Only when it is blank too do we fall back to the emergency list.
   const trimmed = model.trim();
   if (trimmed) {
     logger.warn({ model }, 'godmode wrap: model not resolvable as meta-model — wrapping concrete id directly');
@@ -130,9 +137,15 @@ async function restartGodmodeProxy(requestId: string): Promise<boolean> {
     try {
       const res = await fetch(`${defaultUrl}/v1/health`, { method: 'GET', signal: AbortSignal.timeout(2000) });
       if (res.ok) {
+        // Adopt the persisted api_key when no env key is set. server-manager
+        // always generates and persists one when it spawns the sidecar, so
+        // this keeps the gateway authenticated against a gateway-managed
+        // instance even after an env-less restart (B-006 follow-up) — without
+        // it, every relayed wrap would 401 against the keyed sidecar.
+        const liveRow = serverManager.getRunningInstance();
         setGodmodeConfig({
           baseUrl: defaultUrl,
-          apiKey: process.env.GODMODE_API_KEY || undefined,
+          apiKey: process.env.GODMODE_API_KEY || liveRow?.api_key || undefined,
           openrouterApiKey: process.env.OPENROUTER_API_KEY,
           llmBaseUrl: `${gatewayUrl}/v1`,
           llmApiKey: process.env.DMRX_ADMIN_API_KEY || undefined,

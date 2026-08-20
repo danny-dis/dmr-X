@@ -33,6 +33,9 @@ const MODEL_ERROR_TTL: Record<string, number> = {
   'model_not_found': 6 * 60 * 60_000, // 6 hours
   'auth_error': 15 * 60_000,          // 15 minutes
   'provider_overloaded': 5 * 60_000,  // 5 minutes
+  // 429 is usually transient (upstream throttling window), so a SHORT cooldown
+  // keeps the model out of the next few picks without locking it out for long.
+  'rate_limit': 2 * 60_000,           // 2 minutes
 };
 const modelErrorCache = new Map<string, { category: string; expiresAt: number }>();
 
@@ -285,6 +288,61 @@ function trackModelError(providerId: string, modelId: string, category: string):
 }
 
 /**
+ * Shared failure bookkeeping for a failed provider/model step: 429 → penalty +
+ * escalating cooldown + usage(0); 402 → 24h payment cooldown; 403 → 24h
+ * forbidden cooldown; 529/530 → 5m overload cooldown.
+ *
+ * Used by BOTH the sequential fallback loop and the parallel-probe rejection
+ * path. Before this helper existed, a step probed concurrently that lost the
+ * race to a sibling only got its model error tracked — never a penalty or
+ * cooldown — so it was re-selected hot on the next request even though it had
+ * 429'd/402'd moments earlier.
+ */
+async function applyFailurePenalties(
+  rls: RateLimitService | undefined,
+  providerId: string,
+  modelId: string,
+  error: unknown,
+): Promise<void> {
+  // On 429, add penalty and record usage
+  if (rls && isRateLimitError(error)) {
+    rls.addPenalty(providerId, modelId);
+    // Escalating cooldown (2m -> 10m -> 1h -> 24h) so a repeatedly 429'd
+    // provider/model backs off progressively instead of being retried hot.
+    rls.recordRateLimitHit?.(providerId, modelId);
+    try {
+      await rls.recordUsage(providerId, modelId, 0);
+    } catch (usageErr) {
+      logger.warn({ err: usageErr, provider: providerId }, 'Failed to record rate limit usage');
+    }
+  }
+  // On 402 (Payment Required), apply 24h cooldown — model needs credit to work
+  if (rls && isPaymentRequiredError(error)) {
+    rls.setPaymentRequiredCooldown(providerId, modelId);
+    logger.warn(
+      { provider: providerId, modelId: modelId },
+      'Payment required (402) on fallback — applying 24h cooldown'
+    );
+  }
+  // On 403 (Forbidden), apply 24h cooldown — model is not accessible
+  if (rls && isForbiddenError(error)) {
+    rls.setModelForbiddenCooldown(providerId, modelId);
+    logger.warn(
+      { provider: providerId, modelId: modelId },
+      'Model forbidden (403) on fallback — applying 24h cooldown'
+    );
+  }
+  // On 529/530 (Provider Overloaded), apply 5-minute cooldown
+  if (rls && isProviderOverloadedError(error)) {
+    rls.setCooldown(providerId, modelId, 5 * 60_000);
+    logger.warn(
+      { provider: providerId, statusCode: error instanceof ProviderError ? error.statusCode : 'unknown' },
+      'Provider overloaded — applying 5-minute cooldown'
+    );
+  }
+}
+
+/**
  * Whether a provider/model is currently on an error cooldown (404/410, bad
  * auth, overload). Exported so callers that build chain-less plans — notably
  * the sticky-session fast path — can avoid re-calling a model already known
@@ -425,6 +483,9 @@ export async function executeWithFallback(
     // On 429, add penalty and record usage
     if (rls && isRateLimitError(error)) {
       rls.addPenalty(plan.primary.providerId, plan.primary.modelId);
+      // Escalating cooldown (2m -> 10m -> 1h -> 24h) so a repeatedly 429'd
+      // provider/model backs off progressively instead of being retried hot.
+      rls.recordRateLimitHit?.(plan.primary.providerId, plan.primary.modelId);
       try {
         await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0);
       } catch (usageErr) {
@@ -498,8 +559,13 @@ export async function executeWithFallback(
   // when healthy candidates existed. Now we also track provider_overloaded and
   // generic 'error' with a short cooldown (default 5m) so the meta-router
   // self-heals by skipping the dead candidate instead of re-hitting it.
+  // `rate_limit` (429) is tracked too: a 429'd model was previously left fully
+  // selectable, so the pre-selection filter kept re-picking it until its own
+  // rate-limit penalty decayed. Note 429 is model-scoped, NOT provider-wide —
+  // another model on the same provider may still answer.
   if (errorCategory === 'model_not_found' || errorCategory === 'auth_error' ||
-      errorCategory === 'provider_overloaded' || errorCategory === 'error') {
+      errorCategory === 'provider_overloaded' || errorCategory === 'error' ||
+      errorCategory === 'rate_limit') {
     trackModelError(plan.primary.providerId, plan.primary.modelId, errorCategory);
   }
 
@@ -565,6 +631,11 @@ export async function executeWithFallback(
       } else if (result.status === 'rejected') {
         const step = immediateSteps[i];
         const category = classifyError(result.reason);
+        // Apply the same penalty/cooldown bookkeeping as the sequential loop:
+        // a probed step that loses the race to a sibling must still be demoted
+        // (429 penalty + escalating cooldown, 402/403/529 cooldowns) — otherwise
+        // it is re-selected hot on the next request.
+        await applyFailurePenalties(rls, step.provider.providerId, step.provider.modelId, result.reason);
         trackModelError(step.provider.providerId, step.provider.modelId, category);
         recordTriedError(step.provider.providerId, result.reason);
       }
@@ -671,46 +742,20 @@ export async function executeWithFallback(
           'Fallback provider failed'
         );
       }
-      // On 429, add penalty and record usage
-      if (rls && isRateLimitError(error)) {
-        rls.addPenalty(step.provider.providerId, step.provider.modelId);
-        try {
-          await rls.recordUsage(step.provider.providerId, step.provider.modelId, 0);
-        } catch (usageErr) {
-          logger.warn({ err: usageErr, provider: step.provider.providerId }, 'Failed to record rate limit usage');
-        }
-      }
-      // On 402 (Payment Required), apply 24h cooldown — model needs credit to work
-      if (rls && isPaymentRequiredError(error)) {
-        rls.setPaymentRequiredCooldown(step.provider.providerId, step.provider.modelId);
-        logger.warn(
-          { provider: step.provider.providerId, modelId: step.provider.modelId },
-          'Payment required (402) on fallback — applying 24h cooldown'
-        );
-      }
-      // On 403 (Forbidden), apply 24h cooldown — model is not accessible
-      if (rls && isForbiddenError(error)) {
-        rls.setModelForbiddenCooldown(step.provider.providerId, step.provider.modelId);
-        logger.warn(
-          { provider: step.provider.providerId, modelId: step.provider.modelId },
-          'Model forbidden (403) on fallback — applying 24h cooldown'
-        );
-      }
-      // On 529/530 (Provider Overloaded), apply 5-minute cooldown
-      if (rls && isProviderOverloadedError(error)) {
-        rls.setCooldown(step.provider.providerId, step.provider.modelId, 5 * 60_000);
-        logger.warn(
-          { provider: step.provider.providerId, statusCode: error instanceof ProviderError ? error.statusCode : 'unknown' },
-          'Provider overloaded — applying 5-minute cooldown'
-        );
-      }
+      // On 429/402/403/529, apply the shared penalty + cooldown bookkeeping
+      // (429 → penalty + escalating cooldown + usage, 402 → 24h payment
+      // cooldown, 403 → 24h forbidden cooldown, 529/530 → 5m overload cooldown).
+      await applyFailurePenalties(rls, step.provider.providerId, step.provider.modelId, error);
       // Track model-level errors so we skip them on subsequent attempts.
       // Mirror the primary-provider handling: also track provider_overloaded
       // and generic transient 'error' (not just model_not_found / auth_error)
       // so a dead candidate is skipped instead of retried every turn.
+      // `rate_limit` joins the tracked set for the same reason as the primary
+      // path — a 429'd fallback model should sit out the cooldown window.
       const fallbackErrorCategory = classifyError(error);
       if (fallbackErrorCategory === 'model_not_found' || fallbackErrorCategory === 'auth_error' ||
-          fallbackErrorCategory === 'provider_overloaded' || fallbackErrorCategory === 'error') {
+          fallbackErrorCategory === 'provider_overloaded' || fallbackErrorCategory === 'error' ||
+          fallbackErrorCategory === 'rate_limit') {
         trackModelError(step.provider.providerId, step.provider.modelId, fallbackErrorCategory);
       }
     }

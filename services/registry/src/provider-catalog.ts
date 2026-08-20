@@ -8,6 +8,8 @@ export {
   getProvidersByCategory,
   getProvidersByModality,
   searchProviders,
+  getBenchmarkIntelligenceRank,
+  benchmarkIndexToRank,
   type ProviderTemplate,
   type ModelTemplate,
   type OAuthProviderConfig,

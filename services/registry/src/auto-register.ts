@@ -5,7 +5,7 @@ import { getDb } from '@dmr-x/db';
 import { logger, eventBus, SystemEvents } from '@dmr-x/utils';
 
 import { discoverOpenAIModels, type DiscoveredModel, OPENROUTER_VIRTUAL_MODEL_IDS } from './model-discovery.js';
-import { PROVIDER_CATALOG, type ProviderTemplate, type ModelTemplate } from './provider-catalog.js';
+import { PROVIDER_CATALOG, type ProviderTemplate, type ModelTemplate, getBenchmarkIntelligenceRank } from './provider-catalog.js';
 
 /**
  * Build a lookup map of catalog models keyed by `${providerId}/${modelId}`.
@@ -68,7 +68,12 @@ function enrichFromCatalog(
     // the bare tier baseline.
     rateLimits: model.rateLimits ?? tmpl.freeTier?.rateLimits,
     monthlyTokenBudget: model.monthlyTokenBudget ?? tmpl.freeTier?.monthlyTokenBudget,
-    intelligenceRank: model.intelligenceRank ?? tmpl.freeTier?.intelligenceRank,
+    // Benchmark-first intelligence rank: the hand-set catalog rank is inflated
+    // for several free gateways (nemotron-3-ultra-550b-a55b:free is catalog
+    // rank 9 but scores 38.3 on Artificial Analysis ≈ rank 6). When OpenRouter
+    // publishes a benchmark for this model id, that measured rank wins; only
+    // models with no benchmark fall through to the catalog guess.
+    intelligenceRank: getBenchmarkIntelligenceRank(model.modelId) ?? model.intelligenceRank ?? tmpl.freeTier?.intelligenceRank,
     speedRank: model.speedRank ?? tmpl.freeTier?.speedRank,
   };
 }

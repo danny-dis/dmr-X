@@ -104,6 +104,29 @@ function replyError(err: unknown): { error: string; message: string } {
   return { error: 'server_operation_failed', message };
 }
 
+/**
+ * Self-heal guard for godmode inference routes: if the sidecar is not up,
+ * bring it online via the shared godmode-guard (the same restart path the
+ * `auto-free` flow uses). Without this, every godmode panel request dies
+ * with a connection error whenever the sidecar is down — e.g. after a
+ * gateway restart while DMRX_GODMODE_AUTOSTART was false, which is exactly
+ * how "godmode stopped working through dmrx" surfaced.
+ */
+async function ensureGodmodeProxyReady(): Promise<boolean> {
+  const { ensureGodmodeProxy } = await import('../lib/godmode-guard.js');
+  return ensureGodmodeProxy('godmode-route').catch(() => false);
+}
+
+/** 503 reply when the proxy could not be brought online. */
+function proxyUnavailableReply(reply: {
+  status: (code: number) => { send: (payload: unknown) => unknown };
+}) {
+  return reply.status(503).send({
+    error: 'godmode_unavailable',
+    message: 'G0DM0D3 proxy unavailable — not running and auto-start failed',
+  });
+}
+
 
 export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   const service = getGodmodeService();
@@ -141,6 +164,12 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data as GodmodeChatRequest;
+
+    // Self-heal: ensure the sidecar is up before touching it (chat relays
+    // inference through the gateway vault, so a down sidecar must restart).
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
 
     // No model supplied → let DMR-X's own algorithm pick (pick-then-wrap):
     // rank the live vault candidates with the same picker the `auto-free`
@@ -190,6 +219,10 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
 
     const body = parsed.data as UltraplinianRequest & { stream?: boolean };
 
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
+
     if (body.stream) {
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -222,6 +255,10 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data as ConsortiumRequest & { stream?: boolean };
+
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
 
     if (body.stream) {
       reply.hijack();
@@ -397,6 +434,9 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data as AutotuneAnalyzeRequest;
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
     return service.autotuneAnalyze(body);
   });
 
@@ -408,6 +448,9 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data as ParseltongueEncodeRequest;
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
     return service.parseltongueEncode(body);
   });
 
@@ -419,6 +462,9 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data as TransformRequest;
+    if (!(await ensureGodmodeProxyReady())) {
+      return proxyUnavailableReply(reply);
+    }
     return service.transform(body);
   });
 }

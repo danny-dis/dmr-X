@@ -239,7 +239,8 @@ export function decrypt(encryptedHex: string): string {
 
 /**
  * Encrypt the `apiKey` field inside a config object (in-place).
- * If DMRX_ENCRYPTION_KEY is not set, the value passes through unchanged.
+ * Throws if DMRX_ENCRYPTION_KEY is not set — storing plaintext at rest
+ * defeats encryption (L3). No-op when apiKey is absent or not a string.
  */
 export function encryptConfigApiKey(config: Record<string, unknown>): Record<string, unknown> {
   if (typeof config.apiKey === 'string' && config.apiKey.length > 0) {

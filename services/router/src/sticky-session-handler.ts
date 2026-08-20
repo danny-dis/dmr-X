@@ -90,6 +90,10 @@ export async function handleStickySession(
   // must not be re-called: the sticky plan carries no fallback chain, so the
   // request would hard-fail with 502 instead of being routed normally.
   if (isModelOnErrorCooldown(sticky.providerId, sticky.modelId)) {
+    logger.warn(
+      { providerId: sticky.providerId, modelId: sticky.modelId },
+      'Sticky session broken — pinned model is on error cooldown'
+    );
     await breakStickySession(conversationHash, 'Pinned model is on error cooldown');
     return { used: false };
   }
@@ -176,6 +180,20 @@ export async function handleStickySession(
 
     // If we're still in sticky mode (planner said STAY or planner disabled)
     if (!enablePlanner || (await getStickyProvider(conversationHash, config.rateLimitService, freeTierStrategy, () => false))) {
+      // Re-verify the pin is not on an error cooldown before the chain-less
+      // fast path re-calls a dead model: the pipeline run above can be slow
+      // enough that the pinned model enters cooldown between the first check
+      // and this point, and getStickyProvider only checks rate limits, not
+      // the error cooldown.
+      if (isModelOnErrorCooldown(sticky.providerId, sticky.modelId)) {
+        logger.warn(
+          { providerId: sticky.providerId, modelId: sticky.modelId },
+          'Sticky session broken — pinned model is on error cooldown'
+        );
+        await breakStickySession(conversationHash, 'Pinned model is on error cooldown');
+        return { used: false };
+      }
+
       logger.info(
         { providerId: sticky.providerId, modelId: sticky.modelId },
         'Using sticky session'
