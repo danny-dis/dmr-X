@@ -65,6 +65,117 @@ async function executeToolCallWithRetry(
 }
 
 // ---------------------------------------------------------------------------
+// Tool call dedupe
+//
+// Observed on live runs: models re-issue the SAME tool call inside one turn
+// AND across turns, burning the step budget re-asking a question they already
+// have the answer to. A 'Codebase Archaeologist' run with maxSteps=4 produced
+// `recall, recall, list_files, list_files, search_files, search_files` — every
+// tool executed twice with near-identical arguments.
+//
+// Two defences, both keyed on (tool name + NORMALIZED arguments):
+//   1. within-turn : execute once, fan the single result out to every
+//                    tool_call_id that asked for it.
+//   2. cross-turn  : replay the cached earlier result instead of re-executing.
+//
+// CRITICAL: the OpenAI tool protocol requires exactly one tool message per
+// tool_call_id. Dedupe therefore never DROPS a call — it only avoids the
+// second EXECUTION, and always emits a result row per id.
+//
+// Gated by DMRX_AGENT_TOOL_DEDUPE (default on; set to 0/false/off to disable).
+// ---------------------------------------------------------------------------
+
+/** Recursively sort object keys so {"a":1,"b":2} and {"b":2,"a":1} normalize equal. */
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === 'object') {
+    const src = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(src).sort()) out[k] = sortKeysDeep(src[k]);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Canonical form of a tool call's argument string. Parses JSON and sorts keys
+ * so key order and whitespace do not defeat the comparison. Unparseable
+ * arguments fall back to the trimmed raw string (still a valid equality test).
+ */
+export function normalizeToolArguments(raw: string | undefined | null): string {
+  const text = (raw ?? '').trim();
+  if (!text) return '{}';
+  try {
+    return JSON.stringify(sortKeysDeep(JSON.parse(text)));
+  } catch {
+    return text;
+  }
+}
+
+/** Identity of a tool call for dedupe purposes: name + normalized arguments. */
+export function toolCallDedupeKey(tc: ToolCall): string {
+  return `${tc.function.name}\u0000${normalizeToolArguments(tc.function.arguments)}`;
+}
+
+function isToolDedupeEnabled(): boolean {
+  const raw = (process.env.DMRX_AGENT_TOOL_DEDUPE ?? '').trim().toLowerCase();
+  if (!raw) return true; // default ON
+  return !(raw === '0' || raw === 'false' || raw === 'off' || raw === 'no');
+}
+
+type ToolExecResult = {
+  tool_call_id: string;
+  tool_name: string;
+  result: unknown;
+  error?: { message: string };
+  /** Set when this row was fanned out from another execution rather than executed. */
+  deduped?: 'within_turn' | 'cross_turn';
+  /** The tool_call_id whose real execution produced this row. */
+  deduped_from?: string;
+};
+
+/**
+ * Split a turn's allowed calls into the ones that must really execute and the
+ * ones whose result can be copied (same turn) or replayed (earlier turn).
+ */
+function planToolExecution(
+  allowedCalls: ToolCall[],
+  cache: Map<string, ToolExecResult>,
+  enabled: boolean,
+): {
+  toExecute: ToolCall[];
+  withinTurnAliases: Array<{ tc: ToolCall; key: string }>;
+  crossTurnReplays: Array<{ tc: ToolCall; key: string }>;
+  keyOf: Map<string, string>;
+} {
+  const toExecute: ToolCall[] = [];
+  const withinTurnAliases: Array<{ tc: ToolCall; key: string }> = [];
+  const crossTurnReplays: Array<{ tc: ToolCall; key: string }> = [];
+  const keyOf = new Map<string, string>();
+  const firstSeen = new Set<string>();
+
+  for (const tc of allowedCalls) {
+    if (!enabled) {
+      toExecute.push(tc);
+      continue;
+    }
+    const key = toolCallDedupeKey(tc);
+    keyOf.set(tc.id, key);
+    if (cache.has(key)) {
+      crossTurnReplays.push({ tc, key });
+      continue;
+    }
+    if (firstSeen.has(key)) {
+      withinTurnAliases.push({ tc, key });
+      continue;
+    }
+    firstSeen.add(key);
+    toExecute.push(tc);
+  }
+  return { toExecute, withinTurnAliases, crossTurnReplays, keyOf };
+}
+
+// ---------------------------------------------------------------------------
 // Shared agentic loop engine for the /agents/:instanceId/chat route.
 // ---------------------------------------------------------------------------
 
@@ -656,6 +767,16 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   let finalUsage: any;
   const allSteps: AgentChatLoopResult['allSteps'] = [];
   const allStepResults: StepResult[] = [];
+
+  // Run-scoped tool-result cache for CROSS-TURN repeat detection, keyed on
+  // (tool name + normalized arguments). Populated only with results that were
+  // really executed in this run; errors are cached too so a failing call is not
+  // hammered every turn (the reflection prompt already tells the model to change
+  // its approach). Lives for the duration of one runAgentChatLoop call only.
+  const toolResultCache = new Map<string, ToolExecResult>();
+  const toolDedupeEnabled = isToolDedupeEnabled();
+  let dedupedCallCount = 0;
+
   const sdkStopConditions = buildStopConditions(
     stopConditions,
     () => lastResponseText,
@@ -919,7 +1040,38 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     const MAX_TOOL_RETRIES = 2;
     const TOOL_RETRY_BASE_MS = 1000;
 
-    const executionPromises = allowedCalls.map((tc: ToolCall) =>
+    // ---------------------------------------------------------------- DEDUPE
+    // Plan the turn: which calls really execute, which are duplicates of a call
+    // in THIS turn, and which repeat a call already executed in an EARLIER turn.
+    const { toExecute, withinTurnAliases, crossTurnReplays } = planToolExecution(
+      allowedCalls,
+      toolResultCache,
+      toolDedupeEnabled,
+    );
+
+    if (withinTurnAliases.length > 0 || crossTurnReplays.length > 0) {
+      dedupedCallCount += withinTurnAliases.length + crossTurnReplays.length;
+      logger.info(
+        {
+          turn,
+          requestId,
+          executed: toExecute.length,
+          withinTurnDuplicates: withinTurnAliases.length,
+          crossTurnRepeats: crossTurnReplays.length,
+          names: [...withinTurnAliases, ...crossTurnReplays].map((a) => a.tc.function.name),
+        },
+        'agent-chat-loop: deduped redundant tool calls',
+      );
+      if (stream) {
+        onStreamEvent('tool_deduped', {
+          turn,
+          within_turn: withinTurnAliases.map((a) => ({ id: a.tc.id, name: a.tc.function.name })),
+          cross_turn: crossTurnReplays.map((a) => ({ id: a.tc.id, name: a.tc.function.name })),
+        });
+      }
+    }
+
+    const executionPromises = toExecute.map((tc: ToolCall) =>
       executeToolCallWithRetry(tc, {
         requestId,
         tenant,
@@ -931,12 +1083,59 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     );
 
     const settled = await Promise.allSettled(executionPromises);
-    const stepResults = settled
+    const executedResults = settled
       .filter(
         (s): s is PromiseFulfilledResult<Awaited<ReturnType<typeof executeToolCall>>> =>
           s.status === 'fulfilled',
       )
-      .map((s) => s.value);
+      .map((s) => s.value)
+      .filter((v): v is ToolExecResult => v != null);
+
+    // Cache every real execution under its dedupe key so a later turn asking the
+    // identical question gets the cached answer instead of a second execution.
+    const executedByKey = new Map<string, ToolExecResult>();
+    for (const tc of toExecute) {
+      const row = executedResults.find((r) => r?.tool_call_id === tc.id);
+      if (!row) continue; // rejected promise — no result to fan out or cache
+      const key = toolCallDedupeKey(tc);
+      executedByKey.set(key, row);
+      if (toolDedupeEnabled && !toolResultCache.has(key)) toolResultCache.set(key, row);
+    }
+
+    // TRANSCRIPT INTEGRITY: the OpenAI protocol demands one tool message per
+    // tool_call_id, so every duplicate id still gets its own result row — a copy
+    // of the single execution, re-stamped with the duplicate's own id.
+    const dedupedRows: ToolExecResult[] = [];
+    for (const { tc, key } of withinTurnAliases) {
+      const source = executedByKey.get(key);
+      if (!source) continue;
+      dedupedRows.push({
+        ...source,
+        tool_call_id: tc.id,
+        deduped: 'within_turn',
+        deduped_from: source.tool_call_id,
+      });
+    }
+    for (const { tc, key } of crossTurnReplays) {
+      const source = toolResultCache.get(key);
+      if (!source) continue;
+      dedupedRows.push({
+        ...source,
+        tool_call_id: tc.id,
+        deduped: 'cross_turn',
+        deduped_from: source.tool_call_id,
+      });
+    }
+
+    // Emit results in the ORIGINAL tool_calls order so the transcript mirrors
+    // the assistant message that requested them.
+    const resultById = new Map<string, ToolExecResult>();
+    for (const r of [...executedResults, ...dedupedRows]) {
+      if (r?.tool_call_id) resultById.set(r.tool_call_id, r);
+    }
+    const stepResults = allowedCalls
+      .map((tc: ToolCall) => resultById.get(tc.id))
+      .filter((r): r is ToolExecResult => r != null);
 
     if (stream) {
       onStreamEvent('tool_results', { turn, results: stepResults });
@@ -945,7 +1144,10 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // If any tool failed after retries, inject a reflection prompt asking
     // the model to acknowledge the error and propose a fix. This nudges
     // self-correction instead of ignoring the error.
-    const failedResults = stepResults.filter((tr) => tr.error);
+    // Only reflect on errors from calls that REALLY executed this turn — a
+    // deduped copy of an already-reported failure would repeat the same
+    // reflection prompt every turn.
+    const failedResults = stepResults.filter((tr) => tr.error && !tr.deduped);
     if (failedResults.length > 0) {
       const errorSummary = failedResults.map((tr) =>
         `Tool call ${tr.tool_call_id} failed: ${tr.error?.message ?? 'unknown error'}`
@@ -963,14 +1165,26 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       tool_results: stepResults,
     });
 
-    // Add tool results to messages
+    // Add tool results to messages. Every tool_call_id gets exactly one tool
+    // message — including deduped ids — or the provider rejects the transcript.
+    // Repeats carry a short note so the model can see it already asked this.
     for (const tr of stepResults) {
+      let content: string;
+      if (tr.deduped) {
+        const note =
+          tr.deduped === 'cross_turn'
+            ? 'Duplicate call: you already ran this exact tool with these exact arguments earlier in this run. This is the cached prior result — do not request it again; use it or make a different call.'
+            : 'Duplicate call within the same turn: the tool ran once and this is that same result.';
+        content = JSON.stringify(
+          tr.error ? { error: tr.error.message, _dmrx_note: note } : { result: tr.result, _dmrx_note: note },
+        );
+      } else {
+        content = tr.error ? JSON.stringify({ error: tr.error.message }) : JSON.stringify(tr.result);
+      }
       messages.push({
         role: 'tool',
         tool_call_id: tr.tool_call_id,
-        content: tr.error
-          ? JSON.stringify({ error: tr.error.message })
-          : JSON.stringify(tr.result),
+        content,
       });
     }
 
@@ -1123,6 +1337,13 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         'agent loop produced no model prose — returned a gateway placeholder',
       );
     }
+  }
+
+  if (dedupedCallCount > 0) {
+    logger.info(
+      { resolvedConversationId, requestId, dedupedCallCount, uniqueToolCalls: toolResultCache.size },
+      'agent-chat-loop: run finished with deduped tool calls',
+    );
   }
 
   return {
