@@ -71,8 +71,8 @@ describe('sqlite-client', () => {
       // 072-075: agent tool UX / sidecar / plan-mode polish.
       // 076 adds agent capabilities + seeds the system tenant and __receptionist.
       // 077 adds per-agent compaction thresholds.
-      // 078 adds request logs pruning.
-      expect(row.v).toBe(78);
+      // 080 attaches research skills to web agents.
+      expect(row.v).toBe(80);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {
