@@ -246,7 +246,8 @@ export async function handleRpc(
     }
 
     case 'agent/getExtendedCard':
-    // Alias — some clients use the 0.3.0-era name for the same operation.
+      // Alias — some clients use the 0.3.0-era name for the same operation.
+      /* falls through */
     case 'agent/authenticatedExtendedCard': {
       if (!agentCardProvider) {
         return rpcError(id, A2A_ERR.INTERNAL, 'Agent card provider not registered');

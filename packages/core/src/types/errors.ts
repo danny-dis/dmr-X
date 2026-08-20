@@ -76,7 +76,6 @@ export class AllProvidersFailedError extends DMRXError {
     // Surface the most informative underlying error in dev_message so
     // local/dev callers can see WHY routing failed (e.g. HTTP 401 from
     // cohere) instead of just "All providers failed".
-    const last = errors?.[errors.length - 1];
     const devMessage = errors
       ? errors
           .map((e) => `${e.provider}${e.status ? ` (HTTP ${e.status})` : ''}: ${e.message}`)
