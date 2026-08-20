@@ -94,7 +94,12 @@ const BODY_LIMIT = parseBodyLimit(process.env.DMRX_BODY_LIMIT, 10 * 1024 * 1024)
 // idle-connection reaping never pre-empts an in-flight request.
 const REQUEST_TIMEOUT = parseInt(process.env.DMRX_REQUEST_TIMEOUT || '300000', 10);
 const KEEPALIVE_TIMEOUT = parseInt(process.env.DMRX_KEEPALIVE_TIMEOUT || '305000', 10);
-const CONNECTION_TIMEOUT = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || '10000', 10);
+// Socket-level (Node `server.timeout`). MUST stay above REQUEST_TIMEOUT: it
+// fires on socket inactivity with no regard for a running handler, so a lower
+// value severs live agent turns with RemoteDisconnected — a dropped connection
+// rather than an error response, with the provider tokens already spent.
+// validateStartupConfig() in main.ts refuses to boot on a violation.
+const CONNECTION_TIMEOUT = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || '310000', 10);
 const MAX_PARAM_LENGTH = parseInt(process.env.DMRX_MAX_PARAM_LENGTH || '200', 10);
 const MEMORY_LIMIT = parseBodyLimit(process.env.DMRX_MEMORY_LIMIT, 1_500 * 1024 * 1024);
 const TRUST_PROXY = parseTrustProxy(process.env.DMRX_TRUST_PROXY);

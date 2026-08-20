@@ -18,6 +18,53 @@ import { executeToolCall } from './tools.routes.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 
 // ---------------------------------------------------------------------------
+// Tool call retry helper
+//
+// Retries a tool call up to maxRetries times with exponential backoff.
+// A tool call fails with tr.error — we classify the error as transient
+// (retryable) or persistent (non-retryable). Persistent errors like
+// schema validation or missing parameters are NOT retried since they
+// will fail the same way. Transient errors (provider errors, timeouts)
+// are retried with exponential backoff.
+// ---------------------------------------------------------------------------
+async function executeToolCallWithRetry(
+  tc: ToolCall,
+  ctx: {
+    requestId: string;
+    tenant?: { id: string; name: string };
+    agentDefinition: { id: string; name: string; tenantId: string; allowedTools: string[] };
+    router: Router;
+    loadedSkills: string[];
+    conversationId: string;
+  },
+  maxRetries: number,
+  baseDelayMs: number,
+) {
+  let lastResult: any = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await executeToolCall(tc, ctx);
+    if (!result.error) return result;
+    lastResult = result;
+    // Don't retry on the last attempt
+    if (attempt === maxRetries) break;
+    // Only retry transient errors: ProviderUnavailableError, timeouts
+    const errName = result.error?.constructor?.name ?? '';
+    const isTransient =
+      errName === 'ProviderUnavailableError' ||
+      errName === 'TimeoutError' ||
+      (result.error?.message && /timeout|econnreset|socket|network|rate.?limit|429|503|502/i.test(result.error.message));
+    if (!isTransient) break;
+    const delay = baseDelayMs * Math.pow(2, attempt);
+    logger.warn(
+      { toolCallId: tc.id, attempt: attempt + 1, delayMs: delay, error: result.error?.message },
+      'agent-chat-loop: retrying tool call',
+    );
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return lastResult;
+}
+
+// ---------------------------------------------------------------------------
 // Shared agentic loop engine for the /agents/:instanceId/chat route.
 // ---------------------------------------------------------------------------
 
@@ -602,6 +649,10 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   let totalCost = 0;
   let budgetExceeded = false;
   let awaitingApproval = false;
+  // Set when the loop exits on the step limit while the model was still asking
+  // for tools — the signal that the agent did work but was never given a turn
+  // to report it. Drives the FINAL SUMMARY turn after the loop.
+  let stepLimitedWithPendingTools = false;
   let finalUsage: any;
   const allSteps: AgentChatLoopResult['allSteps'] = [];
   const allStepResults: StepResult[] = [];
@@ -708,7 +759,16 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     let responseText =
       typeof response.message?.content === 'string' ? response.message.content : '';
     responseText = responseText.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
-    lastResponseText = responseText;
+    // Only OVERWRITE the running reply when this turn actually produced prose.
+    //
+    // Providers emit `content: ''` (or null) on a pure tool-call turn. Since the
+    // loop breaks when `turn === maxSteps - 1`, a step-limited run ends on such a
+    // turn — and an unconditional assignment wiped whatever the agent had already
+    // said, handing the caller an empty reply after real work. Observed across the
+    // DMR-X agent fleet: every agent that invoked a tool returned 0 characters.
+    if (responseText) {
+      lastResponseText = responseText;
+    }
     finalUsage = response.usage;
 
     if (response.usage) {
@@ -753,6 +813,16 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     allStepResults.push(stepResult);
 
     // Stop if no tool calls, at step limit, or a stop condition is met.
+    //
+    // NOTE ON THE STEP LIMIT: reaching `maxSteps - 1` with tool calls pending
+    // means this turn's tool calls are DISCARDED (tool_results is empty below)
+    // and the model never gets a turn to speak about them. That is why a
+    // maxSteps=2 fleet run produced only synthesised "reached the step limit"
+    // text for every tool-using agent: turn 0 called tools, turn 1 called tools
+    // again, and the loop exited with no prose ever generated. A final
+    // summarisation turn is issued after this loop (see FINAL SUMMARY below)
+    // so a step-limited run still returns the agent's own words.
+    const hitStepLimit = turn === maxSteps - 1 && toolCalls.length > 0;
     if (
       toolCalls.length === 0 ||
       turn === maxSteps - 1 ||
@@ -766,6 +836,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         tool_calls: toolCalls,
         tool_results: [],
       });
+      if (hitStepLimit) stepLimitedWithPendingTools = true;
       onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
       break;
     }
@@ -839,21 +910,24 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       break;
     }
 
-    // Execute tool calls
-    const assistantMessage = { ...response.message };
-    messages.push(assistantMessage);
+    // Execute tool calls with automatic retry for transient failures.
+    // A tool call can fail for transient reasons (network timeout, provider
+    // rate limit) or persistent reasons (bad input, syntax error). We retry
+    // transient failures up to MAX_TOOL_RETRIES times with exponential backoff.
+    // Persistent errors are reported back to the model immediately so it can
+    // self-correct on the next turn.
+    const MAX_TOOL_RETRIES = 2;
+    const TOOL_RETRY_BASE_MS = 1000;
 
     const executionPromises = allowedCalls.map((tc: ToolCall) =>
-      executeToolCall(tc, {
+      executeToolCallWithRetry(tc, {
         requestId,
         tenant,
         agentDefinition,
         router,
         loadedSkills: loadedSkillIds,
-        // Key the coding sandbox on the conversation, not the request, so
-        // every turn of this (possibly resumed) session shares one workspace.
         conversationId: resolvedConversationId,
-      }),
+      }, MAX_TOOL_RETRIES, TOOL_RETRY_BASE_MS),
     );
 
     const settled = await Promise.allSettled(executionPromises);
@@ -866,6 +940,20 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
 
     if (stream) {
       onStreamEvent('tool_results', { turn, results: stepResults });
+    }
+
+    // If any tool failed after retries, inject a reflection prompt asking
+    // the model to acknowledge the error and propose a fix. This nudges
+    // self-correction instead of ignoring the error.
+    const failedResults = stepResults.filter((tr) => tr.error);
+    if (failedResults.length > 0) {
+      const errorSummary = failedResults.map((tr) =>
+        `Tool call ${tr.tool_call_id} failed: ${tr.error?.message ?? 'unknown error'}`
+      ).join('\n');
+      messages.push({
+        role: 'system',
+        content: `⚠️ TOOL EXECUTION ERROR(S):\n${errorSummary}\n\nReview the above error(s) and correct your approach. If a file was written with incorrect content, rewrite it. If a command failed, fix the syntax and retry.`,
+      });
     }
 
     allSteps.push({
@@ -906,6 +994,84 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     }
   }
 
+  // ------------------------------------------------------------------ FINAL
+  // FINAL SUMMARY TURN
+  //
+  // The ReAct loop exits the instant `turn === maxSteps - 1`, even when that
+  // turn was a pure tool-call turn. The model therefore never gets to speak
+  // about what it just did, and the caller receives no prose at all.
+  //
+  // Measured on the DMR-X agent fleet (24 agents, maxSteps=2): all 10
+  // tool-using agents returned only a synthesised placeholder, while the 7
+  // agents that answered directly (no tools) returned 972-7479 characters.
+  // "0 empty replies" was true only because a placeholder was standing in for
+  // the agent's actual answer.
+  //
+  // So: ask the model ONE more time, with the tool results already in the
+  // transcript and tools withheld, to state its findings. This costs one extra
+  // completion on step-limited runs only, and is what makes the reply real
+  // rather than fabricated by the gateway. Failures here are non-fatal — the
+  // placeholder below still guards the empty-string case.
+  if (stepLimitedWithPendingTools && !budgetExceeded && !awaitingApproval && !lastResponseText.trim()) {
+    try {
+      messages.push({
+        role: 'user',
+        content:
+          'You have reached your tool-use step limit. Do not request any more tools. ' +
+          'Using only what you already know from this conversation, give your final ' +
+          'answer to the original request now.',
+      });
+      const summaryRequest = toUnifiedRequest(
+        {
+          model,
+          messages,
+          // No `tools` — withholding them forces prose instead of another
+          // tool-call turn, which is the failure we are correcting.
+          temperature: body.temperature,
+          max_tokens: body.maxTokens,
+          stream: false,
+        },
+        requestId,
+        tenant,
+      );
+      const { response: summaryResponse } = await completeAgentTurn(
+        router,
+        summaryRequest,
+        target,
+        requestId,
+        godmodeWrap,
+      );
+      let summaryText =
+        typeof summaryResponse.message?.content === 'string' ? summaryResponse.message.content : '';
+      summaryText = summaryText.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+      if (summaryText) {
+        lastResponseText = summaryText;
+        if (summaryResponse.message) messages.push(summaryResponse.message);
+        allSteps.push({
+          turn: allSteps.length,
+          message: summaryResponse.message,
+          tool_calls: [],
+          tool_results: [],
+        });
+        if (summaryResponse.usage) {
+          totalTokensUsed += summaryResponse.usage.total_tokens ?? 0;
+          totalCost +=
+            (summaryResponse.usage as any).cost ?? (summaryResponse.usage as any).total_cost ?? 0;
+          finalUsage = summaryResponse.usage;
+        }
+        commitConversationState(conversation, messages, 'completed');
+        if (stream) {
+          onStreamEvent('final_summary', { resolvedConversationId, content: summaryText });
+        }
+      }
+    } catch (summaryError) {
+      logger.warn(
+        { resolvedConversationId, error: summaryError },
+        'final summarisation turn failed — falling back to synthesised text',
+      );
+    }
+  }
+
   try {
     if (executionId && context) {
       try {
@@ -925,6 +1091,38 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     }
   } catch (persistenceError) {
     logger.warn({ resolvedConversationId, executionId, error: persistenceError }, 'failed_to_persist_telemetry');
+  }
+
+  // Last-resort guard: never hand the caller a silently empty reply.
+  //
+  // Reached only when the FINAL SUMMARY turn above was skipped or itself failed
+  // to produce prose. This text is the GATEWAY speaking, not the agent — it is
+  // deliberately worded so it can never be mistaken for an agent's answer in a
+  // benchmark or a UI. Treat its presence as a failure to report on, not a
+  // success: a run whose reply matches this shape produced no model output.
+  // The tool calls themselves remain in `allSteps` for callers wanting detail.
+  if (!lastResponseText.trim()) {
+    const namesUsed = Array.from(
+      new Set(
+        allSteps.flatMap((s) =>
+          (s.tool_calls ?? []).map((tc: any) => tc.function?.name ?? tc.name).filter(Boolean),
+        ),
+      ),
+    );
+    if (namesUsed.length > 0) {
+      lastResponseText =
+        `[dmr-x] No agent output produced. The ${maxSteps}-step limit was reached after calling: ` +
+        `${namesUsed.join(', ')}, and the final summarisation turn did not return text. ` +
+        'Raise maxSteps so the agent can report its findings.';
+    } else if (budgetExceeded) {
+      lastResponseText = '[dmr-x] No agent output produced: cost budget exceeded before a reply.';
+    }
+    if (lastResponseText) {
+      logger.warn(
+        { resolvedConversationId, maxSteps, toolsUsed: namesUsed, budgetExceeded },
+        'agent loop produced no model prose — returned a gateway placeholder',
+      );
+    }
   }
 
   return {

@@ -9,13 +9,29 @@ gets a test-design brief, a Legal Compliance Checker gets a retention question).
 A uniform prompt would not exercise routing and classification the way real use
 does.
 
-## Headline: 75% → 92% success after two fixes
+## Headline: 71% → 96% success, and the reply metric was wrong
 
-| Run | Agents | Concurrency | Success | Empty replies | Throughput |
-|-----|--------|-------------|---------|---------------|------------|
-| Pilot (before) | 6 | 3 | 67% | **3 of 4** | 0.08 req/s |
-| Baseline (before) | 24 | 6 | 75% | 0 (parser fixed) | 0.18 req/s |
-| After both fixes | 40 | 8 | **92%** | **0** | **0.31 req/s** |
+| Run | Agents | Conc. | HTTP success | **Real agent replies** | Throughput |
+|-----|--------|-------|--------------|------------------------|------------|
+| Pilot (before) | 6 | 3 | 67% | 1 of 4 | 0.08 req/s |
+| Baseline (before) | 24 | 6 | 71% | **7 of 24 (29%)** | 0.14 req/s |
+| After the fixes below | 24 | 6 | **96%** | **23 of 24 (96%)** | 0.09 req/s |
+
+> **Correction to an earlier version of this document.** It reported "0 empty
+> replies" as a fix landing. That was a measurement artifact. The gateway had
+> been changed to substitute placeholder text ("Reached the N-step limit after
+> calling: ...") whenever the loop produced no prose, and the harness counted any
+> non-empty string as a success. In the 24-agent baseline **all 10 tool-using
+> agents returned 128-144 characters — every one of them that placeholder** —
+> while the 7 agents that answered directly returned 972-7479 characters. The
+> reply rate was 29%, not 100%. Bug 3 below covers the root cause and the fix;
+> throughput went *down* because real work now actually runs to completion
+> instead of being severed at 60s.
+
+Evidence for the post-fix row: 5 runs report `steps_completed: 3` — the new
+summarisation turn firing — and return 1127-3513 characters of the agent's own
+analysis where they previously returned the 128-char placeholder. The gateway
+logged **zero** placeholders across the whole run.
 
 ## Bug 1 — every agent that used a tool returned an EMPTY reply
 
@@ -60,16 +76,80 @@ The client sees `RemoteDisconnected` — a dropped socket, not an error response
 so there is nothing to retry on and no error body to read.
 
 **Fix:** default `requestTimeout` 60s → 300s, `keepAliveTimeout` → 305s.
-`connectionTimeout` deliberately left at 10s: it guards handshakes, and raising
-it would open a slowloris foothold.
 
 `tests/unit/gateway-timeout-budget.test.ts` asserts the invariant
 *relationally* (`requestTimeout >= 2 × turn timeout`), so raising the per-turn
 ceiling without raising the transport ceiling fails the build.
 
-**NOTE:** `.env` pins `DMRX_REQUEST_TIMEOUT=120000`, which overrides the new
-default. 3 of 40 tasks still fail at ~56s. Raising that line to `300000` should
-clear the remainder — a config change for the operator, not a code change.
+## Bug 2b — the real killer was `connectionTimeout`, not `requestTimeout`
+
+**Severity: HIGH.** Raising `requestTimeout` did **not** fix it. The next
+24-agent run still lost **7 of 24** tasks in a tight **56.5-60.4s** band with
+`RemoteDisconnected`, with `DMRX_REQUEST_TIMEOUT` already at 120s. Something
+else owned the 60s boundary: `DMRX_CONNECTION_TIMEOUT=60000`.
+
+Bug 2 above asserted `connectionTimeout` "guards handshakes, and raising it
+would open a slowloris foothold." **That is wrong**, and the test suite encoded
+the mistake as `connectionTimeout <= 30_000`. Per fastify's docs it maps to
+Node's [`server.timeout`](https://nodejs.org/api/http.html#servertimeout) — a
+**socket inactivity** timeout that fires with no regard for a handler still
+legitimately running. Slow-loris defence is `requestTimeout` (which bounds
+request *receipt*) plus `headersTimeout`. An agent turn sends no bytes while
+waiting on a provider, so the socket looks idle and gets destroyed mid-request.
+The socket layer always wins, so **ordering** is the invariant, not magnitude:
+
+```
+connectionTimeout >= keepAliveTimeout >= requestTimeout >= (per-turn budget × maxSteps)
+```
+
+**Fix:** `connectionTimeout` default 10s → 310s, and `validateStartupConfig()`
+now **refuses to boot** on an inversion, naming the offending pair. `.env` and
+`.env.example` both shipped the inverted values; both corrected. Verified the
+guard rejects the exact old config:
+
+```
+DMRX_CONNECTION_TIMEOUT (60000ms) must be >= DMRX_REQUEST_TIMEOUT (120000ms).
+connectionTimeout is a socket-level timeout and will sever in-flight requests
+before the request timeout can return a proper error.
+```
+
+**Result:** `RemoteDisconnected` went 7/24 → 1/24, and runs at 58.8s, 86.8s and
+91.7s — all previously impossible — now complete.
+
+## Bug 3 — the step limit discards the agent's answer, and a placeholder hid it
+
+**Severity: HIGH.** The ReAct loop breaks the instant `turn === maxSteps - 1`.
+When that final turn carries tool calls, the calls are discarded *and* the model
+never gets a turn to speak about work it already did — so the run ends with no
+prose at all. At `maxSteps=2` this hits **every** agent that uses a tool on its
+first turn, which is the common case.
+
+The earlier "fix" made the gateway synthesise `Reached the N-step limit after
+calling: ...`. That converted a visible failure into an invisible one: the
+harness saw a non-empty string and scored a success, producing the bogus
+"0 empty replies" headline while 10 of 10 tool-using agents said nothing.
+
+**Fix, three parts:**
+
+1. **`apps/gateway/src/routes/agent-chat-loop.ts`** — on a step-limited exit with
+   pending tool calls, issue **one final summarisation turn** with `tools`
+   withheld (so it cannot emit another tool-call turn) asking the model to state
+   its findings. Its tokens and cost are counted; failure is non-fatal.
+2. The placeholder is now last-resort only and prefixed **`[dmr-x] No agent
+   output produced`** — impossible to mistake for an agent's answer in a
+   benchmark or UI.
+3. **`scripts/agent_fleet_workload.py`** — scores `real_reply` and `placeholder`
+   separately and prints `REAL AGENT REPLIES` as the headline, so the harness can
+   no longer credit the gateway's apology as agent output.
+
+Regression tests in `tests/unit/agent-chat-loop-final-summary.test.ts` pin that
+the summary turn fires, withholds tools, counts its tokens, is **skipped** when
+prose already exists or no tools were used, and falls back to the marked
+placeholder when the provider fails.
+
+**Result:** real replies 7/24 → 23/24. The 5 tool-using agents now return
+1127-3513 characters of their own analysis instead of 128 characters of
+placeholder; zero placeholders logged across the run.
 
 ## Not bugs — corrected during the run
 

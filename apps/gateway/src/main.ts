@@ -47,9 +47,15 @@ import type { Server as HttpsServer } from 'node:https';
 
 const MIN_ADMIN_API_KEY_LENGTH = 32;
 const DEFAULT_BODY_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;          // 60 s
-const DEFAULT_KEEPALIVE_TIMEOUT_MS = 65_000;        // 65 s
-const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;       // 10 s
+// Timeout defaults must satisfy the ordering enforced in validateStartupConfig:
+//   connection >= keepAlive >= request
+// `connectionTimeout` is Node's `server.timeout` — a socket-level kill that
+// ignores in-flight handlers — so anything below requestTimeout severs live
+// agent requests with RemoteDisconnected instead of a clean error. These
+// defaults front a 2-turn agent loop at the 120s-per-turn default budget.
+const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;         // 300 s
+const DEFAULT_KEEPALIVE_TIMEOUT_MS = 305_000;       // 305 s
+const DEFAULT_CONNECTION_TIMEOUT_MS = 310_000;      // 310 s
 const DEFAULT_MAX_PARAM_LENGTH = 200;
 const DEFAULT_MEMORY_LIMIT_BYTES = 1_500 * 1024 * 1024; // 1.5 GB
 
@@ -79,8 +85,41 @@ function validateStartupConfig(): void {
     errors.push('DMRX_KEEPALIVE_TIMEOUT must be between 1000 and 600000 ms');
   }
   const connTimeout = parseInt(process.env.DMRX_CONNECTION_TIMEOUT || String(DEFAULT_CONNECTION_TIMEOUT_MS), 10);
-  if (!Number.isFinite(connTimeout) || connTimeout < 1000 || connTimeout > 300_000) {
-    errors.push('DMRX_CONNECTION_TIMEOUT must be between 1000 and 300000 ms');
+  // Cap matches DMRX_REQUEST_TIMEOUT / DMRX_KEEPALIVE_TIMEOUT (600s): this
+  // value must be able to sit ABOVE requestTimeout (see the ordering check
+  // below), so a lower ceiling here would make a valid long-request config
+  // impossible to express.
+  if (!Number.isFinite(connTimeout) || connTimeout < 1000 || connTimeout > 600_000) {
+    errors.push('DMRX_CONNECTION_TIMEOUT must be between 1000 and 600000 ms');
+  }
+
+  // The three timeouts must be ORDERED, not merely in range.
+  //
+  // `connectionTimeout` maps to Node's `server.timeout`: a SOCKET-level kill
+  // that fires on socket inactivity regardless of whether a handler is still
+  // legitimately running. A long-poll agent turn produces no bytes until the
+  // provider replies, so a connectionTimeout shorter than requestTimeout
+  // destroys the socket mid-request. The client sees RemoteDisconnected — not
+  // a 503 — so the failure is indistinguishable from a crash, and the tokens
+  // are already spent.
+  //
+  // Measured on the DMR-X agent fleet (24 agents, concurrency 6): with
+  // DMRX_CONNECTION_TIMEOUT=60000 and DMRX_REQUEST_TIMEOUT=120000, 7 of 24
+  // delegated tasks died in a tight 56.5-60.4s band with RemoteDisconnected.
+  // Raising requestTimeout alone did nothing, because the socket layer wins.
+  if (Number.isFinite(connTimeout) && Number.isFinite(reqTimeout) && connTimeout < reqTimeout) {
+    errors.push(
+      `DMRX_CONNECTION_TIMEOUT (${connTimeout}ms) must be >= DMRX_REQUEST_TIMEOUT (${reqTimeout}ms). ` +
+      'connectionTimeout is a socket-level timeout and will sever in-flight requests ' +
+      'before the request timeout can return a proper error.',
+    );
+  }
+  // keepAlive must sit above requestTimeout so idle-connection reaping never
+  // pre-empts a request that is still within its allowed budget.
+  if (Number.isFinite(keepAlive) && Number.isFinite(reqTimeout) && keepAlive < reqTimeout) {
+    errors.push(
+      `DMRX_KEEPALIVE_TIMEOUT (${keepAlive}ms) must be >= DMRX_REQUEST_TIMEOUT (${reqTimeout}ms).`,
+    );
   }
   const maxParam = parseInt(process.env.DMRX_MAX_PARAM_LENGTH || String(DEFAULT_MAX_PARAM_LENGTH), 10);
   if (!Number.isFinite(maxParam) || maxParam < 1 || maxParam > 4096) {

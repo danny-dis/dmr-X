@@ -190,6 +190,14 @@ def main():
                     txt = ((steps[-1].get("message") or {}).get("content")) or ""
             rec["reply_len"] = len(txt)
             rec["empty_reply"] = not txt.strip()
+            # A gateway placeholder is NOT an agent reply. The gateway emits
+            # "[dmr-x] No agent output produced..." when the loop finished
+            # without the model ever speaking. Counting that as a success made
+            # a fleet run report "0 empty replies" while every tool-using agent
+            # had in fact produced nothing — the benchmark was measuring the
+            # gateway's apology, not the agent's work. Scored separately.
+            rec["placeholder"] = txt.strip().startswith("[dmr-x] No agent output produced")
+            rec["real_reply"] = bool(txt.strip()) and not rec["placeholder"]
             rec["steps"] = resp.get("steps_completed")
             rec["tokens"] = resp.get("totalTokens")
             rec["cost_usd"] = resp.get("costUsd")
@@ -253,6 +261,22 @@ def main():
         print("\nEMPTY REPLIES   : %d  (succeeded but produced nothing)" % len(empties))
         for r in empties[:8]:
             print("   - %s" % r["agent"][:60])
+
+    # The headline number. A 200 carrying a gateway placeholder is a FAILURE to
+    # produce agent output, so report it separately from both success and empty.
+    placeholders = [r for r in ok if r.get("placeholder")]
+    real = [r for r in ok if r.get("real_reply")]
+    print("\nREAL AGENT REPLIES : %d of %d dispatched (%.0f%%)"
+          % (len(real), len(results), 100.0 * len(real) / max(1, len(results))))
+    if placeholders:
+        print("GATEWAY PLACEHOLDERS: %d  (HTTP 200, but the model never spoke —"
+              " do NOT count these as successes)" % len(placeholders))
+        for r in placeholders[:8]:
+            print("   - %-34s steps=%s tools=%s"
+                  % (r["agent"][:34], r.get("steps"), r.get("tool_calls")))
+    if real:
+        rl = sorted(r["reply_len"] for r in real)
+        print("reply chars p50/max: %d / %d" % (rl[len(rl) // 2], rl[-1]))
 
     if bad:
         print("\nERROR BREAKDOWN :")
