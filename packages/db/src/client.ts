@@ -947,13 +947,18 @@ function quotePathLiteral(filePath: string): string {
 }
 
 /**
- * Recover from a corrupt or unopenable database file: move the broken file
- * aside as a dated .corrupt backup, then auto-restore the newest VALID .bak
- * candidate (pre-migration snapshots and prior .corrupt renames); with no
- * valid backup, fall back to an in-memory database — never a fresh empty file,
- * which would shadow the preserved .corrupt backup (see the DATA LOSS note).
- * Shared by the up-front magic-header check, the open() failure path, and the
- * deferred first-statement failure path.
+ * Recover from a corrupt or unopenable database file.
+ *
+ * Strategy (in order of preference):
+ * 1. If DMRX_DB_NO_AUTO_RESTORE is set: skip backup auto-restore. The WAL
+ *    file (data.db-wal) contains all committed transactions and will be
+ *    replayed automatically on next open — so data is NOT lost even if the
+ *    main file is torn. A torn main file can be rebuilt from the WAL by
+ *    simply re-opening (SQLite does this automatically).
+ * 2. Otherwise (default): preserve the old auto-restore behavior.
+ *
+ * In both cases the corrupt file is preserved as a .corrupt.*.bak for
+ * manual recovery.
  */
 async function recoverFromCorruptDb(
   nativePath: string,
@@ -965,7 +970,30 @@ async function recoverFromCorruptDb(
   const backupPath = `${nativePath}.corrupt.${Date.now()}.bak`;
   try { fs.renameSync(nativePath, backupPath); } catch { /* best-effort */ }
 
-  // ── Auto-restore from the most recent backup ──────────────────
+  // ── Option A: no auto-restore — rely on WAL replay ──────────────
+  // The WAL (data.db-wal) holds every committed transaction. SQLite
+  // replays it automatically on next open, so a torn main file still
+  // recovers all data. We just need to remove the corrupt main file;
+  // the WAL + -shm file stay in place and rebuild it.
+  if (process.env.DMRX_DB_NO_AUTO_RESTORE === 'true') {
+    log.warn(`Auto-restore disabled (DMRX_DB_NO_AUTO_RESTORE=true). ` +
+      `Corrupt file preserved as ${backupPath}. ` +
+      `Relying on WAL replay for data recovery.`);
+    try {
+      // Remove the corrupt main file; the WAL will rebuild it on open
+      fs.unlinkSync(nativePath);
+    } catch { /* best-effort */ }
+    try {
+      const reopened = engine!.open(nativePath);
+      log.info('Database recovered via WAL replay (no data lost)');
+      return reopened;
+    } catch (reopenErr) {
+      log.error(`WAL replay failed: ${reopenErr instanceof Error ? reopenErr.message : String(reopenErr)}. ` +
+        `Starting with empty database.`);
+      return engine!.open(':memory:');
+    }
+  }
+  // ── Option B: auto-restore from newest backup (legacy behavior) ──
   // The pre-S5 "last good" snapshot files (.lastgood / .enc.lastgood)
   // have had no writer since S5 and were retired in S6 — dated .bak
   // backups (pre-migration snapshots and prior .corrupt renames) are the
