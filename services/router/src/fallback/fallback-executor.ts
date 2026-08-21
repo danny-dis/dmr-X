@@ -310,6 +310,13 @@ async function applyFailurePenalties(
     // Escalating cooldown (2m -> 10m -> 1h -> 24h) so a repeatedly 429'd
     // provider/model backs off progressively instead of being retried hot.
     rls.recordRateLimitHit?.(providerId, modelId);
+    // Self-correcting limits: parse the provider's reported ceiling from the
+    // error message and push it into the live config (only ever lowers).
+    try {
+      rls.learnLimitFromError?.(providerId, modelId, error instanceof Error ? error : { message: String(error) });
+    } catch (learnErr) {
+      logger.warn({ err: learnErr, provider: providerId }, 'Failed to learn limit from error');
+    }
     try {
       await rls.recordUsage(providerId, modelId, 0);
     } catch (usageErr) {
@@ -486,6 +493,12 @@ export async function executeWithFallback(
       // Escalating cooldown (2m -> 10m -> 1h -> 24h) so a repeatedly 429'd
       // provider/model backs off progressively instead of being retried hot.
       rls.recordRateLimitHit?.(plan.primary.providerId, plan.primary.modelId);
+      // Self-correcting limits: learn the real ceiling from the error message.
+      try {
+        rls.learnLimitFromError?.(plan.primary.providerId, plan.primary.modelId, error instanceof Error ? error : { message: String(error) });
+      } catch (learnErr) {
+        logger.warn({ err: learnErr, provider: plan.primary.providerId }, 'Failed to learn limit from error');
+      }
       try {
         await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0);
       } catch (usageErr) {
@@ -536,7 +549,18 @@ export async function executeWithFallback(
           if (qs && tenantId) {
             const tokens = response.usage?.total_tokens || 0;
             await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
-            await qs.recordProviderBudgetUsage(tenantId, plan.primary.providerId, tokens);
+            // The retry succeeded on a DIFFERENT key than the primary attempt —
+            // record it against that key's own free-tier bucket, because
+            // provider free tiers are granted per credential and a shared pool
+            // would both over-restrict (capped at one key's budget) and mask
+            // an exhausted key. keyRotationService.hashKey() gives the same
+            // stable per-key identifier used for quota lookups.
+            await qs.recordProviderBudgetUsage(
+              tenantId,
+              plan.primary.providerId,
+              tokens,
+              options.keyRotationService.hashKey(nextKey)
+            );
           }
         } catch (usageErr) {
           logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record usage for key retry');
@@ -544,6 +568,14 @@ export async function executeWithFallback(
         return response;
       } catch (keyRetryError) {
         logger.warn({ err: keyRetryError, provider: plan.primary.providerId }, 'Key retry also failed, falling through to cross-provider fallback');
+        // The rotated key hit a limit too — learn from it like any other 429.
+        if (rls && isRateLimitError(keyRetryError)) {
+          try {
+            rls.learnLimitFromError?.(plan.primary.providerId, plan.primary.modelId, keyRetryError instanceof Error ? keyRetryError : { message: String(keyRetryError) });
+          } catch (learnErr) {
+            logger.warn({ err: learnErr, provider: plan.primary.providerId }, 'Failed to learn limit from key retry error');
+          }
+        }
         try { options?.onFailure?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
       }
     }

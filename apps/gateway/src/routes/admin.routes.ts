@@ -4,6 +4,7 @@ import path from 'node:path';
 import { ValidationError } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
 import { federationService } from '@dmr-x/federation';
+import { quotaService } from '@dmr-x/quota';
 import { memoryService, retentionManager } from '@dmr-x/memory';
 import { PROVIDER_CATALOG, discoverOpenAIModels, registryService } from '@dmr-x/registry';
 import { sandboxService } from '@dmr-x/sandbox';
@@ -1599,6 +1600,60 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
     }
     return { keys: listProviderKeys(db, id) };
+  });
+
+  // Per-key free-tier monthly budget usage for a provider. Provider free tiers
+  // are granted PER CREDENTIAL, so when a tenant rotates several keys the
+  // budgets must be tracked and surfaced per key (see QuotaService
+  // getProviderKeyBudgets). This endpoint lets the operator see exactly how
+  // much of each key's monthly free budget has been consumed.
+  server.get('/admin/providers/:id/key-budgets', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const tenantId = (request.query as any)?.tenant_id || 'default';
+    const db = getDb();
+    const provider = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+    const budgets = await quotaService.getProviderKeyBudgets(tenantId, id);
+    const monthlyBudget = db
+      .prepare('SELECT monthly_token_budget FROM providers WHERE id = ?')
+      .get(id) as { monthly_token_budget: number | null } | undefined;
+    const resetAt = quotaService.getNextBudgetReset().toISOString();
+    return {
+      provider_id: id,
+      tenant_id: tenantId,
+      monthly_token_budget: monthlyBudget?.monthly_token_budget ?? null,
+      next_reset_at: resetAt,
+      keys: budgets,
+    };
+  });
+
+  // Reset the free-tier monthly budget for a provider — either a single key
+  // (body.keyId) or all of the provider's keys (no keyId). Useful after a
+  // provider's free quota rolls over early, or to clear a stuck per-key bucket.
+  server.post('/admin/providers/:id/key-budgets/reset', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const tenantId = (request.body as any)?.tenant_id || 'default';
+    const keyId = (request.body as any)?.key_id || null;
+    const db = getDb();
+    const provider = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
+    if (!provider) {
+      reply.status(404);
+      return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
+    }
+    // Re-implement the reset against the cache keys directly: a targeted
+    // decrement of the per-key bucket. getProviderKeyBudgets lists the keys;
+    // we zero each by recording a negative usage equal to its current value.
+    const budgets = await quotaService.getProviderKeyBudgets(tenantId, id);
+    const targets = keyId ? budgets.filter((b) => b.keyId === keyId) : budgets;
+    for (const b of targets) {
+      if (b.usage > 0) {
+        await quotaService.recordProviderBudgetUsage(tenantId, id, -b.usage, b.keyId);
+      }
+    }
+    return { reset: targets.length, provider_id: id, tenant_id: tenantId };
   });
 
   // Add a new key to a provider

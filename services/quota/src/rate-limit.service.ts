@@ -686,10 +686,47 @@ export class RateLimitService {
   }
 
   /**
-   * Learn a real limit from an error and persist it.
-   * Only lowers limits, never raises them.
+   * Apply a learned limit to the LIVE config for a provider/model pair.
+   * Only lowers the effective limit, never raises it.
+   *
+   * This is what makes the learning loop observable. Without it, a limit
+   * discovered from a 429/413 error was persisted to the DB but the in-memory
+   * config map used by `checkLimit` was never updated, so the new ceiling only
+   * took effect after a restart or a manual candidate refresh.
    */
-  learnLimitFromError(modelId: string, err: { message?: string }): { kind: string; limit: number } | null {
+  applyLearnedLimit(
+    providerId: string,
+    modelId: string,
+    kind: 'rpm' | 'rpd' | 'tpm' | 'tpd',
+    limit: number
+  ): void {
+    const key = this.configKey(providerId, modelId);
+    const current = this.configs.get(key) || {};
+    const existing = current[kind];
+    if (existing === undefined || existing === null || limit < existing) {
+      this.configs.set(key, { ...current, [kind]: limit });
+      logger.warn(
+        { providerId, modelId, kind, limit, previous: existing ?? null },
+        'Applied learned rate limit to live config'
+      );
+    }
+  }
+
+  /**
+   * Learn a real limit from an error and persist it to the provider-level
+   * table (`provider_rate_limits.learned_*`), then apply it to the live
+   * config. Only lowers limits, never raises them.
+   *
+   * NOTE: this previously wrote to `model_profiles.{tpm,tpd,rpm,rpd}_limit` —
+   * columns that do not exist in any migration — so every call silently threw
+   * inside the try/catch and the learning loop never reached the live config.
+   * `provider_rate_limits` (migration 030) is the table built for this.
+   */
+  learnLimitFromError(
+    providerId: string,
+    modelId: string,
+    err: { message?: string }
+  ): { kind: string; limit: number } | null {
     const parsed = this.parseProviderLimit(err?.message);
     if (!parsed) return null;
 
@@ -697,28 +734,83 @@ export class RateLimitService {
       const { getDb } = require('@dmr-x/db');
       const db = getDb();
       const columnMap: Record<string, string> = {
-        tpm: 'tpm_limit',
-        tpd: 'tpd_limit',
-        rpm: 'rpm_limit',
-        rpd: 'rpd_limit',
+        tpm: 'learned_tpm',
+        tpd: 'learned_tpd',
+        rpm: 'learned_rpm',
+        rpd: 'learned_rpd',
       };
       const col = columnMap[parsed.kind];
       if (!col) return null;
 
-      // Only lower limits, never raise them
-      const result = db.prepare(
-        `UPDATE model_profiles SET ${col} = ? WHERE model_id = ? AND (${col} IS NULL OR ${col} > ?)`
-      ).run(parsed.limit, modelId, parsed.limit);
+      // Persist to provider_rate_limits, only ever lowering the learned value.
+      const result = db.prepare(`
+        INSERT INTO provider_rate_limits (provider_id, model_id, ${col}, last_learned_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(provider_id, model_id) DO UPDATE SET
+          ${col} = CASE
+            WHEN provider_rate_limits.${col} IS NULL OR provider_rate_limits.${col} > excluded.${col}
+            THEN excluded.${col} ELSE provider_rate_limits.${col} END,
+          last_learned_at = datetime('now')
+      `).run(providerId, modelId, parsed.limit);
+
+      // Push into the live config so enforcement changes immediately.
+      this.applyLearnedLimit(providerId, modelId, parsed.kind, parsed.limit);
 
       if (result.changes > 0) {
-        logger.warn({ modelId, kind: parsed.kind, limit: parsed.limit }, 'Learned real limit from error');
+        logger.warn(
+          { providerId, modelId, kind: parsed.kind, limit: parsed.limit },
+          'Learned real limit from error'
+        );
         return { kind: parsed.kind, limit: parsed.limit };
       }
     } catch (error) {
-      logger.debug({ err: error, modelId }, 'Failed to learn limit from error');
+      logger.debug({ err: error, providerId, modelId }, 'Failed to learn limit from error');
     }
 
     return null;
+  }
+
+  /**
+   * Merge persisted learned limits (`provider_rate_limits.learned_*`) into the
+   * live configs. Called at boot after catalog seeding and on candidate
+   * refresh, so a limit learned by a previous process survives restarts.
+   *
+   * Also creates configs for models the catalog gives NO limits to but a
+   * learned limit exists for — closing the gap where catalog models with
+   * all-zero freeTierMetadata rateLimits (e.g. most OpenRouter `:free`
+   * entries) were never configured and therefore never enforced.
+   *
+   * @returns number of config entries updated or created.
+   */
+  mergeLearnedLimits(): number {
+    try {
+      const { getDb } = require('@dmr-x/db');
+      const db = getDb();
+      const rows = db.prepare(
+        `SELECT provider_id, model_id, learned_rpm, learned_rpd, learned_tpm, learned_tpd
+         FROM provider_rate_limits
+         WHERE learned_rpm IS NOT NULL OR learned_rpd IS NOT NULL
+            OR learned_tpm IS NOT NULL OR learned_tpd IS NOT NULL`
+      ).all() as any[];
+
+      let applied = 0;
+      for (const row of rows) {
+        for (const kind of ['rpm', 'rpd', 'tpm', 'tpd'] as const) {
+          const limit = row[`learned_${kind}`];
+          if (limit && limit > 0) {
+            this.applyLearnedLimit(row.provider_id, row.model_id, kind, limit);
+            applied++;
+          }
+        }
+      }
+      if (applied > 0) {
+        logger.info({ applied }, 'Merged learned rate limits into live configs');
+      }
+      return applied;
+    } catch (error) {
+      logger.debug({ err: error }, 'Failed to merge learned rate limits');
+      return 0;
+    }
   }
 
   /**

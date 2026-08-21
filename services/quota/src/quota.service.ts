@@ -87,12 +87,44 @@ export class QuotaService {
 
   /**
    * Get accumulated token usage for a provider's free-tier budget (current month).
+   *
+   * When `keyId` is provided, reads the per-key bucket. Provider free tiers are
+   * granted per credential, so when a tenant rotates several keys the buckets
+   * must stay separate — otherwise one shared pool over-restricts traffic (it
+   * caps at a single key's budget even though every key has budget left) or,
+   * worse, keeps routing to an exhausted key because the shared pool still has
+   * headroom from the other keys.
    */
-  async getProviderBudgetUsage(tenantId: string, providerId: string): Promise<number> {
+  async getProviderBudgetUsage(tenantId: string, providerId: string, keyId?: string): Promise<number> {
     const periodKey = this.getCurrentMonthKey();
-    const key = `${tenantId}:${providerId}:${periodKey}`;
+    const key = keyId
+      ? `${tenantId}:${providerId}:${keyId}:${periodKey}`
+      : `${tenantId}:${providerId}:${periodKey}`;
     const usage = budgetCache.get(key);
     return parseInt(usage || '0');
+  }
+
+  /**
+   * List per-key budget usage for a provider (current month).
+   * Each entry is the token usage recorded against one credential bucket.
+   */
+  async getProviderKeyBudgets(
+    tenantId: string,
+    providerId: string
+  ): Promise<Array<{ keyId: string; usage: number }>> {
+    const periodKey = this.getCurrentMonthKey();
+    const prefix = `${tenantId}:${providerId}:`;
+    const suffix = `:${periodKey}`;
+    const out: Array<{ keyId: string; usage: number }> = [];
+    for (const key of budgetCache.keysByPrefix(prefix)) {
+      if (key.length <= prefix.length + suffix.length) continue; // provider-wide bucket, not per-key
+      if (!key.endsWith(suffix)) continue;
+      out.push({
+        keyId: key.slice(prefix.length, key.length - suffix.length),
+        usage: parseInt(budgetCache.get(key) || '0'),
+      });
+    }
+    return out;
   }
 
   /**
@@ -114,14 +146,19 @@ export class QuotaService {
   /**
    * Record usage against a provider's free-tier monthly budget.
    * Period-aware: resets counter at the start of each calendar month.
+   * When `keyId` is provided the usage is recorded per-key; otherwise it falls
+   * back to the legacy provider-wide bucket.
    */
   async recordProviderBudgetUsage(
     tenantId: string,
     providerId: string,
-    tokens: number
+    tokens: number,
+    keyId?: string
   ): Promise<void> {
     const periodKey = this.getCurrentMonthKey();
-    const key = `${tenantId}:${providerId}:${periodKey}`;
+    const key = keyId
+      ? `${tenantId}:${providerId}:${keyId}:${periodKey}`
+      : `${tenantId}:${providerId}:${periodKey}`;
     budgetCache.incrBy(key, tokens);
     // Expire at end of month + 7 days grace
     budgetCache.expire(key, 37 * 24 * 60 * 60);

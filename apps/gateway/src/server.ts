@@ -415,6 +415,16 @@ export async function createServer() {
     if (rateLimitConfigCount > 0) {
       logger.info({ count: rateLimitConfigCount }, 'Loaded rate limit configs from catalog');
     }
+
+    // Merge limits learned from live 429/413 errors (persisted in
+    // provider_rate_limits.learned_*) so they survive restarts — and create
+    // configs for catalog models that declare no free limits but had one
+    // learned in practice (the zero-limit catalog gap that left most
+    // OpenRouter `:free` models unenforced).
+    const merged = getRateLimitService().mergeLearnedLimits();
+    if (merged > 0) {
+      logger.info({ merged }, 'Merged learned rate limits from provider_rate_limits');
+    }
   } catch (err) {
     logger.warn({ err }, 'Could not load candidates from registry (DB may not be ready)');
   }
@@ -442,6 +452,10 @@ export async function createServer() {
           });
         }
       }
+
+      // Learned limits (from live 429/413 errors) take precedence over catalog
+      // limits — they are the empirically observed ceilings.
+      getRateLimitService().mergeLearnedLimits();
 
       logger.info({ count: candidates.length }, 'Refreshed routing candidates');
     } catch (err) {
@@ -511,6 +525,35 @@ export async function createServer() {
         }
       }
     }, 5000).unref();
+  });
+
+  // Background free-tier re-verification — keep learned rate limits and the
+  // free-tier rate-limit configs continuously enforced without a restart.
+  // On a normal gateway the learning loop writes limits to provider_rate_limits
+  // (and provider_key_rate_limits) from live 429/413 errors; mergeLearnedLimits()
+  // pushes those into the in-memory RateLimitService configs. A periodic re-merge
+  // means a limit learned by THIS process — or by another gateway replica sharing
+  // the DB — is picked up by every replica's enforcement within the interval, so
+  // a model that 429'd once stops being selected past its real ceiling even if
+  // the learning happened elsewhere. refreshCandidates() also re-seeds the
+  // catalog-derived configs and re-merges learned limits.
+  const freeTierVerifyMs = process.env.DMRX_FREE_TIER_VERIFY_MS
+    ? Math.max(60_000, parseInt(process.env.DMRX_FREE_TIER_VERIFY_MS, 10) || 900_000)
+    : 900_000;
+  const freeTierVerifyTimer = setInterval(() => {
+    try {
+      const merged = getRateLimitService().mergeLearnedLimits();
+      if (merged > 0) {
+        logger.info({ merged }, 'Free-tier re-verification: re-merged learned rate limits');
+      }
+      // Re-seed catalog configs + re-merge learned limits (idempotent).
+      (server as any).refreshCandidates?.();
+    } catch (err) {
+      logger.warn({ err }, 'Free-tier re-verification tick failed (non-fatal)');
+    }
+  }, freeTierVerifyMs).unref();
+  server.addHook('onClose', async () => {
+    clearInterval(freeTierVerifyTimer);
   });
 
   // Background OAuth token refresh — check every 5 minutes.

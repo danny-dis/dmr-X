@@ -21,7 +21,7 @@ import {
   type Result,
 } from '@dmr-x/utils';
 import { trace, SpanStatusCode, SpanKind, propagation, context } from '@opentelemetry/api';
-import { getRateLimitTracker, supportsRateLimitHeaders, keyRotationService } from '@dmr-x/quota';
+import { getRateLimitTracker, supportsRateLimitHeaders, keyRotationService, parseLimitFromError } from '@dmr-x/quota';
 
 import type {
   ProviderAdapter,
@@ -377,6 +377,34 @@ export abstract class BaseAdapter implements ProviderAdapter {
         }
       }
       return response;
+    });
+
+    // Self-correcting per-key limits: when the provider rejects a request with
+    // a limit hint in the error body (e.g. Groq "Limit 30000, Requested 33476"),
+    // learn it against this adapter's own key. This is the per-key half of the
+    // learning loop; the model-level half runs in the router's fallback
+    // executor (which knows provider+model). model_id is omitted here because
+    // the error context doesn't carry it — a key-level learned limit applies
+    // to every model on the key, which is correct for credential-scoped caps.
+    this.hooks.registerAfterError(async (ctx, response, error) => {
+      if (this.config.apiKey) {
+        try {
+          const message = String((error as Error | undefined)?.message ?? '');
+          const parsed = parseLimitFromError(message);
+          if (parsed) {
+            getRateLimitTracker().learnLimitFromError({
+              keyId: this.config.apiKey,
+              providerId: this.providerId,
+              limit: parsed.limit,
+              axis: parsed.axis,
+            });
+          }
+        } catch (error2) {
+          // Non-critical, just log
+          logger.debug({ error: error2, providerId: this.providerId }, 'Failed to learn limit from error');
+        }
+      }
+      return { response, error };
     });
 
     logger.info({ providerId: this.providerId }, 'Rate limit tracking enabled');

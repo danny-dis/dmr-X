@@ -76,15 +76,17 @@ const isFree = (c: any) => {
   const hasPositivePrice =
     (c.costPerInputToken ?? 0) > 0 || (c.costPerOutputToken ?? 0) > 0;
   if (declaredFreeProvider && !hasPositivePrice) return true;
-  // KNOWN LIMITATION: model_profiles.input_cost_per_1k is REAL NOT NULL
-  // DEFAULT 0, so a model whose provider publishes no pricing is stored as 0 —
-  // indistinguishable from a genuinely free one, and most /v1/models endpoints
-  // publish nothing. Zero cost is still honoured because it is the documented
-  // contract (tests/unit/meta-models.test.ts, "should exclude paid models when
-  // costFilter=free"); dropping it broke that for callers who supply real
-  // pricing. Closing the ambiguity needs a migration making the cost columns
-  // nullable so "unpriced" and "free" stop sharing a representation.
-  if ((c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0) return true;
+  // Post-migration 081 input_cost_per_1k/output_cost_per_1k are nullable:
+  // NULL = unpriced/unknown (provider published nothing), 0 = verified free.
+  // An unpriced model must NOT be treated as free — it is only free when an
+  // explicit signal exists (pricingTier/freeTierMetadata/:free suffix/verified
+  // 0). This closed the catalog gap where most /v1/models endpoints publish no
+  // pricing and the gateway marked thousands of paid models as free.
+  const input = c.costPerInputToken;
+  const output = c.costPerOutputToken;
+  const hasPricing = input != null || output != null;
+  if (!hasPricing) return false;
+  if ((input ?? 0) === 0 && (output ?? 0) === 0) return true;
   return false;
 };
 
@@ -189,11 +191,15 @@ export const META_MODELS: MetaModelDefinition[] = [
       const filter = costFilterOverride ?? 'all';
       const MIN_CONTEXT = 64000;
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      const scored = pool
-        .filter(c =>
-          c.capabilities.includes('tool_use') &&
-          (c.contextLength ?? 0) >= MIN_CONTEXT
-        )
+      // The tool_use + context gates are preferences, not hard gates: applying
+      // them to an empty-ish pool returned zero candidates and 502'd the
+      // request outright. Fall back to the full pool when nothing qualifies.
+      const qualified = pool.filter(c =>
+        c.capabilities.includes('tool_use') &&
+        (c.contextLength ?? 0) >= MIN_CONTEXT
+      );
+      const usable = qualified.length > 0 ? qualified : pool;
+      const scored = usable
         .map(c => {
           // Tool capability bonus: reward json_mode and streaming too
           const toolBonus = 1 + (c.capabilities.includes('json_mode') ? 0.2 : 0) + (c.capabilities.includes('streaming') ? 0.1 : 0);
@@ -217,8 +223,11 @@ export const META_MODELS: MetaModelDefinition[] = [
       const MIN_CONTEXT = 32000;
       const codeCapabilities = ['tool_use', 'streaming', 'reasoning', 'json_mode'];
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      const scored = pool
-        .filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT)
+      // Never return an empty pool: fall back to all candidates when none
+      // meet the context floor.
+      const qualified = pool.filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT);
+      const usable = qualified.length > 0 ? qualified : pool;
+      const scored = usable
         .map(c => {
           // Specialization match: how many code-related capabilities the model has
           const specMatch = codeCapabilities.filter(cap => c.capabilities.includes(cap)).length / codeCapabilities.length;
@@ -271,8 +280,11 @@ export const META_MODELS: MetaModelDefinition[] = [
     ranker: (candidates, costFilterOverride) => {
       const filter = costFilterOverride ?? 'all';
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      const scored = pool
-        .filter(c => c.capabilities.includes('vision'))
+      // Never return an empty pool: vision models are still in the catalog for
+      // most providers, but if none are tagged, degrade to the full pool.
+      const qualified = pool.filter(c => c.capabilities.includes('vision'));
+      const usable = qualified.length > 0 ? qualified : pool;
+      const scored = usable
         .map(c => {
           const qualityComponent = (c.qualityScore ?? 0) * 0.45;
           const visionComponent = 1 * 0.25; // Already filtered
@@ -292,8 +304,11 @@ export const META_MODELS: MetaModelDefinition[] = [
     ranker: (candidates) => {
       const MIN_QUALITY = 0.3;
       const pool = candidates.filter(isFree);
-      return pool
-        .filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY)
+      // The quality floor is a preference, not a hard gate: an empty filtered
+      // pool previously 502'd the request. Degrade to the full free pool.
+      const aboveFloor = pool.filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY);
+      const usable = aboveFloor.length > 0 ? aboveFloor : pool;
+      return usable
         .sort((a, b) => {
           // First: free models come first
           const aFree = isFree(a);
@@ -318,8 +333,10 @@ export const META_MODELS: MetaModelDefinition[] = [
       const filter = costFilterOverride ?? 'all';
       const MIN_QUALITY = 0.3;
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      return pool
-        .filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY)
+      // Quality floor is a preference, not a hard gate (see auto-eco).
+      const aboveFloor = pool.filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY);
+      const usable = aboveFloor.length > 0 ? aboveFloor : pool;
+      return usable
         .sort((a, b) => {
           // First: free models come first
           const aFree = isFree(a);
@@ -354,8 +371,11 @@ export const META_MODELS: MetaModelDefinition[] = [
       const filter = costFilterOverride ?? 'all';
       const MIN_CONTEXT = 128000;
       const pool = filter === 'all' ? [...candidates] : candidates.filter(isFree);
-      const scored = pool
-        .filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT)
+      // Never return an empty pool: if no candidate clears 128K context,
+      // degrade to the full pool rather than failing the request.
+      const qualified = pool.filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT);
+      const usable = qualified.length > 0 ? qualified : pool;
+      const scored = usable
         .map(c => {
           const contextComponent = Math.min((c.contextLength ?? 0) / 1_000_000, 1) * 0.45;
           const qualityComponent = (c.qualityScore ?? 0) * 0.35;
@@ -416,10 +436,12 @@ export const META_MODELS: MetaModelDefinition[] = [
     description: 'Best free model for tool use. Requires tool_use capability. Scores by quality (40%) + tool capabilities (30%) + context window (20%) + speed (10%).',
     costFilter: 'free',
     ranker: (candidates) => {
-      const scored = candidates
-        .filter(c =>
-          c.capabilities.includes('tool_use')
-        )
+      // Never return an empty pool: if no free model is tagged tool_use,
+      // degrade to the full free pool rather than failing the request.
+      const freePool = candidates.filter(isFree);
+      const qualified = freePool.filter(c => c.capabilities.includes('tool_use'));
+      const usable = qualified.length > 0 ? qualified : freePool;
+      const scored = usable
         .map(c => {
           const toolBonus = 1 + 
             (c.capabilities.includes('json_mode') ? 0.2 : 0) + 
@@ -444,8 +466,11 @@ export const META_MODELS: MetaModelDefinition[] = [
       const MIN_CONTEXT = 32000;
       const codeCapabilities = ['tool_use', 'streaming', 'reasoning', 'json_mode'];
       const pool = candidates.filter(isFree);
-      const scored = pool
-        .filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT)
+      // Context floor is a preference: degrade to the full free pool if no
+      // candidate clears 32K rather than returning an empty pool.
+      const qualified = pool.filter(c => (c.contextLength ?? 0) >= MIN_CONTEXT);
+      const usable = qualified.length > 0 ? qualified : pool;
+      const scored = usable
         .map(c => {
           const specMatch = codeCapabilities.filter(cap => c.capabilities.includes(cap)).length / codeCapabilities.length;
           const qualityComponent = (c.qualityScore ?? 0) * 0.3;

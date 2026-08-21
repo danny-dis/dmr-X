@@ -147,9 +147,12 @@ export class RegistryService {
       // corrupts the cost scorers — never expose them as routing candidates.
       .filter((row: any) => !isOpenRouterVirtualModel(row.modelId))
       .map((row: any) => {
-        // Resolve pricing from models.dev for all providers
-        let costPerInputToken = Math.max(0, parseFloat(row.costPerInputToken) || 0);
-        let costPerOutputToken = Math.max(0, parseFloat(row.costPerOutputToken) || 0);
+        // Resolve pricing from models.dev for all providers.
+        // Preserve NULL (unpriced) so isFree() can distinguish it from 0 (verified free).
+        let costPerInputToken: number | null =
+          row.costPerInputToken == null ? null : Math.max(0, parseFloat(row.costPerInputToken) || 0);
+        let costPerOutputToken: number | null =
+          row.costPerOutputToken == null ? null : Math.max(0, parseFloat(row.costPerOutputToken) || 0);
 
         if (this.modelsDevData) {
           const modelsDevPrices = lookupModelPricing({

@@ -72,7 +72,8 @@ describe('sqlite-client', () => {
       // 076 adds agent capabilities + seeds the system tenant and __receptionist.
       // 077 adds per-agent compaction thresholds.
       // 080 attaches research skills to web agents.
-      expect(row.v).toBe(80);
+      // 081 makes model_profiles cost columns nullable (unpriced != free).
+      expect(row.v).toBe(81);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

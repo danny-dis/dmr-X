@@ -93,6 +93,18 @@ export async function getStickyProvider(
 
 /**
  * Break a sticky session for a conversation hash.
+ *
+ * NOTE (free-tier context handoff): when a sticky pin is broken mid-conversation
+ * — e.g. the pinned free model hits a 429/402 cooldown and the router falls back
+ * to a DIFFERENT model — the new turn answers from a different model with a
+ * different context window and different system prompt expectations. The router
+ * does NOT re-send the prior turn's context; the caller is responsible for
+ * continuing the conversation thread. Breaking here only releases the pin so the
+ * next turn re-selects freely. Anything that relied on the pinned model's
+ * specific context (long-system-prompt assumptions, cached prefix, tool schema)
+ * must be re-established by the caller, otherwise the handoff model sees a
+ * context it did not produce. This is a known limitation of the free-tier
+ * sticky break, documented here so it is not mistaken for a silent context loss.
  */
 export async function breakStickySession(conversationHash: string, reason: string): Promise<void> {
   cache.del(conversationHash);
