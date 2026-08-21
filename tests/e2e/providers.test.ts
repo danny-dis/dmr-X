@@ -44,6 +44,10 @@ describeE2E('Provider Integration E2E', () => {
 
     // 2. Google Gemini (Using OpenAI compatibility)
     it('should complete a request via Google Gemini', async () => {
+      if (!process.env.GOOGLE_API_KEY) {
+        console.log('Skipping Google Gemini test — GOOGLE_API_KEY not set');
+        return;
+      }
       const response = await client.request('/v1/chat/completions', {
         model: 'google/gemini-2.0-flash',
         messages: [{ role: 'user', content: 'Say "Gemini Verified"' }]
@@ -55,6 +59,10 @@ describeE2E('Provider Integration E2E', () => {
 
     // 3. OpenRouter
     it('should complete a request via OpenRouter', async () => {
+      if (!process.env.OPENROUTER_API_KEY) {
+        console.log('Skipping OpenRouter test — OPENROUTER_API_KEY not set');
+        return;
+      }
       const response = await client.request('/v1/chat/completions', {
         model: 'openrouter/google/gemini-2.0-flash-001', // Using a reliable model through OpenRouter
         messages: [{ role: 'user', content: 'Say "OpenRouter Verified"' }]

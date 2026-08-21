@@ -197,7 +197,6 @@ jobs:
     # assertions fail here every run. Until those keys are added as CI
     # secrets (or the key-dependent cases are gated on their presence), this
     # job reports but must not gate the build.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

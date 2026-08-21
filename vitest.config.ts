@@ -138,6 +138,7 @@ export default defineConfig({
               singleFork: true,
             },
           },
+          retry: 1,
         },
       },
       {
