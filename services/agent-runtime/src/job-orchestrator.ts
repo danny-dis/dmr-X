@@ -3,6 +3,7 @@ import { logger } from '@dmr-x/utils';
 import { jobStore, type Job, type JobStatus, type JobTask } from './job.store.js';
 import { readBoardFor, renderBoardForPrompt, writeBoardEntry } from './job-board.js';
 import { findCycles, findMissingDependencies, schedulerState } from './job-scheduler.js';
+import { verifyAcceptanceCriteria } from './receptionist.js';
 
 // ---------------------------------------------------------------------------
 // Job event system (for streaming progress via SSE)
@@ -207,6 +208,13 @@ export async function runJobPass(
   const status = SCHEDULER_TO_JOB_STATUS[after.state];
   if (status) jobStore.updateJobStatus(tenantId, jobId, status);
 
+  // Terminal states get the Receptionist's structural acceptance check written
+  // into the job record (the automatic path previously left result null and a
+  // failure silent). Mirrors deliver_job / escalate_to_human in receptionist.ts.
+  if (after.state === 'complete' || after.state === 'failed') {
+    finalizeJobOutcome(tenantId, jobId, after.state);
+  }
+
   emitJobEvent({ type: 'pass:completed', jobId, ranTaskIds, state: after.state });
 
   if (after.state === 'complete') {
@@ -260,7 +268,25 @@ async function runTask(
       openQuestions: result.openQuestions ?? [],
       forNext: result.forNext ?? [],
     });
-    jobStore.updateTask(tenantId, task.id, { status: 'completed' });
+    // Record the deliverable alongside (not over) the board handoff — the
+    // structural acceptance check counts a criterion as met only when completed
+    // tasks carry output.
+    const fresh = jobStore.getTask(tenantId, task.id);
+    const currentOutput =
+      fresh?.output !== null && typeof fresh?.output === 'object' && !Array.isArray(fresh?.output)
+        ? (fresh.output as Record<string, unknown>)
+        : {};
+    jobStore.updateTask(tenantId, task.id, {
+      status: 'completed',
+      output: {
+        ...currentOutput,
+        deliverable: {
+          summary: result.summary,
+          artifacts: result.artifacts ?? [],
+          agent: result.agentName,
+        },
+      },
+    });
     emitJobEvent({
       type: 'task:completed',
       jobId,
@@ -391,4 +417,33 @@ function budgetExhausted(job: Job): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Write a terminal outcome into the job record: the structural
+ * acceptance-criteria verification for a delivered job, or an explicit
+ * escalation entry for a failed one, so neither state is ever silent.
+ */
+function finalizeJobOutcome(tenantId: string, jobId: string, state: 'complete' | 'failed'): void {
+  try {
+    const job = jobStore.getJob(tenantId, jobId);
+    if (!job) return;
+    const log = Array.isArray(job.decisionLog) ? (job.decisionLog as unknown[]) : [];
+
+    if (state === 'complete') {
+      const verification = verifyAcceptanceCriteria(job, jobStore.listTasks(tenantId, jobId));
+      jobStore.updateJob(tenantId, jobId, { result: verification });
+    } else {
+      const reason = 'escalated to human: job failed';
+      jobStore.updateJob(tenantId, jobId, {
+        decisionLog: [
+          ...log,
+          { at: new Date().toISOString(), by: '__receptionist', action: 'escalate_to_human', reason },
+        ],
+      });
+    }
+  } catch (error) {
+    // Finalization is bookkeeping; never let it fail a pass that already ran.
+    logger.warn({ err: error, jobId, state }, 'job-orchestrator: outcome finalization failed');
+  }
 }

@@ -203,6 +203,34 @@ describe('runJobPass', () => {
     expect(result.ranTaskIds).toEqual([]);
   });
 
+  // Terminal states must not be silent: a completed job carries the Receptionist's
+  // structural verification in its result; a failed one gets an escalation entry.
+  it('records acceptance verification on completion and escalation on failure', async () => {
+    const done = makeJob({ acceptanceCriteria: ['does X'] } as Partial<Job>);
+    makeTask(done.id, 1);
+    await runJobPass(TENANT, done.id, succeeds);
+
+    const finished = await runJobPass(TENANT, done.id, succeeds);
+    expect(finished.state).toBe('complete');
+    const result: any = jobStore.getJob(TENANT, done.id)?.result;
+    expect(result?.passed).toBe(true);
+    expect(result?.criteria?.[0]?.status).toBe('met');
+
+    const broken = makeJob();
+    makeTask(broken.id, 1);
+    await runJobPass(TENANT, broken.id, async () => ({
+      ok: false,
+      agentName: 'agent-a',
+      summary: '',
+      error: 'nope',
+    }));
+    await runJobPass(TENANT, broken.id, succeeds);
+
+    expect(jobStore.getJob(TENANT, broken.id)?.status).toBe('failed');
+    const log = jobStore.getJob(TENANT, broken.id)?.decisionLog as any[];
+    expect(log.at(-1)?.action).toBe('escalate_to_human');
+  });
+
   it('reports a missing job rather than throwing', async () => {
     const result = await runJobPass(TENANT, 'no-such-job', succeeds);
     expect(result.state).toBe('failed');
