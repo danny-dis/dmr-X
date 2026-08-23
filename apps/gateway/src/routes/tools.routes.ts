@@ -1,4 +1,4 @@
-import { ValidationError, type UnifiedRequest, type ToolCall } from '@dmr-x/core';
+import { ValidationError, normalizeAllowedTools, type UnifiedRequest, type ToolCall } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
 import { memoryService } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
@@ -161,7 +161,7 @@ export function getRegisteredToolDefinitions(names?: string[]): RegisteredToolDe
     .filter((d): d is RegisteredToolDefinition => Boolean(d));
 }
 
-export { normalizeAllowedTools } from '@dmr-x/core';
+export { normalizeAllowedTools };
 
 /**
  * Register only an LLM-facing schema for a tool whose handler was registered
@@ -553,6 +553,15 @@ export function registerDelegateToolHandler(): void {
         return { error: `No subagent found matching "${agent}"` };
       }
 
+      // Thread a bounded tool loop into the child: defs come from the same
+      // registered catalog agent-chat uses (getRegisteredToolDefinitions),
+      // narrowed by the SUBAGENT's allowedTools; execution reuses
+      // executeToolCall with the child's definition so its own narrowing and
+      // audit apply. Without declared allowedTools the child stays single-shot.
+      const allowedSubTools = normalizeAllowedTools((subagent as any).allowedTools);
+      const requestId = generateRequestId();
+      const childConversationId = generateRequestId(); // fresh isolated transcript for the child
+
       try {
         const result = await runSubagent({
           parent: parent as any,
@@ -562,6 +571,41 @@ export function registerDelegateToolHandler(): void {
           router,
           runtime: agentRuntimeService,
           outputSchema: output_schema,
+          ...(allowedSubTools.length > 0
+            ? {
+                toolLoop: {
+                  tools: getRegisteredToolDefinitions(allowedSubTools).slice(0, 30), // provider tool-def cap (see agent-dispatch)
+                  maxSteps: Number(process.env.DMRX_SUBAGENT_MAX_STEPS) || 5,
+                  execute: async (
+                    tc: { id: string; name: string; arguments: string },
+                  ): Promise<unknown> => {
+                    const allowed = new Set(allowedSubTools.map((n: string) => n.toLowerCase()));
+                    if (!allowed.has(String(tc.name).toLowerCase())) {
+                      return {
+                        error: {
+                          message: `Tool "${tc.name}" is not in subagent "${subagent.name}" allowedTools`,
+                        },
+                      };
+                    }
+                    return executeToolCall(
+                      {
+                        id: tc.id,
+                        type: 'function',
+                        function: { name: tc.name, arguments: tc.arguments },
+                      },
+                      {
+                        requestId,
+                        tenant: { id: tenantId, name: tenantId },
+                        agentDefinition: subagent as any,
+                        router,
+                        loadedSkills: [],
+                        conversationId: childConversationId,
+                      },
+                    );
+                  },
+                },
+              }
+            : {}),
         });
         if (!result.ok) return { error: result.error ?? 'subagent failed' };
         return {

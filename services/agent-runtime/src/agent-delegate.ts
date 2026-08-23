@@ -6,30 +6,23 @@ import type { AgentRuntimeService } from './agent-runtime.js';
 // ---------------------------------------------------------------------------
 // Subagent delegation (isolation boundary)
 //
-// Borrowed from Vercel EVE's declared-subagent model, but scoped down to a
-// SINGLE-SHOT, TOOLLESS task hand-off (see the note below on why this is not
-// yet the full model). A subagent is a specialist with its own definition;
-// when the parent delegates to it, the child runs in a FRESH, ISOLATED
-// session:
+// Borrowed from Vercel EVE's declared-subagent model. A subagent is a
+// specialist with its own definition; when the parent delegates to it, the
+// child runs in a FRESH, ISOLATED session:
 //   - brand-new conversation history (parent's messages are NOT visible),
-//   - its own system prompt (built from its own definition + skills),
-//   - exactly ONE model completion (no tool calls, no ReAct loop) whose text
-//     is returned as the child's answer.
+//   - its own system prompt (built from its own definition + skills).
 //
-// IMPORTANT — this does NOT narrow to the subagent's `allowedTools` today:
-// the child is never given a `tools` array at all, so it cannot call ANY
-// tool, regardless of what `allowedTools` declares. If a subagent's job
-// requires calling tools, delegation is currently the wrong primitive for it.
-// This is a deliberate, documented limitation (not a bug) — building a real
-// bounded tool-calling loop here would require threading executable tool
-// handlers from the gateway (apps/gateway/src/routes/tools.routes.ts) down
-// into this service, which `services/*` is not allowed to depend on
-// (packages/core has the shared types; apps/gateway is the only place the
-// handlers and the ReAct loop live). Narrowing + a real loop should be
-// implemented at the call site in tools.routes.ts's `delegate` handler
-// instead, passing an execute callback + tool defs into `runSubagent`.
+// The child runs either:
+//   - a SINGLE-SHOT completion (default), or
+//   - a SMALL bounded tool-calling loop when the call site passes `toolLoop`
+//     AND the subagent declares non-empty `allowedTools`. `services/*` cannot
+//     import executable handlers from apps/gateway, so the call site
+//     (apps/gateway/src/routes/tools.routes.ts's `delegate` handler) threads
+//     them in as generic tool defs + an execute callback; this module stays
+//     dependency-free and just narrows the advertised tools to
+//     allowedTools ∩ provided.
 //
-// This is a HARD isolation boundary: the child inherits nothing from the
+// This is still a HARD isolation boundary: the child inherits nothing from the
 // parent except (optionally) the task message it was handed. Multiple
 // delegates run concurrently (the route awaits them with Promise.all).
 // ---------------------------------------------------------------------------
@@ -71,7 +64,26 @@ export async function resolveSubagent(
 }
 
 /**
+ * Optional bounded tool-calling loop handed to the child by the call site.
+ * Generic on purpose: services/* must not depend on apps/gateway, so the
+ * executable handlers arrive as opaque defs + a callback.
+ */
+export interface SubagentToolLoop {
+  /** LLM-facing tool definitions (OpenAI `tools` wire shape). */
+  tools: any[];
+  /** Hard cap on model turns in the child's loop. */
+  maxSteps: number;
+  /** Execute one tool call; resolves to any value (stringified into the transcript). */
+  execute: (tc: { id: string; name: string; arguments: string }) => Promise<unknown>;
+}
+
+/**
  * Run a delegated subagent in an isolated session.
+ *
+ * With `toolLoop` provided AND the subagent declaring non-empty
+ * `allowedTools`, runs a bounded ReAct-style loop (advertised tools narrowed
+ * to allowedTools ∩ toolLoop.tools); otherwise falls back to the single-shot
+ * completion.
  */
 export async function runSubagent(args: {
   parent: AgentDefinition;
@@ -81,6 +93,7 @@ export async function runSubagent(args: {
   router: any;
   runtime: AgentRuntimeService;
   outputSchema?: Record<string, unknown>;
+  toolLoop?: SubagentToolLoop;
 }): Promise<DelegateResult> {
   const { parent, subagent, message, tenantId, router, runtime } = args;
 
@@ -99,14 +112,99 @@ export async function runSubagent(args: {
     return { ok: false, name: subagent.name, output: '', error: 'Failed to load subagent context' };
   }
 
-  // NOTE: this is single-shot and TOOLLESS (see module docstring above) — the
-  // child is not given `subagent.allowedTools` here on purpose; there is no
-  // tool-calling loop to narrow. Do not resurrect a `childTools` computation
-  // without also wiring an execute path and a bounded loop for it.
+  // NOTE: the child's advertised tools are narrowed to
+  // allowedTools ∩ toolLoop.tools. When no toolLoop is passed, or the child
+  // declares no allowedTools, this stays empty and we take the single-shot
+  // path below (unchanged behaviour).
   const model = runtime.resolveModel(subagent);
   const systemPrompt = await runtime.buildSystemPrompt(subagent, 0, []);
 
-  // 2. Single-shot task mode: one fresh conversation, run to completion.
+  const allowedNames = new Set(
+    (Array.isArray(subagent.allowedTools) ? subagent.allowedTools : [])
+      .map((n: unknown) => String(n).trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const childTools =
+    args.toolLoop && allowedNames.size > 0
+      ? (args.toolLoop.tools ?? []).filter(
+          (d: any) =>
+            d?.function?.name && allowedNames.has(String(d.function.name).toLowerCase()),
+        )
+      : [];
+
+  // 2a. Bounded tool-calling loop (only when executable tools were threaded in).
+  if (args.toolLoop && childTools.length > 0) {
+    const maxSteps = Math.max(1, Math.floor(args.toolLoop.maxSteps));
+    const messages: any[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: message },
+    ];
+    let bestOutput = '';
+    let lastModel: string | undefined;
+    try {
+      for (let step = 0; step < maxSteps; step++) {
+        const requestId = generateRequestId();
+        const { response } = await router.route(
+          {
+            modality: 'llm',
+            model,
+            messages,
+            tools: childTools,
+            temperature: undefined,
+            max_tokens: undefined,
+            stream: false,
+            metadata: { requestId, tenant: { id: tenantId, name: tenantId } },
+          },
+          { path: '/v1/agents/delegate' },
+        );
+        lastModel = response.modelId;
+        const content =
+          typeof response.message?.content === 'string' ? response.message.content : '';
+        if (content) bestOutput = content;
+
+        const wireCalls: any[] = response.message?.tool_calls ?? [];
+        if (wireCalls.length === 0) break; // final prose — done
+
+        messages.push(response.message);
+        // Normalize OpenAI wire shape to the flat callback shape.
+        const calls = wireCalls.map((tc: any) => ({
+          id: String(tc.id ?? tc.function?.name ?? ''),
+          name: String(tc.function?.name ?? tc.name ?? ''),
+          arguments:
+            typeof tc.function?.arguments === 'string'
+              ? tc.function.arguments
+              : JSON.stringify(tc.function?.arguments ?? tc.arguments ?? {}),
+        }));
+
+        const settled = await Promise.allSettled(calls.map((tc) => args.toolLoop!.execute(tc)));
+        settled.forEach((s, i) => {
+          let payload: string;
+          if (s.status === 'rejected') {
+            payload = JSON.stringify({
+              error: s.reason instanceof Error ? s.reason.message : String(s.reason),
+            });
+          } else {
+            const v: any = s.value;
+            payload =
+              v && typeof v === 'object' && 'error' in v && v.error != null
+                ? JSON.stringify({ error: v.error?.message ?? String(v.error) })
+                : JSON.stringify(v && typeof v === 'object' && 'result' in v ? v.result : v);
+          }
+          messages.push({ role: 'tool', tool_call_id: calls[i].id, content: payload });
+        });
+      }
+      return { ok: true, name: subagent.name, output: bestOutput, model: lastModel };
+    } catch (err) {
+      const message2 = err instanceof Error ? err.message : String(err);
+      // No output yet → hard failure; otherwise return what we have, noting the error.
+      if (!bestOutput) {
+        return { ok: false, name: subagent.name, output: '', error: message2 };
+      }
+      return { ok: true, name: subagent.name, output: bestOutput, model: lastModel, error: message2 };
+    }
+  }
+
+  // 2b. Single-shot task mode (default): one fresh conversation, run to completion.
   const requestId = generateRequestId();
   try {
     const { response } = await router.route(

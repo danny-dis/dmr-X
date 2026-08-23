@@ -314,6 +314,27 @@ export class AgentSessionStore {
       .filter((s): s is PersistedSession => s !== null);
   }
 
+  /**
+   * Boot-time watchdog: mark orphaned runs as interrupted. Any session still
+   * 'in_progress' whose updated_at is older than `olderThanMs` was left behind
+   * by a crashed/restarted gateway and can no longer be resumed as live.
+   * Returns the number of sessions transitioned.
+   */
+  markStaleInterrupted(olderThanMs: number): number {
+    const db = getDb();
+    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+    const result = db
+      .prepare(
+        `UPDATE agent_sessions
+         SET status = 'interrupted',
+             status_reason = COALESCE(status_reason, 'run_orphaned'),
+             updated_at = ?
+         WHERE status = 'in_progress' AND updated_at < ?`,
+      )
+      .run(cutoff, cutoff);
+    return result.changes;
+  }
+
   /** Delete a session by id. */
   delete(conversationId: string): void {
     const db = getDb();

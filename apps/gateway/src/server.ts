@@ -17,7 +17,7 @@ import { getTelemetryService, contentCaptureService, retentionService } from '@d
 import { ProviderUnavailableError } from '@dmr-x/core';
 import { registryService, HealthChecker, PROVIDER_CATALOG, autoRegisterProviders, discoverMissingModels, enrichExistingModels, repairModelProfiles, syncClassifications, classifyFreeProviderModels } from '@dmr-x/registry';
 import { getDb } from '@dmr-x/db';
-import { agentScheduler } from '@dmr-x/agent-runtime';
+import { agentScheduler, agentSessionStore } from '@dmr-x/agent-runtime';
 import { quotaService, getRateLimitService } from '@dmr-x/quota';
 import { policyService } from '@dmr-x/policy';
 import Fastify from 'fastify';
@@ -214,6 +214,17 @@ export async function createServer() {
   await initializeAdapters(adapterRegistry);
 
   const db = getDb();
+
+  // Boot-time watchdog: orphaned in_progress sessions from a crashed gateway
+  // are marked interrupted (DMRX_SESSION_STALE_MS, default 30 min).
+  try {
+    const stale = agentSessionStore.markStaleInterrupted(
+      Number(process.env.DMRX_SESSION_STALE_MS) || 30 * 60_000,
+    );
+    if (stale > 0) logger.info({ stale }, 'Marked stale agent sessions as interrupted');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to mark stale agent sessions as interrupted');
+  }
 
   // Validate admin API key strength in production
   const MIN_ADMIN_API_KEY_LENGTH = 32;

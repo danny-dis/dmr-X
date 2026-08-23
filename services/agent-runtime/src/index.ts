@@ -30,6 +30,7 @@ export {
   resolveSubagent,
   runSubagent,
   type DelegateResult,
+  type SubagentToolLoop,
 } from './agent-delegate.js';
 
 export {

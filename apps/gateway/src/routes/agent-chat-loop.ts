@@ -203,6 +203,8 @@ export interface AgentChatLoopResult {
   budgetExceeded: boolean;
   /** True when the loop paused for human approval (status awaiting_approval). */
   awaitingApproval?: boolean;
+  /** True when the run hit the global wall-clock deadline (DMRX_AGENTIC_RUN_TIMEOUT_MS). */
+  runTimedOut?: boolean;
   finalUsage: any;
   allSteps: Array<{
     turn: number;
@@ -262,6 +264,10 @@ const MAX_TURN_RETRIES = 2;
 // Per-turn model-call timeout. A hung provider call must not hang the whole
 // durable run; abort the single turn and surface a recoverable error.
 const TURN_TIMEOUT_MS = Number(process.env.DMRX_AGENTIC_TURN_TIMEOUT_MS) || 120_000;
+
+// Global wall-clock deadline for one agent run (all turns). A run that exceeds
+// it is interrupted before the next model call instead of running unbounded.
+const RUN_TIMEOUT_MS = Number(process.env.DMRX_AGENTIC_RUN_TIMEOUT_MS) || 900_000;
 
 function toUnifiedRequest(
   body: {
@@ -760,6 +766,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   let totalCost = 0;
   let budgetExceeded = false;
   let awaitingApproval = false;
+  let runTimedOut = false;
   // Set when the loop exits on the step limit while the model was still asking
   // for tools — the signal that the agent did work but was never given a turn
   // to report it. Drives the FINAL SUMMARY turn after the loop.
@@ -794,7 +801,22 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     });
   }
 
+  const runStartedAt = Date.now();
   for (let turn = 0; turn < maxSteps; turn++) {
+    // Global wall-clock deadline: stop BEFORE making another model call.
+    const elapsedMs = Date.now() - runStartedAt;
+    if (elapsedMs > RUN_TIMEOUT_MS) {
+      commitConversationState(conversation, messages, 'interrupted');
+      logger.warn(
+        { resolvedConversationId, elapsedMs, runTimeoutMs: RUN_TIMEOUT_MS },
+        'agent_run_timeout',
+      );
+      if (stream) {
+        onStreamEvent('run_timeout', { resolvedConversationId, elapsedMs });
+      }
+      runTimedOut = true;
+      break;
+    }
     let systemPromptText = await buildSystemPrompt(turn);
     // Keep the plan in front of the model every turn (plan-then-execute mode).
     if (planText) {
@@ -1353,6 +1375,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     stepsCompleted: allSteps.length || maxSteps,
     budgetExceeded,
     awaitingApproval,
+    runTimedOut,
     finalUsage,
     allSteps,
   };

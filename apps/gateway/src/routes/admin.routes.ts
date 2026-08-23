@@ -1617,14 +1617,24 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       return { error: { message: 'Provider not found', type: 'not_found', code: 'provider_not_found' } };
     }
     const budgets = await quotaService.getProviderKeyBudgets(tenantId, id);
+    // The provider-level monthly free budget is the sum of its free-tier
+    // models' monthly_token_budget (lives on model_profiles; falls back to
+    // model_classifications.monthly_budget). Mirrors the /free-tier/summary
+    // aggregation so the per-key usage can be shown as a fraction of the whole.
     const monthlyBudget = db
-      .prepare('SELECT monthly_token_budget FROM providers WHERE id = ?')
-      .get(id) as { monthly_token_budget: number | null } | undefined;
+      .prepare(
+        `SELECT COALESCE(SUM(COALESCE(mp.monthly_token_budget, mc.monthly_budget, 0)), 0) AS total
+         FROM model_classifications mc
+         LEFT JOIN model_profiles mp
+           ON mp.provider_id = mc.provider_id AND mp.model_id = mc.model_id
+         WHERE mc.provider_id = ? AND mc.has_free_tier = 1`,
+      )
+      .get(id) as { total: number } | undefined;
     const resetAt = quotaService.getNextBudgetReset().toISOString();
     return {
       provider_id: id,
       tenant_id: tenantId,
-      monthly_token_budget: monthlyBudget?.monthly_token_budget ?? null,
+      monthly_token_budget: monthlyBudget?.total ?? 0,
       next_reset_at: resetAt,
       keys: budgets,
     };

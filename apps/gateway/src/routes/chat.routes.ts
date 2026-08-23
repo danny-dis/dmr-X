@@ -77,7 +77,13 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 reply.header('Cache-Control', 'no-cache');
                 reply.header('Connection', 'keep-alive');
                 reply.raw.writeHead(200);
-                for (const wrapModel of wrapOrder) {
+                // Watchdog: the godmode relay occasionally stalls before the
+                // first chunk or mid-stream (proxy restart, dead upstream).
+                // Without this the request hangs silently forever.
+                const AUTOFREE_STREAM_TIMEOUT_MS =
+                  Number(process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS) || 120_000;
+                const drainWrapStream = async (): Promise<void> => {
+                  for (const wrapModel of wrapOrder) {
                   try {
                     let sent = false;
                     let sawToolCalls = false;
@@ -124,6 +130,24 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                   } catch (e) {
                     logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next picked model');
                   }
+                  }
+                };
+                try {
+                  await Promise.race([
+                    drainWrapStream(),
+                    new Promise((_, reject) =>
+                      setTimeout(() => reject(new Error('auto-free stream watchdog timeout')), AUTOFREE_STREAM_TIMEOUT_MS),
+                    ),
+                  ]);
+                  return;
+                } catch (e) {
+                  logger.warn({ requestId, err: e }, 'auto-free godmode stream stalled — emitting SSE error and closing');
+                  if (!reply.raw.writableEnded) {
+                    reply.raw.write(`data: ${JSON.stringify({ error: { message: `auto-free stream failed: ${(e as Error).message}` } })}\n\n`);
+                    reply.raw.write('data: [DONE]\n\n');
+                    reply.raw.end();
+                  }
+                  return;
                 }
                 if (isGodmodeStrict()) {
                   reply.raw.write(`data: ${JSON.stringify({ error: { message: 'auto-free godmode proxy unavailable (strict mode)' } })}\n\n`);
