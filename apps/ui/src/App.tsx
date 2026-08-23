@@ -27,6 +27,7 @@ const AgentsPage = lazy(() => import('@/pages/agents/AgentsPage').then(m => ({ d
 const AgentDetailPage = lazy(() => import('@/pages/agents/AgentDetailPage').then(m => ({ default: m.AgentDetailPage })));
 const AgentCreatePage = lazy(() => import('@/pages/agents/AgentCreatePage').then(m => ({ default: m.AgentCreatePage })));
 const AgentAnalyticsPage = lazy(() => import('@/pages/agents/AgentAnalyticsPage').then(m => ({ default: m.AgentAnalyticsPage })));
+const JobsPage = lazy(() => import('@/pages/agents/JobsPage').then(m => ({ default: m.JobsPage })));
 const MarketplacePage = lazy(() => import('@/pages/Marketplace').then(m => ({ default: m.MarketplacePage })));
 
 // MCP + A2A
@@ -105,6 +106,7 @@ export default function App() {
                 <Route path="/agents" element={<AgentsPage />} />
                 <Route path="/agents/new" element={<AgentCreatePage />} />
                 <Route path="/agents/analytics" element={<AgentAnalyticsPage />} />
+                <Route path="/jobs" element={<JobsPage />} />
                 <Route path="/agents/:id" element={<AgentDetailPage />} />
                 <Route path="/marketplace" element={<MarketplacePage />} />
                 <Route path="/integrations" element={<AgentIntegrationsPage />} />

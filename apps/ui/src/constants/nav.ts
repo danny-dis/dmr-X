@@ -140,6 +140,12 @@ export const NAV_GROUPS: NavGroup[] = [
         description: 'Agent cost & performance',
       },
       {
+        label: 'Jobs',
+        path: '/jobs',
+        icon: Briefcase,
+        description: 'Multi-agent job board',
+      },
+      {
         label: 'Marketplace',
         path: '/marketplace',
         icon: ShoppingBag,

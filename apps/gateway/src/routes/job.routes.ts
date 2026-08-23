@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { agentPermissions } from '../middleware/agent-rbac.middleware.js';
 import {
   jobStore,
+  scoreAgentForTask,
   type JobStatus,
   type ListJobsOptions,
 } from '@dmr-x/agent-runtime';
+import { agentRegistryService, isSystemAgentName } from '@dmr-x/agent-registry';
 
 import { planJob } from '../lib/job-runner.js';
 import { jobQueue } from '../lib/job-queue.js';
@@ -203,11 +205,18 @@ export function registerJobRoutes(server: FastifyInstance): void {
   // Enqueue and return. A job runs for minutes, so holding the connection open
   // means clients time out on work that is progressing fine, and a client that
   // gives up leaves the run orphaned mid-task. Poll GET /jobs/:id for progress.
+  //
+  // `coordinator: 'receptionist'` pre-staffs the plan before enqueueing: each
+  // pending task is pinned to the best capability-matched active agent (the
+  // Receptionist's own matcher), so the run uses real assignments instead of
+  // the executor's per-task keyword dispatch. Unmatched tasks stay unassigned
+  // and fall back to dispatch as usual.
   server.post('/jobs/:id/run', {
     preHandler: [agentPermissions.update()],
   }, async (request, reply) => {
     const tenant = (request as any).tenant;
     const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as { coordinator?: string };
     const job = jobStore.getJob(tenant.id, id);
     if (!job) {
       return reply.code(404).send({ error: { message: 'Job not found' } });
@@ -221,6 +230,11 @@ export function registerJobRoutes(server: FastifyInstance): void {
       return reply.code(409).send({
         error: { message: `Job is ${job.status} and cannot be run` },
       });
+    }
+
+    let assignedCount = 0;
+    if (body.coordinator === 'receptionist') {
+      assignedCount = await staffJobWithReceptionist(tenant.id, id);
     }
 
     const enqueued = jobQueue.enqueue(tenant.id, id);
@@ -239,9 +253,63 @@ export function registerJobRoutes(server: FastifyInstance): void {
       jobId: id,
       status: 'queued',
       queuePosition: enqueued.position,
+      coordinator: body.coordinator === 'receptionist' ? 'receptionist' : 'default',
+      assignedTasks: assignedCount,
       poll: `/v1/jobs/${id}`,
     });
   });
+
+  /**
+   * Pin every pending task to the best capability-matched active agent.
+   *
+   * Uses updateTask rather than jobStore.assignTask: assignTask moves the task
+   * to 'assigned', which readyTasks does not treat as pending — pre-staffing
+   * through it would deadlock every task it touched. The assignment columns
+   * are what the task executor reads; status stays 'pending'.
+   */
+  async function staffJobWithReceptionist(tenantId: string, jobId: string): Promise<number> {
+    const tasks = jobStore.listTasks(tenantId, jobId);
+    const pending = tasks.filter((t) => t.status === 'pending');
+    if (pending.length === 0) return 0;
+
+    const { items } = await agentRegistryService.listInstances(tenantId, { status: 'active' });
+    const pool = items.filter((i) => !isSystemAgentName(i.definitionName));
+
+    let assigned = 0;
+    for (const task of pending) {
+      const taskText = [task.title, task.description].filter(Boolean).join('\n');
+      let best: { instance: (typeof pool)[number]; score: number } | null = null;
+      for (const instance of pool) {
+        const { score } = scoreAgentForTask(instance, taskText);
+        if (score > 0 && (!best || score > best.score)) best = { instance, score };
+      }
+      if (!best) continue;
+      jobStore.updateTask(tenantId, task.id, {
+        assignedAgentDefId: best.instance.agentDefinitionId,
+        assignedInstanceId: best.instance.id,
+      });
+      assigned++;
+    }
+
+    if (assigned > 0 || pending.length > 0) {
+      const log = Array.isArray(jobStore.getJob(tenantId, jobId)?.decisionLog)
+        ? (jobStore.getJob(tenantId, jobId)?.decisionLog as unknown[])
+        : [];
+      jobStore.updateJob(tenantId, jobId, {
+        decisionLog: [
+          ...log,
+          {
+            at: new Date().toISOString(),
+            by: '__receptionist',
+            action: 'staff_job',
+            matched: assigned,
+            pending: pending.length,
+          },
+        ],
+      });
+    }
+    return assigned;
+  }
 
   // ── Queue status ───────────────────────────────────────────────────────
   // Depth and in-flight jobs, so a caller polling a job can tell "waiting for

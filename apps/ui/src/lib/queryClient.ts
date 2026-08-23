@@ -169,6 +169,12 @@ export const keys = {
     jobs: () => [...keys.sandbox.all, 'jobs'] as const,
   },
 
+  jobs: {
+    all: ['jobs'] as const,
+    list: (status?: string) => [...keys.jobs.all, 'list', status ?? 'any'] as const,
+    tasks: (id: string) => [...keys.jobs.all, 'tasks', id] as const,
+  },
+
   workers: {
     all: ['workers'] as const,
     list: () => [...keys.workers.all, 'list'] as const,
