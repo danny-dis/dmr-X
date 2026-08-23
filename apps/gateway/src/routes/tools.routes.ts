@@ -3,7 +3,7 @@ import type { Router } from '@dmr-x/router';
 import { memoryService } from '@dmr-x/memory';
 import { sandboxService } from '@dmr-x/sandbox';
 import { skillService } from '@dmr-x/agent-registry';
-import { recordDataAccess, sanitizeArgsSummary, agentRuntimeService, skillLoader } from '@dmr-x/agent-runtime';
+import { recordDataAccess, sanitizeArgsSummary, agentRuntimeService, skillLoader, jobStore } from '@dmr-x/agent-runtime';
 import { resolveSubagent, runSubagent } from '@dmr-x/agent-runtime';
 import {
   generateRequestId,
@@ -287,6 +287,7 @@ export function registerBuiltinToolHandlers(): void {
   registerSkillToolHandlers();
   registerLoadSkillToolHandler();
   registerDelegateToolHandler();
+  registerJobBoardToolHandler();
 
   // ---- execute_code --------------------------------------------------------
   registerToolHandler(
@@ -513,6 +514,127 @@ const skillSvc = skillService as unknown as SkillServiceContract;
  * calls `delegate`, the named subagent runs in a FRESH, ISOLATED session
  * (its own conversation — parent history NOT visible — and its own system
  * prompt), makes exactly ONE completion call, and returns that text as its
+ * answer. Result is returned to the parent; the parent never sees the
+ * child's intermediate steps (there are none — there is no ReAct loop here).
+ *
+ * IMPORTANT: the child is NOT given any tools, so `subagent.allowedTools` is
+ * not consulted by this path today — it is not narrowed, it is simply unused.
+ * Only delegate self-contained, tool-free reasoning/drafting tasks to a
+ * subagent; anything requiring file/shell/code access must be done by the
+ * parent directly. See `services/agent-runtime/src/agent-delegate.ts` for the
+ * full rationale and what a real bounded tool-calling loop would require.
+ *
+ * Requires the running agent's definition + the router in the tool context
+ * (`context.agentDefinition`, `context.router`); an agentic loop that
+ * supports delegation must supply them (the agent chat loop does).
+ */
+export function registerJobBoardToolHandler(): void {
+  registerToolHandler(
+    'create_job_task',
+    async (args, context) => {
+      const tenantId = context?.tenant?.id;
+      if (!tenantId) return { error: 'No tenant context' };
+
+      const { jobId, title, description, deliverable, dependsOnTaskIds } = args as {
+        jobId?: unknown;
+        title?: unknown;
+        description?: unknown;
+        deliverable?: unknown;
+        dependsOnTaskIds?: unknown;
+      };
+      if (typeof jobId !== 'string' || !jobId) return { error: 'jobId is required' };
+      if (typeof title !== 'string' || !title.trim()) return { error: 'title is required' };
+
+      const job = jobStore.getJob(tenantId, jobId);
+      if (!job) return { error: `Job ${jobId} not found` };
+      // Only open jobs accept new work — no spawning tasks into a delivered
+      // or cancelled job where they would never run.
+      if (['cancelled', 'delivered', 'failed'].includes(job.status)) {
+        return { error: `Job is ${job.status} and cannot accept new tasks` };
+      }
+
+      const existing = jobStore.listTasks(tenantId, jobId);
+      // ponytail: flat cap on dynamic tasks per job; raise if real plans need more.
+      const MAX_DYNAMIC_TASKS = 20;
+      if (existing.length >= MAX_DYNAMIC_TASKS) {
+        return { error: `Job already has ${MAX_DYNAMIC_TASKS} tasks — escalate to a human instead of adding more` };
+      }
+
+      // Dependencies must reference REAL task ids on THIS job. A dangling dep
+      // would deadlock the scheduler (readyTasks never fires it).
+      const knownIds = new Set(existing.map((t) => t.id));
+      const deps = Array.isArray(dependsOnTaskIds)
+        ? (dependsOnTaskIds as unknown[]).filter((d): d is string => typeof d === 'string')
+        : [];
+      const unknownDeps = deps.filter((d) => !knownIds.has(d));
+      if (unknownDeps.length > 0) {
+        return { error: `dependsOnTaskIds contains unknown task ids: ${unknownDeps.join(', ')}` };
+      }
+      // A cycle can't be created by pointing at EXISTING tasks from a NEW one,
+      // so no cycle check is needed here.
+
+      const crypto = await import('crypto');
+      const created = jobStore.createTask({
+        id: crypto.randomUUID(),
+        jobId,
+        parentTaskId: null,
+        seq: existing.length + 1,
+        title: title.trim(),
+        description: typeof description === 'string' && description.trim() ? description.trim() : null,
+        deliverable: typeof deliverable === 'string' && deliverable.trim() ? deliverable.trim() : null,
+        dependsOn: deps,
+        status: 'pending',
+      } as any);
+
+      const log = Array.isArray(job.decisionLog) ? (job.decisionLog as unknown[]) : [];
+      jobStore.updateJob(tenantId, jobId, {
+        decisionLog: [
+          ...log,
+          {
+            at: new Date().toISOString(),
+            by: (context as any).agentDefinition?.name ?? 'agent',
+            action: 'create_task',
+            taskId: created.id,
+            title: created.title,
+            dependsOn: deps,
+          },
+        ],
+      });
+
+      return {
+        taskId: created.id,
+        status: created.status,
+        note: 'Task added to the job board. The runner picks up unblocked pending tasks on its next pass.',
+      };
+    },
+    {
+      description:
+        'Add a new task to an existing multi-agent job board when you discover work the current plan does not cover. The job runner assigns and executes it automatically. Use sparingly: only for genuinely required follow-up work you cannot do yourself.',
+      parameters: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'The job this task belongs to (given in your task message).' },
+          title: { type: 'string', description: 'Short imperative task title.' },
+          description: { type: 'string', description: 'What the next agent needs to know to complete it.' },
+          deliverable: { type: 'string', description: 'What "done" looks like for this task.' },
+          dependsOnTaskIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional ids of tasks that must complete before this one runs.',
+          },
+        },
+        required: ['jobId', 'title'],
+      },
+    },
+  );
+}
+
+/**
+ * Register the `delegate` tool.
+ *
+ * Delegation runs a NAMED subagent in a fully isolated session: fresh system
+ * prompt (from the subagent's own definition), fresh conversation, one user
+ * message (the task), exactly ONE completion call, and returns that text as its
  * answer. Result is returned to the parent; the parent never sees the
  * child's intermediate steps (there are none — there is no ReAct loop here).
  *

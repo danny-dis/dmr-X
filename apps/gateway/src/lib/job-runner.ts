@@ -148,7 +148,7 @@ function extractText(body: any): string {
 }
 
 function buildTaskMessage(task: JobTask, boardContext: string): string {
-  const parts = [`Task: ${task.title}`];
+  const parts = [`Task: ${task.title}`, `Job: ${task.jobId}`];
   if (task.description) parts.push(`\nDescription:\n${task.description}`);
   if (task.deliverable) parts.push(`\nDeliverable:\n${task.deliverable}`);
   if (task.acceptance) parts.push(`\nAcceptance criteria:\n${task.acceptance}`);
