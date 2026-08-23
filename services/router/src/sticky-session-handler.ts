@@ -177,8 +177,25 @@ export async function handleStickySession(
       return { used: false };
     }
 
-    // Planner-aware sticky session decision
-    if (enablePlanner) {
+    // Planner-aware sticky session decision — but only when the pin looks
+    // SUSPECT. The planner comparison runs classify + the full scoring
+    // pipeline on EVERY stuck turn, roughly doubling per-request work just to
+    // confirm what the fast path already knows. A healthy pin (no recent 429
+    // penalties) has already survived the health/rate-limit/cooldown checks
+    // above, so skip the comparison and serve from the pin directly; its
+    // fallback chain (built below) catches transients. Any penalty point —
+    // meaning the pinned model 429'd recently — marks the pin suspect and the
+    // comparison runs once. Penalty decay (-1 point / 2min) flips the pin back
+    // to clean automatically, so the planner still gets periodic say after
+    // any rough patch rather than never.
+    const pinPenaltyPoints = config.rateLimitService.getPenaltyPoints(sticky.providerId, sticky.modelId);
+    const pinIsSuspect = pinPenaltyPoints > 0;
+
+    if (enablePlanner && pinIsSuspect) {
+      logger.debug(
+        { providerId: sticky.providerId, modelId: sticky.modelId, pinPenaltyPoints },
+        'Sticky pin is suspect — running planner STAY/SWITCH comparison'
+      );
       // Run the routing pipeline to get a fresh decision for comparison.
       // This result is also returned to the caller so it can be reused
       // (avoiding a redundant pipeline run) when the planner decides SWITCH.
@@ -241,10 +258,11 @@ export async function handleStickySession(
       }
     }
 
-    // If we're still in sticky mode (planner said STAY or planner disabled)
-    if (!enablePlanner || (await getStickyProvider(conversationHash, config.rateLimitService, freeTierStrategy, () => false))) {
-      // Re-verify the pin is not on an error cooldown before the chain-less
-      // fast path re-calls a dead model: the pipeline run above can be slow
+    // If we're still in sticky mode (planner said STAY, planner skipped
+    // because the pin was clean, or planner disabled)
+    if (!enablePlanner || !pinIsSuspect || (await getStickyProvider(conversationHash, config.rateLimitService, freeTierStrategy, () => false))) {
+      // Re-verify the pin is not on an error cooldown before the fast path
+      // re-calls a dead model: the planner's pipeline run above can be slow
       // enough that the pinned model enters cooldown between the first check
       // and this point, and getStickyProvider only checks rate limits, not
       // the error cooldown.

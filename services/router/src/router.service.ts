@@ -15,7 +15,7 @@ import { CompositeExecutor } from './decomposer/composite-executor.js';
 import { SpecialistRouter } from './decomposer/specialist-router.js';
 import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
-import { executeWithFallback, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
+import { executeWithFallback, executeWithHedging, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
 import { isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
@@ -733,7 +733,7 @@ export class Router {
         span.setAttribute('router.selected_model', plan.primary.modelId);
         span.setAttribute('router.fallback_count', plan.chain.length);
         if (!this.adapterExecutor) throw new Error('No adapter executor configured');
-        const res = await executeWithFallback(plan, request, this.adapterExecutor, {
+        const res = await executeWithHedging(plan, request, this.adapterExecutor, {
           rateLimitService: this.config.rateLimitService,
           quotaService: this.config.quotaService,
           tenantId,

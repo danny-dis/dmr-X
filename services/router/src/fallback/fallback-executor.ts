@@ -800,6 +800,226 @@ export async function executeWithFallback(
 }
 
 /**
+ * Request hedging: fire the top alternate IN PARALLEL once the primary runs
+ * past a latency threshold, and take whichever answers first.
+ *
+ * Scope guards (each one exists because hedging burns real tokens):
+ * - Non-streaming LLM requests only. Streaming responses can't be raced
+ *   cleanly and diffusion/video/music jobs are too expensive to duplicate.
+ * - The hedge target must be a DIFFERENT provider than the primary — racing
+ *   the same pool against itself doubles key/quota burn for little gain.
+ *   (The chain's same-model-first ordering still applies; we just skip any
+ *   same-provider entries.)
+ * - Global credit bucket caps how many hedges can fire per minute (default 6)
+ *   so a slow upstream period can't fan every request into two calls.
+ *
+ * The threshold is a fixed delay rather than a measured p95: candidates carry
+ * `latencyPercentiles` in the type system but nothing populates them today,
+ * and hedging off an invented number would be worse than a blunt constant.
+ * Tune with DMRX_HEDGE_DELAY_MS (0 disables), cap with DMRX_HEDGE_MAX_PER_MIN.
+ *
+ * When the hedge loses the race its result is discarded (the call completes
+ * upstream regardless — that waste is inherent to hedging and why the credit
+ * bucket exists); when it wins, the abandoned primary attempt is left to finish
+ * unobserved and the winner is tagged with `fallback.reason = 'hedge'` so the
+ * switch stays visible to callers.
+ */
+
+/** Reset hedge bookkeeping. Exported for testing only. */
+export function resetHedgeState(): void {
+  hedgeWindowStart = 0;
+  hedgeCount = 0;
+}
+
+let hedgeWindowStart = 0;
+let hedgeCount = 0;
+
+function tryAcquireHedgeCredit(maxPerMin: number): boolean {
+  const now = Date.now();
+  if (now - hedgeWindowStart >= 60_000) {
+    hedgeWindowStart = now;
+    hedgeCount = 0;
+  }
+  if (hedgeCount >= maxPerMin) return false;
+  hedgeCount += 1;
+  return true;
+}
+
+interface HedgeConfig {
+  enabled: boolean;
+  delayMs: number;
+  maxPerMinute: number;
+}
+
+function getHedgeConfig(): HedgeConfig {
+  const delayMs = Number.parseInt(process.env.DMRX_HEDGE_DELAY_MS ?? '', 10);
+  const maxPerMinute = Number.parseInt(process.env.DMRX_HEDGE_MAX_PER_MIN ?? '', 10);
+  return {
+    // DMRX_HEDGE_DELAY_MS=0 disables hedging entirely.
+    enabled: Number.isNaN(delayMs) ? true : delayMs > 0,
+    delayMs: Number.isNaN(delayMs) ? 5000 : delayMs,
+    maxPerMinute: Number.isNaN(maxPerMinute) ? 6 : Math.max(1, maxPerMinute),
+  };
+}
+
+function selectHedgeStep(
+  plan: RoutingPlan,
+  rls: RateLimitService | undefined,
+): { providerId: string; modelId: string } | null {
+  for (const step of plan.chain) {
+    if (step.provider.providerId === plan.primary.providerId) continue;
+    if (step.waitMs && step.waitMs > 0) continue;
+    if (isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)) continue;
+    if (rls) {
+      const check = rls.checkLimit(step.provider.providerId, step.provider.modelId, 0);
+      if (!check.allowed) continue;
+    }
+    return { providerId: step.provider.providerId, modelId: step.provider.modelId };
+  }
+  return null;
+}
+
+export async function executeWithHedging(
+  plan: RoutingPlan,
+  request: UnifiedRequest,
+  executor: AdapterExecutor,
+  options?: FallbackOptions
+): Promise<UnifiedResponse> {
+  const hedge = getHedgeConfig();
+  const rls = options?.rateLimitService;
+
+  const hedgeable =
+    hedge.enabled &&
+    !request.stream &&
+    (request.modality || 'llm') === 'llm' &&
+    plan.chain.length > 0;
+
+  if (!hedgeable) {
+    return executeWithFallback(plan, request, executor, options);
+  }
+
+  const hedgeStep = selectHedgeStep(plan, rls);
+  if (!hedgeStep || !tryAcquireHedgeCredit(hedge.maxPerMinute)) {
+    return executeWithFallback(plan, request, executor, options);
+  }
+
+  const requestId = options?.requestId || crypto.randomUUID();
+  logger.info(
+    { primary: `${plan.primary.providerId}:${plan.primary.modelId}`, hedge: `${hedgeStep.providerId}:${hedgeStep.modelId}`, delayMs: hedge.delayMs },
+    'Request hedging armed — alternate fires if primary exceeds delay'
+  );
+
+  // Primary attempt WITHOUT its chain: if it fails fast (before the hedge even
+  // fires) we want the full sequential fallback path, not a race between the
+  // chain and a hedge duplicate. Chain-based recovery happens below when the
+  // primary attempt itself rejects.
+  const primaryOnlyPlan: RoutingPlan = { ...plan, chain: [] };
+
+  type Outcome =
+    | { kind: 'primary'; response: UnifiedResponse }
+    | { kind: 'primary-failed'; error: unknown }
+    | { kind: 'hedge'; response: UnifiedResponse }
+    | { kind: 'hedge-failed'; error: unknown };
+
+  let primarySettled = false;
+
+  const primaryAttempt: Promise<Outcome> = executeWithFallback(
+    primaryOnlyPlan,
+    request,
+    executor,
+    options,
+  ).then(
+    (response): Outcome => {
+      primarySettled = true;
+      return { kind: 'primary', response };
+    },
+    (error): Outcome => {
+      primarySettled = true;
+      return { kind: 'primary-failed', error };
+    },
+  );
+
+  const hedgeAttempt: Promise<Outcome> = (async (): Promise<Outcome> => {
+    await new Promise((resolve) => setTimeout(resolve, hedge.delayMs));
+    if (primarySettled) {
+      // Primary finished inside the threshold — never fire the duplicate.
+      return new Promise<Outcome>(() => {}); // never settles; dropped by the race
+    }
+    logger.info(
+      { provider: hedgeStep.providerId, modelId: hedgeStep.modelId },
+      'Primary exceeded hedge delay — firing alternate'
+    );
+    const slotId = `${hedgeStep.providerId}:${requestId}:hedge`;
+    if (rls) rls.acquireConcurrencySlot(hedgeStep.providerId, slotId);
+    try {
+      const response = await executor.execute(hedgeStep.providerId, hedgeStep.modelId, request);
+      return { kind: 'hedge', response };
+    } catch (error) {
+      return { kind: 'hedge-failed', error };
+    } finally {
+      if (rls) rls.releaseConcurrencySlot(hedgeStep.providerId, slotId);
+    }
+  })();
+
+  const winner = await Promise.race([primaryAttempt, hedgeAttempt]);
+
+  if (winner.kind === 'primary') {
+    return winner.response;
+  }
+
+  if (winner.kind === 'primary-failed') {
+    // Primary died before the hedge fired (or while racing). Full chain takes
+    // over from here; the hedge attempt, if in flight, resolves unobserved and
+    // its usage is recorded below via the detached handler.
+    void hedgeAttempt.catch(() => {});
+    return executeWithFallback(plan, request, executor, options);
+  }
+
+  if (winner.kind === 'hedge') {
+    // Leave the abandoned primary attempt to finish unobserved; never let its
+    // rejection surface as an unhandledRejection.
+    void primaryAttempt.catch(() => {});
+    try { options?.onSuccess?.(hedgeStep.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
+    try {
+      if (rls) {
+        const tokens = winner.response.usage?.total_tokens || 0;
+        await rls.recordUsage(hedgeStep.providerId, hedgeStep.modelId, tokens);
+      }
+      if (options?.quotaService && options?.tenantId) {
+        const tokens = winner.response.usage?.total_tokens || 0;
+        await options.quotaService.recordUsage(options.tenantId, hedgeStep.providerId, tokens, 0);
+        await options.quotaService.recordProviderBudgetUsage(options.tenantId, hedgeStep.providerId, tokens);
+      }
+    } catch (usageErr) {
+      logger.warn({ err: usageErr, provider: hedgeStep.providerId }, 'Failed to record usage for hedge winner');
+    }
+    winner.response.fallback = {
+      fromProviderId: plan.primary.providerId,
+      fromModelId: plan.primary.modelId,
+      attempts: 2,
+      reason: 'hedge',
+      errors: [],
+    };
+    logger.info(
+      { provider: hedgeStep.providerId, modelId: hedgeStep.modelId },
+      'Hedge won the race'
+    );
+    return winner.response;
+  }
+
+  // Hedge fired and failed: apply the standard failure bookkeeping so the
+  // losing alternate is demoted like any other failed candidate, then let the
+  // (already-running) primary outcome decide.
+  await applyFailurePenalties(rls, hedgeStep.providerId, hedgeStep.modelId, winner.error);
+  trackModelError(hedgeStep.providerId, hedgeStep.modelId, classifyError(winner.error));
+  return primaryAttempt.then((outcome) => {
+    if (outcome.kind === 'primary') return outcome.response;
+    // Primary ALSO failed — hand the whole thing to the sequential chain.
+    return executeWithFallback(plan, request, executor, options);
+  });
+}
+
+/**
  * Execute a request with cross-binding multi-binding failover support.
  *
  * Tries each binding (primary + fallbacks) in order. For each binding,
