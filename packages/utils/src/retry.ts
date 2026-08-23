@@ -5,6 +5,14 @@ export interface BackoffStrategy {
   maxInterval: number;
   exponent: number;
   maxElapsedTime: number;
+  /**
+   * Optional hard cap on total attempts (including the first). When set, it
+   * overrides the attempt count implied by the backoff curve — which can be
+   * large (e.g. 800ms→4000ms @2x implies 4 attempts ≈ 7.5s of dead time per
+   * provider). Callers that have their own higher-level fallback (the router's
+   * chain) want FEW in-place retries and a fast handoff instead.
+   */
+  maxAttempts?: number;
 }
 
 const defaultBackoff: BackoffStrategy = {
@@ -117,12 +125,17 @@ export async function withRetry<T>(
     ? (opts.config.backoff ?? defaultBackoff)
     : null;
 
-  const maxAttempts = backoff
+  const curveAttempts = backoff
     ? Math.ceil(
         Math.log(backoff.maxInterval / backoff.initialInterval) /
           Math.log(backoff.exponent),
       ) + 1
     : opts.maxAttempts;
+  // Explicit cap wins over the curve-implied count (see BackoffStrategy.maxAttempts).
+  const maxAttempts =
+    backoff?.maxAttempts !== undefined
+      ? Math.max(1, backoff.maxAttempts)
+      : curveAttempts;
 
   const startTime = Date.now();
 

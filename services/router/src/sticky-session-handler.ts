@@ -1,4 +1,4 @@
-import type { UnifiedRequest, RoutingPlan, UnifiedResponse, CandidateSet } from '@dmr-x/core';
+import type { UnifiedRequest, RoutingPlan, UnifiedResponse, CandidateSet, FallbackStep } from '@dmr-x/core';
 import { keyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
 import { trace } from '@opentelemetry/api';
@@ -49,6 +49,69 @@ function extractPrompt(request: UnifiedRequest): string {
       .join('\n');
   }
   return request.prompt || '';
+}
+
+/**
+ * Build the sticky plan's fallback chain.
+ *
+ * The chain used to be empty (`chain: []`), which made any transient failure
+ * on the pinned model a hard fail-to-client even though hundreds of healthy
+ * candidates were available. The pin stays PRIMARY; this chain only catches
+ * its transients. Ordering encodes same-model affinity:
+ *
+ *   1. The SAME `modelId` on OTHER providers (and other candidates on the
+ *      pinned provider, i.e. fresh keys of the same pool) — a failure that is
+ *      provider-specific should not change the conversation's brain.
+ *   2. Then the best model per DISTINCT other provider (mirroring
+ *      `buildFallbackChain`'s diversity rule), so one bad upstream cannot
+ *      burn the whole chain.
+ *
+ * Only when every same-model route AND every diverse alternate fails does the
+ * conversation switch models — and even then the caller re-pins whatever
+ * actually served the response.
+ */
+function buildStickyFallbackChain(
+  stickyProviderId: string,
+  stickyModelId: string,
+  candidates: CandidateSet,
+): FallbackStep[] {
+  const healthy = candidates.filter(
+    (c) => c.isHealthy &&
+      !(c.providerId === stickyProviderId && c.modelId === stickyModelId),
+  );
+
+  // Same model, different provider — preserves the conversation's brain.
+  const sameModel = healthy.filter((c) => c.modelId === stickyModelId);
+
+  // Different model on the pinned provider — fresh keys / capacity of the
+  // same pool before going cross-provider.
+  const sameProviderOtherModel = healthy.filter(
+    (c) => c.providerId === stickyProviderId && c.modelId !== stickyModelId,
+  );
+
+  // Best model per distinct OTHER provider — survives a pinned-provider-wide
+  // outage instead of burning all slots on one upstream.
+  const seenProviders = new Set<string>([stickyProviderId]);
+  const diverse: typeof sameModel = [];
+  for (const model of healthy) {
+    if (model.modelId === stickyModelId) continue; // already in sameModel
+    if (seenProviders.has(model.providerId)) continue;
+    seenProviders.add(model.providerId);
+    diverse.push(model);
+  }
+
+  const ordered = [...sameModel, ...sameProviderOtherModel.slice(0, 2), ...diverse];
+
+  return ordered.slice(0, 8).map((model, index) => ({
+    provider: {
+      providerId: model.providerId,
+      modelId: model.modelId,
+      adapterType: model.providerName,
+      score: model.qualityScore,
+    },
+    trigger: index === 0 ? ('timeout' as const) : ('error' as const),
+    waitMs: index === 0 ? 1000 : 0,
+  }));
 }
 
 export async function handleStickySession(
@@ -205,7 +268,9 @@ export async function handleStickySession(
 
       const plan: RoutingPlan = {
         primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
-        chain: [],
+        // The pin stays primary; this chain only catches its transient
+        // failures (same-model-first affinity — see the builder above).
+        chain: buildStickyFallbackChain(sticky.providerId, sticky.modelId, candidates),
         timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
         maxRetries: 1,
       };
@@ -227,10 +292,8 @@ export async function handleStickySession(
         return { used: true, result: { plan, response } };
       } catch (error) {
         // Break sticky session on provider failure and fall through to normal
-        // routing. The pin is an optimisation, not a contract — the plan built
-        // here has no fallback chain, so rethrowing turned one dead pinned
-        // model into a hard 502 even though the full candidate pool was
-        // healthy. Every other exit from this function degrades the same way.
+        // routing. With the fallback chain attached this now only happens when
+        // the pin AND every same-model/diverse alternate failed together.
         await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);
         return { used: false };
       }
@@ -247,7 +310,8 @@ export async function handleStickySession(
 
     const plan: RoutingPlan = {
       primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
-      chain: [],
+      // Same-model-first fallback chain (mirrors the rate-limit branch above).
+      chain: buildStickyFallbackChain(sticky.providerId, sticky.modelId, candidates),
       timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
       maxRetries: 1,
     };

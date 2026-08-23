@@ -90,6 +90,12 @@ export abstract class BaseAdapter implements ProviderAdapter {
       // seconds — keeps end clients (e.g. the pi agent) from timing out
       // while DMR-X smooths over provider failures.
       maxElapsedTime: 8000,
+      // Hard cap of 2 total attempts (1 in-place retry). Without it the
+      // backoff curve implies ~4 attempts (~7.5s of dead time per failing
+      // provider before the router's fallback chain even gets a turn).
+      // The chain IS the retry strategy here; in-place retries only exist
+      // to absorb a single blip, so hand off fast.
+      maxAttempts: 2,
     },
     retryConnectionErrors: true,
   };

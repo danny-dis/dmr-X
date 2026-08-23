@@ -23,6 +23,37 @@ export interface StickySession {
 }
 
 /**
+ * Encode a pin (+ its effective TTL) into the single cached value.
+ *
+ * The TTL rides along so `getStickyProvider` can RENEW the same adjusted TTL
+ * on every turn (sliding expiration) instead of resetting it to the default —
+ * which would defeat the tight-RPM shortening done by `setStickyProvider`.
+ */
+function encodePin(providerId: string, modelId: string, ttlSeconds: number): string {
+  return `${providerId}:${modelId}:${ttlSeconds}`;
+}
+
+/**
+ * Parse `providerId:modelId[:ttl]`. Legacy two-field pins (written before
+ * sliding-renewal existed) parse fine and renew at the default TTL; they
+ * disappear naturally as they expire.
+ */
+function decodePin(value: string): { providerId: string; modelId: string; ttlSeconds: number } | null {
+  const firstColon = value.indexOf(':');
+  if (firstColon <= 0) return null;
+  const providerId = value.slice(0, firstColon);
+  const rest = value.slice(firstColon + 1);
+  const lastColon = rest.lastIndexOf(':');
+  if (lastColon > 0) {
+    const ttl = Number(rest.slice(lastColon + 1));
+    if (Number.isFinite(ttl) && ttl > 0) {
+      return { providerId, modelId: rest.slice(0, lastColon), ttlSeconds: ttl };
+    }
+  }
+  return { providerId, modelId: rest, ttlSeconds: DEFAULT_TTL_SECONDS };
+}
+
+/**
  * Hash a conversation's first user message to create a stable session key.
  *
  * `requestedModel` is part of the key because the pin is only valid for the
@@ -66,8 +97,9 @@ export async function getStickyProvider(
   const value = cache.get(key);
   if (!value) return null;
 
-  const [providerId, modelId] = value.split(':');
-  if (!providerId || !modelId) return null;
+  const pin = decodePin(value);
+  if (!pin) return null;
+  const { providerId, modelId, ttlSeconds } = pin;
 
   // Check if sticky provider is free-tier compatible when strategy is 'prioritize'
   if (freeTierStrategy === 'prioritize' && isFreeModel) {
@@ -78,15 +110,29 @@ export async function getStickyProvider(
     }
   }
 
-  // Check if the sticky provider is still available (not rate-limited)
+  // Check if the sticky provider is still available (not rate-limited).
+  //
+  // A rate-limited pin is SUSPENDED, not destroyed: `cache.get` is a peek that
+  // leaves the TTL running, so the conversation's identity survives a short
+  // RPM window and the handler can re-pin the same model afterwards. Deleting
+  // here (the old behaviour) made one transient 429 permanently re-route the
+  // conversation to a different model.
   if (rateLimitService) {
     const check = rateLimitService.checkLimit(providerId, modelId, 0);
     if (!check.allowed) {
-      cache.del(key);
-      logger.info({ providerId, modelId, reason: check.reason }, 'Sticky session broken - provider rate-limited');
+      logger.info(
+        { providerId, modelId, reason: check.reason },
+        'Sticky session suspended - provider rate-limited (pin preserved for renewal)'
+      );
       return null;
     }
   }
+
+  // Sliding expiration: an ACTIVE conversation never expires mid-flight. Each
+  // successful read re-arms the SAME effective TTL this pin was created with
+  // (including any tight-RPM shortening), so only IDLE conversations — no
+  // reads within the window — actually expire.
+  cache.set(key, encodePin(providerId, modelId, ttlSeconds), ttlSeconds);
 
   return { providerId, modelId };
 }
@@ -130,7 +176,7 @@ export async function setStickyProvider(
     ttlSeconds = adjustedTtl;
   }
 
-  cache.set(conversationHash, `${providerId}:${modelId}`, ttlSeconds);
+  cache.set(conversationHash, encodePin(providerId, modelId, ttlSeconds), ttlSeconds);
 
   logger.debug(
     { conversationHash, providerId, modelId, ttlSeconds },
