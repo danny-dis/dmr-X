@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
-import { agentRegistryService } from '@dmr-x/agent-registry';
+import {
+  agentRegistryService,
+  isSystemAgentName,
+} from '@dmr-x/agent-registry';
 import { agentRuntimeService } from '@dmr-x/agent-runtime';
 import { generateRequestId, logger } from '@dmr-x/utils';
 import { executeToolCall, getRegisteredToolDefinitions, normalizeAllowedTools } from './tools.routes.js';
@@ -183,6 +186,10 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       const instance = active[i];
       const def = definitions[i];
       if (!def) continue;
+      // System-owned agents (`__`-prefixed, e.g. the Receptionist) are platform
+      // plumbing: they coordinate work, they are never dispatch targets. Their
+      // generic descriptions would otherwise out-score real specialists.
+      if (isSystemAgentName(def.name)) continue;
       if (def.category) categories.add(def.category);
       (def.tags ?? []).forEach((t: string) => allTags.add(t));
       const score = scoreDefinition(def, body.task, body.category, body.tags);

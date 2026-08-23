@@ -47,9 +47,18 @@ export interface AgentChatOptions {
 export class AgentRuntimeService {
   /**
    * Load an agent execution context from a deployed instance.
+   *
+   * `instanceOrNameRef` may also be a definition NAME (e.g. `__receptionist`):
+   * the tenant's active instance of that definition is used, deploying one on
+   * first use so a seeded system agent is reachable without a manual deploy
+   * step. Definition ids are not accepted here — ids already resolve via the
+   * instance path above.
    */
   async loadContext(instanceId: string, tenantId: string): Promise<AgentExecutionContext | null> {
-    const instance = await agentRegistryService.getInstance(instanceId);
+    let instance = await agentRegistryService.getInstance(instanceId);
+    if (!instance && !/^[0-9a-f-]{36}$/i.test(instanceId)) {
+      instance = await this.resolveInstanceByName(instanceId, tenantId);
+    }
     if (!instance || instance.tenantId !== tenantId || instance.status !== 'active') {
       return null;
     }
@@ -58,12 +67,37 @@ export class AgentRuntimeService {
     if (!definition) return null;
 
     return {
-      instanceId,
+      instanceId: instance.id,
       definition,
       instance,
       requestId: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       tenantId,
     };
+  }
+
+  /**
+   * Find the tenant's active instance of a definition by name; auto-deploy one
+   * if the definition exists but was never deployed. Returns null when the
+   * name matches nothing.
+   */
+  private async resolveInstanceByName(
+    nameRef: string,
+    tenantId: string,
+  ): Promise<AgentInstance | null> {
+    const definition = await agentRegistryService.getDefinitionByName(tenantId, nameRef);
+    if (!definition) return null;
+
+    const { items } = await agentRegistryService.listInstances(tenantId, { status: 'active' });
+    const existing = items.find((i) => i.agentDefinitionId === definition.id);
+    if (existing) return existing;
+
+    // ponytail: linear scan of active instances per lookup — fine at hundreds
+    // of agents; add a SQL find-by-definition query if dispatch latency matters.
+    logger.info({ tenantId, definition: definition.name }, 'Auto-deploying agent instance for chat');
+    return agentRegistryService.createInstance(tenantId, {
+      agentDefinitionId: definition.id,
+      configOverride: {},
+    });
   }
 
   /**
