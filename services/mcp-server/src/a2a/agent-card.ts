@@ -276,7 +276,6 @@ export function buildAgentCard(
   const rpcUrl = /^https?:\/\/[^/]+\/?$/.test(resolvedUrl)
     ? resolvedUrl.replace(/\/$/, '') + A2A_RPC_PATH
     : resolvedUrl;
-
   const primaryInterface: AgentInterface = {
     url: rpcUrl,
     protocolBinding,
@@ -291,7 +290,11 @@ export function buildAgentCard(
     name: config.name || 'DMR-X Agent',
     description: config.description || 'DMR-X MCP Server with intelligent routing',
     version: config.version || '0.5.0',
-    url: resolvedUrl,
+    // The legacy 0.3.0 flat `url` MUST also be the RPC endpoint: most
+    // spec-0.3.0 clients never look at supportedInterfaces[] and POST their
+    // JSON-RPC envelope straight at `card.url`. Advertising the bare origin
+    // here made them all 404 on the first message/send.
+    url: rpcUrl,
     preferredTransport: protocolBinding,
     capabilities: config.capabilities || {
       streaming: true,

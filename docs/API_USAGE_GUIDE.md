@@ -779,6 +779,23 @@ curl -X POST http://localhost:3000/v1/agents \
   }'
 ```
 
+> **IMPORTANT — deploy before use.** Creating a definition does NOT create a
+> runnable instance. A freshly-created agent is unreachable: `chat`,
+> `/agentic/dispatch`, and MCP `dmrx_run_agent` all 404 with
+> "Agent instance not found" until you deploy it. (Bulk import auto-deploys;
+> single creation does not.) Always call `/deploy` immediately after
+> `POST /v1/agents`:
+>
+> ```bash
+> curl -X POST http://localhost:3000/v1/agents/:definitionId/deploy \
+>   -H "Authorization: Bearer dmrx_your_api_key_here" \
+>   -H "Content-Type: application/json" -d '{}'
+> ```
+>
+> The response contains the `id` of the deployed **instance** — that instance
+> id (not the definition id) is what every downstream call takes:
+> `/v1/agents/:instanceId/chat`.
+
 **Deploy an instance:**
 
 ```bash
