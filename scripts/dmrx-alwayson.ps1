@@ -1,5 +1,5 @@
 # DMR-X always-on launcher.
-# Keeps the gateway running and the MCP+A2A (:47114) and G0DM0D3 (:7860)
+# Keeps the gateway running and the MCP+A2A (:47114) and G0DM0D3 (:47115)
 # companions alive alongside it. The gateway itself is started through PM2
 # (source code with all fixes) — the compiled binary lineage had
 # false-corruption detection and silent data loss on restart, so it is never
@@ -184,7 +184,7 @@ Write-Log "Bun path: $BunDir"
 Write-Log "Gateway port: $GwPort"
 
 # Reap a gateway stranded on our port by a previous run — but only ever one of
-# ours. Companion ports (47114 / 7860) are deliberately NOT cleared here: the
+# ours. Companion ports (47114 / 47115) are deliberately NOT cleared here: the
 # supervisor loop below adopts a healthy companion and restarts a dead one, so
 # killing them on every boot would cause avoidable downtime for no benefit.
 foreach ($p in (Get-PortOwnerPids $GwPort)) {
@@ -277,7 +277,7 @@ function Start-Companions {
     # Start G0DM0D3
     $g0dm0d3Dir = Join-Path $ProjectRoot '.dmrx-data\servers\g0dm0d3'
     if (Test-Path $g0dm0d3Dir) {
-        Write-Log "Starting G0DM0D3 on :7860..."
+        Write-Log "Starting G0DM0D3 on :47115..."
         $child = Start-Process -FilePath $BunExe -ArgumentList 'x','tsx','api/server.ts' `
             -WorkingDirectory $g0dm0d3Dir `
             -PassThru -NoNewWindow -ErrorAction SilentlyContinue
@@ -296,9 +296,9 @@ function Start-Companions {
     for ($i = 0; $i -lt $maxWait; $i++) {
         Start-Sleep -Seconds 1
         $mcpUp = Test-PortListen 47114
-        $g0dUp  = Test-PortListen 7860
+        $g0dUp  = Test-PortListen 47115
         if ($mcpUp -and $g0dUp) {
-            Write-Log "Companions healthy (MCP+A2A :47114, G0DM0D3 :7860)"
+            Write-Log "Companions healthy (MCP+A2A :47114, G0DM0D3 :47115)"
             return
         }
         if ($i -eq $maxWait - 1) {
@@ -312,7 +312,7 @@ function Start-Companions {
 # Stop-Process only kills the PID it is given. G0DM0D3 runs as
 # `bun x tsx` -> `tsx/cli.mjs` -> `node`, and the port is held by the deepest
 # process, so killing the recorded wrapper leaves the actual server alive and
-# still bound to 7860 — the next Start-Companions then spawns a second one on
+# still bound to 47115 — the next Start-Companions then spawns a second one on
 # top of an orphan. taskkill /T takes the descendants with it.
 function Stop-ProcessTree($Proc) {
     if (-not $Proc) { return }
@@ -403,7 +403,7 @@ while ($true) {
     if (Test-PortListen $GwPort) {
         Start-Sleep -Seconds 10
         $mcpAlive  = Test-PortListen 47114
-        $g0dAlive  = Test-PortListen 7860
+        $g0dAlive  = Test-PortListen 47115
         if (-not $mcpAlive -or -not $g0dAlive) {
             Write-Log "Companion(s) down (MCP=$mcpAlive, G0DM0D3=$g0dAlive) - restarting..."
             Stop-Companions
@@ -427,7 +427,7 @@ while ($true) {
     while (Test-PortListen $GwPort) {
         Start-Sleep -Seconds 10
         $mcpAlive = Test-PortListen 47114
-        $g0dAlive = Test-PortListen 7860
+        $g0dAlive = Test-PortListen 47115
         if (-not $mcpAlive -or -not $g0dAlive) {
             Write-Log "Companion(s) down during gateway runtime (MCP=$mcpAlive, G0DM0D3=$g0dAlive) - restarting..."
             # Reap before respawning: a companion can be alive but not listening
