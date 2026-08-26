@@ -82,8 +82,18 @@ export function capabilityFilter(
   // HARD — a text-only model cannot see an attached image, so routing there
   // would guarantee a wrong answer instead of risking one. Modality is always
   // hard for the same reason.
+  //
+  // Non-LLM modalities skip the degrade entirely: for diffusion (and the
+  // other generative modalities) modality match is already enforced by
+  // `matchesModality`, and requiring a capability tag like `text2img` that a
+  // healthy image provider never sets would empty the candidate set — the
+  // exact failure mode documented above. Without this guard, every keyed
+  // text provider listing an image-named model (e.g. "flux") passed the soft
+  // fallback and then died at execution with "Unsupported modality: diffusion".
+  const NON_LLM_MODALITIES = new Set(['diffusion', 'video', 'music', '3d', 'audio_tts', 'audio_stt']);
   const SOFT_CAPABILITIES = new Set(['tool_use', 'json_mode', 'reasoning', 'function_call']);
   const allSoft =
+    !NON_LLM_MODALITIES.has(modality) &&
     requiredCapabilities.length > 0 &&
     requiredCapabilities.every((cap) => SOFT_CAPABILITIES.has(cap));
 
