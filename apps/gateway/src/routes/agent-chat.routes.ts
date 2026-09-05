@@ -275,8 +275,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         evalId = executionRecord.id;
       } else {
         // Fallback: get the most recent execution for this instance
-        const latestExec = agentRegistryService.getLatestExecution(context.instanceId, context.tenantId);
-        evalId = latestExec?.id;
+        const recentExecs = await agentRegistryService.listExecutions(context.instanceId, context.tenantId, 1);
+        evalId = recentExecs[0]?.id;
       }
       if (evalId) {
         try {
