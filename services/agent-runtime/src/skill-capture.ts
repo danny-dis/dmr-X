@@ -8,7 +8,7 @@
 // This is the "L5" TODO item: pattern detection, not just nudge.
 // ---------------------------------------------------------------------------
 
-import { agentRegistryService } from '@dmr-x/agent-registry';
+import { skillService } from '@dmr-x/agent-registry';
 import { logger } from '@dmr-x/utils';
 
 export interface SkillSuggestion {
@@ -280,7 +280,7 @@ export async function persistCapturedSkill(
   suggestion: SkillSuggestion,
 ): Promise<{ id: string; name: string } | null> {
   try {
-    const skill = await agentRegistryService.createSkill(tenantId, {
+    const skill = await skillService.createSkill(tenantId, {
       name: suggestion.name,
       description: suggestion.description,
       content: suggestion.content,

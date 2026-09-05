@@ -1,4 +1,4 @@
-import { agentRegistryService, type AgentDefinition, type AgentInstance } from '@dmr-x/agent-registry';
+import { agentRegistryService, type AgentDefinition, type AgentExecution, type AgentInstance } from '@dmr-x/agent-registry';
 import { billingService } from '@dmr-x/billing';
 import { normalizeAllowedTools } from '@dmr-x/core';
 import { getDb } from '@dmr-x/db';
@@ -378,7 +378,7 @@ export class AgentRuntimeService {
 
       if (resolvedProvider && resolvedModel) {
         try {
-          const pricing = await billingService.getModelPricing(resolvedProvider, resolvedModel);
+          const pricing = resolvedProvider ? await billingService.getModelPricing(resolvedProvider, resolvedModel) : null;
           if (pricing) {
             costCents = billingService.calculateCost(inputTokens, outputTokens, pricing);
           }
@@ -425,7 +425,7 @@ export class AgentRuntimeService {
       const resolvedProvider = this.extractProvider(modelUsed);
       const resolvedModel = this.extractModel(modelUsed);
       try {
-        const pricing = await billingService.getModelPricing(resolvedProvider, resolvedModel);
+        const pricing = resolvedProvider ? await billingService.getModelPricing(resolvedProvider, resolvedModel) : null;
         if (pricing) {
           costCents = billingService.calculateCost(inputTokens, outputTokens, pricing);
         }
