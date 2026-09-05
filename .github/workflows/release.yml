@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   binaries:
-    name: Build binaries
+    name: Build binaries & create release
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -100,42 +100,61 @@ jobs:
             sha256sum "$f" | tee -a checksums.txt
           done
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Extract version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="v${{ inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Read CHANGELOG
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          V="${VERSION#v}"
+          CHANGELOG=docs/CHANGELOG.md
+          if [ -f "$CHANGELOG" ]; then
+            awk -v ver="$V" '
+              /^## / {
+                if (in_section && found) exit
+                if ($0 ~ "## v?" ver " ") { in_section=1; found=1 }
+              }
+              in_section { print }
+            ' "$CHANGELOG" > release-notes.md || true
+          else
+            : > release-notes.md
+          fi
+          if [ ! -s release-notes.md ]; then
+            echo "## $VERSION" > release-notes.md
+            echo "" >> release-notes.md
+            echo "See [CHANGELOG.md](https://github.com/danny-dis/dmr-X/blob/$VERSION/docs/CHANGELOG.md) for the full list of changes." >> release-notes.md
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
-          name: binaries-linux-x64
-          path: apps/gateway/dist/dmrx-linux-x64.tar.gz
-      - name: Upload linux arm64
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-linux-arm64
-          path: apps/gateway/dist/dmrx-linux-arm64.tar.gz
-      - name: Upload darwin x64
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-darwin-x64
-          path: apps/gateway/dist/dmrx-darwin-x64.tar.gz
-      - name: Upload darwin arm64
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-darwin-arm64
-          path: apps/gateway/dist/dmrx-darwin-arm64.tar.gz
-      - name: Upload windows x64
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-windows-x64
-          path: apps/gateway/dist/dmrx-windows-x64.zip
-      - name: Upload checksums
-        uses: actions/upload-artifact@v4
-        with:
-          name: checksums
-          path: apps/gateway/checksums.txt
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: |
+            apps/gateway/dist/dmrx-linux-x64.tar.gz
+            apps/gateway/dist/dmrx-linux-arm64.tar.gz
+            apps/gateway/dist/dmrx-darwin-x64.tar.gz
+            apps/gateway/dist/dmrx-darwin-arm64.tar.gz
+            apps/gateway/dist/dmrx-windows-x64.zip
+            apps/gateway/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   container:
     name: Build & push container
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: binaries
     permissions:
       contents: read
       packages: write
@@ -213,7 +232,7 @@ jobs:
       - name: Sign node image
         run: |
           # Request OIDC token from GitHub Actions
-          OIDC_TOKEN=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          OIDC_TOKEN=$(curl -H "Authorization: bearer $ACTIO...OKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sigstore" | jq -r '.value')
           cosign sign --identity-token "$OIDC_TOKEN" --yes \
             ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
@@ -221,85 +240,6 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
         with:
-          artifact: ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+          image: ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
           format: cyclonedx-json
           output-file: sbom.cdx.json
-
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: sbom.cdx.json
-
-  release:
-    name: Create GitHub release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [binaries, container]
-    permissions:
-      contents: write
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Extract version
-        id: version
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            VERSION="${{ github.ref_name }}"
-          else
-            VERSION="v${{ inputs.version }}"
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Read CHANGELOG
-        id: changelog
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          V="${VERSION#v}"
-          # The changelog lives at docs/CHANGELOG.md (not repo root); a missing
-          # file must not fail the release (O9). awk exits non-zero if the file
-          # is absent, so guard the read and tolerate a non-zero exit.
-          CHANGELOG=docs/CHANGELOG.md
-          if [ -f "$CHANGELOG" ]; then
-            awk -v ver="$V" '
-              /^## / {
-                if (in_section && found) exit
-                if ($0 ~ "## v?" ver " ") { in_section=1; found=1 }
-              }
-              in_section { print }
-            ' "$CHANGELOG" > release-notes.md || true
-          else
-            : > release-notes.md
-          fi
-          if [ ! -s release-notes.md ]; then
-            echo "## $VERSION" > release-notes.md
-            echo "" >> release-notes.md
-            echo "See [CHANGELOG.md](https://github.com/danny-dis/dmr-X/blob/$VERSION/docs/CHANGELOG.md) for the full list of changes." >> release-notes.md
-          fi
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: ${{ steps.version.outputs.version }}
-          body_path: release-notes.md
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-          files: |
-            artifacts/binaries-linux-x64/*.tar.gz
-            artifacts/binaries-linux-arm64/*.tar.gz
-            artifacts/binaries-darwin-x64/*.tar.gz
-            artifacts/binaries-darwin-arm64/*.tar.gz
-            artifacts/binaries-windows-x64/*.zip
-            artifacts/checksums/checksums.txt
-            artifacts/sbom/sbom.cdx.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
