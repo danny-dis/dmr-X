@@ -75,10 +75,10 @@ describe('UsageTracker', () => {
       });
       expect(result.id).toBeTruthy();
       expect(result.createdAt).toBeTruthy();
-      // Format is "YYYY-MM-DD HH:MM:SS" in local time — must match exactly
-      expect(result.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-      // Parse as local time (no timezone suffix — the format is naive local time)
-      const ts = Date.parse(result.createdAt.replace(' ', 'T'));
+      // Format is ISO 8601 UTC — "YYYY-MM-DDTHH:MM:SS.sssZ"
+      expect(result.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      // Parse directly as ISO
+      const ts = Date.parse(result.createdAt);
       expect(Number.isNaN(ts)).toBe(false);
       // The recorded timestamp should be within 5 seconds of "now" (allowing for
       // small execution drift, including the prior DELETE on the table).
