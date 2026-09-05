@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/cli",
-  "version": "0.5.12",
+  "version": "0.5.20",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

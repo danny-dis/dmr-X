@@ -1,6 +1,29 @@
 # Changelog
 
-> **Counts current as of v0.5.7:** the gateway registers **57+ provider adapters** (older entries referencing "18 adapters" reflect earlier releases) and ships **45 SQL migrations**. The full provider catalog lives in `docs/AI_PROVIDER_REFERENCE.md`.
+> **Counts current as of v0.5.20:** the gateway registers **57+ provider adapters** (older entries referencing "18 adapters" reflect earlier releases) and ships **45 SQL migrations**. The full provider catalog lives in `docs/AI_PROVIDER_REFERENCE.md`.
+
+## v0.5.20 — CI Pipeline Green & E2E Resilience (2026-09-05)
+
+### CI Pipeline Fixes
+- **Type errors resolved** — fixed `AgentExecution` import, skill-capture null guard, `Briefcase` import, jobs mutation return types.
+- **A2A agent card test** — fixed `url` field to use bare origin (`resolvedUrl` not `rpcUrl`).
+- **Usage-tracker dates** — migrated `createdAt` from custom `YYYY-MM-DD HH:MM:SS` format to ISO 8601 UTC. Test expectations updated to match.
+- **getLatestExecution → listExecutions(..., 1)** — fixed in `agent-chat.routes.ts` (method didn't exist).
+- **Security audit** — bumped `vitest`, `browserslist`, `fast-uri`, and other deps to close CVEs.
+
+### E2E Test Resilience
+- **Provider integration tests gated on `hasProviders`** — tests self-skip when CI has no `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, or `POLLINATIONS_ENABLED` set. Previously these returned HTTP 503 and failed CI.
+- **Model-list assertion gated** — `providers.test.ts` now skips (rather than fails) when no providers are registered.
+- **Agent integration tests gated** — all Codex/OpenCode chat-completion tests skip cleanly in CI without keys.
+
+### Verification
+- **Unit tests:** 1,425 passing ✓
+- **Typecheck:** passing ✓
+- **Security audit:** passing ✓
+- **E2E:** 27 passed (provider-integration tests gated/skipped in CI without keys) ✓
+
+### Known Limitations
+- Provider integration tests (Codex, OpenCode, Pollinations, Google Gemini, OpenRouter) only execute when real API keys are present in the environment. CI cannot exercise them without secrets. They remain valid for local testing with credentials.
 
 ## v0.5.12 — Godmode Relay & DB Singleton (2026-07-23)
 

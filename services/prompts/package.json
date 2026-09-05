@@ -1,6 +1,6 @@
 {
   "name": "@dmr-x/prompts",
-  "version": "0.5.12",
+  "version": "0.5.20",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
