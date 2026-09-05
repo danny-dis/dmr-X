@@ -87,6 +87,12 @@ export interface FallbackOptions {
   configuredFallbacks?: FallbackStepConfig[];
   /** Key rotation service for same-provider key retry */
   keyRotationService?: KeyRotationService;
+  /**
+   * Global timeout in ms for the entire fallback chain. When the timer fires
+   * the request fails fast with ProviderUnavailableError instead of walking
+   * every dead candidate sequentially. Default 12_000 (12s). Set 0 to disable.
+   */
+  globalTimeoutMs?: number;
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -384,6 +390,33 @@ export async function executeWithFallback(
   const tried: string[] = [];
   const triedErrors: { provider: string; status?: number; message: string }[] = [];
 
+  // Global timeout: bound the entire fallback chain so a string of slow-failing
+  // providers can't stall the request past the client's patience. When the
+  // timer fires we fail fast with ProviderUnavailableError (retryable) instead
+  // of walking every dead candidate sequentially.
+  const globalTimeoutMs = options?.globalTimeoutMs ?? 12_000;
+  const globalDeadline = globalTimeoutMs > 0 ? Date.now() + globalTimeoutMs : 0;
+
+  // Pool health check: if the vast majority of candidates are on cooldown,
+  // fail fast instead of probing them one by one. This turns a 30s sequential
+  // walk into a 1-2s fast-fail when the pool is genuinely unhealthy.
+  const totalChainLength = 1 + plan.chain.length; // primary + fallbacks
+  const deadChainMembers = plan.chain.filter(step =>
+    isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)
+  ).length;
+  const primaryDead = isModelOnErrorCooldown(plan.primary.providerId, plan.primary.modelId) ? 1 : 0;
+  const deadRatio = totalChainLength > 0 ? (primaryDead + deadChainMembers) / totalChainLength : 0;
+  if (deadRatio >= 0.8 && totalChainLength >= 2) {
+    logger.warn(
+      { requestId: options?.requestId, deadRatio, totalChainLength },
+      'Pool unhealthy: >80% candidates on cooldown — failing fast'
+    );
+    throw new ProviderUnavailableError(
+      [plan.primary.providerId, ...plan.chain.map(s => s.provider.providerId)],
+      5000
+    );
+  }
+
   // Capture a per-provider error for root-cause surfacing (F-4).
   function recordTriedError(providerId: string, error: unknown): void {
     if (triedErrors.some((e) => e.provider === providerId)) return;
@@ -646,9 +679,20 @@ export async function executeWithFallback(
           await qs.checkQuota(tenantId, step.provider.providerId, 0, 0);
         }
         tried.push(step.provider.providerId);
-        const response = await withConcurrencySlot(step.provider.providerId, () =>
+        // Race each probe against the global deadline so a slow provider
+        // can't hold back the entire chain past the timeout.
+        const remainingMs = globalDeadline > 0 ? Math.max(1, globalDeadline - Date.now()) : 0;
+        const execPromise = withConcurrencySlot(step.provider.providerId, () =>
           executor.execute(step.provider.providerId, step.provider.modelId, request)
         );
+        const response = remainingMs > 0
+          ? await Promise.race([
+              execPromise,
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('global timeout')), remainingMs)
+              ),
+            ])
+          : await execPromise;
         return { step, response };
       })()
     );
@@ -707,6 +751,18 @@ export async function executeWithFallback(
         continue;
       }
 
+      // Global timeout check: if the deadline has passed, fail fast instead
+      // of trying another slow provider. This bounds the total fallback chain
+      // latency so the client gets a timely error (or a timely success from
+      // the parallel probe above) instead of a 30s+ sequential walk.
+      if (globalDeadline > 0 && Date.now() >= globalDeadline) {
+        logger.warn(
+          { requestId: options?.requestId, globalTimeoutMs, tried },
+          'Global fallback timeout reached — failing fast'
+        );
+        throw new ProviderUnavailableError(tried, globalTimeoutMs);
+      }
+
       // Re-check rate limit before executing fallback
       if (rls) {
         const limitCheck = rls.checkLimit(step.provider.providerId, step.provider.modelId, 0);
@@ -760,6 +816,12 @@ export async function executeWithFallback(
       };
       return response;
     } catch (error) {
+      // If this is a global timeout, re-throw immediately — do NOT continue
+      // to the next provider. The timeout means we've exhausted our latency
+      // budget and the client needs a timely error, not more attempts.
+      if (error instanceof ProviderUnavailableError && error.message === 'All providers currently unavailable') {
+        throw error;
+      }
       // Record circuit breaker failure (wrapped in try/catch)
       try { options?.onFailure?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
       recordTriedError(step.provider.providerId, error);
@@ -790,6 +852,34 @@ export async function executeWithFallback(
           fallbackErrorCategory === 'rate_limit') {
         trackModelError(step.provider.providerId, step.provider.modelId, fallbackErrorCategory);
       }
+    }
+  }
+
+  // Graceful degradation: before failing entirely, try a last-resort model
+  // that trades quality for availability. This keeps the request alive when
+  // the pool is temporarily unhealthy — better a degraded answer than a 503.
+  // Only triggers when we haven't already tried the degraded model.
+  const degradedModel = process.env.DMRX_DEGRADED_MODEL;
+  if (degradedModel && !tried.some(id => id.includes('degraded'))) {
+    try {
+      const [degradedProviderId, degradedModelId] = degradedModel.includes('/')
+        ? degradedModel.split('/')
+        : ['openrouter-free', degradedModel];
+      logger.warn(
+        { requestId: options?.requestId, degradedModel, degradedProviderId, degradedModelId },
+        'All providers failed — attempting graceful degradation'
+      );
+      const response = await executor.execute(degradedProviderId, degradedModelId, request);
+      response.fallback = {
+        fromProviderId: plan.primary.providerId,
+        fromModelId: plan.primary.modelId,
+        attempts: tried.length,
+        reason: 'graceful_degradation',
+        errors: [...triedErrors, { provider: 'all', message: 'All primary and fallback providers failed; degraded model used' }],
+      };
+      return response;
+    } catch (degradedErr) {
+      logger.warn({ requestId: options?.requestId, err: degradedErr }, 'Graceful degradation also failed');
     }
   }
 

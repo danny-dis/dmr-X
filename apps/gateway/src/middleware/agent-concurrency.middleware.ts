@@ -22,10 +22,12 @@ interface TenantBucket {
  */
 export function createAgentConcurrencyGuard(options?: AgentConcurrencyOptions) {
   // Overall capacity across all tenants. Existing env name is preserved.
+  // Default raised from 20 → 50: the old cap blocked parallel agent fleets and
+  // returned 429 on nearly all agent endpoints under modest load.
   const globalLimit =
     Number(process.env.DMRX_MAX_CONCURRENT_AGENT_REQUESTS) ||
     options?.defaultLimit ||
-    20;
+    50;
 
   // Per-tenant ceiling. Defaults to the global ceiling so a single tenant behaves
   // exactly as before; the global cap then protects total capacity under multi-tenant

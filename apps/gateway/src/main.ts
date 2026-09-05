@@ -275,17 +275,41 @@ async function main(): Promise<void> {
   // make listen() fail on every restart until someone intervenes by hand.
   try {
     const { reapStaleCompanions } = await import('./lib/sidecar-boot.js');
-    reapStaleCompanions();
+    await reapStaleCompanions();
   } catch (err) {
     logger.warn({ err }, 'Stale companion reap skipped');
   }
 
-  try {
-    await server.listen(listenOptions);
-    logger.info({ port }, 'DMR-X Gateway running');
-  } catch (err) {
-    logger.error({ err }, 'Failed to start server');
-    process.exit(1);
+  // Retry listen() up to 3 times with a 2s delay between attempts. The reap
+  // above waits for the OS to release the socket, but under heavy load the
+  // kernel can take longer — without a retry, a single slow release kills the
+  // boot. Each retry re-checks port ownership so we only bind when it's safe.
+  let listenAttempts = 0;
+  const maxListenAttempts = 3;
+  while (true) {
+    try {
+      await server.listen(listenOptions);
+      logger.info({ port }, 'DMR-X Gateway running');
+      break;
+    } catch (err) {
+      listenAttempts++;
+      if (listenAttempts >= maxListenAttempts) {
+        logger.error({ err, attempts: listenAttempts }, 'Failed to start server after retries');
+        process.exit(1);
+      }
+      logger.warn(
+        { err, attempt: listenAttempts, max: maxListenAttempts },
+        'listen() failed — reaping stale companions and retrying',
+      );
+      // One more reap attempt in case a new zombie appeared
+      try {
+        const { reapStaleCompanions } = await import('./lib/sidecar-boot.js');
+        await reapStaleCompanions();
+      } catch {
+        /* best-effort */
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
 
   // Kick off background initialisation first, before deferred companion boots.

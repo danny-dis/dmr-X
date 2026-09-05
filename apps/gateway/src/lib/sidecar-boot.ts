@@ -212,7 +212,17 @@ function isOurCompanion(cmd: string | undefined): boolean {
   // supervised boot cannot bind — which is precisely the restart loop this
   // reaper exists to break.
   if (lower.includes('.dmr-x\\bin\\dmrx') || lower.includes('.dmr-x/bin/dmrx')) return true;
-  if (!lower.includes(root)) return false;
+  if (!lower.includes(root)) {
+    // Tier 3: bare gateway entry match — last resort for zombies whose cmd line
+    // is truncated or whose cwd differs. We require BOTH "gateway" and "main"
+    // to avoid killing an unrelated bun process that happens to share a port.
+    const isGatewayEntry =
+      (lower.includes('gateway') && lower.includes('main.ts')) ||
+      (lower.includes('gateway') && lower.includes('main.js')) ||
+      lower.includes('apps/gateway') ||
+      lower.includes('apps\\gateway');
+    return isGatewayEntry;
+  }
   return (
     lower.includes('mcp-server') ||
     lower.includes('g0dm0d3') ||
@@ -262,7 +272,7 @@ function topmostOurAncestor(pid: number, table: Map<number, ProcInfo>): number {
  *    unreachable from the recorded PID, so a ledger-only reap left the gateway
  *    permanently unable to bind.
  */
-export function reapStaleCompanions(): void {
+export async function reapStaleCompanions(): Promise<void> {
   const candidates = new Set<number>();
 
   for (const pid of Object.values(readCompanionLedger())) {
@@ -302,6 +312,26 @@ export function reapStaleCompanions(): void {
       logger.info({ pid }, 'Reaped stale companion tree from a previous gateway run');
     } catch (err) {
       logger.warn({ err, pid }, 'Could not reap stale companion');
+    }
+  }
+
+  // Wait for the OS to release the sockets we just killed. Without this,
+  // reapStaleCompanions() returns immediately and the next listen() can still
+  // hit EADDRINUSE because the kernel hasn't finished tearing down the socket.
+  const reapDeadline = Date.now() + 8000;
+  while (Date.now() < reapDeadline) {
+    const stillHeld = pidsListeningOn(ports).filter((p) => p !== process.pid);
+    if (stillHeld.length === 0) break;
+    logger.info(
+      { ports, stillHeld },
+      'Waiting for OS to release DMR-X port(s) after reaping stale companions',
+    );
+    // 500 ms is short enough to not slow boots noticeably, long enough to let
+    // the kernel reap the socket.
+    try {
+      await new Promise((r) => setTimeout(r, 500));
+    } catch {
+      /* never */
     }
   }
 

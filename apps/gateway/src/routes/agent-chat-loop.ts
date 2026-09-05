@@ -13,6 +13,7 @@ import {
 } from '@dmr-x/utils';
 import type { AgentRuntimeService, AgentExecutionContext } from '@dmr-x/agent-runtime';
 import type { AgentDefinition } from '@dmr-x/agent-registry';
+import { agentRegistryService } from '@dmr-x/agent-registry';
 
 import { executeToolCall } from './tools.routes.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
@@ -1321,6 +1322,19 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           status: budgetExceeded ? 'error' : 'success',
           error: budgetExceeded ? 'budget_exceeded' : null,
         }, allSteps, maxSteps);
+        // Persist the evaluation so it appears in the evaluations endpoint.
+        if (evaluation) {
+          await agentRegistryService.createEvaluation(context.tenantId, {
+            agentInstanceId: context.instanceId,
+            executionId,
+            toolSuccessRate: evaluation.toolSuccessRate,
+            budgetAdherence: evaluation.budgetAdherence,
+            turnEfficiency: evaluation.turnEfficiency,
+            score: evaluation.score,
+            breakdown: evaluation.breakdown,
+            status: budgetExceeded ? 'error' : 'success',
+          });
+        }
       } catch (evaluationError) {
         logger.warn({ executionId, error: evaluationError }, 'failed_to_evaluate_execution');
       }

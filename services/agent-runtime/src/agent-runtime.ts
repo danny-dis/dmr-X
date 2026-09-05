@@ -405,6 +405,51 @@ export class AgentRuntimeService {
   }
 
   /**
+   * Create an execution record and return it (with id).
+   * Used by the chat runtime to link evaluations to the execution they score.
+   */
+  async createExecution(
+    context: AgentExecutionContext,
+    input: string,
+    output: string,
+    toolsUsed: string[],
+    modelUsed: string,
+    inputTokens: number,
+    outputTokens: number,
+    durationMs: number,
+    status: 'success' | 'error' = 'success',
+    error?: string,
+  ): Promise<AgentExecution | null> {
+    let costCents = 0;
+    if (inputTokens > 0 || outputTokens > 0) {
+      const resolvedProvider = this.extractProvider(modelUsed);
+      const resolvedModel = this.extractModel(modelUsed);
+      try {
+        const pricing = await billingService.getModelPricing(resolvedProvider, resolvedModel);
+        if (pricing) {
+          costCents = billingService.calculateCost(inputTokens, outputTokens, pricing);
+        }
+      } catch (err) {
+        logger.warn({ modelUsed, error: err }, 'Failed to calculate agent execution cost');
+      }
+    }
+    return agentRegistryService.recordExecution({
+      agentInstanceId: context.instanceId,
+      tenantId: context.tenantId,
+      input,
+      output,
+      toolsUsed,
+      modelUsed,
+      inputTokens,
+      outputTokens,
+      costCents,
+      durationMs,
+      status,
+      error,
+    });
+  }
+
+  /**
    * Extract provider ID from a model string like "openai/gpt-4o" or "gpt-4o".
    */
   private extractProvider(model: string): string | null {
@@ -445,13 +490,11 @@ export class AgentRuntimeService {
     turnEfficiency: number;
     score: number;
     breakdown: Record<string, unknown>;
-  }> {
+  } | null> {
     const toolCalls = steps.flatMap((s) => s.tool_calls ?? []);
     const toolResults = steps.flatMap((s) => s.tool_results ?? []);
     const successfulToolResults = toolResults.filter((tr) => !tr.error);
     const toolSuccessRate = toolCalls.length > 0 ? successfulToolResults.length / toolCalls.length : 1;
-    // ponytail: budget adherence rewards finishing UNDER the step budget,
-    // not consuming all of it. Mirror turnEfficiency's shape.
     const budgetAdherence =
       execution.status === 'success' && maxSteps > 0
         ? Math.max(0, 1 - steps.length / maxSteps)
@@ -465,7 +508,7 @@ export class AgentRuntimeService {
       ).toFixed(4),
     );
 
-    return {
+    const evaluation = {
       toolSuccessRate: Number(toolSuccessRate.toFixed(4)),
       budgetAdherence: Number(budgetAdherence.toFixed(4)),
       turnEfficiency: Number(turnEfficiency.toFixed(4)),
@@ -478,6 +521,24 @@ export class AgentRuntimeService {
         maxSteps,
       },
     };
+
+    // Persist the evaluation so it appears in the evaluations endpoint.
+    try {
+      await agentRegistryService.createEvaluation(context.tenantId, {
+        agentInstanceId: context.instanceId,
+        executionId: execution.id,
+        toolSuccessRate: evaluation.toolSuccessRate,
+        budgetAdherence: evaluation.budgetAdherence,
+        turnEfficiency: evaluation.turnEfficiency,
+        score: evaluation.score,
+        breakdown: evaluation.breakdown,
+        status: execution.status === 'success' ? 'success' : 'error',
+      });
+    } catch (err) {
+      logger.warn({ executionId: execution.id, error: err }, 'failed_to_persist_evaluation');
+    }
+
+    return evaluation;
   }
 
 }

@@ -447,6 +447,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       let lastStreamError: unknown;
       let usedProviderId = plan.primary.providerId;
 
+      // Global fallback timeout: bound the entire candidate walk so a string
+      // of slow providers can't stall the request past the client's patience.
+      // Default 12s. The fallback-executor has the same guard for non-streaming.
+      const fallbackTimeoutMs = Number(process.env.DMRX_FALLBACK_TIMEOUT_MS ?? 12000);
+      const fallbackDeadline = fallbackTimeoutMs > 0 ? Date.now() + fallbackTimeoutMs : 0;
+
       for (let attempt = 0; attempt < streamCandidates.length; attempt++) {
         const candidate = streamCandidates[attempt];
         const adapter = (server as any).getAdapter(candidate.providerId);
@@ -454,6 +460,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           lastStreamError = new Error(`No adapter available for provider ${candidate.providerId}`);
           continue;
         }
+
+        // Global fallback timeout check: if the deadline has passed, fail
+        // fast instead of trying another slow provider. This bounds the total
+        // streaming candidate walk so the client gets a timely error.
+        if (fallbackDeadline > 0 && Date.now() >= fallbackDeadline) {
+          lastStreamError = new Error(`Fallback timeout (${fallbackTimeoutMs}ms) reached with ${streamCandidates.length - attempt} candidates remaining`);
+          logger.warn({ requestId, fallbackTimeoutMs, attempt, total: streamCandidates.length }, 'Streaming fallback timeout reached');
+          break;
+        }
+
         usedProviderId = candidate.providerId;
         const controller = new AbortController();
         const onClientClose = () => controller.abort();
