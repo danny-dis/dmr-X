@@ -1,0 +1,1 @@
+def dmrx_auto_ok(): return "DMRX_AUTO_OK"

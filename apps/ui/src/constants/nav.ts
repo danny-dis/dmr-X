@@ -1,5 +1,6 @@
 import {
   Bot,
+  Briefcase,
   Cpu,
   Layers,
   Network,

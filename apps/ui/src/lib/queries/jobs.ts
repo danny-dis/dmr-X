@@ -70,7 +70,7 @@ export interface CreateJobInput {
 export function useCreateJob() {
   const invalidate = useJobInvalidation();
   return useMutation({
-    mutationFn: (body: CreateJobInput) => apiPost<Job>('/jobs', body),
+    mutationFn: (body: CreateJobInput) => apiPost<string>('/jobs', body),
     onSuccess: invalidate,
   });
 }
@@ -96,7 +96,7 @@ export function usePlanJob() {
 export function useCancelJob() {
   const invalidate = useJobInvalidation();
   return useMutation({
-    mutationFn: (id: string) => apiPost<Job>(`/jobs/${id}/cancel`),
+    mutationFn: (id: string) => apiPost<string>(`/jobs/${id}/cancel`),
     onSuccess: invalidate,
   });
 }
