@@ -257,7 +257,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         costDelta: (step.message as any)?.usage?.cost ?? (step.message as any)?.usage?.total_cost ?? 0,
       })));
 
-      await agentRuntimeService.recordExecution(
+      const executionRecord = await agentRuntimeService.createExecution(
         context,
         JSON.stringify(body.messages),
         result.lastResponseText,
@@ -267,6 +267,38 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         0,
         Date.now() - startTime,
       );
+      // Persist an evaluation record linked to this execution so the
+      // /evaluations endpoint has data to serve.
+      // Use the latest execution's ID since recordExecution returns void.
+      let evalId: string | undefined;
+      if (executionRecord?.id) {
+        evalId = executionRecord.id;
+      } else {
+        // Fallback: get the most recent execution for this instance
+        const latestExec = agentRegistryService.getLatestExecution(context.instanceId, context.tenantId);
+        evalId = latestExec?.id;
+      }
+      if (evalId) {
+        try {
+          await agentRuntimeService.evaluateExecution(
+            context,
+            {
+              id: evalId,
+              output: result.lastResponseText,
+              toolsUsed: result.allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
+              inputTokens: result.totalTokensUsed,
+              outputTokens: 0,
+              durationMs: Date.now() - startTime,
+              status: result.budgetExceeded ? 'error' : 'success',
+              error: result.budgetExceeded ? 'budget_exceeded' : null,
+            },
+            result.allSteps,
+            maxSteps,
+          );
+        } catch (evaluationError) {
+          logger.warn({ executionId: evalId, error: evaluationError }, 'failed_to_evaluate_execution');
+        }
+      }
 
 
       if (body.stream) {
@@ -573,6 +605,39 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const { instanceId } = request.params as { instanceId: string };
     const executions = await agentRegistryService.listExecutions(instanceId, tenant.id);
     return reply.send(executions);
+  });
+
+  /**
+   * POST /agents/:instanceId/analyze
+   *
+   * Analyze a completed conversation transcript for skill-capture opportunities.
+   * Returns suggested skills that could be captured from repeated workflows,
+   * tool usage patterns, and reusable response templates.
+   */
+  server.post('/agents/:instanceId/analyze', async (request, reply) => {
+    const tenant = (request as any).tenant;
+    if (!tenant) return reply.code(401).send({ error: { message: 'Unauthorized' } });
+
+    const { instanceId } = request.params as { instanceId: string };
+    const body = (request.body ?? {}) as { conversationId?: string; messages?: any[] };
+
+    // Get messages from conversation or request body
+    let messages = body.messages ?? [];
+    if (body.conversationId && messages.length === 0) {
+      const session = agentSessionStore.get(tenant.id, body.conversationId);
+      if (session) {
+        messages = session.state?.messages ?? [];
+      }
+    }
+
+    if (messages.length === 0) {
+      return reply.code(400).send({ error: { message: 'No messages to analyze' } });
+    }
+
+    const { analyzeTranscript } = await import('@dmr-x/agent-runtime');
+    const analysis = analyzeTranscript(messages, []);
+
+    return reply.send(analysis);
   });
 }
 

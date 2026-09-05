@@ -27,6 +27,13 @@ export {
 export { SkillLoader, skillLoader, type SkillAdvert } from './skill-loader.js';
 
 export {
+  analyzeTranscript,
+  persistCapturedSkill,
+  type SkillSuggestion,
+  type CaptureAnalysis,
+} from './skill-capture.js';
+
+export {
   resolveSubagent,
   runSubagent,
   type DelegateResult,
