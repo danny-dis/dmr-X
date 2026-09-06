@@ -8,7 +8,8 @@ This index establishes the current documentation hierarchy. Older documents rema
 
 1. **[DMRX-PRODUCT-AND-ARCHITECTURE.md](./DMRX-PRODUCT-AND-ARCHITECTURE.md)** — product definition, boundaries and target architecture.
 2. **[DMRX-RESEARCH-2026-09.md](./DMRX-RESEARCH-2026-09.md)** — current competitive/standards research and resulting decisions.
-3. **[DMRX-ROADMAP.md](./DMRX-ROADMAP.md)** — implementation roadmap; use alongside the canonical architecture and research.
+3. **[DMRX-ROADMAP-2026-09.md](./DMRX-ROADMAP-2026-09.md)** — current execution roadmap and build gates.
+4. `DMRX-ROADMAP.md` — earlier roadmap retained for historical continuity.
 
 ## Core architecture
 
@@ -36,19 +37,17 @@ This index establishes the current documentation hierarchy. Older documents rema
 - `PRODUCTION-READINESS-AUDIT.md` — implementation audit.
 - `CHANGELOG.md` — historical changes.
 
-## Documentation rules
-
-### Source of truth
+## Source of truth
 
 - Product boundaries: `DMRX-PRODUCT-AND-ARCHITECTURE.md`
 - Research/standards decisions: `DMRX-RESEARCH-2026-09.md`
-- Roadmap: `DMRX-ROADMAP.md`
+- Roadmap: `DMRX-ROADMAP-2026-09.md`
 - MCP: `MCP-2026.md`
 - A2A: `A2A.md`
 - Agent Runtime: `AGENT-RUNTIME.md`
 - Current implementation details: `ARCHITECTURE.md` and source code
 
-### Boundary that must appear consistently
+## Boundary that must appear consistently
 
 DMR-X is independent.
 
@@ -62,7 +61,7 @@ ATHENA, ARGUS, Ghost Factory and other systems are consumers, not dependencies.
 
 SMS/Sovereign Mind is not required by DMR-X.
 
-### Documentation maintenance
+## Documentation maintenance
 
 When a feature changes:
 
