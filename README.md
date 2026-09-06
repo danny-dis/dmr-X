@@ -1,439 +1,265 @@
-# DMR-X
+# ⚡ DMR-X
 
-Universal AI routing, orchestration, and **Model Context Protocol (MCP) platform**. A single gateway that accepts requests in **OpenAI**, **Anthropic**, and **Google Gemini** wire formats, routes them to the best available provider, and returns responses in the same format. Also includes a full-featured MCP server for seamless agent integration.
+<p align="center">
+  <strong>The AI Gateway · Adaptive Router · Agent Runtime</strong><br/>
+  One interface for models, providers, inference economics, and agent execution.
+</p>
 
-## Agent Platform (AaaS)
+<p align="center">
+  <img src="https://img.shields.io/badge/status-active-00c853?style=for-the-badge" alt="status" />
+  <img src="https://img.shields.io/badge/runtime-Bun-f9f1e1?style=for-the-badge&logo=bun&logoColor=black" alt="Bun" />
+  <img src="https://img.shields.io/badge/TypeScript-5.x-3178c6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/MCP-compatible-7c3aed?style=for-the-badge" alt="MCP" />
+  <img src="https://img.shields.io/badge/A2A-ready-2563eb?style=for-the-badge" alt="A2A" />
+</p>
 
-DMR-X is also an **Agent-as-a-Service (AaaS) runtime**. Define agents as markdown, provision them from the marketplace, ZIP, GitHub, or direct import, and run them with durable execution: sessions persist across restarts with **resume/retry**, executions are billed and audited by tenant, and every run is observable through evaluation metrics and telemetry. Agents can dispatch **subagents in isolation** per tenant, and skills are available on-demand from a universal registry. The platform exposes an MCP-native surface so external MCP clients can create, list, run, and inspect agents without forking DMR-X.
+DMR-X is an **independent, local-first AI infrastructure platform** between applications/agents and AI execution. It normalizes provider interfaces, selects the best execution path for each request, manages cost/quality/latency/privacy trade-offs, and can optionally run isolated agents.
 
-## Key Features
+**ATHENA, ARGUS, Ghost Factory, Claude Code, Codex, and unrelated applications can all use DMR-X. None are dependencies.**
 
-- **Multi-Format API** — native OpenAI, Anthropic, and Gemini endpoints from one gateway
-- **Dynamic Routing** — cost/latency/quality scoring with fallback chains and Thompson Sampling bandit
-- **Meta-Model Aliases** — `auto-coding`, `auto-smart`, `auto-agentic`, `auto-fast`, `auto` for automatic provider selection
-- **57+ Provider Adapters** — a curated set includes OpenAI, Anthropic, Google (Vertex AI), Ollama, Bedrock, Azure OpenAI, GenericOpenAI/GenericAnthropic (any OAI-compatible provider), Groq, Cerebras, SambaNova, NVIDIA-NIM, DeepSeek, xAI, Perplexity, OpenRouter, Together, Fireworks, HuggingFace, Databricks, vLLM, Nebius, Novita, Moonshot, MiniMax, LMStudio, Volcengine, Dashscope, Antigravity, Replicate, Stability, Pollinations, ComfyUI, Fal, Veo, Runway, ElevenLabs, Deepgram, Kokoro, Piper, Cohere, Jina, TEI, audio-separation, and OCR. Full catalog in `docs/AI_PROVIDER_REFERENCE.md`.
-- **Zero External Dependencies** — SQLite via sql.js, no Redis/Postgres required
-- **Single Binary Distribution** — compile to standalone executable for Windows, Linux, macOS
-- **Admin UI** — React/Vite dashboard for providers, models, tenants, keys, policies, quotas, and telemetry
-- **MCP Server** — expose DMR-X routing as MCP tools (stdio, SSE, HTTP transports); also **aggregates external MCP servers** into one tool namespace (`<serverId>__<tool>`) with per-server allowlists + live hot-reload
-- **Agent Platform (AaaS)** — durable agent sessions with resume/retry, on-demand skills, subagent isolation/delegation, evaluation/telemetry for executions, and MCP plugin compatibility; provision agents from the marketplace, ZIP, GitHub, or direct import, with end-to-end billing and audit logging
-- **Multi-Tenant** — per-tenant API keys, quotas, policies, and billing tracking
-- **Agentic Workflows** — tool execution, multi-turn tool loops, and agentic chat with approval gates
+---
 
-## Quick Start
+## 🧠 What DMR-X does
 
-### From Source
+```text
+Application / Agent / Coding Agent
+              │
+              ▼
+       ┌──────────────┐
+       │    DMR-X     │
+       │              │
+       │ Gateway      │
+       │ Policy       │
+       │ Capabilities │
+       │ Router       │
+       │ Economics    │
+       │ Reliability  │
+       │ Evaluation   │
+       └──────┬───────┘
+              │
+       ┌──────┼──────────────┐
+       ▼      ▼              ▼
+     Local  Economy       Frontier
+     models models         models
+
+Optional:
+Application → Agent Runtime → DMR-X Gateway → model/provider
+```
+
+The core question is:
+
+> **Given an AI workload and its constraints, what is the best way to execute it?**
+
+DMR-X optimizes across **capability, quality, cost, latency, reliability, privacy, locality, modality, context, and historical performance**.
+
+---
+
+## ✨ Core capabilities
+
+- 🔀 **Adaptive model routing** — capability-aware selection, constraints, fallbacks, reliability and learned performance.
+- 💸 **Inference economics** — free-only, free-first, cheapest-acceptable and quality-per-dollar strategies.
+- 🏠 **Local-first execution** — route sensitive or cost-sensitive workloads to local infrastructure.
+- 🛡️ **Privacy-aware routing** — sensitivity classification, PII redaction/tokenization and fail-closed privacy constraints.
+- 🌐 **Provider abstraction** — one gateway across cloud, local, frontier and specialist providers.
+- 🔌 **MCP** — expose DMR-X capabilities and optionally aggregate external MCP tools.
+- 🤝 **A2A** — communicate with independent agents using the Agent2Agent protocol.
+- 🤖 **Agent Runtime** — persistent or ephemeral agents with isolation, sessions, skills, scheduling and resource controls.
+- 📊 **Evaluation + observability** — routing traces, cost, latency, reliability, outcomes and audit.
+- 🧪 **Benchmarking** — compare models/providers by task and capability instead of one global leaderboard.
+- 🎛️ **Multi-tenant controls** — keys, quotas, policies, budgets and usage accounting.
+- 🎨 **Multimodal infrastructure** — text, vision, embeddings, reranking, speech and specialist generation workloads.
+
+---
+
+## 💰 Free and cheap inference
+
+Cheap inference is a **first-class DMR-X use case**.
+
+A caller can express an objective such as:
+
+```text
+free-only
+free-first
+cheapest-acceptable
+best-quality-per-dollar
+lowest-latency
+local-only
+privacy-required
+best-available
+```
+
+DMR-X then searches the eligible model/provider pool instead of forcing the application to maintain its own provider logic.
+
+This is particularly valuable for coding agents and autonomous systems where hundreds or thousands of inference calls can dominate operating cost.
+
+---
+
+## 🤖 Agent Runtime
+
+The Runtime is optional reusable execution infrastructure. It does **not** turn DMR-X into an application-level sovereign orchestrator.
+
+A workload can request an ephemeral specialist:
+
+```text
+Create temporary research agent
+        ↓
+Provision isolated workspace/browser
+        ↓
+Attach scoped tools + capabilities
+        ↓
+Run with TTL + resource/budget limits
+        ↓
+Use DMR-X for inference
+        ↓
+Return results/artifacts
+        ↓
+Destroy agent
+```
+
+Runtime responsibilities include lifecycle, isolation, sessions, checkpoint/recovery, scheduling, skills, subagents, resource limits, evaluation and portability.
+
+**Runtime executes. Gateway routes. The calling application remains responsible for its own higher-level authorization/governance.**
+
+---
+
+## 🔌 MCP and 🤝 A2A
+
+### MCP
+
+DMR-X exposes routing and agent capabilities through MCP and can optionally aggregate external MCP servers.
+
+MCP is an **interface/tool interoperability layer**, not DMR-X's internal decision-making brain.
+
+### A2A
+
+DMR-X can expose and consume agent capabilities through A2A, including task lifecycle, streaming, cancellation and artifacts.
+
+A2A is an **interoperability boundary**, not a replacement for application orchestration.
+
+---
+
+## 🧩 Architecture boundaries
+
+These rules are intentional and should not drift:
+
+1. **DMR-X is independently deployable.**
+2. **DMR-X does not require SMS/Sovereign Mind.**
+3. **DMR-X does not own ATHENA's lattice or governance.**
+4. **DMR-X does not replace application-level orchestration.**
+5. **Gateway owns model/provider routing.**
+6. **Runtime owns reusable agent execution infrastructure.**
+7. **MCP exposes capabilities/tools.**
+8. **A2A interoperates with independent agents.**
+9. **Any application can consume DMR-X without adopting the rest of the ecosystem.**
+
+---
+
+## 🚀 Quick start
 
 ```bash
-# Clone and install
 git clone https://github.com/danny-dis/dmr-X.git
 cd dmr-X
 bun install
-
-# Configure
 cp .env.example .env
-# Edit .env — set at least one provider key, or use local providers like Ollama
-
-# Run
 bun run dev:gateway
-# Open http://localhost:3000
 ```
 
-### From Binary
-
-```bash
-# Linux / macOS
-curl -sL https://github.com/danny-dis/dmr-X/releases/latest/download/dmrx-linux-x64.tar.gz | tar xz
-./dmrx
-
-# Windows
-# Download dmrx-windows-x64.zip from releases, extract, run dmrx.exe
-```
+Gateway: `http://localhost:3000`
 
 ### Docker
 
 ```bash
 docker compose up -d
-# Gateway at http://localhost:3000
 ```
 
-## Architecture
+Configure at least one provider, or connect local infrastructure such as Ollama or an OpenAI-compatible local server.
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    Client (any format)               │
-│         OpenAI / Anthropic / Gemini / MCP            │
-└──────────────────────┬──────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────┐
-│                   DMR-X Gateway (:3000)               │
-│                                                       │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
-│  │  Auth    │→ │  Router   │→ │  Adapter Executor │   │
-│  │Middleware│  │ Pipeline  │  │                   │   │
-│  └──────────┘  └──────────┘  └──────────────────┘   │
-│                       │                               │
-│  ┌──────────────────────────────────────────────┐    │
-│  │  Services: Registry, Quota, Policy, Billing,  │    │
-│  │  Benchmark, Telemetry, MCP Server             │    │
-│  └──────────────────────────────────────────────┘    │
-│                       │                               │
-│  ┌──────────────────────────────────────────────┐    │
-│  │  SQLite (sql.js) — debounced save, flush on   │    │
-│  │  shutdown, zero external dependencies          │    │
-│  └──────────────────────────────────────────────┘    │
-└──────────────────────┬──────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────┐
-│  Provider Adapters (57+ total)                       │
-│  OpenAI · Anthropic · Google(Vertex) · Ollama ·      │
-│  Bedrock · Azure OpenAI · GenericOpenAI · Groq ·     │
-│  DeepSeek · xAI · Perplexity · Together · Fireworks ·│
-│  Replicate · Stability · ComfyUI · Fal · Veo · Runway│
-│  ElevenLabs · Deepgram · Kokoro · Piper · Cohere ·   │
-│  Jina · TEI · OCR · audio-separation (+ many OAI-     │
-│  compatible subclasses) — full list in docs ref      │
-└──────────────────────────────────────────────────────┘
+---
+
+## 🧑‍💻 Coding-agent friendly
+
+DMR-X is designed to sit **under** existing coding/agent clients:
+
+```text
+Claude Code ─┐
+Codex ───────┼──→ DMR-X ──→ models/providers
+Your App ────┘
 ```
 
-This is a Bun workspace (npm-compatible) TypeScript monorepo. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
+The client keeps its own workflow and agent behavior. DMR-X provides the inference infrastructure beneath it, including model abstraction, routing, fallback and cost optimization.
 
-## Repository Layout
+---
 
-```
-dmr-x/
-├── apps/
-│   ├── gateway/          # Fastify HTTP gateway + static UI host
-│   └── ui/               # React/Vite admin dashboard
-├── packages/
-│   ├── core/             # Shared types (single source of truth)
-│   ├── db/               # SQLite client, cache, and migrations
-│   ├── utils/            # Logging, retries, streams, crypto, errors, tool execution
-│   ├── cli/              # CLI tool (dmrx command)
-│   ├── secrets/          # Secrets manager (AES-encrypted provider-key storage)
-│   ├── tokenizers/       # Tokenizer registry (heuristic, tiktoken, anthropic)
-│   ├── provider-catalog/ # 35+ provider catalog: taxonomy, OAuth configs, pricing
-│   └── plugin-loader/    # Plugin loader (manifest/transport/tool/permissions)
+## 🏗️ Repository
+
+```text
+dmr-X/
+├── apps/                 # Gateway + web UI
+├── packages/             # Shared libraries, CLI, secrets, catalogs
 ├── services/
-│   ├── adapters/         # Provider adapter interface + 57+ concrete adapters
-│   ├── router/           # Task classifier, routing pipeline, fallback, bandit, A/B strategies
-│   ├── registry/         # Provider and model registry (incl. model classification/free-tier)
-│   ├── quota/            # Quota + rate-limit management
-│   ├── policy/           # Routing policies + RBAC policy engine
-│   ├── billing/          # Usage tracking and billing (credits/wallet)
-│   ├── benchmark/        # Provider benchmarking + LLM-judge quality scoring
-│   ├── telemetry/        # Metrics, OTel tracing, audit logging
-│   ├── oauth/            # OAuth provider authentication (auth_code / device_code)
-│   ├── federation/       # Cross-instance federation
-│   ├── memory/           # Conversation memory + embeddings + vector search
-│   ├── sandbox/          # Sandboxed code execution
-│   ├── workers/          # Background worker tasks + task queue
-│   ├── mcp-server/       # MCP tool server + A2A, federation, RBAC, guardrails, audit
-│   ├── mcp-client/       # MCP client integration (external servers as adapters)
-│   ├── agent-registry/   # Agent definitions, instances, marketplace, RBAC roles
-│   ├── agent-runtime/    # Agent execution runtime + scheduler + billing
-│   ├── prompts/          # Prompt library + .mkd template parser
-│   ├── skill-registry/   # Universal skill registry (CRUD, import/export, versioning)
-│   ├── tool-search/      # Hybrid BM25 + semantic tool search engine
-│   ├── godmode/          # G0DM0D3 integration (ULTRAPLINIAN, CONSORTIUM, etc.)
-│   └── operator/         # Kubernetes operator (MCP/federation/workflow CRDs)
-├── tests/
-│   ├── unit/             # 86 unit test files
-│   └── e2e/              # Opt-in end-to-end connectivity tests
-├── scripts/              # Install scripts, release packaging, backup, loadtest, dev
-├── docs/                 # Documentation
-├── helm/                 # Helm chart for Kubernetes deployment
-├── monitoring/           # Prometheus/Alertmanager/Loki/Grafana + dashboards
-└── infra/                # Additional infrastructure configs (terraform, etc.)
+│   ├── adapters/         # Provider adapters
+│   ├── router/           # Routing intelligence
+│   ├── registry/         # Models/providers
+│   ├── policy/           # Policy + RBAC
+│   ├── quota/            # Rate/quota controls
+│   ├── billing/          # Usage/economics
+│   ├── benchmark/        # Benchmark/evaluation
+│   ├── telemetry/        # Metrics/tracing/audit
+│   ├── mcp-server/       # MCP + A2A
+│   ├── agent-runtime/    # Reusable agent execution
+│   ├── agent-registry/   # Agent definitions
+│   ├── skill-registry/   # Skills
+│   └── tool-search/      # Tool discovery
+├── tests/                # Unit + E2E
+├── docs/                 # Canonical + implementation docs
+├── helm/                 # Kubernetes
+├── monitoring/           # Observability
+└── infra/                # Infrastructure configuration
 ```
 
-## Multi-Format API
+---
 
-DMR-X natively serves three API wire formats from a single gateway. Send requests in the format your client already uses — no SDK changes needed.
+## 📚 Documentation
 
-| Format | Chat Endpoint | Streaming | Auth Header |
-|--------|--------------|-----------|-------------|
-| **OpenAI** | `POST /v1/chat/completions` | SSE with `data: [DONE]` | `Authorization: Bearer *** |
-| **Anthropic** | `POST /v1/messages` | SSE with `event:` types | `x-api-key: *** |
-| **Google Gemini** | `POST /v1/gemini/generateContent` | SSE with `data:` lines | `x-api-key: *** |
-
-All three formats support streaming, tool/function calling, vision (image inputs), JSON mode, and temperature/top_p/top_k/max_tokens/stop parameters.
+**Start here:**
 
-The gateway converts every request into a unified internal format, routes it to the best available provider, and converts the response back to the requested wire format. An Anthropic-formatted request can be served by an OpenAI provider (or vice versa).
-
-### Meta-Models (Dynamic Routing)
+| Document | Purpose |
+|---|---|
+| [`DMRX-PRODUCT-AND-ARCHITECTURE.md`](docs/DMRX-PRODUCT-AND-ARCHITECTURE.md) | Canonical product definition and architecture |
+| [`DMRX-RESEARCH-2026-09.md`](docs/DMRX-RESEARCH-2026-09.md) | Current research and decisions |
+| [`DMRX-ROADMAP-2026-09.md`](docs/DMRX-ROADMAP-2026-09.md) | Current implementation roadmap |
+| [`MCP-2026.md`](docs/MCP-2026.md) | MCP architecture/conformance target |
+| [`A2A.md`](docs/A2A.md) | A2A architecture/conformance target |
+| [`AGENT-RUNTIME.md`](docs/AGENT-RUNTIME.md) | Agent Runtime specification |
+| [`DMRX-DOCS-INDEX.md`](docs/DMRX-DOCS-INDEX.md) | Documentation source-of-truth map |
 
-Instead of hard-coding a model name, use a **meta-model alias** — DMR-X picks the best available provider at request time:
+Implementation references are retained only where they describe code that still exists. Canonical documents win when there is a conflict.
 
-| Alias | Picks |
-|-------|-------|
-| `auto` | Auto-pick best model (paid + free) |
-| `auto-fast` | Fastest model (paid + free) |
-| `auto-smart` | Most capable model (paid + free) |
-| `auto-agentic` | Best model for tool use (64K+ context) |
-| `auto-coding` | Best model for code generation |
-
-Use them exactly like a model name: `"model": "auto-coding"`.
-
-### Free-Tier Routing
-
-DMR-X has a **dedicated free-tier routing layer** so you can run primarily on $0 providers without hand-picking models. Every model carries `freeTierMetadata` (monthly token budget, rate limits, intelligence/speed rank) that the cost/latency scorer uses to keep free providers in the candidate pool. A free-tier strategy is applied *after* the normal filters, before the final selector:
-
-| Strategy | Behavior |
-|----------|----------|
-| `none` (default) | Ignore free-tier status; select by cost/latency/quality |
-| `prioritize` | Prefer free-tier providers when available |
-| `load_balance` | Distribute load across free-tier providers |
-| `fallback` | Use free-tier first, fall back to paid if unavailable |
-
-Set it globally via the `DMRX_FREE_TIER_STRATEGY` env var, or per-request via the `x-free-tier-strategy` header (e.g. `x-free-tier-strategy: prioritize`). A companion catalog of free-only providers lives in `docs/FREE_API_PROVIDERS_REPORT.md`.
-
-See [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) for detailed examples and SDK integration guides, and [docs/QUICK-START.md](docs/QUICK-START.md) for the single-API-key setup guide.
-
-## API Endpoints
-
-> The gateway exposes **200+ live routes** (core, multimodal, agentic, utilities, integrations, and a large admin surface). The tables below are a curated, correct subset. `prompt.routes` (`/v1/prompts`) and `cloudcode.routes` are implemented in source but **not currently registered** in the gateway.
-
-### Core
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/chat/completions` | OpenAI-compatible chat |
-| `POST` | `/v1/messages` | Anthropic-compatible messages |
-| `POST` | `/v1/gemini/generateContent` | Gemini-compatible generateContent |
-| `POST` | `/v1/models/:model/gemini:generateContent` | Gemini generateContent with explicit model |
-| `GET` | `/v1/models` | List available models (OpenAI format) |
-| `GET` | `/v1/models/:modelId` | Single model lookup |
-| `POST` | `/v1/moderations` | Content moderation |
-
-### Multimodal
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/images/generations` | Image generation |
-| `POST` | `/v1/embeddings` | Text embeddings |
-| `POST` | `/v1/rerank` | Document reranking |
-| `POST` | `/v1/audio/speech` | Text-to-speech |
-| `POST` | `/v1/audio/transcriptions` | Speech-to-text |
-| `POST` | `/v1/audio/separate` | Audio source separation (stems) |
-| `POST` | `/v1/video/generations` | Video generation |
-| `POST` | `/v1/3d/generate` | 3D asset generation |
-| `POST` | `/v1/ocr` | Optical character recognition |
-
-### Agentic
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/tools/execute` | Single tool execution |
-| `POST` | `/v1/tools/loop` | Multi-turn tool loop |
-| `POST` | `/v1/agentic/chat` | Agentic chat with approval gates |
-| `POST` | `/v1/agentic/chat/:conversationId/cancel` | Cancel an in-flight agentic chat |
-| `GET/POST/PUT/DELETE` | `/v1/conversations` | Conversation history (full CRUD + message append/batch) |
-| `GET/POST/PUT/DELETE` | `/v1/agents` | Agent definitions (CRUD, deploy, instances) |
-| `GET` | `/v1/marketplace` | Browse the agent marketplace |
-| `POST` | `/v1/marketplace/:id/install` | Install a marketplace agent |
-| `POST` | `/v1/agents/import` | Import agent (GitHub repo, ZIP, or pasted `.md`) |
-| `POST/GET` | `/v1/agent-chat` | Agent chat (streaming) + stats/executions/cancel |
-| `GET/POST/PUT/DELETE` | `/v1/skills` | On-demand skill registry (list, install, enable, version) |
-
-### Agent Platform Runtime
-
-The AaaS runtime adds durable execution controls on top of agent definitions:
-
-- **Durable sessions** — conversations and execution state are persisted in SQLite and survive gateway restarts.
-- **Resume / retry** — in-flight and completed agent runs can be resumed or retried from the last checkpoint instead of restarted.
-- **Subagent isolation** — child agents inherit tenant boundaries and run in a separate execution scope so tenants cannot see or modify each other's state.
-- **Evaluation & observability** — each agent execution emits telemetry plus evaluator metrics (throughput, latency, success, quality score, and tool-call breakdowns) accessible via admin telemetry/audit endpoints.
-- **Billing & auditing** — token usage, wall-clock time, and tool calls are tracked per tenant and per agent instance in the billing service; audit events capture creation, execution, and policy actions.
-
-### Utilities
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET/PUT/POST` | `/v1/compression/*` | Prompt compression (tenant/key config, retrieve, stats, cleanup) |
-| `POST` | `/v1/route` | Route decision preview |
-| `GET` | `/validate` | Request validation (registered at root — **not** `/v1/validate`) |
-| `POST` | `/v1/messages/count_tokens` | Token counting (path is `/v1/messages/count_tokens`) |
-
-### Integrations
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/godmode/*` | G0DM0D3 integration — `chat`, `ultraplinian`, `consortium`, `autotune`, `parseltongue`, `transform` |
-| `POST` | `/v1internal*` | Cloud Code protocol (Antigravity/agy) — registered in the gateway; single wildcard route dispatches `:streamGenerateContent`/`:generateContent`/`:loadCodeAssist`/`:fetchAvailableModels` |
-
-### Admin
-
-> The admin surface is large (~120 routes). The groups below are representative; full coverage includes CRUD + sub-routes for each.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET/POST/PUT/DELETE` | `/v1/admin/tenants` | Tenant management |
-| `GET/POST/DELETE` | `/v1/admin/api-keys` | API key management (+ `PATCH` expiry/compression, tools) |
-| `GET/PUT` + full CRUD | `/v1/admin/providers` | Provider config, keys, OAuth (auth_code/device_code) sub-routes |
-| `GET/PUT` + sub-routes | `/v1/admin/models` | Model management (classifications, free-tier, verify-free) |
-| `GET/POST/DELETE` | `/v1/admin/organizations` | Organizations + members |
-| `GET` | `/v1/admin/benchmarks/*` | Benchmark leaderboard, battles, tournaments, runs, validations |
-| `GET` | `/v1/admin/billing/*`, `/v1/admin/credits/*` | Billing summary, credit wallet, usage history |
-| `GET` | `/v1/admin/agents/*`, `/v1/admin/marketplace/*` | Agent management, marketplace installs, runtime controls |
-| `GET` | `/v1/admin/dashboard/*` | Dashboard stats + live stream |
-| `GET` | `/v1/admin/routing/*` | Routing decisions + performance-by-mode |
-| `GET` | `/v1/admin/free-tier/summary`, `/v1/admin/cost/dashboard` | Free-tier & cost dashboards |
-| `GET/POST` | `/v1/admin/policies` | Routing + RBAC policies |
-| `GET` | `/v1/admin/quotas` | Quota management |
-| `GET` | `/v1/admin/alerts` | Alerts (ack/resolve) |
-| `GET` | `/v1/admin/telemetry/*` | Metrics + telemetry stream |
-| `GET` | `/v1/admin/audit/events` | Audit events |
-| `GET/POST` | `/v1/admin/memory/*` | Memory + vector search |
-| `GET/POST` | `/v1/admin/sandbox/jobs` | Sandbox job control |
-| `GET/POST` | `/v1/admin/workers` | Worker pool control |
-| `GET/POST/DELETE` | `/v1/admin/federation` | Cross-instance federation |
-| `GET/PUT` | `/v1/admin/settings` | System settings |
-| `GET/POST` | `/v1/admin/mcp/*` | MCP server control (tools, config, RBAC, federation, a2a, aggregation) |
-| `GET/POST/PUT/DELETE` | `/v1/admin/fusion-panels` | Fusion panels (slots) |
-| `POST` | `/v1/admin/security/rotate-admin-key` | Rotate admin key |
-
-### Health
+---
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Basic health check |
-| `GET` | `/healthz` | Health with subsystem checks |
-| `GET` | `/ready` | Readiness probe |
-| `GET` | `/livez` | Liveness probe |
-
-## Agent Provisioning & Marketplace
-
-Agents can be provisioned from multiple sources so operators and developers can choose workflow over copy/paste:
-
-- **Marketplace** — browse and install published agents via `/v1/marketplace` and `/v1/marketplace/:id/install`.
-- **GitHub** — import directly from a public or private repo via `/v1/agents/import`.
-- **ZIP** — upload a packaged agent bundle for offline or airgapped installs.
-- **Pasted Markdown** — paste a `.agent.md` / `.md` definition through `/v1/agents/import` for quick iteration.
-
-Each install path records the source, version, and installing tenant in the agent registry and emits an audit event.
-
-## MCP Compatibility
-
-DMR-X is both an MCP host and an MCP aggregator:
-
-- **Host:** DMR-X's built-in MCP server exposes `dmrx_*` tools over stdio, SSE, and Streamable HTTP. External MCP clients (Claude Desktop, Cursor, Continue, Codex, custom clients) connect to DMR-X without code changes.
-- **Aggregator:** DMR-X connects to upstream MCP servers and re-exposes their tools under `<serverId>__<toolName>`. Per-server allowlists restrict tool visibility. Config can live in the environment (`DMRX_MCP_CLIENT_SERVERS`) or in a config file (`dmrx-mcp.config.json`) with live hot-reload.
-- **Tenant isolation:** Inbound MCP requests resolve a tenant key from `X-DMR-Tenant-Key`, `DMRX_MCP_AGENT_API_KEY`, or auto-provisioning, so external MCP clients stay tenant-scoped.
-- **Plugins:** MCP servers can be contributed as plugins via the plugin loader, with manifest, transport, tool, and permission declarations.
-
-See [docs/MCP.md](docs/MCP.md) for transports, security, and advanced server configuration, and [docs/AGENTS_PLUGANDPLAY.md](docs/AGENTS_PLUGANDPLAY.md) for plug-and-play connectivity guidance.
-
-## Configuration
-
-All environment variables are documented in `.env.example` and [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-Key variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Gateway listen port |
-| `DMRX_LOCAL_MODE` | `false` | Skip tenant auth for local dev |
-| `DMRX_ADMIN_API_KEY` | — | Admin API key (required in production) |
-| `DMRX_ENCRYPTION_KEY` | — | AES-256-GCM key for provider key encryption |
-| `DMRX_CORS_ORIGIN` | `http://localhost:4200` | Allowed CORS origins |
-| `DMRX_FREE_TIER_STRATEGY` | `none` | Free-tier routing: none/prioritize/load_balance/fallback |
-| `DMRX_MCP_API_KEY` | — | API key for MCP SSE/HTTP transports |
-| `DMRX_MCP_TRANSPORT` | `stdio` | MCP transport: stdio, sse, or http |
-
-## Development
-
-```bash
-bun install              # Install dependencies
-bun run dev              # Run all workspace dev tasks (turbo)
-bun run dev:gateway      # Gateway only
-bun run dev:ui           # UI only (Vite at :4200, proxies /v1/* to gateway :3000)
-bun run build            # Production build
-bun run start            # Start built gateway
-bun run test             # Run unit tests
-bun run lint             # Lint all packages
-```
-
-E2E connectivity tests require a running gateway:
-
-```bash
-DMRX_RUN_E2E=true bun run test -- tests/e2e/connectivity.test.ts
-```
-
-## Testing
-
-```bash
-bun run test
-```
-
-**Security:** Since v0.2.0, DMR-X has patched a cross-tenant data leak, an SSRF DNS-rebinding bypass, and 11 CVEs. See [SECURITY.md](SECURITY.md).
-
-86 unit test files (1200+ assertions) covering:
-
-- Routing pipeline (capability filter, availability, cost/latency scoring, final selector, fallback)
-- Anthropic converter and stream serializer
-- API contracts and auth middleware
-- Task classifier and tool orchestrator
-- SQLite client, memory cache, crypto
-- Meta-model resolution
-- Event streams, HTTP errors, stop conditions
-
-See [docs/TESTING.md](docs/TESTING.md) for details.
-
-## Distribution
-
-DMR-X compiles to a single standalone binary via `bun build --compile`. Pre-built binaries are available on the [Releases](https://github.com/danny-dis/dmr-X/releases) page for:
-
-- **Linux x64** — `dmrx-linux-x64.tar.gz`
-- **macOS x64** — `dmrx-darwin-x64.tar.gz`
-- **Windows x64** — `dmrx-windows-x64.zip`
-
-Each archive contains the binary, UI assets, and an install script. See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for details.
-
-CI/CD: push a `v*` tag to trigger the GitHub Actions release workflow that builds, packages, and publishes all platform binaries.
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture and request flow |
-| [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) | API usage with SDK examples |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Environment variable reference |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Deployment guide (Bun, Docker, binary) |
-| [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) | Binary packaging and install scripts |
-| [docs/MCP.md](docs/MCP.md) | MCP server setup and tool reference |
-| [docs/TESTING.md](docs/TESTING.md) | Testing guide |
-| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
-| [SECURITY.md](SECURITY.md) | Security policy, supported versions, and vulnerability disclosure |
-| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operational runbook and incident response |
-| [docs/ROADMAP-STATUS.md](docs/ROADMAP-STATUS.md) | Feature/roadmap status checklist |
-| [TODO.md](TODO.md) | **Day-to-day task board** — multi-agent in-progress/pending/completed tracking |
-| [docs/TRANSPARENCY-VERIFICATION.md](docs/TRANSPARENCY-VERIFICATION.md) | Provider transparency verification |
-| [docs/AI_PROVIDER_REFERENCE.md](docs/AI_PROVIDER_REFERENCE.md) | Canonical all-models provider reference (57+ adapters / 100+ providers) |
-| [docs/FREE_API_PROVIDERS_REPORT.md](docs/FREE_API_PROVIDERS_REPORT.md) | Free-tier provider report |
-| [docs/AGENTS_PLUGANDPLAY.md](docs/AGENTS_PLUGANDPLAY.md) | External MCP client connectivity and agent key resolution |
-
-## Contributing
-
-- Branch names: `feature/<topic>`, `fix/<topic>`, `refactor/<topic>`, `docs/<topic>`.
-- Run `bun run test` and `bun run build` before opening a PR.
-- Keep generated files out of source folders; build outputs belong in `dist/` or `apps/gateway/public/`.
-- Prefer behavior-preserving refactors and small commits by phase.
-- Follow existing TypeScript ESM style and package boundaries.
-- **All contributions are made under the GPL-2.0 license.**
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
-## License
-
-This project is licensed under the [GNU General Public License v2.0](LICENSE) (GPL-2.0) — the same license used by the Linux kernel.
-
-| Use Case | Terms |
-|----------|-------|
-| **Any use** | Free, with full source code access |
-| **Modification** | Allowed, must be released under GPL-2.0 |
-| **Distribution** | Must include source code and GPL-2.0 license |
-
-For commercial licensing: see [LICENSE](LICENSE) for contact details.
+## 🧭 Roadmap
+
+**P0 — make routing excellent**
+
+Capability ontology · requirement vectors · deterministic routing policies · privacy routing · reliability intelligence · routing decision traces · free/economy allocator.
+
+**P1 — make it self-improving and production-grade**
+
+Outcome evaluation · attribution · contextual learning · task-specific tournaments · Runtime lifecycle/isolation/recovery · MCP/A2A conformance · distributed reliability.
+
+**P2 — scale and optimize**
+
+Semantic caching · streaming optimization · model/provider lifecycle automation · federation · chaos/load testing.
+
+See the canonical roadmap for the build order and acceptance gates.
+
+---
+
+## 📄 License
+
+GPL-2.0
+
+<p align="center">
+  <strong>⚡ DMR-X</strong><br/>
+  <sub>Route intelligence to the right model, at the right cost, through the right execution path.</sub>
+</p>
