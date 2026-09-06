@@ -1,73 +1,84 @@
-# DMR-X Documentation Index
+# DMR-X Documentation
 
-**Canonicalized:** 2026-09-06
+**Canonicalized: 2026-09-06**
 
-This index establishes the current documentation hierarchy. Older documents remain useful for implementation detail, but when they conflict with the canonical documents below, the canonical documents win.
+This directory is intentionally small and opinionated. The canonical documents define what DMR-X is and where it is going; implementation references document code that actually exists.
 
 ## Start here
 
-1. **[DMRX-PRODUCT-AND-ARCHITECTURE.md](./DMRX-PRODUCT-AND-ARCHITECTURE.md)** — product definition, boundaries and target architecture.
-2. **[DMRX-RESEARCH-2026-09.md](./DMRX-RESEARCH-2026-09.md)** — current competitive/standards research and resulting decisions.
-3. **[DMRX-ROADMAP-2026-09.md](./DMRX-ROADMAP-2026-09.md)** — current execution roadmap and build gates.
-4. `DMRX-ROADMAP.md` — earlier roadmap retained for historical continuity.
+1. `DMRX-PRODUCT-AND-ARCHITECTURE.md` — canonical product definition, boundaries and architecture.
+2. `DMRX-RESEARCH-2026-09.md` — current research, standards and competitive decisions.
+3. `DMRX-ROADMAP-2026-09.md` — current build plan and acceptance gates.
 
-## Core architecture
+## Protocols and runtime
 
-- `ARCHITECTURE.md` — detailed existing implementation architecture.
-- `CONFIGURATION.md` — configuration reference.
-- `DEPLOYMENT.md` — deployment options.
-- `DISTRIBUTION.md` — binary/distribution design.
-- `AI_PROVIDER_REFERENCE.md` — provider catalog.
-- `FREE_API_PROVIDERS_REPORT.md` — free-provider research/catalog.
+4. `MCP-2026.md` — current MCP architecture, security and conformance target.
+5. `A2A.md` — A2A architecture and conformance target.
+6. `AGENT-RUNTIME.md` — reusable Agent Runtime specification.
 
-## Interfaces and agent infrastructure
+## Implementation reference
 
-- **`MCP-2026.md`** — current MCP architecture, security and conformance target.
-- **`A2A.md`** — current A2A v1.x integration and conformance target.
-- **`AGENT-RUNTIME.md`** — canonical reusable Agent Runtime specification.
-- `MCP.md` — existing MCP implementation/reference details; use `MCP-2026.md` for current protocol direction.
-- `AGENTS_PLUGANDPLAY.md` — existing agent import/provisioning details.
-- `AGENT-FLEET-LOAD-FINDINGS.md` — fleet/load findings.
+7. `ARCHITECTURE.md` — detailed implementation architecture.
+8. `API_USAGE_GUIDE.md` — API/client usage.
+9. `CONFIGURATION.md` — configuration reference.
+10. `DEPLOYMENT.md` — deployment options.
+11. `DISTRIBUTION.md` — distribution/build packaging.
+12. `AI_PROVIDER_REFERENCE.md` — provider/model adapter reference.
+13. `AGENTS_PLUGANDPLAY.md` — agent import/provisioning implementation reference.
+14. `CHANGELOG.md` — historical release/change record.
 
-## Product/API documentation
+## Intentionally removed
 
-- `API_USAGE_GUIDE.md` — API and client usage.
-- `QUICK-START.md` — quick setup.
-- `QUICK-START-DEMO.md` — demo walkthrough.
-- `PRODUCTION-READINESS-AUDIT.md` — implementation audit.
-- `CHANGELOG.md` — historical changes.
+Superseded, duplicated, or time-sensitive research is not kept as parallel sources of truth. In particular, old roadmap/MCP documents, obsolete free-provider catalogs, demo-only documentation, and point-in-time audits should not be used to define current behavior.
 
-## Source of truth
+## Source-of-truth rules
 
-- Product boundaries: `DMRX-PRODUCT-AND-ARCHITECTURE.md`
-- Research/standards decisions: `DMRX-RESEARCH-2026-09.md`
-- Roadmap: `DMRX-ROADMAP-2026-09.md`
-- MCP: `MCP-2026.md`
-- A2A: `A2A.md`
-- Agent Runtime: `AGENT-RUNTIME.md`
-- Current implementation details: `ARCHITECTURE.md` and source code
+- Product/boundaries → `DMRX-PRODUCT-AND-ARCHITECTURE.md`
+- Research/standards decisions → `DMRX-RESEARCH-2026-09.md`
+- Build priorities → `DMRX-ROADMAP-2026-09.md`
+- MCP → `MCP-2026.md`
+- A2A → `A2A.md`
+- Runtime → `AGENT-RUNTIME.md`
+- Actual implementation → source code + `ARCHITECTURE.md`
+- API usage → `API_USAGE_GUIDE.md`
 
-## Boundary that must appear consistently
+If an implementation differs from documentation, **source code is reality and the documentation must be corrected**. If two documents disagree, the canonical document wins until the implementation is updated.
 
-DMR-X is independent.
+## Architectural boundary
 
-`Application/Agent -> DMR-X -> model/provider`
+```text
+Application / Agent / Coding Agent
+              │
+              ▼
+            DMR-X
+       ┌──────┴──────┐
+       ▼             ▼
+    Gateway       Runtime
+       │             │
+       └──────┬──────┘
+              ▼
+       Model / Provider
+```
 
-or:
+DMR-X is independent infrastructure.
 
-`Application/Agent -> DMR-X Runtime -> DMR-X Gateway -> model/provider`
+- ATHENA, ARGUS and Ghost Factory are consumers, not dependencies.
+- SMS/Sovereign Mind is not required.
+- DMR-X does not own application governance or ATHENA's lattice.
+- Gateway owns model/provider routing.
+- Runtime owns reusable agent execution infrastructure.
+- MCP provides capability/tool interoperability.
+- A2A provides agent interoperability.
 
-ATHENA, ARGUS, Ghost Factory and other systems are consumers, not dependencies.
+## Documentation discipline
 
-SMS/Sovereign Mind is not required by DMR-X.
+Every substantive feature change should update:
 
-## Documentation maintenance
+1. implementation documentation;
+2. canonical architecture when boundaries change;
+3. roadmap when priorities/status change;
+4. research when external standards or ecosystem facts change;
+5. examples/API documentation;
+6. tests and acceptance gates.
 
-When a feature changes:
-
-1. update implementation docs;
-2. update the canonical architecture if the boundary changes;
-3. update the roadmap if the feature changes priorities;
-4. update research when an external standard/provider changes the design;
-5. update examples and API docs;
-6. add or update tests before claiming the capability is complete.
+Do not create another "current roadmap", "latest architecture", or provider catalog beside these files. Update the canonical document instead.
