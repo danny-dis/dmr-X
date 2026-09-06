@@ -3682,6 +3682,26 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
     return { ok: res.ok, status: res.status, json };
   }
 
+  async function dmrxPatch(path: string, body: unknown): Promise<{ ok: boolean; status: number; json: any }> {
+    const key = resolveGatewayKey();
+    const res = await fetch(`${gatewayUrl}${path}`, {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+    let json: any;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    return { ok: res.ok, status: res.status, json };
+  }
+
   async function refreshSubagentTools(): Promise<void> {
     try {
       const defs = await fetchSubagentDefs();
@@ -5300,6 +5320,347 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         return toolError(message, 'DISPATCH_TASK_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_list_capabilities
+  //
+  // Lists active DMR-X agents with their declared capabilities, so a caller
+  // can decide whether to delegate a job. One gateway call (GET /v1/agents/instances).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.LIST_CAPABILITIES,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.LIST_CAPABILITIES],
+      inputSchema: {} as any,
+      annotations: { title: 'List Capabilities', readOnlyHint: true, openWorldHint: false },
+    },
+    async (_params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const res = await dmrxGet('/v1/agents/instances');
+        if (!res.ok) {
+          return toolError('Failed to list agents', 'GATEWAY_LIST_FAILED', requestId);
+        }
+        const json = res.json ?? {};
+        const items: any[] = json.items ?? [];
+        const capabilities = items
+          .filter((i: any) => i.status === 'active')
+          .map((i: any) => ({
+            name: i.definitionName ?? i.definitionHumanName ?? i.id,
+            description: i.definitionDescription ?? null,
+            category: i.definitionCategory ?? null,
+            domains: i.definitionCapabilities?.domains ?? [],
+            deliverables: i.definitionCapabilities?.deliverables ?? [],
+            languages: i.definitionCapabilities?.languages ?? [],
+            seniority: i.definitionCapabilities?.seniority ?? null,
+            summary: i.definitionCapabilities?.summary ?? null,
+            accepts: i.definitionCapabilities?.accepts ?? [],
+          }));
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ capabilities }, null, 2) }],
+          structuredContent: { capabilities },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'LIST_CAPABILITIES_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_job_decompose
+  //
+  // Decompose a job's brief into tasks (POST /v1/jobs/:id/plan).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.JOB_DECOMPOSE,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.JOB_DECOMPOSE],
+      inputSchema: {
+        jobId: z.string().describe('The job id to decompose'),
+        model: z.string().optional().describe('Optional model override'),
+      } as any,
+      annotations: { title: 'Decompose Job', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/plan`,
+          params.model ? { model: params.model } : {}
+        );
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError('Plan request failed', 'GATEWAY_PLAN_FAILED', requestId);
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(res.json, null, 2) }],
+          structuredContent: res.json,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'JOB_DECOMPOSE_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_request_verification
+  //
+  // Request verification of a job's deliverables (POST /v1/jobs/:id/verify).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.REQUEST_VERIFICATION,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.REQUEST_VERIFICATION],
+      inputSchema: {
+        jobId: z.string().describe('The job id to verify'),
+      } as any,
+      annotations: { title: 'Request Verification', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/verify`, {});
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError('Verify request failed', 'GATEWAY_VERIFY_FAILED', requestId);
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(res.json, null, 2) }],
+          structuredContent: res.json,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'REQUEST_VERIFICATION_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_deliver_job
+  //
+  // Deliver a job after verification (POST /v1/jobs/:id/deliver).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.DELIVER_JOB,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.DELIVER_JOB],
+      inputSchema: {
+        jobId: z.string().describe('The job id to deliver'),
+        result: z.object({}).passthrough().optional().describe('Optional verification result to store'),
+      } as any,
+      annotations: { title: 'Deliver Job', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const body: Record<string, unknown> = {};
+        if (params.result) body.result = params.result;
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/deliver`, body);
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError('Deliver request failed', 'GATEWAY_DELIVER_FAILED', requestId);
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(res.json, null, 2) }],
+          structuredContent: res.json,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'DELIVER_JOB_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_escalate_to_human
+  //
+  // Escalate a job to a human (POST /v1/jobs/:id/escalate).
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.ESCALATE_TO_HUMAN,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.ESCALATE_TO_HUMAN],
+      inputSchema: {
+        jobId: z.string().describe('The job id to escalate'),
+        reason: z.string().describe('Why the job needs human attention'),
+      } as any,
+      annotations: { title: 'Escalate Job', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const res = await dmrxPost(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/escalate`, {
+          reason: params.reason,
+        });
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError('Escalate request failed', 'GATEWAY_ESCALATE_FAILED', requestId);
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(res.json, null, 2) }],
+          structuredContent: res.json,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'ESCALATE_TO_HUMAN_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_find_agents
+  //
+  // Find the best-matching active agents for a task. POST to
+  // /v1/agents/match with the task text. Returns a ranked shortlist.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.FIND_AGENTS,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.FIND_AGENTS],
+      inputSchema: {
+        task: z.string().describe('The task text to match agents against'),
+        language: z.string().optional().describe('Optional language hint (e.g. "python", "javascript")'),
+        limit: z.number().int().positive().optional().describe('Max number of agents to return'),
+      } as any,
+      annotations: { title: 'Find Agents', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        if (!params.task || String(params.task).trim().length === 0) {
+          return toolError('task is required', 'INVALID_REQUEST', requestId);
+        }
+        const matchBody: Record<string, unknown> = { task: params.task };
+        if (params.language != null) matchBody.language = params.language;
+        if (params.limit != null) matchBody.limit = params.limit;
+        const matchRes = await dmrxPost('/v1/agents/match', matchBody);
+        if (!matchRes.ok) {
+          return toolError('Agent match request failed', 'GATEWAY_MATCH_FAILED', requestId);
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(matchRes.json, null, 2) }],
+          structuredContent: matchRes.json,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'FIND_AGENTS_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_assign_task
+  //
+  // Assign an agent to a task. PATCH /v1/jobs/:jobId/tasks/:taskId with the
+  // assignment body. Returns the updated task.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.ASSIGN_TASK,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.ASSIGN_TASK],
+      inputSchema: {
+        jobId: z.string().describe('The job id the task belongs to'),
+        taskId: z.string().describe('The task id to assign'),
+        agentDefinitionId: z.string().describe('The agent definition id to assign'),
+        agentVersion: z.string().optional().describe('Optional agent version'),
+        instanceId: z.string().optional().describe('Optional specific agent instance id'),
+        model: z.string().optional().describe('Optional model override for the agent'),
+      } as any,
+      annotations: { title: 'Assign Task', readOnlyHint: false, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const body: Record<string, unknown> = { assignedAgentDefId: params.agentDefinitionId };
+        if (params.agentVersion != null) body.assignedAgentVersion = params.agentVersion;
+        if (params.instanceId != null) body.assignedInstanceId = params.instanceId;
+        if (params.model != null) body.assignedModel = params.model;
+        const res = await dmrxPatch(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/tasks/${encodeURIComponent(String(params.taskId))}`, body);
+        if (res.status === 404) {
+          return toolError('Task not found', 'TASK_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError('Assign request failed', 'GATEWAY_ASSIGN_FAILED', requestId);
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(res.json, null, 2) }],
+          structuredContent: res.json,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'ASSIGN_TASK_ERROR', requestId);
+      }
+    }
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool: dmrx_read_job_board
+  //
+  // Read the job board — every task's structured handoff entry — for a job.
+  // GET /v1/jobs/:jobId/board.
+  // -----------------------------------------------------------------------
+  server.registerTool(
+    TOOL_NAMES.READ_JOB_BOARD,
+    {
+      description: TOOL_DESCRIPTIONS[TOOL_NAMES.READ_JOB_BOARD],
+      inputSchema: {
+        jobId: z.string().describe('The job id to read the board for'),
+      } as any,
+      annotations: { title: 'Read Job Board', readOnlyHint: true, openWorldHint: false },
+    },
+    async (params: any) => {
+      const requestId = crypto.randomUUID();
+      if (!gatewayUrl) {
+        return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
+      }
+      try {
+        const res = await dmrxGet(`/v1/jobs/${encodeURIComponent(String(params.jobId))}/board`);
+        if (res.status === 404) {
+          return toolError('Job not found', 'JOB_NOT_FOUND', requestId);
+        }
+        if (!res.ok) {
+          return toolError('Failed to read job board', 'GATEWAY_BOARD_READ_FAILED', requestId);
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(res.json, null, 2) }],
+          structuredContent: res.json,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return toolError(message, 'READ_JOB_BOARD_ERROR', requestId);
       }
     }
   );

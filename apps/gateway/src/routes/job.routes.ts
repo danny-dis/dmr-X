@@ -5,6 +5,7 @@ import { agentPermissions } from '../middleware/agent-rbac.middleware.js';
 import {
   jobStore,
   scoreAgentForTask,
+  readBoard,
   type JobStatus,
   type ListJobsOptions,
 } from '@dmr-x/agent-runtime';
@@ -60,6 +61,19 @@ const ListJobsQuerySchema = z.object({
   status: JobStatusSchema.optional(),
   limit: z.number().int().min(1).max(200).default(50),
   offset: z.number().int().min(0).default(0),
+});
+
+const MatchAgentsBodySchema = z.object({
+  task: z.string().min(1),
+  language: z.string().optional(),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+const AssignTaskBodySchema = z.object({
+  assignedAgentDefId: z.string().min(1),
+  assignedAgentVersion: z.string().optional(),
+  assignedInstanceId: z.string().optional(),
+  assignedModel: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -320,6 +334,64 @@ export function registerJobRoutes(server: FastifyInstance): void {
     return reply.send(jobQueue.stats());
   });
 
+  // ── Verify job ─────────────────────────────────────────────────────────
+  // Move a job to 'verifying' status. The actual acceptance-criteria check
+  // happens client-side (via dmrx_deliver_job) or automatically on completion.
+  server.post('/jobs/:id/verify', {
+    preHandler: [agentPermissions.update()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const job = jobStore.getJob(tenant.id, id);
+    if (!job) {
+      return reply.code(404).send({ error: { message: 'Job not found' } });
+    }
+    const updated = jobStore.updateJobStatus(tenant.id, id, 'verifying');
+    return reply.send({ jobId: id, status: updated?.status ?? 'verifying' });
+  });
+
+  // ── Deliver job ─────────────────────────────────────────────────────────
+  // Mark a job 'delivered' with a result payload. Called after verification
+  // passes (acceptance criteria met). The result is stored verbatim.
+  server.post('/jobs/:id/deliver', {
+    preHandler: [agentPermissions.update()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const job = jobStore.getJob(tenant.id, id);
+    if (!job) {
+      return reply.code(404).send({ error: { message: 'Job not found' } });
+    }
+    const result = (request.body ?? {}) as Record<string, unknown>;
+    const updated = jobStore.updateJob(tenant.id, id, { status: 'delivered', result });
+    return reply.send({ jobId: id, status: updated?.status ?? 'delivered', result });
+  });
+
+  // ── Escalate job ────────────────────────────────────────────────────────
+  // Move a job to 'blocked' with a reason. Used when no agent matches, a
+  // task fails repeatedly, or the job is stuck and needs human intervention.
+  server.post('/jobs/:id/escalate', {
+    preHandler: [agentPermissions.update()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const { reason } = (request.body ?? {}) as { reason?: string };
+    const job = jobStore.getJob(tenant.id, id);
+    if (!job) {
+      return reply.code(404).send({ error: { message: 'Job not found' } });
+    }
+    const escalationReason = reason ?? 'escalated by receptionist';
+    const updated = jobStore.updateJobStatus(tenant.id, id, 'blocked');
+    const log = Array.isArray(job.decisionLog) ? (job.decisionLog as unknown[]) : [];
+    jobStore.updateJob(tenant.id, id, {
+      decisionLog: [
+        ...log,
+        { at: new Date().toISOString(), by: '__receptionist', action: 'escalate_to_human', reason: escalationReason },
+      ],
+    });
+    return reply.send({ jobId: id, status: updated?.status ?? 'blocked', reason: escalationReason });
+  });
+
   // ── Job events (SSE) ───────────────────────────────────────────────────
   // Stream real-time progress of a job's tasks as server-sent events.
   // Connect with EventSource('/v1/jobs/:id/events') to receive task:started,
@@ -357,5 +429,93 @@ export function registerJobRoutes(server: FastifyInstance): void {
       clearInterval(heartbeat);
       unsubscribe();
     });
+  });
+
+  // ── Match agents to task ──────────────────────────────────────────────
+  // Score all active, non-system agents against a task and return the top N
+  // matches. Used for agent discovery and manual assignment before a run.
+  server.post('/agents/match', {
+    preHandler: [agentPermissions.read()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const parsed = MatchAgentsBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: { message: 'Invalid request', details: parsed.error.issues } });
+    }
+
+    const { task, language, limit } = parsed.data;
+    if (task.trim().length === 0) {
+      return reply.code(400).send({ error: { message: 'Task cannot be empty' } });
+    }
+
+    const { items } = await agentRegistryService.listInstances(tenant.id, { status: 'active', limit: 50 });
+    const pool = items.filter((i) => !isSystemAgentName(i.definitionName));
+
+    const scored = pool.map((instance) => {
+      const { score, matchedOn } = scoreAgentForTask(instance, task, language);
+      return {
+        instanceId: instance.id,
+        definitionId: instance.agentDefinitionId,
+        name: instance.definitionName,
+        score,
+        matchedOn,
+      };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    const candidates = scored.slice(0, limit);
+
+    return reply.send({
+      task,
+      candidates,
+      totalScoped: pool.length,
+    });
+  });
+
+  // ── Assign task to agent ──────────────────────────────────────────────
+  // Pin a task to a specific agent. Unlike staffJobWithReceptionist, this
+  // uses assignTask which moves the task to 'assigned' status — intended for
+  // explicit single-task assignment.
+  server.patch('/jobs/:id/tasks/:taskId', {
+    preHandler: [agentPermissions.update()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id, taskId } = request.params as { id: string; taskId: string };
+    const parsed = AssignTaskBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: { message: 'Invalid request', details: parsed.error.issues } });
+    }
+
+    const input = {
+      assignedAgentDefId: parsed.data.assignedAgentDefId,
+      assignedAgentVersion: parsed.data.assignedAgentVersion,
+      assignedInstanceId: parsed.data.assignedInstanceId,
+      assignedModel: parsed.data.assignedModel,
+    };
+
+    const task = jobStore.assignTask(tenant.id, taskId, input);
+    if (!task) {
+      return reply.code(404).send({ error: { message: 'Task not found' } });
+    }
+
+    return reply.send(task);
+  });
+
+  // ── Job board ─────────────────────────────────────────────────────────
+  // Read the current state of a job's task board — all tasks with their
+  // assignments, statuses, and progress.
+  server.get('/jobs/:id/board', {
+    preHandler: [agentPermissions.read()],
+  }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+
+    const job = jobStore.getJob(tenant.id, id);
+    if (!job) {
+      return reply.code(404).send({ error: { message: 'Job not found' } });
+    }
+
+    const board = readBoard(tenant.id, id);
+    return reply.send({ jobId: id, board });
   });
 }

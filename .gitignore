@@ -152,3 +152,4 @@ test_v3.txt
 .recovery/
 # Vendored upstream source (fork of modelcontextprotocol/servers) - clone on demand for catalog generation
 vendored/
+release-binaries/

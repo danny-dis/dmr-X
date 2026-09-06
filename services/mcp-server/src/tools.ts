@@ -415,6 +415,15 @@ export const TOOL_NAMES = {
   JOB_STATUS: 'dmrx_job_status',
   JOB_TASKS: 'dmrx_job_tasks',
   CANCEL_JOB: 'dmrx_cancel_job',
+  // Receptionist orchestration tools
+  LIST_CAPABILITIES: 'dmrx_list_capabilities',
+  JOB_DECOMPOSE: 'dmrx_job_decompose',
+  FIND_AGENTS: 'dmrx_find_agents',
+  ASSIGN_TASK: 'dmrx_assign_task',
+  READ_JOB_BOARD: 'dmrx_read_job_board',
+  REQUEST_VERIFICATION: 'dmrx_request_verification',
+  DELIVER_JOB: 'dmrx_deliver_job',
+  ESCALATE_TO_HUMAN: 'dmrx_escalate_to_human',
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -1019,7 +1028,23 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   dmrx_run_job:
     'Enqueue a planned job for execution (POST /v1/jobs/:id/run). A job must have tasks (via ' +
     'dmrx_plan_job) before it can run — dmrx_submit_job alone leaves it in "intake". Returns the ' +
-    'job id and its new status ("queued"). Poll dmrx_job_status and dmrx_job_tasks to track progress ' +
+    'dmrx_job_status and its new status ("queued"). Poll dmrx_job_status and dmrx_job_tasks to track progress ' +
     'until the job reaches a terminal status ("delivered", "failed", or "cancelled"). Returns ' +
     'JOB_NOT_FOUND if the job id does not found. Requires a configured gateway URL and tenant API key.',
+  dmrx_list_capabilities:
+    'List all active DMR-X agent capabilities. Returns what each agent can do (domains, deliverables, languages, seniority, summary, accepts) so a caller can decide whether to delegate a job.',
+  dmrx_job_decompose:
+    'Decompose a job brief into tasks (POST /v1/jobs/:id/plan). Call after submitting a job to create the task list.',
+  dmrx_find_agents:
+    'Find the best-matching active agents for a task. Scores each agent by its declared capabilities against the task text and returns a ranked shortlist.',
+  dmrx_assign_task:
+    'Assign an agent to a task. Moves the task from pending to assigned so the job runner picks it up.',
+  dmrx_read_job_board:
+    'Read the job board — every task\'s structured handoff entry — for a job. Shows what each task produced and any open questions.',
+  dmrx_request_verification:
+    'Request verification of a job\'s deliverables (POST /v1/jobs/:id/verify). Moves the job to verifying status.',
+  dmrx_deliver_job:
+    'Deliver a job after verification passes (POST /v1/jobs/:id/deliver). Marks the job delivered and stores the verification result.',
+  dmrx_escalate_to_human:
+    'Escalate a job to a human (POST /v1/jobs/:id/escalate). Moves the job to blocked with a reason. Use when no agent matches or the job is stuck.',
 };
