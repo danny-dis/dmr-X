@@ -1,7 +1,7 @@
 # DMR-X — Product & Architecture Canonical
 
 **Status:** Canonical design document  
-**Updated:** 2026-09-06
+**Updated:** 2026-09-07
 
 ## 1. Product definition
 
@@ -35,6 +35,7 @@ The product should be evaluated as a **universal AI gateway/router/runtime**, no
 - MCP access to DMR-X capabilities.
 - A2A interoperability for independent agents.
 - Optional agent execution through the Agent Runtime.
+- **Specialist multimodal routing, including neural/BCI capabilities.**
 
 ### DMR-X does not own
 
@@ -52,6 +53,12 @@ External systems can use DMR-X, but DMR-X must not acquire dependencies on them.
 ### Plain inference
 
 `Application / IDE / Coding Agent -> DMR-X Gateway -> Router -> Provider -> Response`
+
+### Specialist neural inference
+
+`Neural acquisition -> DMR-X Gateway -> Neural capability router -> specialist model -> structured result`
+
+DMR-X must treat specialist neural models as capability providers, not as LLMs. See [`NEURAL-MODALITY-AND-EEG.md`](NEURAL-MODALITY-AND-EEG.md).
 
 ### Agent runtime
 
@@ -75,6 +82,8 @@ Every request should become a structured **Request Requirement Vector** containi
 - complexity estimate
 - required capabilities
 - modalities
+- signal type when applicable
+- operation when applicable
 - context size
 - reasoning requirement
 - tool/function-calling requirement
@@ -96,6 +105,8 @@ Every request should become a structured **Request Requirement Vector** containi
 Every candidate model/provider should expose a corresponding **Capability & Execution Profile**:
 
 - supported modalities
+- supported signal types
+- supported operations
 - context limits
 - reasoning/coding/tool capabilities
 - structured-output behavior
@@ -107,7 +118,7 @@ Every candidate model/provider should expose a corresponding **Capability & Exec
 - concurrency limits
 - rate limits
 - historical latency
-- TTFT/tokens-per-second
+- TTFT/tokens-per-second or equivalent modality-specific performance
 - error/timeout/stream failure rates
 - task-specific quality
 - model/version lineage
@@ -119,19 +130,20 @@ Routing becomes constrained optimization rather than a single static score.
 1. Authenticate and identify tenant/application/user.
 2. Normalize wire format into DMR-X's internal request model.
 3. Detect modality and extract requirements.
-4. Classify task and estimate complexity.
-5. Apply hard policy constraints.
-6. Apply privacy/data-residency constraints.
-7. Filter by capability compatibility.
-8. Filter unavailable, unhealthy or budget-exhausted candidates.
-9. Generate candidate set.
-10. Score candidates against the active objective.
-11. Select using deterministic policy plus learned routing intelligence.
-12. Execute through provider adapter.
-13. Stream/return normalized result in the requested wire format.
-14. Record telemetry, actual cost and reliability outcome.
-15. Evaluate outcome when an evaluator/feedback signal is available.
-16. Attribute outcome to model/provider/task/context and update routing intelligence.
+4. For specialist modalities, identify signal type and requested operation.
+5. Classify task and estimate complexity.
+6. Apply hard policy constraints.
+7. Apply privacy/data-residency constraints.
+8. Filter by capability compatibility.
+9. Filter unavailable, unhealthy or budget-exhausted candidates.
+10. Generate candidate set.
+11. Score candidates against the active objective.
+12. Select using deterministic policy plus learned routing intelligence.
+13. Execute through provider adapter.
+14. Stream/return normalized result in the requested wire format.
+15. Record telemetry, actual cost and reliability outcome.
+16. Evaluate outcome when an evaluator/feedback signal is available.
+17. Attribute outcome to model/provider/task/context and update routing intelligence.
 
 ## 6. Routing objectives
 
@@ -183,7 +195,35 @@ The runtime then requests inference through DMR-X. It does **not** implement a s
 
 This enables cheap delegated work for users of DMR-X, coding agents, applications and external agent systems.
 
-## 8. Coding-agent integration
+## 8. Specialist neural / BCI capability family
+
+Neural processing is a first-class DMR-X modality. It must not be reduced to a single EEG model.
+
+The initial capability taxonomy includes:
+
+- **Signal restoration:** ZUNA — EEG reconstruction, masked channel infilling and super-resolution where supported.
+- **General EEG representation:** INCEPT, CBraMod, LaBraM, EEGPT, EEGMamba, CSBrain, LUNA and FEMBA.
+- **Neural-to-language / semantic alignment:** NeuroLM and Neuro-GPT.
+- **Multimodal neural signals:** BrainOmni and validated equivalents.
+- **Intracranial neural signals:** Brant, BrainBERT and BIOT, capability-gated separately from non-invasive EEG.
+
+These models are **candidates**, not a permanent ranking. DMR-X must benchmark them per task, dataset, signal type, hardware and latency target and learn task-specific performance profiles.
+
+Example routing:
+
+```text
+Missing/noisy EEG channels -> ZUNA
+Stable EEG representation -> INCEPT / CBraMod / LaBraM / EEGPT / EEGMamba / CSBrain / LUNA / FEMBA
+EEG -> language/semantic task -> NeuroLM / Neuro-GPT
+EEG + MEG -> BrainOmni or validated equivalent
+Intracranial signal -> Brant / BrainBERT / BIOT
+```
+
+Neural data must receive an explicit high-sensitivity privacy class by default. Raw EEG and derived observations must have separate retention, authorization and provenance policies.
+
+DMR-X routes neural capabilities; it does not claim that EEG models can directly read thoughts. Signal restoration, representation learning, brain-state decoding and neural-to-language decoding are separate capabilities and must remain separately registered and evaluated.
+
+## 9. Coding-agent integration
 
 DMR-X must be designed as a drop-in AI backend for coding environments.
 
@@ -202,7 +242,7 @@ The integration goal is minimal client modification: a user points the client at
 
 Where a client cannot use a generic endpoint directly, provide documented adapters/configuration and CLI helpers rather than coupling DMR-X to the client internals.
 
-## 9. Agent Runtime
+## 10. Agent Runtime
 
 The runtime is reusable execution infrastructure.
 
@@ -245,7 +285,7 @@ A temporary agent should have:
 
 At TTL expiry or successful completion, its execution environment should be destroyed while required artifacts and audit records are retained according to policy.
 
-## 10. Security boundary
+## 11. Security boundary
 
 The runtime can execute work; it cannot grant authorization that the calling application does not possess.
 
@@ -257,7 +297,7 @@ If governance rejects the underlying action, the runtime must not provide a bypa
 
 For an ordinary DMR-X user, the user's application/tenant policy is the authority.
 
-## 11. Self-improving router
+## 12. Self-improving router
 
 The long-term routing loop is:
 
@@ -267,11 +307,11 @@ Learning must be scoped by context. A model that is excellent at code generation
 
 Maintain performance profiles for combinations such as:
 
-`model x provider x task_family x context_class x modality x policy_class`
+`model x provider x task_family x context_class x modality x signal_type x operation x policy_class`
 
 Use exploration/exploitation controls so DMR-X can discover better routes without destabilizing production traffic.
 
-## 12. Routing Decision Trace
+## 13. Routing Decision Trace
 
 Every route should be explainable to an authorized operator.
 
@@ -295,9 +335,9 @@ A trace should contain:
 - evaluation/outcome
 - policy version
 
-Do not expose secrets or sensitive prompt contents in traces by default.
+Do not expose secrets or sensitive prompt/signal contents in traces by default.
 
-## 13. Reliability architecture
+## 14. Reliability architecture
 
 Build for failure as a normal operating condition:
 
@@ -314,7 +354,7 @@ Build for failure as a normal operating condition:
 - distributed rate limiting for multi-instance deployments
 - durable queueing for eligible asynchronous work
 
-## 14. Caching
+## 15. Caching
 
 Caching should be explicit and policy-aware.
 
@@ -330,7 +370,9 @@ Candidate layers:
 
 Semantic response caching must enforce tenant, privacy, freshness, tool-state and authorization boundaries.
 
-## 15. Model lifecycle
+Neural signal caching requires additional acquisition-session, consent, retention and sensitivity boundaries.
+
+## 16. Model lifecycle
 
 The model registry should become an intelligence system rather than a static catalog.
 
@@ -340,7 +382,9 @@ Lifecycle:
 
 Model records should preserve version history and benchmark lineage.
 
-## 16. Product surfaces
+Specialist neural models must not become production-eligible solely because they are published; required signal formats, preprocessing assumptions, licensing, hardware requirements and benchmark evidence must be verified.
+
+## 17. Product surfaces
 
 ### Gateway
 Stable APIs and streaming.
@@ -360,7 +404,53 @@ Expose DMR-X as an interoperable agent/service and accept delegated tasks from i
 ### Runtime
 Create and execute agents under explicit resource and security policies.
 
-## 17. Non-goals
+### Neural capability API
+Provide a normalized interface for specialist neural workloads so applications do not need model-specific integration.
+
+## 18. NOESIS and ATHENA integration boundary
+
+DMR-X should provide the execution and routing substrate while NOESIS and ATHENA remain independent consumers.
+
+### NOESIS
+
+Neural outputs should enter NOESIS as **structured, provenance-aware observations**, not as unqualified facts.
+
+Possible memory objects include:
+
+- timestamped neural-state observations
+- embeddings where policy permits
+- derived state labels
+- confidence/uncertainty
+- acquisition/session metadata
+- model and version provenance
+- longitudinal trends
+
+Raw EEG remains a separate high-sensitivity data class.
+
+### ATHENA
+
+ATHENA should govern and reason over approved neural analysis, not host model-specific EEG logic.
+
+```text
+ATHENA governance/lattice
+        |
+        | approved neural-analysis task
+        v
+      DMR-X
+        |
+        v
+specialist neural model(s)
+        |
+        v
+structured result
+        |
+        +--> NOESIS
+        +--> ATHENA decision context
+```
+
+This gives ATHENA a new sensing/analysis modality without turning the sovereign orchestrator into a neural-model runtime.
+
+## 19. Non-goals
 
 DMR-X should not become:
 
@@ -370,9 +460,10 @@ DMR-X should not become:
 - a general-purpose personal assistant
 - a software factory
 - a universal business workflow engine
+- a brain-reading product
 
 It can provide primitives those systems consume.
 
-## 18. Definition of success
+## 20. Definition of success
 
-DMR-X is successful when a developer can install it, point existing AI clients at it, configure providers and policies, and immediately obtain better **cost, reliability, privacy, latency or quality** than manually choosing a single provider — while optionally using the same platform to run isolated agents and connect external agents/tools.
+DMR-X is successful when a developer can install it, point existing AI clients at it, configure providers and policies, and immediately obtain better **cost, reliability, privacy, latency or quality** than manually choosing a single provider — while optionally using the same platform to run isolated agents, connect external agents/tools, and consume specialized non-LLM modalities such as neural/EEG processing through a single capability-routing layer.
