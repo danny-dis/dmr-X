@@ -16,6 +16,7 @@ import { logger } from '@dmr-x/utils';
 import { availabilityFilter } from './availability-filter.js';
 import { capabilityFilter } from './capability-filter.js';
 import { costLatencyScorer } from './cost-latency-scorer.js';
+import { EligibilityEngine } from '../eligibility/eligibility-engine.js';
 import { finalSelector, type ThompsonSamplerLike } from './final-selector.js';
 import { rateLimitFilter } from './rate-limit-filter.js';
 import type { RateLimitFilterResult } from './rate-limit-filter.js';
@@ -50,6 +51,7 @@ export interface PipelineInput {
   epsilon?: number; // exploration rate for epsilon-greedy
   rateLimitService?: RateLimitService;
   quotaService?: QuotaService;
+  eligibilityEngine?: EligibilityEngine;
   policyService?: PolicyService;
   tenantId?: string;
   estimatedTokens?: number;
@@ -203,6 +205,7 @@ export async function runPipelineFromFiltered(input: {
   epsilon?: number;
   rateLimitService?: RateLimitService;
   quotaService?: QuotaService;
+  eligibilityEngine?: EligibilityEngine;
   policyService?: PolicyService;
   tenantId?: string;
   estimatedTokens?: number;
@@ -220,6 +223,7 @@ export async function runPipelineFromFiltered(input: {
     epsilon = 0.05,
     rateLimitService,
     quotaService,
+    eligibilityEngine,
     policyService,
     tenantId,
     estimatedTokens = 0,
@@ -251,6 +255,23 @@ export async function runPipelineFromFiltered(input: {
   // Stage 5: Quota Filter
   if (quotaService && tenantId) {
     filtered = await quotaService.filterByQuota(filtered, tenantId);
+  }
+
+  // Stage 5.5: Eligibility Filter (free_only enforcement)
+  if (eligibilityEngine) {
+    const beforeCount = filtered.length;
+    const eligibilityResult = eligibilityEngine.filter(filtered);
+    filtered = eligibilityResult.eligible;
+    if (eligibilityResult.rejected.length > 0) {
+      logger.debug(
+        {
+          rejected: eligibilityResult.rejected,
+          before: beforeCount,
+          after: filtered.length,
+        },
+        'eligibility filter rejected candidates',
+      );
+    }
   }
 
   // Retry-with-wait: if all providers are rate-limited and wait is short, retry after reset

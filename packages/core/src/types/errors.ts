@@ -52,7 +52,8 @@ export class ProviderError extends DMRXError {
     message: string,
     public readonly providerId: string,
     statusCode: number = 502,
-    isRetryable: boolean = RETRYABLE_PROVIDER_STATUSES.has(statusCode)
+    isRetryable: boolean = RETRYABLE_PROVIDER_STATUSES.has(statusCode),
+    public readonly headers?: Record<string, string>
   ) {
     super(message, 'PROVIDER_ERROR', statusCode, isRetryable, { providerId });
     this.name = 'ProviderError';

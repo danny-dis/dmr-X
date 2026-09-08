@@ -312,6 +312,8 @@ export abstract class BaseAdapter implements ProviderAdapter {
         `${prefix}: ${error.message}`,
         this.providerId,
         error.statusCode,
+        RETRYABLE_PROVIDER_STATUSES.has(error.statusCode),
+        Object.fromEntries(error.headers.entries()),
       );
       (providerError as Error).cause = error;
       throw providerError;
