@@ -55,6 +55,9 @@ const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m
 const AgentIntegrationsPage = lazy(() => import('@/pages/AgentIntegrations').then(m => ({ default: m.AgentIntegrationsPage })));
 const CostDashboardPage = lazy(() => import('@/pages/CostDashboard').then(m => ({ default: m.CostDashboardPage })));
 const ObservabilityPage = lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
+const RuntimePage = lazy(() => import('@/pages/Runtime').then(m => ({ default: m.RuntimePage })));
+const PerformancePage = lazy(() => import('@/pages/Performance').then(m => ({ default: m.PerformancePage })));
+const HealthPage = lazy(() => import('@/pages/Health').then(m => ({ default: m.HealthPage })));
 
 function PageLoader() {
   return (
@@ -93,8 +96,13 @@ export default function App() {
                 <Route path="/policies" element={<PoliciesPage />} />
                 <Route path="/fusion" element={<FusionPanelPage />} />
 
-                {/* Monitor */}
+                {/* Observability */}
                 <Route path="/observability" element={<ObservabilityPage />} />
+                <Route path="/performance" element={<PerformancePage />} />
+                <Route path="/health" element={<HealthPage />} />
+
+                {/* Runtime (new) */}
+                <Route path="/runtime" element={<RuntimePage />} />
 
                 {/* Resources — Free Tier and Models are siblings, not tabs */}
                 <Route path="/providers" element={<ProvidersPage />} />
