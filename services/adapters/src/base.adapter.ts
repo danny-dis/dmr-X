@@ -57,7 +57,7 @@ const tracer = trace.getTracer('dmr-x-gateway', '0.4.0');
  * fallback executor move to the next candidate, which IS the correct retry for
  * a quota error. Free-tier keys make this the common path, not the rare one.
  */
-const RETRYABLE_STATUS_CODES = ['502', '503', '504'];
+const RETRYABLE_PROVIDER_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export abstract class BaseAdapter implements ProviderAdapter {
   abstract readonly providerId: string;
@@ -661,7 +661,7 @@ export abstract class BaseAdapter implements ProviderAdapter {
             // can parse the Retry-After header and schedule the next attempt.
             if (
               error instanceof HttpError &&
-              RETRYABLE_STATUS_CODES.includes(String(error.statusCode))
+              RETRYABLE_PROVIDER_STATUSES.has(error.statusCode)
             ) {
               lastRetryableHttpError = error;
               throw new TemporaryError(
