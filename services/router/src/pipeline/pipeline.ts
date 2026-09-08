@@ -74,7 +74,7 @@ export interface PipelineOutput {
 }
 
 export async function runPipeline(input: PipelineInput): Promise<PipelineOutput> {
-  const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler, routingStrategy = 'thompson' } = input;
+  const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, eligibilityEngine, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler, routingStrategy = 'thompson' } = input;
 
   // Stage 1-2.5: Deterministic filters (pure functions of candidates + taskProfile)
   const preRateLimit = runDeterministicFilters(candidates, taskProfile, providerPreferences);
@@ -86,6 +86,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     epsilon,
     rateLimitService,
     quotaService,
+    eligibilityEngine,
     policyService,
     tenantId,
     estimatedTokens,
