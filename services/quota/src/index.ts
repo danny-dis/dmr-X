@@ -20,7 +20,7 @@ export {
   type DemandVector,
   type QuotaScope,
   type ReplenishmentModel,
-} from './quota-dimensions.js';
+} from './quota-vector.js';
 export {
   CapacityManager,
   InMemoryCapacityStore,

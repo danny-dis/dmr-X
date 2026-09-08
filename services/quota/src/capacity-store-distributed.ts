@@ -21,18 +21,9 @@
  * See docs/DMRX-FREE-INFERENCE-IMPLEMENTATION-PLAN.md Phase 3.
  */
 
+import { getDb } from '@dmr-x/db';
 import type { CapacityStore, CapacityReservation } from './capacity-manager.js';
 import type { QuotaUnit } from './quota-dimensions.js';
-
-// Lazy-import getDb to avoid pulling @dmr-x/utils (and its pino dep) at module
-// load time. pino is currently broken on this workspace's bun install.
-let _dbPromise: Promise<any> | null = null;
-function getDbLazy(): Promise<any> {
-  if (!_dbPromise) {
-    _dbPromise = import('@dmr-x/db').then(m => m.getDb());
-  }
-  return _dbPromise;
-}
 
 interface DbLike {
   prepare(sql: string): any;
@@ -90,7 +81,7 @@ export class SQLiteCapacityStore implements CapacityStore {
           const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
           result.push({ unit: d.unit, scopeId: d.scopeId, newRemaining: (d.currentRemaining ?? 0) - reserved });
         }
-      })();
+      });
     } catch (err) {
       return null; // Unique constraint violation or other failure
     }
