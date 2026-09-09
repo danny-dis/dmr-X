@@ -17,6 +17,9 @@ import {
   Key,
   FlaskConical,
   Bell,
+  Bot,
+  TrendingUp,
+  Cpu,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import * as React from 'react';
@@ -25,6 +28,7 @@ import { Link } from 'react-router';
 import { DonutChart } from '@/components/charts/DonutChart';
 import { LatencyChart } from '@/components/charts/LatencyChart';
 import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
+import { BarSeriesChart } from '@/components/charts/BarSeriesChart';
 import { RouteDecisionRow } from '@/components/domain/RouteDecisionRow';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
@@ -32,6 +36,7 @@ import { Button } from '@/components/primitives/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { DataState } from '@/components/primitives/DataState';
 import { LazyTab } from '@/components/primitives/LazyTab';
+import { Progress } from '@/components/primitives/Progress';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatTile, type StatTileProps } from '@/components/primitives/StatTile';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
@@ -43,10 +48,13 @@ import { Admin } from '@/lib/admin';
 import { useAlerts } from '@/lib/queries/observability';
 import { useModels } from '@/lib/queries/models';
 import { useProviders } from '@/lib/queries/providers';
+import { useAgentInstances } from '@/lib/queries/agents';
+import { useFreeTierSummary, useSavings } from '@/lib/queries/usage';
 import {
   formatNumber,
   formatDuration,
   formatCompactCurrency,
+  formatCurrency,
   timeAgo,
 } from '@/lib/formatters';
 import { keys } from '@/lib/queryClient';
@@ -98,6 +106,9 @@ export function DashboardPage() {
   const providers = useProviders();
   const alerts = useAlerts();
   const models = useModels({ available_only: 'true' });
+  const agentInstances = useAgentInstances();
+  const freeTierSummary = useFreeTierSummary();
+  const savings = useSavings(30);
   // No dedicated query hook exists for API keys yet (only `Admin.listApiKeys`
   // in lib/admin.ts) — queried inline here rather than adding a new hook file
   // while another migration touches lib/queries/tenants.ts concurrently.
@@ -143,6 +154,17 @@ export function DashboardPage() {
       mixed: mixedProviders.length,
     };
   }, [providers.data]);
+
+  // Compute active agent instance stats
+  const agentStats = React.useMemo(() => {
+    const items = agentInstances.data?.items ?? [];
+    const active = items.filter(i => i.status === 'active');
+    return {
+      total: agentInstances.data?.total ?? items.length,
+      active: active.length,
+      paused: items.filter(i => i.status === 'paused').length,
+    };
+  }, [agentInstances.data]);
 
   // Derive the top-of-page system status from real alert severities so the
   // badge reflects what's actually broken, not a hardcoded "all good" line.
@@ -205,6 +227,21 @@ export function DashboardPage() {
   const usageSeriesData = usage.isLoading ? undefined : usageSeries;
   const latencyChartData = usage.isLoading ? undefined : latencyData;
   const modalityPieData = models.isLoading ? undefined : modalityPie;
+
+  // Routing quality: model selection distribution from recent decisions
+  const modelDistribution = React.useMemo(() => {
+    const list = decisions.data ?? [];
+    const counts: Record<string, number> = {};
+    for (const d of list) {
+      const key = d.selected_model ?? 'unknown';
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return Object.entries(counts).map(([name, count], i) => ({
+      name,
+      count,
+      color: categoricalColor(i),
+    }));
+  }, [decisions.data]);
 
   // Onboarding: a state-aware getting-started checklist, not a one-shot
   // dismissible banner. Three signals, each cheaply available from data the
@@ -400,6 +437,7 @@ export function DashboardPage() {
         )
       )}
 
+      {/* ── Above the fold: primary KPIs ── */}
       <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
         <DataState
           data={stats}
@@ -461,7 +499,59 @@ export function DashboardPage() {
         </DataState>
       </div>
 
+      {/* ── Second row: active agents, free savings, provider health ── */}
       <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <DataState
+          data={agentInstances.data?.items}
+          isLoading={agentInstances.isLoading}
+          error={agentInstances.error}
+          onRetry={() => void agentInstances.refetch()}
+          loading={<StatTileSkeleton label="Active Agents" icon={<Bot className="size-3.5" />} tone="success" />}
+        >
+          {() => (
+            <StatTile
+              label="Active Agents"
+              value={agentStats.active}
+              icon={<Bot className="size-3.5" />}
+              tone="success"
+              hint={`${agentStats.total} total · ${agentStats.paused} paused`}
+            />
+          )}
+        </DataState>
+        <DataState
+          data={freeTierSummary.data?.summary}
+          isLoading={freeTierSummary.isLoading}
+          error={freeTierSummary.error}
+          onRetry={() => void freeTierSummary.refetch()}
+          loading={<StatTileSkeleton label="Free Savings" icon={<TrendingUp className="size-3.5" />} tone="success" />}
+        >
+          {(s) => (
+            <StatTile
+              label="Free Savings"
+              value={formatCurrency(s.cost_avoided_usd ?? 0)}
+              icon={<TrendingUp className="size-3.5" />}
+              tone="success"
+              hint={`${formatNumber(s.total_free_models ?? 0)} free models`}
+            />
+          )}
+        </DataState>
+        <DataState
+          data={stats}
+          isLoading={statsLoading}
+          error={statsQuery.error}
+          onRetry={() => void statsQuery.refetch()}
+          loading={<StatTileSkeleton label="Provider Health" icon={<Activity className="size-3.5" />} tone="primary" />}
+        >
+          {(s) => (
+            <StatTile
+              label="Provider Health"
+              value={`${Math.round((s.provider_health ?? 0) * 100)}%`}
+              icon={<Activity className="size-3.5" />}
+              tone="primary"
+              hint={`${providerStats.withKeys} active keys`}
+            />
+          )}
+        </DataState>
         <DataState
           data={models.data}
           isLoading={models.isLoading}
@@ -479,48 +569,340 @@ export function DashboardPage() {
             />
           )}
         </DataState>
-        <DataState
-          data={providers.data}
-          isLoading={providers.isLoading}
-          error={providers.error}
-          onRetry={() => void providers.refetch()}
-          loading={
-            <>
-              <StatTileSkeleton label="Free Providers" icon={<KeyRound className="size-3.5" />} tone="success" />
-              <StatTileSkeleton label="Paid Providers" icon={<DollarSign className="size-3.5" />} tone="warning" />
-              <StatTileSkeleton label="Mixed Providers" icon={<Activity className="size-3.5" />} tone="primary" />
-            </>
-          }
-        >
-          {() => (
-            <>
-              <StatTile
-                label="Free Providers"
-                value={providerStats.free}
-                icon={<KeyRound className="size-3.5" />}
-                tone="success"
-                hint="zero-cost routing available"
-              />
-              <StatTile
-                label="Paid Providers"
-                value={providerStats.paid}
-                icon={<DollarSign className="size-3.5" />}
-                tone="warning"
-                hint="usage-based billing"
-              />
-              <StatTile
-                label="Mixed Providers"
-                value={providerStats.mixed}
-                icon={<Activity className="size-3.5" />}
-                tone="primary"
-                hint="free + paid keys"
-              />
-            </>
-          )}
-        </DataState>
       </div>
 
-      <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-3">
+      {/* ── Main panels: live routing activity + routing quality ── */}
+      <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <Card padding="md" className="lg:col-span-2">
+          <CardHeader className="px-0 pt-0 flex-row items-center justify-between">
+            <div>
+              <CardTitle>Live routing activity</CardTitle>
+              <p className="text-[10px] text-fg-muted mt-0.5">Live stream · last {decisions.data?.length ?? 0} decisions</p>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/requests">
+                All requests
+                <ChevronRight className="size-3" aria-hidden />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="px-0 pb-0">
+            <DataState
+              data={decisions.data}
+              isLoading={decisions.isLoading}
+              error={decisions.error}
+              onRetry={() => void decisions.refetch()}
+              skeletonRows={5}
+              empty={{
+                icon: <Activity className="size-8" />,
+                title: 'No routing decisions yet',
+                description: 'Send a request to see live routing decisions.',
+              }}
+            >
+              {(list) => (
+                <div className="flex flex-col gap-0.5">
+                  {list.slice(0, 6).map((d) => (
+                    <RouteDecisionRow key={d.id} decision={d} />
+                  ))}
+                </div>
+              )}
+            </DataState>
+          </CardContent>
+        </Card>
+
+        <Card padding="md">
+          <CardHeader className="px-0 pt-0 flex-row items-center justify-between">
+            <div>
+              <CardTitle>Routing quality</CardTitle>
+              <p className="text-[10px] text-fg-muted mt-0.5">Success & fallback rate</p>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/routing">
+                Details
+                <ChevronRight className="size-3" aria-hidden />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="px-0 pb-0 flex flex-col gap-3">
+            <DataState
+              data={stats}
+              isLoading={statsLoading}
+              error={statsQuery.error}
+              onRetry={() => void statsQuery.refetch()}
+              loading={
+                <div className="grid grid-cols-2 gap-3">
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                </div>
+              }
+            >
+              {(s) => (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-[10px] text-fg-muted">Success rate</div>
+                    <div className="text-lg font-semibold text-success tabular-nums">
+                      {((s.successRate ?? 0) * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-[10px] text-fg-muted">Fallback rate</div>
+                    <div className="text-lg font-semibold text-warning tabular-nums">
+                      {((s.fallbackRate ?? 0) * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+              )}
+            </DataState>
+            <div>
+              <div className="text-[10px] text-fg-muted mb-2">Model selection distribution</div>
+              <DataState
+                data={modelDistribution}
+                isLoading={decisions.isLoading}
+                error={decisions.error}
+                onRetry={() => void decisions.refetch()}
+                loading={<Skeleton className="h-[100px] w-full" />}
+                empty={{
+                  title: 'No data',
+                  description: 'Model distribution appears after requests are routed.',
+                }}
+              >
+                {(data) => (
+                  <BarSeriesChart
+                    data={data}
+                    xKey="name"
+                    height={100}
+                    bars={[{ key: 'count', name: 'Selections', color: chartColor('primary') }]}
+                  />
+                )}
+              </DataState>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Free inference + Savings panels ── */}
+      <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <Card padding="md">
+          <CardHeader className="px-0 pt-0 flex-row items-center justify-between">
+            <div>
+              <CardTitle>Free inference</CardTitle>
+              <p className="text-[10px] text-fg-muted mt-0.5">Free capacity used & remaining</p>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/free-tier">
+                Free tier
+                <ChevronRight className="size-3" aria-hidden />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="px-0 pb-0">
+            <DataState
+              data={freeTierSummary.data?.summary}
+              isLoading={freeTierSummary.isLoading}
+              error={freeTierSummary.error}
+              onRetry={() => void freeTierSummary.refetch()}
+              loading={
+                <div className="grid grid-cols-3 gap-3">
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                </div>
+              }
+            >
+              {(s) => (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-[10px] text-fg-muted">Free models</div>
+                    <div className="text-lg font-semibold text-fg tabular-nums">
+                      {formatNumber(s.total_free_models ?? 0)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-[10px] text-fg-muted">Healthy providers</div>
+                    <div className="text-lg font-semibold text-success tabular-nums">
+                      {formatNumber(s.healthy_free_providers ?? 0)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-2 p-3">
+                    <div className="text-[10px] text-fg-muted">Monthly budget</div>
+                    <div className="text-lg font-semibold text-fg tabular-nums">
+                      {formatNumber(s.total_monthly_budget ?? 0, true)}
+                    </div>
+                    <div className="text-[10px] text-fg-subtle">tokens</div>
+                  </div>
+                </div>
+              )}
+            </DataState>
+            <div className="mt-3">
+              <div className="text-[10px] text-fg-muted mb-2">Free providers & limits</div>
+              <DataState
+                data={freeTierSummary.data?.providers}
+                isLoading={freeTierSummary.isLoading}
+                error={freeTierSummary.error}
+                onRetry={() => void freeTierSummary.refetch()}
+                loading={<Skeleton className="h-[60px] w-full" />}
+                empty={{
+                  title: 'No free providers',
+                  description: 'Add a free key to see capacity.',
+                  action: (
+                    <Button size="sm" variant="secondary" asChild>
+                      <Link to="/free-tier">Add free key</Link>
+                    </Button>
+                  ),
+                }}
+              >
+                {(list) => (
+                  <div className="space-y-2">
+                    {list.slice(0, 3).map((p) => (
+                      <div key={p.provider_name} className="flex items-center gap-2 text-xs">
+                        <span className={cn('size-2 rounded-full', p.is_healthy ? 'bg-success' : 'bg-danger')} aria-hidden />
+                        <span className="truncate text-fg">{p.provider_name}</span>
+                        <span className="ml-auto text-fg-subtle tabular-nums">
+                          {formatNumber(p.total_monthly_budget, true)} tokens/mo
+                        </span>
+                      </div>
+                    ))}
+                    {list.length > 3 && (
+                      <p className="text-[10px] text-fg-subtle">+{list.length - 3} more providers</p>
+                    )}
+                  </div>
+                )}
+              </DataState>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card padding="md">
+          <CardHeader className="px-0 pt-0 flex-row items-center justify-between">
+            <div>
+              <CardTitle>Savings</CardTitle>
+              <p className="text-[10px] text-fg-muted mt-0.5">Free vs paid avoided spend</p>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/cost">
+                Cost dashboard
+                <ChevronRight className="size-3" aria-hidden />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="px-0 pb-0">
+            <DataState
+              data={savings.data}
+              isLoading={savings.isLoading}
+              error={savings.error}
+              onRetry={() => void savings.refetch()}
+              loading={<Skeleton className="h-[200px] w-full" />}
+              empty={{
+                icon: <TrendingUp className="size-8" />,
+                title: 'No savings yet',
+                description: 'Savings appear once requests route to free models.',
+              }}
+            >
+              {(data) => (
+                <>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div className="rounded-lg border border-success/20 bg-success/5 p-3">
+                      <div className="text-[10px] text-fg-muted">Total avoided</div>
+                      <div className="text-lg font-semibold text-success tabular-nums">
+                        {formatCurrency(data.costAvoidedUsd)}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border bg-surface-2 p-3">
+                      <div className="text-[10px] text-fg-muted">Free requests</div>
+                      <div className="text-lg font-semibold text-fg tabular-nums">
+                        {formatNumber(data.freeRequests, true)}
+                      </div>
+                    </div>
+                  </div>
+                  <TimeSeriesChart
+                    data={data.daily}
+                    xKey="date"
+                    height={120}
+                    series={[
+                      { key: 'costAvoidedUsd', name: 'Cost avoided (USD)', color: chartColor('success'), fillOpacity: 0.15 },
+                    ]}
+                    yFormatter={(v) => formatCurrency(Number(v))}
+                  />
+                </>
+              )}
+            </DataState>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Active agents panel ── */}
+      <div className="mt-3">
+        <Card padding="md">
+          <CardHeader className="px-0 pt-0 flex-row items-center justify-between">
+            <div>
+              <CardTitle>Active agents</CardTitle>
+              <p className="text-[10px] text-fg-muted mt-0.5">Currently running agent instances</p>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/runtime">
+                Runtime
+                <ChevronRight className="size-3" aria-hidden />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="px-0 pb-0">
+            <DataState
+              data={agentInstances.data?.items}
+              isLoading={agentInstances.isLoading}
+              error={agentInstances.error}
+              onRetry={() => void agentInstances.refetch()}
+              skeletonRows={3}
+              empty={{
+                icon: <Cpu className="size-8" />,
+                title: 'No active agents',
+                description: 'Deploy an agent to see it running here.',
+                action: (
+                  <Button size="sm" variant="secondary" asChild>
+                    <Link to="/agents">Go to agents</Link>
+                  </Button>
+                ),
+              }}
+            >
+              {(list) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {list.slice(0, 6).map((instance) => (
+                    <div
+                      key={instance.id}
+                      className="flex items-center gap-3 rounded-lg border border-border bg-surface-2 p-3"
+                    >
+                      <div className={cn(
+                        'flex size-8 shrink-0 items-center justify-center rounded-lg',
+                        instance.status === 'active' ? 'bg-success/10 text-success' : 'bg-surface-1 text-fg-muted'
+                      )}>
+                        <Bot className="size-4" aria-hidden />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-fg truncate">
+                            {instance.definitionHumanName ?? instance.definitionName ?? 'Unnamed'}
+                          </span>
+                          <span className={cn(
+                            'text-[10px] font-medium',
+                            instance.status === 'active' ? 'text-success' : 'text-fg-muted'
+                          )}>
+                            {instance.status}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-fg-subtle">
+                          {instance.definitionModelTier ?? 'default'} tier · {instance.executionCount} runs
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </DataState>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Existing panels: request volume, capabilities, alerts, latency ── */}
+      <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-3">
         <Card padding="md" className="lg:col-span-2">
           <CardHeader className="px-0 pt-0">
             <div className="flex items-center justify-between">
@@ -601,43 +983,6 @@ export function DashboardPage() {
       </div>
 
       <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <Card padding="md" className="lg:col-span-2">
-          <CardHeader className="px-0 pt-0 flex-row items-center justify-between">
-            <div>
-              <CardTitle>Recent routing decisions</CardTitle>
-              <p className="text-[10px] text-fg-muted mt-0.5">Live stream · last {decisions.data?.length ?? 0}</p>
-            </div>
-            <Button variant="ghost" size="sm" asChild>
-              <Link to="/routing">
-                All decisions
-                <ChevronRight className="size-3" aria-hidden />
-              </Link>
-            </Button>
-          </CardHeader>
-          <CardContent className="px-0 pb-0">
-            <DataState
-              data={decisions.data}
-              isLoading={decisions.isLoading}
-              error={decisions.error}
-              onRetry={() => void decisions.refetch()}
-              skeletonRows={5}
-              empty={{
-                icon: <Activity className="size-8" />,
-                title: 'No routing decisions yet',
-                description: 'Send a request to see live routing decisions.',
-              }}
-            >
-              {(list) => (
-                <div className="flex flex-col gap-0.5">
-                  {list.slice(0, 6).map((d) => (
-                    <RouteDecisionRow key={d.id} decision={d} />
-                  ))}
-                </div>
-              )}
-            </DataState>
-          </CardContent>
-        </Card>
-
         <Card padding="md">
           <CardHeader className="px-0 pt-0 flex-row items-center justify-between">
             <CardTitle>Active alerts</CardTitle>
@@ -689,10 +1034,8 @@ export function DashboardPage() {
             </DataState>
           </CardContent>
         </Card>
-      </div>
 
-      <div className="mt-3">
-        <Card padding="md">
+        <Card padding="md" className="lg:col-span-2">
           <CardHeader className="px-0 pt-0">
             <CardTitle>Latency p50 / p95 / p99</CardTitle>
             <p className="text-[10px] text-fg-muted mt-0.5">End-to-end request latency</p>
