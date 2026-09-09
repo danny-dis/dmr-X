@@ -1,4 +1,4 @@
-import { Bot, MessageSquare, Pause, Play, Rocket, Trash2, Loader2 } from 'lucide-react';
+import { Bot, Brain, Eye, Key, Lock, MessageSquare, Pause, Play, Rocket, Search, Shield, Trash2, Loader2 } from 'lucide-react';
 import * as React from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 
@@ -23,12 +23,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitive
 import { DataState } from '@/components/primitives/DataState';
 import { EmptyState } from '@/components/primitives/EmptyState';
 import { interpretError } from '@/components/primitives/ErrorState';
+import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { StatusPill } from '@/components/primitives/StatusPill';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
 import { useUrlState } from '@/hooks/useUrlState';
-import { formatCurrency, formatDateTime, formatNumber } from '@/lib/formatters';
+import { formatCurrency, formatDateTime, formatNumber, timeAgo } from '@/lib/formatters';
 import {
   useAgent,
   useAgentInstancesFor,
@@ -40,6 +41,8 @@ import {
   useUpdateAgent,
   type AgentInstanceDetail,
 } from '@/lib/queries/agents';
+import { useMemoryItems, useMemoryStats, useSearchMemory } from '@/lib/queries/memory';
+import type { ApiMemoryItem } from '@/types/api';
 
 export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -49,11 +52,35 @@ export function AgentDetailPage() {
   const agent = useAgent(id);
   const instances = useAgentInstancesFor(id);
   const update = useUpdateAgent();
-  const deploy = useDeployAgent();
-  const publish = usePublishAgent();
-  const remove = useDeleteAgent();
-  const [editError, setEditError] = React.useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = React.useState(false);
+    const deploy = useDeployAgent();
+    const publish = usePublishAgent();
+    const remove = useDeleteAgent();
+    const [editError, setEditError] = React.useState<string | null>(null);
+    const [confirmDelete, setConfirmDelete] = React.useState(false);
+
+    const memoryItems = useMemoryItems({ refetchInterval: 30000 });
+    const memoryStats = useMemoryStats({ refetchInterval: 60000 });
+    const searchMemory = useSearchMemory();
+    const [searchQuery, setSearchQuery] = React.useState('');
+    const [searchResults, setSearchResults] = React.useState<ApiMemoryItem[] | null>(null);
+    const [searchError, setSearchError] = React.useState<unknown>(null);
+    const searching = searchMemory.isPending;
+
+    const handleSearch = async () => {
+      if (!searchQuery.trim()) {
+        setSearchResults(null);
+        setSearchError(null);
+        return;
+      }
+      setSearchError(null);
+      try {
+        const r = await searchMemory.mutateAsync(searchQuery);
+        setSearchResults(r);
+      } catch (err) {
+        setSearchResults(null);
+        setSearchError(err);
+      }
+    };
 
   const handleUpdate = (agentId: string, values: AgentFormValues) => {
     setEditError(null);
@@ -154,6 +181,8 @@ export function AgentDetailPage() {
                   <TabsTrigger value="instances">Instances ({items.length})</TabsTrigger>
                   <TabsTrigger value="runs">Runs</TabsTrigger>
                   <TabsTrigger value="triggers">Triggers</TabsTrigger>
+                  <TabsTrigger value="memory">Memory</TabsTrigger>
+                  <TabsTrigger value="permissions">Permissions</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="overview">
@@ -320,6 +349,127 @@ export function AgentDetailPage() {
                       )}
                     </CardContent>
                   </Card>
+                </TabsContent>
+
+                <TabsContent value="memory">
+                  <div className="mt-4 space-y-4">
+                    <Card>
+                      <CardHeader><CardTitle>Memory store</CardTitle></CardHeader>
+                      <CardContent>
+                        <p className="text-xs text-fg-muted mb-3">
+                          Memory is tenant-wide, not per-agent. All agents in this tenant share the same memory store.
+                        </p>
+                        <div className="flex gap-2 mb-4">
+                          <Input
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search memory…"
+                            aria-label="Search memory"
+                            className="flex-1"
+                          />
+                          <Button
+                            onClick={handleSearch}
+                            loading={searching}
+                            disabled={!searchQuery.trim()}
+                          >
+                            Search
+                          </Button>
+                        </div>
+                        {searchError && (
+                          <p className="text-xs text-danger mb-2">Search failed. Try again.</p>
+                        )}
+                        {searchResults ? (
+                          <DataState
+                            data={searchResults}
+                            isLoading={false}
+                            error={null}
+                            empty={{
+                              title: 'No matches',
+                              description: 'No memory items matched your search.',
+                            }}
+                          >
+                            {(items) => (
+                              <ul className="space-y-2">
+                                {items.map((item) => (
+                                  <li key={item.id} className="rounded-lg border border-border bg-surface-2 p-3">
+                                    <p className="text-xs text-fg line-clamp-2">{item.content}</p>
+                                    <div className="mt-1 flex items-center gap-2 text-[10px] text-fg-subtle">
+                                      {item.source && <span>src: {item.source}</span>}
+                                      {item.createdAt && <span>{timeAgo(item.createdAt)}</span>}
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </DataState>
+                        ) : (
+                          <DataState
+                            data={memoryItems.data}
+                            isLoading={memoryItems.isLoading}
+                            error={memoryItems.error}
+                            onRetry={() => memoryItems.refetch()}
+                            skeletonRows={3}
+                            empty={{
+                              icon: <Brain className="size-6" />,
+                              title: 'No memory items',
+                              description: 'Memory items are created during agent conversations.',
+                            }}
+                          >
+                            {(items) => (
+                              <ul className="space-y-2">
+                                {items.slice(0, 10).map((item) => (
+                                  <li key={item.id} className="rounded-lg border border-border bg-surface-2 p-3">
+                                    <p className="text-xs text-fg line-clamp-2">{item.content}</p>
+                                    <div className="mt-1 flex items-center gap-2 text-[10px] text-fg-subtle">
+                                      {item.source && <span>src: {item.source}</span>}
+                                      {item.createdAt && <span>{timeAgo(item.createdAt)}</span>}
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </DataState>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="permissions">
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <Card>
+                      <CardHeader><CardTitle>Access control</CardTitle></CardHeader>
+                      <CardContent className="space-y-3">
+                        <Detail label="Visibility" value={def.visibility} />
+                        <Detail label="Model tier" value={def.modelTier} />
+                        <div>
+                          <div className="text-2xs uppercase tracking-wide text-fg-subtle">Allowed tools</div>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {def.allowedTools.length === 0 ? (
+                              <span className="text-xs text-fg-muted">None — reply only</span>
+                            ) : (
+                              def.allowedTools.map((t) => (
+                                <span key={t} className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-2xs text-fg-muted">
+                                  {t}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                        {def.customTools && def.customTools.length > 0 && (
+                          <Detail label="Custom tools" value={`${def.customTools.length} defined`} />
+                        )}
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader><CardTitle>Security</CardTitle></CardHeader>
+                      <CardContent className="space-y-3">
+                        <Detail label="Plan mode" value={def.planMode ? 'Enabled' : 'Disabled'} />
+                        <Detail label="History compaction" value={def.historyCompaction ? 'Enabled' : 'Disabled'} />
+                        <Detail label="Verify on stop" value={def.verifyOnStop ? 'Enabled' : 'Disabled'} />
+                      </CardContent>
+                    </Card>
+                  </div>
                 </TabsContent>
               </Tabs>
 
