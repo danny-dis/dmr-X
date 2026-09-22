@@ -214,6 +214,146 @@ describe('agent-chat-loop: never return an empty reply after tool use', () => {
     expect(result.lastResponseText).not.toContain('internal only');
     expect(result.lastResponseText.trim()).not.toBe('');
   });
+
+  it('recovers a terminal thought-only no-tool reply into a real answer', async () => {
+    // Live bug: a terminal turn whose provider content is ONLY a
+    // <thought>...</thought> block strips to empty prose. No tools, so the
+    // step-limited FINAL SUMMARY path never fires, and the run returned
+    // HTTP 200 with content="". The loop must spend exactly ONE extra
+    // tools-withheld recovery completion asking for a user-visible answer.
+    const route = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>hidden reasoning about the question</thought>'),
+      })
+      .mockResolvedValueOnce({ response: textResponse('The visible final answer.') });
+
+    const result = await runAgentChatLoop(
+      buildLoopArgs({ router: { route } as any, maxSteps: 5 }),
+    );
+
+    expect(route).toHaveBeenCalledTimes(2);
+    // Recovery turn must be tools-withheld so it cannot loop again.
+    expect(route.mock.calls[1][0].tools == null || route.mock.calls[1][0].tools.length === 0).toBe(true);
+    expect(result.lastResponseText).toBe('The visible final answer.');
+    expect(result.lastResponseText).not.toContain('hidden reasoning');
+    expect(result.lastResponseText.trim()).not.toBe('');
+  });
+
+  it('returns a non-secret gateway placeholder when recovery also has no visible prose', async () => {
+    // Both the terminal turn and the one recovery turn are thought-only.
+    // Never empty 200, never leak the hidden thought content.
+    const route = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>first hidden chain of thought</thought>'),
+      })
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>second hidden chain of thought</thought>'),
+      });
+
+    const result = await runAgentChatLoop(
+      buildLoopArgs({ router: { route } as any, maxSteps: 5 }),
+    );
+
+    expect(route).toHaveBeenCalledTimes(2);
+    expect(result.lastResponseText.trim()).not.toBe('');
+    expect(result.lastResponseText).not.toContain('first hidden chain of thought');
+    expect(result.lastResponseText).not.toContain('second hidden chain of thought');
+    expect(result.lastResponseText).not.toContain('<thought>');
+    expect(result.lastResponseText).toContain('[dmr-x]');
+  });
+
+  it('persists a non-empty placeholder and completed status when recovery throws', async () => {
+    // Terminal thought-only turn, then the ONE recovery call rejects.
+    // Must still append/persist a safe assistant placeholder and leave the
+    // conversation completed — never empty, never leaking thought text.
+    const route = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>hidden boom reasoning</thought>'),
+      })
+      .mockRejectedValueOnce(new Error('provider exhausted'));
+
+    const args = buildLoopArgs({ router: { route } as any, maxSteps: 5 });
+
+    const result = await runAgentChatLoop(args);
+
+    expect(route).toHaveBeenCalledTimes(2);
+    expect(result.lastResponseText.trim()).not.toBe('');
+    expect(result.lastResponseText).toContain('[dmr-x]');
+    expect(result.lastResponseText).not.toContain('hidden boom reasoning');
+    expect(result.lastResponseText).not.toContain('<thought>');
+    expect(args.conversation.status).toBe('completed');
+    const persistedAssistant = [...args.conversation.messages]
+      .reverse()
+      .find((m: any) => m.role === 'assistant');
+    expect(persistedAssistant).toBeDefined();
+    expect(String((persistedAssistant as any)?.content ?? '').trim()).not.toBe('');
+    expect(JSON.stringify(args.conversation.messages)).not.toContain('hidden boom reasoning');
+    expect(JSON.stringify(args.conversation.messages)).not.toContain('<thought>');
+    expect(JSON.stringify(result.allSteps)).not.toContain('hidden boom reasoning');
+  });
+
+  it('emits a stream placeholder event when recovery has no visible prose', async () => {
+    // Streaming must never finish silently: the safe placeholder is emitted
+    // as a visible recovery event.
+    const route = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>stream hidden first</thought>'),
+      })
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>stream hidden second</thought>'),
+      });
+    const onStreamEvent = vi.fn();
+    const args = buildLoopArgs({
+      router: { route } as any,
+      maxSteps: 5,
+      stream: true,
+      onStreamEvent,
+    });
+
+    const result = await runAgentChatLoop(args);
+
+    expect(route).toHaveBeenCalledTimes(2);
+    const recoveryCalls = onStreamEvent.mock.calls.filter(([ev]) => ev === 'empty_reply_recovery');
+    expect(recoveryCalls.length).toBeGreaterThan(0);
+    const emittedContent = String((recoveryCalls[0][1] as any)?.content ?? '');
+    expect(emittedContent.trim()).not.toBe('');
+    expect(emittedContent).not.toContain('stream hidden');
+    expect(emittedContent).not.toContain('<thought>');
+    expect(result.lastResponseText.trim()).not.toBe('');
+    // No streaming event may carry the hidden thought text.
+    expect(JSON.stringify(onStreamEvent.mock.calls)).not.toContain('stream hidden first');
+    expect(JSON.stringify(onStreamEvent.mock.calls)).not.toContain('stream hidden second');
+  });
+
+  it('never leaks hidden thought text into allSteps or conversation messages', async () => {
+    // Both the original terminal turn and the recovery turn are thought-only.
+    // Sanitization happens before any persistence/event/return, with tool_calls
+    // preserved (no tools here, but the message shape must survive).
+    const route = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>leak check original</thought>'),
+      })
+      .mockResolvedValueOnce({
+        response: textResponse('<thought>leak check recovery</thought>'),
+      });
+    const args = buildLoopArgs({ router: { route } as any, maxSteps: 5 });
+
+    const result = await runAgentChatLoop(args);
+
+    expect(route).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(result.allSteps)).not.toContain('leak check original');
+    expect(JSON.stringify(result.allSteps)).not.toContain('leak check recovery');
+    expect(JSON.stringify(result.allSteps)).not.toContain('<thought>');
+    expect(JSON.stringify(args.conversation.messages)).not.toContain('leak check original');
+    expect(JSON.stringify(args.conversation.messages)).not.toContain('leak check recovery');
+    expect(JSON.stringify(args.conversation.messages)).not.toContain('<thought>');
+    expect(result.lastResponseText).not.toContain('leak check');
+  });
 });
 
 /** A turn that has BOTH prose and tool calls (some models do this). */

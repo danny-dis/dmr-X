@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import { normalizeAllowedTools } from '../../packages/core/src/agent-tools.js';
+import {
+  executeToolCall,
+  registerToolHandler,
+} from '../../apps/gateway/src/routes/tools.routes.js';
 
 /**
  * Regression: an agent's `allowedTools` names are resolved against the tool
@@ -118,5 +122,126 @@ describe('the WebFetch/WebSearch capability gap is closed', () => {
     expect(REGISTERED_SDK_TOOLS).toContain('search_files');
     const names = normalizeAllowedTools('WebSearch');
     expect(resolve(names).hit).toEqual(['web_search']);
+  });
+});
+
+describe('executeToolCall enforces explicit agent allowedTools (privilege boundary)', () => {
+  // NOTE: executeToolCall caches SDK tools by registry size, so each test
+  // registers a UNIQUE tool name — re-registering the same name would keep
+  // serving the first test's handler from cache.
+  let toolSeq = 0;
+  let callSeq = 0;
+
+  function freshPrivilegedTool() {
+    toolSeq += 1;
+    return `privileged_allowlist_guard_${toolSeq}`;
+  }
+
+  function toolCallFor(name: string) {
+    callSeq += 1;
+    return {
+      id: `call-allowlist-guard-${callSeq}`,
+      type: 'function' as const,
+      function: { name, arguments: '{}' },
+    };
+  }
+
+  function agentContext(allowedTools: string[]) {
+    return {
+      requestId: 'req-allowlist-guard',
+      agentDefinition: {
+        id: 'agent-narrowed',
+        name: 'narrowed-agent',
+        tenantId: 'tenant-allowlist-guard',
+        allowedTools,
+      },
+    };
+  }
+
+  it('blocks a hallucinated privileged tool excluded from explicit non-empty allowedTools', async () => {
+    const PRIVILEGED_TOOL = freshPrivilegedTool();
+    const handler = vi.fn(async () => ({ ok: true }));
+    registerToolHandler(PRIVILEGED_TOOL, handler, {
+      description: 'Privileged test tool',
+      parameters: { type: 'object', properties: {} },
+    });
+
+    const result = await executeToolCall(
+      toolCallFor(PRIVILEGED_TOOL),
+      agentContext(['read_file']),
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(result.tool_name).toBe(PRIVILEGED_TOOL);
+    expect(result.result).toBeNull();
+    expect(result.error?.message).toMatch(/not in .*allowedTools/i);
+  });
+
+  it('executes a tool explicitly listed in non-empty allowedTools', async () => {
+    const PRIVILEGED_TOOL = freshPrivilegedTool();
+    const handler = vi.fn(async () => ({ ok: true }));
+    registerToolHandler(PRIVILEGED_TOOL, handler, {
+      description: 'Privileged test tool',
+      parameters: { type: 'object', properties: {} },
+    });
+
+    const result = await executeToolCall(
+      toolCallFor(PRIVILEGED_TOOL),
+      agentContext([PRIVILEGED_TOOL]),
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.error).toBeUndefined();
+    expect(result.result).toEqual({ ok: true });
+  });
+
+  it('preserves direct-route behavior when no agentDefinition is present', async () => {
+    const PRIVILEGED_TOOL = freshPrivilegedTool();
+    const handler = vi.fn(async () => ({ ok: true }));
+    registerToolHandler(PRIVILEGED_TOOL, handler, {
+      description: 'Privileged test tool',
+      parameters: { type: 'object', properties: {} },
+    });
+
+    const result = await executeToolCall(toolCallFor(PRIVILEGED_TOOL), {
+      requestId: 'req-direct-no-agent',
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('preserves empty-list semantics (no restriction) for agent routes', async () => {
+    const PRIVILEGED_TOOL = freshPrivilegedTool();
+    const handler = vi.fn(async () => ({ ok: true }));
+    registerToolHandler(PRIVILEGED_TOOL, handler, {
+      description: 'Privileged test tool',
+      parameters: { type: 'object', properties: {} },
+    });
+
+    const result = await executeToolCall(
+      toolCallFor(PRIVILEGED_TOOL),
+      agentContext([]),
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('matches allowedTools case-insensitively', async () => {
+    const PRIVILEGED_TOOL = freshPrivilegedTool();
+    const handler = vi.fn(async () => ({ ok: true }));
+    registerToolHandler(PRIVILEGED_TOOL, handler, {
+      description: 'Privileged test tool',
+      parameters: { type: 'object', properties: {} },
+    });
+
+    const result = await executeToolCall(
+      toolCallFor(PRIVILEGED_TOOL),
+      agentContext([PRIVILEGED_TOOL.toUpperCase()]),
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.error).toBeUndefined();
   });
 });

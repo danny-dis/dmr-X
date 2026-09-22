@@ -230,6 +230,26 @@ async function executeToolCall(
     arguments: JSON.parse(tc.function.arguments || '{}'),
   };
 
+  // Privilege boundary: when an agent definition is present with an explicit
+  // non-empty allowlist, block any tool outside it. Non-agent direct routes
+  // (no agentDefinition) and empty-list semantics (no restriction — separate
+  // policy issue) are preserved. Sanitized error: no allowlist dump, no throw.
+  const agentDef = context.agentDefinition;
+  if (agentDef) {
+    const allowed = normalizeAllowedTools(agentDef.allowedTools);
+    if (allowed.length > 0) {
+      const allowedSet = new Set(allowed.map((n) => String(n).toLowerCase()));
+      if (!allowedSet.has(String(tc.function.name).toLowerCase())) {
+        return {
+          tool_call_id: tc.id,
+          tool_name: tc.function.name,
+          result: null,
+          error: { message: `Tool "${tc.function.name}" is not in agent "${agentDef.name}" allowedTools` },
+        };
+      }
+    }
+  }
+
   const tool = findToolByName(tools, tc.function.name);
   if (!tool) {
     return {

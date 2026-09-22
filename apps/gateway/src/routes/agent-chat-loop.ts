@@ -692,6 +692,31 @@ function commitConversationState(
   Object.assign(conversation, updateState(conversation, { messages, status }));
 }
 
+// ---------------------------------------------------------------------------
+// Thought-block sanitization + safe placeholders.
+//
+// Providers may return assistant content wrapped in hidden <thought> blocks.
+// That internal reasoning must never reach the caller: strip it before ANY
+// persistence (conversation.messages), telemetry (allSteps), streaming event,
+// or return (lastResponseText), for both original and recovery turns. The
+// spread preserves tool_calls / role / other fields — only content is replaced.
+const THOUGHT_BLOCK_RE = /<thought>[\s\S]*?<\/thought>/gi;
+function stripThoughtBlocks(text: string): string {
+  return (text ?? '').replace(THOUGHT_BLOCK_RE, '').trim();
+}
+function sanitizedAssistantMessage(message: any, visibleText: string): any {
+  if (!message) return message;
+  if (typeof message.content !== 'string') return message;
+  return { ...message, content: visibleText };
+}
+
+const EMPTY_VISIBLE_REPLY_PLACEHOLDER =
+  '[dmr-x] No agent output produced: the model returned no user-visible text for this turn.';
+const AWAITING_APPROVAL_PLACEHOLDER =
+  '[dmr-x] No agent output produced: awaiting human approval before tool execution.';
+const RUN_TIMEOUT_PLACEHOLDER =
+  '[dmr-x] No agent output produced: run timed out before a reply.';
+
 export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<AgentChatLoopResult> {
   const {
     conversation,
@@ -772,6 +797,10 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   // for tools — the signal that the agent did work but was never given a turn
   // to report it. Drives the FINAL SUMMARY turn after the loop.
   let stepLimitedWithPendingTools = false;
+  // Set when the loop exits on a terminal turn with NO tool calls (a normal
+  // stop / stop-condition exit). Used to detect a thought-only terminal reply
+  // that stripped to empty prose and needs ONE recovery completion.
+  let terminalNoToolStop = false;
   let finalUsage: any;
   const allSteps: AgentChatLoopResult['allSteps'] = [];
   const allStepResults: StepResult[] = [];
@@ -902,7 +931,9 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     const toolCalls = response.message?.tool_calls ?? [];
     let responseText =
       typeof response.message?.content === 'string' ? response.message.content : '';
-    responseText = responseText.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+    responseText = stripThoughtBlocks(responseText);
+    // Sanitized copy for persistence/events: visible prose only, tool_calls preserved.
+    const sanitizedMessage = sanitizedAssistantMessage(response.message, responseText);
     // Only OVERWRITE the running reply when this turn actually produced prose.
     //
     // Providers emit `content: ''` (or null) on a pure tool-call turn. Since the
@@ -923,7 +954,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
 
     // Stop if cost budget exceeded
     if (body.max_cost_budget && totalCost >= body.max_cost_budget) {
-      if (response.message) messages.push(response.message);
+      if (sanitizedMessage) messages.push(sanitizedMessage);
       commitConversationState(conversation, messages, 'completed');
       budgetExceeded = true;
       if (stream) {
@@ -941,7 +972,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       onStreamEvent('turn', {
         turn,
         resolvedConversationId,
-        message: response.message,
+        message: sanitizedMessage,
         model: response.modelId,
         usage: response.usage,
         finish_reason: response.finishReason,
@@ -972,15 +1003,18 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       turn === maxSteps - 1 ||
       (await isStopConditionMet({ stopConditions: sdkStopConditions, steps: allStepResults }))
     ) {
-      if (response.message) messages.push(response.message);
+      if (sanitizedMessage) messages.push(sanitizedMessage);
       commitConversationState(conversation, messages, 'completed');
       allSteps.push({
         turn,
-        message: response.message,
+        message: sanitizedMessage,
         tool_calls: toolCalls,
         tool_results: [],
       });
       if (hitStepLimit) stepLimitedWithPendingTools = true;
+      // A pure no-tool exit (final stop turn, or a stop condition firing on a
+      // text-only turn) is the path where a thought-only reply strips to ''.
+      if (toolCalls.length === 0) terminalNoToolStop = true;
       onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
       break;
     }
@@ -1024,7 +1058,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         name: tc.function.name,
         arguments: JSON.parse(tc.function.arguments || '{}'),
       }));
-      if (response.message) messages.push(response.message);
+      if (sanitizedMessage) messages.push(sanitizedMessage);
       Object.assign(
         conversation,
         updateState(conversation, {
@@ -1035,7 +1069,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       );
       allSteps.push({
         turn,
-        message: response.message,
+        message: sanitizedMessage,
         tool_calls: allowedCalls,
         tool_results: [],
       });
@@ -1183,7 +1217,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
 
     allSteps.push({
       turn,
-      message: response.message,
+      message: sanitizedMessage,
       tool_calls: allowedCalls,
       tool_results: stepResults,
     });
@@ -1280,13 +1314,14 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       );
       let summaryText =
         typeof summaryResponse.message?.content === 'string' ? summaryResponse.message.content : '';
-      summaryText = summaryText.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+      summaryText = stripThoughtBlocks(summaryText);
       if (summaryText) {
         lastResponseText = summaryText;
-        if (summaryResponse.message) messages.push(summaryResponse.message);
+        const sanitizedSummary = sanitizedAssistantMessage(summaryResponse.message, summaryText);
+        if (sanitizedSummary) messages.push(sanitizedSummary);
         allSteps.push({
           turn: allSteps.length,
-          message: summaryResponse.message,
+          message: sanitizedSummary,
           tool_calls: [],
           tool_results: [],
         });
@@ -1306,6 +1341,119 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         { resolvedConversationId, error: summaryError },
         'final summarisation turn failed — falling back to synthesised text',
       );
+    }
+  }
+
+  // ---------------------------------------------------------------- RECOVERY
+  // Thought-only terminal reply recovery.
+  //
+  // A terminal no-tool turn whose provider content is ONLY a <thought> block
+  // strips to empty prose. That path never reaches the FINAL SUMMARY turn above
+  // (which requires pending tool calls at the step limit), so the run used to
+  // fall through to an empty 200. Spend exactly ONE extra tools-withheld
+  // completion asking for a concise user-visible answer. If that also yields no
+  // visible prose, the last-resort placeholder below guarantees a non-empty,
+  // non-secret gateway failure instead of empty content. Budget and approval
+  // stops are excluded — those exits are intentional and already reported.
+  if (
+    terminalNoToolStop &&
+    !budgetExceeded &&
+    !awaitingApproval &&
+    !runTimedOut &&
+    !stepLimitedWithPendingTools &&
+    !lastResponseText.trim()
+  ) {
+    try {
+      messages.push({
+        role: 'user',
+        content:
+          'Your previous reply contained no user-visible text. Do not use tools and do not ' +
+          'include internal reasoning tags. Give one concise final answer the user can read now.',
+      });
+      const recoveryRequest = toUnifiedRequest(
+        {
+          model,
+          messages,
+          // No `tools` — withholding them forces a prose turn.
+          temperature: body.temperature,
+          max_tokens: body.maxTokens,
+          stream: false,
+        },
+        requestId,
+        tenant,
+      );
+      const { response: recoveryResponse } = await completeAgentTurn(
+        router,
+        recoveryRequest,
+        target,
+        requestId,
+        godmodeWrap,
+      );
+      let recoveryText =
+        typeof recoveryResponse.message?.content === 'string' ? recoveryResponse.message.content : '';
+      recoveryText = stripThoughtBlocks(recoveryText);
+      const sanitizedRecovery = sanitizedAssistantMessage(recoveryResponse.message, recoveryText);
+      if (sanitizedRecovery) messages.push(sanitizedRecovery);
+      allSteps.push({
+        turn: allSteps.length,
+        message: sanitizedRecovery,
+        tool_calls: [],
+        tool_results: [],
+      });
+      if (recoveryResponse.usage) {
+        totalTokensUsed += recoveryResponse.usage.total_tokens ?? 0;
+        totalCost +=
+          (recoveryResponse.usage as any).cost ?? (recoveryResponse.usage as any).total_cost ?? 0;
+        finalUsage = recoveryResponse.usage;
+      }
+      if (recoveryText) {
+        lastResponseText = recoveryText;
+        if (stream) {
+          onStreamEvent('empty_reply_recovery', { resolvedConversationId, content: recoveryText });
+        }
+      } else {
+        // Second thought-only response: persist a safe assistant placeholder so
+        // the caller never sees an empty 200 and hidden reasoning never leaks.
+        const placeholderMessage = { role: 'assistant', content: EMPTY_VISIBLE_REPLY_PLACEHOLDER };
+        messages.push(placeholderMessage);
+        allSteps.push({
+          turn: allSteps.length,
+          message: placeholderMessage,
+          tool_calls: [],
+          tool_results: [],
+        });
+        lastResponseText = EMPTY_VISIBLE_REPLY_PLACEHOLDER;
+        if (stream) {
+          onStreamEvent('empty_reply_recovery', {
+            resolvedConversationId,
+            content: EMPTY_VISIBLE_REPLY_PLACEHOLDER,
+          });
+        }
+      }
+      commitConversationState(conversation, messages, 'completed');
+    } catch (recoveryError) {
+      logger.warn(
+        { resolvedConversationId, error: recoveryError },
+        'empty-reply recovery turn failed — falling back to gateway placeholder',
+      );
+      // Recovery threw: still persist a safe non-empty placeholder and leave
+      // the conversation completed. Streaming must not finish silently.
+      const placeholderMessage = { role: 'assistant', content: EMPTY_VISIBLE_REPLY_PLACEHOLDER };
+      messages.push(placeholderMessage);
+      allSteps.push({
+        turn: allSteps.length,
+        message: placeholderMessage,
+        tool_calls: [],
+        tool_results: [],
+      });
+      lastResponseText = EMPTY_VISIBLE_REPLY_PLACEHOLDER;
+      if (stream) {
+        onStreamEvent('empty_reply_recovery', {
+          resolvedConversationId,
+          content: EMPTY_VISIBLE_REPLY_PLACEHOLDER,
+        });
+      }
+      commitConversationState(conversation, messages, 'completed');
     }
   }
 
@@ -1359,17 +1507,25 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         ),
       ),
     );
-    if (namesUsed.length > 0) {
+    if (awaitingApproval) {
+      lastResponseText = AWAITING_APPROVAL_PLACEHOLDER;
+    } else if (runTimedOut) {
+      lastResponseText = RUN_TIMEOUT_PLACEHOLDER;
+    } else if (budgetExceeded) {
+      lastResponseText = '[dmr-x] No agent output produced: cost budget exceeded before a reply.';
+    } else if (namesUsed.length > 0) {
       lastResponseText =
         `[dmr-x] No agent output produced. The ${maxSteps}-step limit was reached after calling: ` +
         `${namesUsed.join(', ')}, and the final summarisation turn did not return text. ` +
         'Raise maxSteps so the agent can report its findings.';
-    } else if (budgetExceeded) {
-      lastResponseText = '[dmr-x] No agent output produced: cost budget exceeded before a reply.';
+    } else {
+      // Terminal no-tool turn (often thought-only) plus a failed/empty recovery
+      // turn: still never hand the caller an empty 200.
+      lastResponseText = EMPTY_VISIBLE_REPLY_PLACEHOLDER;
     }
     if (lastResponseText) {
       logger.warn(
-        { resolvedConversationId, maxSteps, toolsUsed: namesUsed, budgetExceeded },
+        { resolvedConversationId, maxSteps, toolsUsed: namesUsed, budgetExceeded, awaitingApproval, runTimedOut },
         'agent loop produced no model prose — returned a gateway placeholder',
       );
     }
