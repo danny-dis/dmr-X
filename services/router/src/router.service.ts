@@ -966,12 +966,13 @@ export class Router {
       // non-decomposed pass. Build one plan whose primary + chain span the
       // composite's own healthy candidates AND auto-agentic's candidates (which
       // we know route to a single large-context model that succeeds on large
-      // prompts). Use cost filter 'all' for the agentic tier so we don't exclude
-      // its working candidates just because the original request was restricted
-      // to free models. A populated chain lets executeWithFallback survive a
-      // single provider 429 instead of giving up after the primary.
+      // prompts). Preserve a free-only request across this fallback; otherwise
+      // the agentic tier can append paid providers to an executable chain.
       const fallbackCandidatePools: ProviderModel[][] = [compositeCandidates];
-      const agenticResolution = resolveMetaModel('auto-agentic', this.candidates, 'all');
+      const agenticCostFilter = compositeCostFilterOverride === 'free' ||
+        getMetaModel(compositeModelTarget.modelId ?? '')?.costFilter === 'free'
+        ? 'free' : 'all';
+      const agenticResolution = resolveMetaModel('auto-agentic', compositeScoped, agenticCostFilter);
       if (agenticResolution && agenticResolution.resolved.length > 0) {
         fallbackCandidatePools.push(agenticResolution.resolved);
       }
