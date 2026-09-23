@@ -17,7 +17,7 @@ import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { executeWithFallback, executeWithHedging, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
-import { isMetaModel, resolveMetaModel } from './meta-models.js';
+import { getMetaModel, isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
 import { runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
@@ -376,6 +376,9 @@ export class Router {
     // point of stickiness for those.
     const stickyPrefs = request.metadata?.providerPreferences;
     const hasHardProviderConstraint = !!(stickyPrefs?.zdr || stickyPrefs?.only?.length || stickyPrefs?.ignore?.length);
+    const stickyCostFilter = (request as any).metadata?.costFilter ?? this.config.metaModelCostFilter;
+    const hasHardCostConstraint = !!(modelTarget.modelId && isMetaModel(modelTarget.modelId) &&
+      (stickyCostFilter === 'free' || getMetaModel(modelTarget.modelId)?.costFilter === 'free'));
 
     // Reusable pipeline result from sticky handler — when the planner decides
     // SWITCH, it returns the pipeline result it already computed so the caller
@@ -387,7 +390,7 @@ export class Router {
     // and the pipeline to avoid redundant message iteration
     const estimatedTokens = this.estimateTokens(request);
 
-    if (conversationHash && !modelTarget.providerName && !hasHardProviderConstraint) {
+    if (conversationHash && !modelTarget.providerName && !hasHardProviderConstraint && !hasHardCostConstraint) {
       const stickyResult = await handleStickySession({
         request, options, candidates: this.candidates,
         adapterExecutor: this.adapterExecutor, config: this.config,

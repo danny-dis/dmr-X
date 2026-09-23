@@ -286,6 +286,10 @@ export async function runPipelineFromFiltered(input: {
       // Re-run rate-limit with candidates that existed before rate-limit filtering
       const recheck = await rateLimitFilter(preRateLimitCandidates, rateLimitService!, estimatedTokens);
       filtered = recheck.allowed;
+      // Retry starts from the pre-eligibility set, so enforce hard constraints again.
+      if (eligibilityEngine) {
+        filtered = eligibilityEngine.filter(filtered).eligible;
+      }
       // Re-apply policy filter (tenant-scoped, doesn't change in a 3s window —
       // but re-applying is cheap and avoids staleness if the caller's policy
       // was updated)
