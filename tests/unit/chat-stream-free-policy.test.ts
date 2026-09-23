@@ -5,13 +5,15 @@ import { chatRoutes } from '../../apps/gateway/src/routes/chat.routes.js';
 
 describe('streaming free-only fallback', () => {
   it.each([
-    ['free', undefined, false],
-    ['auto', 'free', false],
-    ['auto', undefined, true],
-  ])('applies stream fallback policy for model %s with cost filter %s', async (model, costFilter, allowPaidFallback) => {
+    ['free', undefined, undefined, false],
+    ['auto', 'free', undefined, false],
+    ['auto', undefined, 'free', false],
+    ['auto', undefined, undefined, true],
+  ])('applies stream fallback policy for model %s with cost filter %s and default %s', async (model, costFilter, routerDefault, allowPaidFallback) => {
     const app = Fastify({ logger: false });
     const attempted: string[] = [];
     app.decorate('router', {
+      getEffectiveCostFilter: () => routerDefault ?? costFilter ?? (model === 'free' ? 'free' : 'all'),
       route: async () => ({
         plan: {
           primary: { providerId: 'free-provider', modelId: 'free-model', adapterType: 'openai', score: 1 },

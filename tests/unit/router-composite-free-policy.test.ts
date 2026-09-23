@@ -31,6 +31,15 @@ function failedComposite(): {
   };
 }
 
+describe('router effective cost policy', () => {
+  it('honors a free default, an explicit all override, and an intrinsic free alias', () => {
+    const router = new Router({ metaModelCostFilter: 'free' });
+    expect(router.getEffectiveCostFilter('auto')).toBe('free');
+    expect(router.getEffectiveCostFilter('auto', 'all')).toBe('all');
+    expect(router.getEffectiveCostFilter('free', 'all')).toBe('free');
+  });
+});
+
 describe('composite free-only fallback', () => {
   it('never puts an explicitly paid candidate in a free-only single-pass plan', async () => {
     const router = new Router({ enableDecomposition: true, decompositionThreshold: 1 });

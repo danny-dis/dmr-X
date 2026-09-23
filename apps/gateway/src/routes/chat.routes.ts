@@ -430,7 +430,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // Global candidates may include paid or excluded providers.
       const streamPrefs = unifiedRequest.metadata?.providerPreferences;
       const unconstrainedMetaModel = getMetaModel(body.model)?.costFilter === 'all' &&
-        unifiedRequest.metadata?.costFilter !== 'free' &&
+        router.getEffectiveCostFilter(body.model, unifiedRequest.metadata?.costFilter as 'free' | 'all' | undefined) === 'all' &&
         !streamPrefs?.zdr && !streamPrefs?.only?.length && !streamPrefs?.ignore?.length;
       if (unconstrainedMetaModel) try {
         const routerAny = router as unknown as { getCandidates?: () => Array<{ providerId: string; modelId: string; score: number; isHealthy?: boolean; providerName?: string }> };

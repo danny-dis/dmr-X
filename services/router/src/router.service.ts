@@ -137,14 +137,15 @@ export class Router {
     this.candidates = candidates;
   }
 
-  /**
-   * Return the current candidate set. Used by the streaming chat route to
-   * force-inject healthy fallbacks when a meta-model selection yields an empty
-   * fallback chain — guarantees a failed primary always has somewhere to fall
-   * back to before any token reaches the client (DMR-X smooth-flow contract).
-   */
+  /** Candidate pool used for unconstrained streaming fallback. */
   getCandidates(): CandidateSet {
     return this.candidates;
+  }
+
+  getEffectiveCostFilter(model: string, override?: 'free' | 'all'): 'free' | 'all' {
+    const alias = getMetaModel(this.parseModelTarget(model).modelId);
+    if (alias?.costFilter === 'free') return 'free';
+    return override ?? this.config.metaModelCostFilter ?? alias?.costFilter ?? 'all';
   }
 
   getCandidateCount(): number {
