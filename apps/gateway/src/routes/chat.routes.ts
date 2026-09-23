@@ -29,6 +29,9 @@ const ChatRequestSchema = z.object({
   n: z.number().positive().optional(),
   stream: z.boolean().optional().default(false),
   user: z.string().optional(),
+  // Opt out of Router.route's composite decomposition for this request only.
+  // Default (absent / true) leaves the existing decompose path untouched.
+  decompose: z.boolean().optional(),
 });
 
 export async function chatRoutes(server: FastifyInstance): Promise<void> {
@@ -296,6 +299,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         ...((body as any).metadata && typeof (body as any).metadata === 'object' ? (body as any).metadata : {}),
         requestId,
         tenant: (request as any).tenant,
+        // Set ONLY when the caller explicitly sent decompose:false — any other
+        // body (absent / true) must leave the flag unset so Router.route's
+        // default decompose decision is unchanged.
+        ...(body.decompose === false ? { skipDecomposition: true } : {}),
         freeTierStrategy: (request.headers['x-free-tier-strategy'] as string) || undefined,
         costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
         // X-Provider-Preferences (see ../utils/provider-preferences.ts) wins
@@ -648,7 +655,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             // disables caching: the cache key is body-only, so storing a
             // preference-constrained response under it could later be served
             // to a request with different (or no) constraints.
-            const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences;
+            const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences && body.decompose !== false;
             if (useCache) {
               storeRouteCache('chat', tenantId, body as Record<string, unknown>, assembledResponse);
             }
@@ -791,7 +798,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     // that now carries providerPreferences (order/ignore/only/zdr/...) could
     // silently hand back a response from a provider this call was told to
     // exclude, which is exactly the failure this fix exists to close.
-    const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences;
+    const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences && body.decompose !== false;
 
     // The cache stores the internal UnifiedResponse, but this endpoint is the
     // OpenAI-compatible surface. Returning the cached value verbatim shipped
@@ -889,7 +896,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       reply.header('X-DMRX-Served-By', response.modelId);
     }
 
-    if (useCache && response) {
+    if (useCache && response && (typeof response.message?.content === 'string'
+      ? response.message.content.trim().length > 0
+      : response.message?.content != null)) {
       const { storeRouteCache } = await import('@dmr-x/cache');
       storeRouteCache('chat', tenantId, body as Record<string, unknown>, response);
 

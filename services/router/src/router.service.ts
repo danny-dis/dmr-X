@@ -281,8 +281,12 @@ export class Router {
     options?: ClassifyOptions & { requestId?: string }
   ): Promise<{ plan: RoutingPlan; response: UnifiedResponse }> {
     const opts = options ?? ({ path: (request as any).path ?? '' } as ClassifyOptions & { requestId?: string });
-    // Check if decomposition is enabled and the prompt is complex enough
+    // Check if decomposition is enabled and the prompt is complex enough.
+    // Opt-out: request.metadata.skipDecomposition === true (set by chat.routes
+    // when the body carried decompose:false). Only an explicit true skips —
+    // absent/false/any other value preserves the default decompose path.
     const shouldDecompose = this.config.enableDecomposition !== false &&
+      request.metadata?.skipDecomposition !== true &&
       this.isComplexPrompt(request) &&
       this.compositeExecutor;
 

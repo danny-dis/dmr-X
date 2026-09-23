@@ -98,20 +98,25 @@ const TRANSPORT_RETRY_DELAY_MS = 1_500;
  * have its socket closed under load. Retrying a dropped connection is safe;
  * retrying a 4xx or 5xx would just repeat work the server already rejected or
  * already performed.
+ *
+ * `extraHeaders` are merged over gw.headers (per-call overrides such as
+ * x-quality-target, which the chat route reads from the header only).
  */
 async function callGateway(
   gw: ResolvedGateway,
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<GatewayResponse> {
   let lastMessage = 'request failed';
+  const headers = { ...gw.headers, ...extraHeaders };
 
   for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt++) {
     try {
       const res = await fetch(`${gw.url}${path}`, {
         method,
-        headers: gw.headers,
+        headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(gw.timeoutMs),
       });
@@ -145,6 +150,63 @@ function extractText(body: any): string {
     body?.choices?.[0]?.message?.content ??
     ''
   );
+}
+
+/**
+ * Planner-scoped completion text extraction.
+ *
+ * The shared extractText above short-circuits on `??`: an empty-string
+ * top-level `content`/`output`/`result` (envelope/proxy shapes) shadows the
+ * real plan in `choices[0].message.content`, and a content-parts array is
+ * returned raw so `.trim()` throws. Walk candidates in priority order and
+ * return the first non-blank string after normalising parts → text; fall back
+ * to the first stringified candidate so a genuinely empty body still reads as
+ * empty rather than inventing a plan.
+ *
+ * Deliberately planner-only: extractText is also used by createTaskExecutor
+ * (HIGH blast radius) and must not change behaviour for agent chat summaries.
+ */
+function extractPlannerText(body: any): string {
+  const candidates: unknown[] = [
+    body?.choices?.[0]?.message?.content,
+    body?.content,
+    body?.output,
+    body?.result,
+    body?.choices?.[0]?.text,
+  ];
+
+  const normalize = (value: unknown): string => {
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+      // Anthropic-style content parts: [{ type: 'text', text: '...' }, ...]
+      return value
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          if (part && typeof part === 'object') {
+            const record = part as Record<string, unknown>;
+            if (typeof record.text === 'string') return record.text;
+            if (typeof record.content === 'string') return record.content;
+          }
+          return '';
+        })
+        .join('');
+    }
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      if (typeof record.text === 'string') return record.text;
+      if (typeof record.content === 'string') return record.content;
+    }
+    return '';
+  };
+
+  let firstString = '';
+  for (const candidate of candidates) {
+    const text = normalize(candidate);
+    if (text.trim() !== '') return text;
+    if (firstString === '' && typeof candidate === 'string') firstString = text;
+  }
+  return firstString;
 }
 
 function buildTaskMessage(task: JobTask, boardContext: string): string {
@@ -296,13 +358,28 @@ export async function planJob(
   let lastError = 'no planner model produced a usable plan';
 
   for (const model of models) {
-    const completion = await callGateway(gw, 'POST', '/v1/chat/completions', {
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: false,
-      // Ask the router for its best candidates, not its cheapest.
-      quality_target: 'frontier',
-    });
+    // quality_target is a body field the chat route's Zod schema strips —
+    // the route only reads the x-quality-target header (default 'balanced').
+    // Sending frontier in the body alone silently planned at balanced quality.
+    const completion = await callGateway(
+      gw,
+      'POST',
+      '/v1/chat/completions',
+      {
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        stream: false,
+        // The planning prompt embeds the full agent roster and is complex
+        // enough to trip Router.route's decomposition heuristic. Composite
+        // fan-out was returning HTTP 200 with empty content (planner 422).
+        // Explicit decompose:false keeps this on the single-pass path.
+        decompose: false,
+        // Kept for any future body-aware path; the header below is what
+        // chat.routes.ts actually honors today.
+        quality_target: 'frontier',
+      },
+      { 'x-quality-target': 'frontier' },
+    );
 
     const resolved = completion.body?.model;
     const finish = completion.body?.choices?.[0]?.finish_reason;
@@ -313,7 +390,7 @@ export async function planJob(
       continue;
     }
 
-    const raw = extractText(completion.body);
+    const raw = extractPlannerText(completion.body);
 
     // An empty response and an unparseable one have different causes -- a
     // provider error or a truncated generation, versus a model ignoring the
