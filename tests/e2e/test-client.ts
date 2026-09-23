@@ -4,7 +4,7 @@ export class TestClient {
   public baseUrl: string;
   public apiKey?: string;
 
-  constructor(baseUrl: string = 'http://localhost:3000', apiKey?: string) {
+  constructor(baseUrl: string = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000', apiKey?: string) {
     this.baseUrl = baseUrl;
     this.apiKey = apiKey;
   }

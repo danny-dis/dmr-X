@@ -12,6 +12,7 @@ describeE2E('Gateway Connectivity', () => {
   });
 
   it('should be reachable and return models', async () => {
+    expect(client.baseUrl).toBe(process.env.DMRX_GATEWAY_URL || 'http://localhost:3000');
     try {
       const models: any = await client.getModels();
       expect(models).toBeDefined();
