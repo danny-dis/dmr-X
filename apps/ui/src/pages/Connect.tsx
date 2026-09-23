@@ -1,6 +1,6 @@
 import { Plug, Play, Code, Server, Webhook, KeyRound } from 'lucide-react';
 import * as React from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
@@ -114,6 +114,19 @@ export function ConnectPage() {
         title="Connect"
         description="API reference, authentication, and integration examples"
         icon={<Plug className="size-5" />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/mcp">MCP</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/a2a">A2A</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/integrations">Integrations</Link>
+            </Button>
+          </div>
+        }
       />
 
       <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-3">

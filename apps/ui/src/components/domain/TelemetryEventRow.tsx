@@ -1,6 +1,7 @@
 import { CheckCircle2, XCircle, Info, Cpu, Network, Zap, Wrench, User } from 'lucide-react';
 import * as React from 'react';
 
+
 import { formatDuration } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import type { ApiTelemetryEvent } from '@/types/api';
@@ -53,6 +54,14 @@ export function TelemetryEventRow({ event, className }: TelemetryEventRowProps) 
       )}
       {event.message && (
         <span className="text-fg-muted truncate flex-1 min-w-0">— {event.message}</span>
+      )}
+      {event.trace_id && (
+        <span
+          title={`Correlation ID: ${event.trace_id}`}
+          className="shrink-0 truncate font-mono text-fg-subtle"
+        >
+          {event.trace_id.slice(0, 8)}
+        </span>
       )}
     </div>
   );

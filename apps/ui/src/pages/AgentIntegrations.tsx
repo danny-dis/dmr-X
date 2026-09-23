@@ -1,7 +1,9 @@
 import { Terminal, Code, Bot, AlertTriangle } from 'lucide-react';
 import * as React from 'react';
+import { Link } from 'react-router';
 
 import { PageHeader, PageContainer } from '@/components/layout';
+import { Button } from '@/components/primitives/Button';
 import { Card, CardContent } from '@/components/primitives/Card';
 import { DataState } from '@/components/primitives/DataState';
 import { LazyTab } from '@/components/primitives/LazyTab';
@@ -48,6 +50,19 @@ export function AgentIntegrationsPage() {
         title="Agent Integrations"
         description="Configure AI coding agents to use DMR-X as their model provider"
         icon={<Terminal className="size-5" />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/connect">API & SDKs</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/mcp">MCP</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/a2a">A2A</Link>
+            </Button>
+          </div>
+        }
       />
 
       <div className="mt-5">

@@ -35,6 +35,15 @@ export function CostDashboardPage() {
         description="Monitor costs, free-tier savings, and usage across tenants and providers."
         actions={
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/requests">Requests</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/performance">Performance</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/health">Health</Link>
+            </Button>
             <Select value={String(days)} onValueChange={(v) => setDays(parseInt(v, 10))}>
               <SelectTrigger size="sm" className="w-36" aria-label="Date range">
                 <SelectValue />
