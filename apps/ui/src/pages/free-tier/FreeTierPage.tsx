@@ -1,4 +1,4 @@
-import { AlertTriangle, KeyRound, RefreshCw, Sparkles, Zap } from 'lucide-react';
+import { AlertTriangle, KeyRound, RefreshCw, Sparkles, Zap, Clock } from 'lucide-react';
 import * as React from 'react';
 
 import { DiscoverKeyDialog } from './DiscoverKeyDialog';
@@ -16,7 +16,8 @@ import { Skeleton } from '@/components/primitives/Skeleton';
 import { useUrlState } from '@/hooks/useUrlState';
 import { chartColor } from '@/lib/chartPalette';
 import { formatCurrency, formatNumber } from '@/lib/formatters';
-import { useFreeTierSummary, useSavings, type UsageWindow, type Savings, type FreeTierSummary } from '@/lib/queries/usage';
+import { useProviders } from '@/lib/queries/providers';
+import { useFreeTierSummary, useLiveUsage, useSavings, type LiveUsage, type UsageWindow, type Savings, type FreeTierSummary } from '@/lib/queries/usage';
 
 /**
  * Free Tier.
@@ -32,6 +33,13 @@ export function FreeTierPage() {
 
   const summary = useFreeTierSummary();
   const savings = useSavings(Number(days) || 30);
+  // Real request telemetry for the routing split — free vs non-free or unclassified REQUEST
+  // counts from /admin/usage/live. Model counts are inventory, not traffic,
+  // so they must never stand in for this.
+  const liveUsage = useLiveUsage(window);
+  const providersQuery = useProviders();
+  const traffic = computeTrafficDistribution(liveUsage.data);
+  const fallbackPath = resolveFallbackPath(providersQuery.data);
 
   return (
     <PageContainer size="wide">
@@ -253,6 +261,156 @@ export function FreeTierPage() {
       </Card>
 
       <DiscoverKeyDialog open={discoverOpen} onOpenChange={setDiscoverOpen} />
+
+      {/* Routing distribution — free vs non-free or unclassified REQUEST share from live usage
+          telemetry. Model counts are inventory, not traffic, so when the
+          usage endpoint reports nothing we say so instead of rendering a
+          fabricated split. */}
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>Routing distribution</CardTitle>
+          <p className="text-[10px] text-fg-muted mt-0.5">Free vs non-free or unclassified request share from live usage telemetry</p>
+        </CardHeader>
+        <CardContent>
+          <DataState
+            data={traffic}
+            isLoading={liveUsage.isLoading}
+            error={liveUsage.error}
+            onRetry={liveUsage.refetch}
+            loading={<Skeleton className="h-32 w-full" />}
+            empty={{
+              title: 'Request telemetry unavailable',
+              description:
+                'Routing split appears once the usage endpoint reports classified free and other requests. Unclassified models are counted in the other bucket; model inventory is not traffic.',
+            }}
+          >
+            {(dist) => (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <span className="text-fg-muted">Free requests ({formatNumber(dist.free)})</span>
+                        <span className="font-medium text-success">{dist.freePercent.toFixed(0)}%</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-surface-2 overflow-hidden">
+                        <div
+                          className="h-full bg-success transition-all duration-500"
+                          style={{ width: `${dist.freePercent}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <span className="text-fg-muted">Non-free or unclassified requests ({formatNumber(dist.nonFreeOrUnclassified)})</span>
+                        <span className="font-medium text-warning">{(100 - dist.freePercent).toFixed(0)}%</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-surface-2 overflow-hidden">
+                        <div
+                          className="h-full bg-warning transition-all duration-500"
+                          style={{ width: `${100 - dist.freePercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-fg-muted">
+                    Shares are request counts for the selected window ({window}); the non-free bucket also includes unclassified models.
+                  </p>
+                </div>
+              )}
+          </DataState>
+        </CardContent>
+      </Card>
+
+      {/* Predicted exhaustion & fallback path */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Capacity forecast</CardTitle>
+            <p className="text-[10px] text-fg-muted mt-0.5">Rate-limit budgets per provider</p>
+          </CardHeader>
+          <CardContent>
+            <DataState
+              data={summary.data?.providers}
+              isLoading={summary.isLoading}
+              error={summary.error}
+              onRetry={summary.refetch}
+              loading={<Skeleton className="h-32 w-full" />}
+              empty={{
+                title: 'No capacity data',
+                description: 'Add a free key to see capacity forecasts.',
+              }}
+            >
+              {(providers) => (
+                <div className="space-y-3">
+                  {providers.slice(0, 4).map((p) => (
+                      <div key={p.provider_name} className="flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-medium text-fg truncate">{p.provider_name}</span>
+                            <span className="text-fg-muted tabular-nums">
+                              {formatNumber(p.total_monthly_budget, true)} tokens/mo
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[10px] text-fg-muted">
+                            {p.models[0]?.rate_limits.rpm ? `${p.models[0].rate_limits.rpm} rpm` : 'rate limits unreported'}
+                            {p.models[0]?.rate_limits.rpd ? ` · ${formatNumber(p.models[0].rate_limits.rpd, true)} rpd` : ''}
+                            {' · '}{p.models.length} model{p.models.length === 1 ? '' : 's'}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 p-3 text-[10px] text-fg-muted">
+                    <Clock className="size-3 shrink-0" />
+                    <span>
+                      Exhaustion forecast unavailable — this view does not combine per-key usage,
+                      reset windows, and current consumption into a reliable days-left estimate.
+                      Request telemetry appears above once traffic flows.
+                    </span>
+                  </div>
+                </div>
+              )}
+            </DataState>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Fallback path</CardTitle>
+            <p className="text-[10px] text-fg-muted mt-0.5">
+              Unknown — no live policy, rate-limit, or quota-reset data is reported
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {fallbackPath.steps.map((step) => (
+                <div
+                  key={step.id}
+                  className="flex items-start gap-3 rounded-lg border border-border bg-surface-2 p-3"
+                >
+                  <div className="size-6 shrink-0 rounded-full bg-surface-3 flex items-center justify-center">
+                    <span className="text-[10px] font-medium text-fg-muted">?</span>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-fg">
+                      {step.title}{' '}
+                      <span className="font-normal text-fg-muted">· Unknown / N/A</span>
+                    </div>
+                    <div className="text-[10px] text-fg-muted">{step.detail}</div>
+                  </div>
+                </div>
+              ))}
+              <div className="flex items-start gap-3 rounded-lg border border-border bg-surface-2 p-3 text-[10px] text-fg-muted">
+                <Clock className="size-3 shrink-0 mt-0.5" />
+                <span>
+                  No live rate-limit, quota, or routing-policy data is available from the
+                  endpoints this page reads, so each step shows Unknown instead of an
+                  assumed path. Request shares above are real telemetry from live usage.
+                </span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </PageContainer>
   );
 }
@@ -267,4 +425,129 @@ function Metric({ label, value, suffix }: { label: string; value: string; suffix
       </div>
     </div>
   );
+}
+
+export interface TrafficDistribution {
+  free: number;
+  nonFreeOrUnclassified: number;
+  freePercent: number;
+}
+
+/**
+ * Free vs non-free or unclassified REQUEST share from live usage telemetry.
+ *
+ * Returns null when telemetry is missing or reports zero requests — the
+ * caller renders "telemetry unavailable" instead of fabricating a split.
+ * Model counts are inventory, never traffic: an object without numeric
+ * `free.requests` / `paid.requests` (e.g. a free-tier summary carrying
+ * `total_free_models`) is refused, not coerced.
+ */
+export function computeTrafficDistribution(
+  live: LiveUsage | null | undefined,
+): TrafficDistribution | null {
+  const free = live?.free?.requests;
+  const paid = live?.paid?.requests;
+  if (typeof free !== 'number' || typeof paid !== 'number') return null;
+  if (!Number.isFinite(free) || !Number.isFinite(paid)) return null;
+  const total = free + paid;
+  if (total <= 0) return null;
+  return { free, nonFreeOrUnclassified: paid, freePercent: (free / total) * 100 };
+}
+
+/**
+ * Predicted days until a budget exhausts.
+ *
+ * Always null: this view does not combine per-key usage, reset windows,
+ * and current consumption into a reliable days-left estimate. Kept as a named function
+ * (rather than inlining null) so the call site documents the gap and a
+ * future backend field has one place to land.
+ */
+export function predictExhaustionDays(
+  _budget: { total_monthly_budget: number; monthly_token_budget: number } | null | undefined,
+): number | null {
+  return null;
+}
+
+/**
+ * Whether policy permits a paid fallback, plus paid-tier inventory.
+ *
+ * `available` is always null: no endpoint this page reads exposes a
+ * routing-policy field, so a paid/mixed tier (which only proves a key is
+ * configured) cannot prove policy permits paid fallback. Callers must
+ * render Unknown/N/A — never a fabricated fallback path. `paidTierConfigured`
+ * is the typed inventory fact, kept separate so it can be shown without
+ * being misread as policy.
+ */
+export function resolvePaidFallback(
+  providers: Array<{ tier?: string | null }> | null | undefined,
+): { available: boolean | null; paidTierConfigured: boolean } {
+  const paidTierConfigured = (providers ?? []).some(
+    (p) => p.tier === 'paid' || p.tier === 'mixed',
+  );
+  return { available: null, paidTierConfigured };
+}
+
+export type FallbackStepId =
+  | 'free_first'
+  | 'rate_limit_retry'
+  | 'paid_fallback'
+  | 'budget_reset';
+
+export interface FallbackPathStep {
+  id: FallbackStepId;
+  title: string;
+  detail: string;
+  status: 'unknown';
+}
+
+export interface FallbackPath {
+  steps: FallbackPathStep[];
+  policyDataAvailable: false;
+}
+
+/**
+ * Routing behaviour when free capacity runs out.
+ *
+ * Every step is 'unknown': the endpoints this page read expose budgets,
+ * tiers and request counts, but no routing-policy field, no live
+ * rate-limit state, and no per-provider quota-reset cadence. The UI must
+ * render Unknown/N/A with that explanation — never an asserted
+ * free-first ordering, retry behaviour, paid-fallback permission, or
+ * monthly reset.
+ */
+export function resolveFallbackPath(
+  providers: Array<{ tier?: string | null }> | null | undefined,
+): FallbackPath {
+  const paid = resolvePaidFallback(providers);
+  return {
+    policyDataAvailable: false,
+    steps: [
+      {
+        id: 'free_first',
+        title: 'Free-first ordering',
+        detail: 'No live policy data reports whether requests are ordered free-first.',
+        status: 'unknown',
+      },
+      {
+        id: 'rate_limit_retry',
+        title: 'Rate-limit retry',
+        detail: 'No live rate-limit state or window-reset cadence is reported.',
+        status: 'unknown',
+      },
+      {
+        id: 'paid_fallback',
+        title: 'Paid fallback',
+        detail: paid.paidTierConfigured
+          ? 'A paid/mixed provider is configured, but no policy field reports whether paid fallback is permitted.'
+          : 'No policy field reports whether paid fallback is permitted.',
+        status: 'unknown',
+      },
+      {
+        id: 'budget_reset',
+        title: 'Budget reset',
+        detail: 'No per-provider quota-reset cadence is reported.',
+        status: 'unknown',
+      },
+    ],
+  };
 }

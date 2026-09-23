@@ -4,7 +4,8 @@ import { Admin } from '../admin';
 import { keys } from '../queryClient';
 
 import type { PollOptions } from './types';
-import type { ApiModel } from '@/types/api';
+import type { ApiModel, ModelClassification, ModelClassificationsResponse, PricingTier } from '@/types/api';
+export type { ModelClassification, ModelClassificationsResponse, PricingTier } from '@/types/api';
 
 // ---------------------------------------------------------------------------
 // Models & classifications
@@ -21,34 +22,7 @@ export function useModels(
   });
 }
 
-export type PricingTier = 'free' | 'free_with_limits' | 'paid' | 'subscription_only' | 'unknown';
-
-export interface ModelClassification {
-  providerId: string;
-  modelId: string;
-  pricingTier: PricingTier;
-  inputCostPer1M?: number;
-  outputCostPer1M?: number;
-  hasFreeTier?: boolean;
-  verifiedFree?: boolean;
-  lastVerification?: string | null;
-  source?: string;
-}
-
-export interface ModelClassificationsResponse {
-  total: number;
-  byTier: Record<PricingTier, number>;
-  classifications: ModelClassification[];
-}
-
-/**
- * Pricing-tier classifications for every catalog model.
- *
- * `/admin/models` doesn't carry a `pricing_tier` column — `model_profiles`
- * has none — so the tier for a given row has to be looked up here by
- * `provider_id:model_id` (see `useModelPricingTier` below). This query is
- * the byTier counts source for the Models page and the free/paid split.
- */
+/** Pricing-tier classifications for catalog models, keyed by provider and model ID. */
 export function useModelClassifications() {
   return useQuery({
     queryKey: keys.models.classifications(),

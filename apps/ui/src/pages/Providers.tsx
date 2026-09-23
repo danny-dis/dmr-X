@@ -1,17 +1,25 @@
-import { Boxes, Plus, Search, Globe, Gift } from 'lucide-react';
+import {
+  Boxes,
+  CheckCircle2,
+  Clock,
+  TriangleAlert,
+  MinusCircle,
+  Plus,
+  XCircle,
+} from 'lucide-react';
 import * as React from 'react';
 
 import { AddProviderDialog } from '@/components/domain/AddProviderDialog';
 import { ProviderCard } from '@/components/domain/ProviderCard';
 import { ProviderDetailDrawer } from '@/components/domain/ProviderDetailDrawer';
 import { PageHeader, PageContainer } from '@/components/layout';
-import { BackLink } from '@/components/primitives/BackLink';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
-import { Card } from '@/components/primitives/Card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
 import { DataState } from '@/components/primitives/DataState';
 import { Input } from '@/components/primitives/Input';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { StatTile } from '@/components/primitives/StatTile';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
 import { Pagination } from '@/components/primitives/Pagination';
@@ -21,8 +29,6 @@ import { useCatalog, useProviders } from '@/lib/queries/providers';
 import { formatNumber } from '@/lib/formatters';
 import { useUIStore } from '@/store/useUIStore';
 import type { ApiCatalogEntry, ApiProvider } from '@/types/api';
-
-// Lazy-load Free Tier tab content
 
 export function ProvidersPage() {
   const [query, setQuery] = useUrlState('q', '');
@@ -64,17 +70,24 @@ export function ProvidersPage() {
     });
   };
 
+  // Compute provider status counts from typed wire fields only.
+  // rateLimited / quotaExhausted are always unknown (null): the providers
+  // endpoint reports neither live rate-limit state nor quota consumption.
+  const statusCounts = React.useMemo(
+    () => computeProviderStatusCounts(providers.data),
+    [providers.data],
+  );
+
   return (
     <PageContainer size="wide">
-      <BackLink to="/" label="Dashboard" />
       <PageHeader
         title="Providers"
         description="AI provider catalog — connect, manage, and monitor all upstream services"
         icon={<Boxes className="size-5" />}
         actions={
           <>
-            <Badge tone="muted" size="md" icon={<Globe className="size-3" aria-hidden />}>
-              {formatNumber((providers.data ?? []).length)} configured
+            <Badge tone="muted" size="md" icon={<Boxes className="size-3" aria-hidden />}>
+              {statusCounts.configured ?? 'N/A'} configured
             </Badge>
             <Button
               size="sm"
@@ -89,6 +102,54 @@ export function ProvidersPage() {
           </>
         }
       />
+
+      {/* Status overview KPIs */}
+      <div className="mt-5 grid grid-cols-2 lg:grid-cols-6 gap-3">
+        <StatTile
+          label="Configured"
+          value={statusCounts.configured ?? 'N/A'}
+          icon={<Boxes className="size-3.5" />}
+          tone="primary"
+        />
+        <StatTile
+          label="Healthy"
+          value={statusCounts.healthy ?? 'N/A'}
+          icon={<CheckCircle2 className="size-3.5" />}
+          tone="success"
+        />
+        <StatTile
+          label="Degraded"
+          value={statusCounts.degraded ?? 'N/A'}
+          icon={<TriangleAlert className="size-3.5" />}
+          tone="warning"
+        />
+        <StatTile
+          label="Unavailable"
+          value={statusCounts.unavailable ?? 'N/A'}
+          icon={<XCircle className="size-3.5" />}
+          tone="danger"
+        />
+        <StatTile
+          label="Rate limited"
+          value={statusCounts.rateLimited ?? 'N/A'}
+          hint="no live rate-limit data"
+          icon={<Clock className="size-3.5" />}
+          tone="warning"
+        />
+        <StatTile
+          label="Quota exhausted"
+          value={statusCounts.quotaExhausted ?? 'N/A'}
+          hint="no live quota data"
+          icon={<MinusCircle className="size-3.5" />}
+          tone="danger"
+        />
+      </div>
+      <p className="mt-2 text-[10px] text-fg-muted">
+        Rate-limit and quota tiles show N/A — the providers API reports neither live
+        rate-limit state nor quota consumption (consecutiveFailures is an upstream
+        failure count, not a 429; tier &quot;inactive&quot; means no active keys, not
+        quota exhausted).
+      </p>
 
       <div className="mt-5">
         <Tabs defaultValue="providers">
@@ -105,7 +166,7 @@ export function ProvidersPage() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search providers…"
             aria-label="Search providers"
-            prefix={<Search className="size-3.5" aria-hidden />}
+            prefix={<Boxes className="size-3.5" aria-hidden />}
           />
         </div>
         <div className="flex items-center gap-1">
@@ -218,11 +279,6 @@ export function ProvidersPage() {
                       key={e.id ?? e.name}
                       onClick={() => {
                         setSelectedTemplate(e);
-                        // Suggest a unique name so a second account of the same
-                        // provider type becomes its OWN instance instead of
-                        // upserting (and clobbering) the existing row. The
-                        // activate route keys rows by `name`, so `google-2`
-                        // coexists with `google`.
                         const base = e.id ?? e.name ?? 'provider';
                         const existing = new Set((providers.data ?? []).map((p) => p.name));
                         let suggested = base;
@@ -280,4 +336,27 @@ export function ProvidersPage() {
       </div>
     </PageContainer>
   );
+}
+
+/**
+ * Pure status-bucket counts for the provider overview KPIs.
+ *
+ * Exported for testing. Only buckets derived from typed wire fields come
+ * back as numbers. `rateLimited` and `quotaExhausted` are always null —
+ * the API exposes no live rate-limit state (`consecutiveFailures` counts
+ * upstream failures, not 429s) and no quota-consumption state (`tier:
+ * 'inactive'` means no active keys). Callers render N/A for null instead
+ * of fabricating a 0.
+ */
+export function computeProviderStatusCounts(list: ApiProvider[] | undefined) {
+  if (!list) {
+    return { configured: null, healthy: null, degraded: null, unavailable: null, rateLimited: null, quotaExhausted: null };
+  }
+  const configured = list.length;
+  const healthy = list.filter((p) => p.status === 'healthy' || p.status === 'online').length;
+  const degraded = list.filter((p) => p.status === 'degraded').length;
+  const unavailable = list.filter((p) => p.status === 'unavailable' || p.status === 'offline').length;
+  const rateLimited = null;
+  const quotaExhausted = null;
+  return { configured, healthy, degraded, unavailable, rateLimited, quotaExhausted };
 }

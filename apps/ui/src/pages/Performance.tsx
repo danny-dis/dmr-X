@@ -3,7 +3,8 @@ import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { DataState } from '@/components/primitives/DataState';
+import { EmptyState } from '@/components/primitives/EmptyState';
+import { ErrorState } from '@/components/primitives/ErrorState';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useHealth } from '@/lib/queries/dashboard';
 
@@ -27,7 +28,7 @@ export function PerformancePage() {
     return (
       <PageContainer>
         <PageHeader title="Performance" description="Latency, throughput, and routing overhead" icon={<BarChart3 className="size-5" />} />
-        <DataState variant="error" title="Failed to load performance data" description={error?.message ?? 'Unknown error'} />
+        <ErrorState error={error} title="Failed to load performance data" description={error instanceof Error ? error.message : 'Unknown error'} />
       </PageContainer>
     );
   }
@@ -63,7 +64,7 @@ export function PerformancePage() {
       <Card className="mt-4">
         <CardHeader><CardTitle>Latency Trend</CardTitle></CardHeader>
         <CardContent>
-          <DataState variant="empty" title="No data yet" description="Performance metrics will appear as requests are processed." />
+          <EmptyState title="No data yet" description="Performance metrics will appear as requests are processed." />
         </CardContent>
       </Card>
     </PageContainer>

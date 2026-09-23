@@ -4,7 +4,8 @@ import * as React from 'react';
 import { PageHeader, PageContainer } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/primitives/Card';
-import { DataState } from '@/components/primitives/DataState';
+import { EmptyState } from '@/components/primitives/EmptyState';
+import { ErrorState } from '@/components/primitives/ErrorState';
 import { Skeleton } from '@/components/primitives/Skeleton';
 import { useHealth } from '@/lib/queries/dashboard';
 
@@ -28,7 +29,7 @@ export function HealthPage() {
     return (
       <PageContainer>
         <PageHeader title="Health" description="Gateway, provider, and system health" icon={<HeartPulse className="size-5" />} />
-        <DataState variant="error" title="Failed to load health" description={error?.message ?? 'Unknown error'} />
+        <ErrorState error={error} title="Failed to load health" description={error instanceof Error ? error.message : 'Unknown error'} />
       </PageContainer>
     );
   }
@@ -43,7 +44,7 @@ export function HealthPage() {
         title="Health"
         description="Gateway, provider, and system health"
         icon={<HeartPulse className="size-5" />}
-        actions={<Badge variant={statusColor}>{health?.status ?? 'Unknown'}</Badge>}
+        actions={<Badge tone={statusColor}>{health?.status ?? 'Unknown'}</Badge>}
       />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
@@ -75,7 +76,7 @@ export function HealthPage() {
       <Card className="mt-4">
         <CardHeader><CardTitle>Component Status</CardTitle></CardHeader>
         <CardContent>
-          <DataState variant="empty" title="All systems nominal" description="Detailed component health will appear here." />
+          <EmptyState title="All systems nominal" description="Detailed component health will appear here." />
         </CardContent>
       </Card>
     </PageContainer>

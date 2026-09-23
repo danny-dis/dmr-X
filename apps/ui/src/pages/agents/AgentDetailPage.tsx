@@ -375,7 +375,7 @@ export function AgentDetailPage() {
                             Search
                           </Button>
                         </div>
-                        {searchError && (
+                        {Boolean(searchError) && (
                           <p className="text-xs text-danger mb-2">Search failed. Try again.</p>
                         )}
                         {searchResults ? (
@@ -392,7 +392,7 @@ export function AgentDetailPage() {
                               <ul className="space-y-2">
                                 {items.map((item) => (
                                   <li key={item.id} className="rounded-lg border border-border bg-surface-2 p-3">
-                                    <p className="text-xs text-fg line-clamp-2">{item.content}</p>
+                                    <p className="text-xs text-fg line-clamp-2">{formatMemoryContent(item.content)}</p>
                                     <div className="mt-1 flex items-center gap-2 text-[10px] text-fg-subtle">
                                       {item.source && <span>src: {item.source}</span>}
                                       {item.createdAt && <span>{timeAgo(item.createdAt)}</span>}
@@ -419,7 +419,7 @@ export function AgentDetailPage() {
                               <ul className="space-y-2">
                                 {items.slice(0, 10).map((item) => (
                                   <li key={item.id} className="rounded-lg border border-border bg-surface-2 p-3">
-                                    <p className="text-xs text-fg line-clamp-2">{item.content}</p>
+                                    <p className="text-xs text-fg line-clamp-2">{formatMemoryContent(item.content)}</p>
                                     <div className="mt-1 flex items-center gap-2 text-[10px] text-fg-subtle">
                                       {item.source && <span>src: {item.source}</span>}
                                       {item.createdAt && <span>{timeAgo(item.createdAt)}</span>}
@@ -572,6 +572,23 @@ function InstanceRow({ instance }: { instance: AgentInstanceDetail }) {
       </AlertDialog>
     </li>
   );
+}
+
+/**
+ * Render memory item content that is typed/observed as `unknown` at the
+ * boundary (API may return non-string blobs). Strings pass through verbatim;
+ * nullish becomes empty; anything else is JSON-stringified (falling back to
+ * `String`) so the value is never silently dropped from the list.
+ */
+function formatMemoryContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (content == null) return '';
+  try {
+    const json = JSON.stringify(content);
+    return typeof json === 'string' ? json : String(content);
+  } catch {
+    return String(content);
+  }
 }
 
 function Detail({ label, value }: { label: string; value: string }) {

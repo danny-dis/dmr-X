@@ -225,6 +225,26 @@ const defaultSavings = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-mock override bag. Each key maps to a partial plain object merged over
+ * the corresponding mock return value — typed as `Record<string, unknown>`
+ * (not `unknown`) so object spreads are legal under TS2698 while still
+ * accepting the loose partial shapes used by individual tests.
+ */
+interface DashboardMockOverrides {
+  dashboardStats?: Record<string, unknown>;
+  routeDecisions?: Record<string, unknown>;
+  usageHistory?: Record<string, unknown>;
+  providers?: Record<string, unknown>;
+  alerts?: Record<string, unknown>;
+  models?: Record<string, unknown>;
+  liveStore?: Record<string, unknown>;
+  apiKeysQuery?: Record<string, unknown>;
+  agentInstances?: Record<string, unknown>;
+  freeTierSummary?: Record<string, unknown>;
+  savings?: Record<string, unknown>;
+}
+
 function renderDashboard() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -242,7 +262,7 @@ function renderDashboard() {
   );
 }
 
-function setupMocks(overrides: Record<string, unknown> = {}) {
+function setupMocks(overrides: DashboardMockOverrides = {}) {
   mockUseDashboardStats.mockReturnValue({
     data: defaultStats,
     isLoading: false,

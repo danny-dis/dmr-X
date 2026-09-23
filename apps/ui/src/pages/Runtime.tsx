@@ -332,7 +332,7 @@ function InstanceCard({ instance }: { instance: AgentInstanceDetail }) {
 // ── Instance Trace ─────────────────────────────────────────────────────────
 
 function InstanceTrace({ instanceId }: { instanceId: string }) {
-  const executions = useAgentExecisions(instanceId);
+  const executions = useAgentExecutions(instanceId);
   const [selectedExecution, setSelectedExecution] = React.useState<string | null>(null);
 
   return (
@@ -348,9 +348,9 @@ function InstanceTrace({ instanceId }: { instanceId: string }) {
           description: 'Run history appears here once the agent executes.',
         }}
       >
-        {(list) => (
+        {(list: AgentExecution[]) => (
           <div className="space-y-1">
-            {list.slice(0, 5).map((exec) => (
+            {list.slice(0, 5).map((exec: AgentExecution) => (
               <button
                 key={exec.id}
                 type="button"

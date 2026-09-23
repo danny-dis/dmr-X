@@ -79,6 +79,7 @@ export interface ApiProvider {
    * filter the Free Tier page.
    */
   tier?: ProviderTier;
+  consecutiveFailures?: number | null;
   /**
    * Every key attached to this provider. The active row with the
    * highest priority is the one the adapter uses; the rest are
@@ -820,6 +821,45 @@ export interface ApiMcpAggregatedServer {
 
 export interface ApiMcpAggregationConfig {
   servers: ApiMcpAggregatedServer[];
+}
+
+export interface BanditArm {
+  key: string;
+  providerId: string;
+  modelId: string;
+  alpha: number;
+  beta: number;
+  pulls: number;
+  mean: number;
+  totalReward: number;
+  posteriorStdDev: number;
+}
+
+export interface BanditSummary {
+  armCount: number;
+  totalPulls: number;
+  bestArm: { key: string; providerId: string; modelId: string; mean: number; pulls: number } | null;
+  worstArm: { key: string; providerId: string; modelId: string; mean: number; pulls: number } | null;
+}
+
+export type PricingTier = 'free' | 'free_with_limits' | 'paid' | 'subscription_only' | 'unknown';
+
+export interface ModelClassification {
+  providerId: string;
+  modelId: string;
+  pricingTier: PricingTier;
+  inputCostPer1M?: number;
+  outputCostPer1M?: number;
+  hasFreeTier?: boolean;
+  verifiedFree?: boolean;
+  lastVerification?: string | null;
+  source?: string;
+}
+
+export interface ModelClassificationsResponse {
+  total: number;
+  byTier: Record<PricingTier, number>;
+  classifications: ModelClassification[];
 }
 
 export interface ApiMcpConfig {
