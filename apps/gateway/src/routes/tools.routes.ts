@@ -14,6 +14,8 @@ import {
   logger,
 } from '@dmr-x/utils';
 import { writeSSE } from '../lib/sse.js';
+import { canRunHostProcess } from '../lib/host-execution-policy.js';
+import { LOCAL_MODE } from '../middleware/auth.middleware.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -313,6 +315,9 @@ export function registerBuiltinToolHandlers(): void {
   registerToolHandler(
     'execute_code',
     async (args, context) => {
+    if (!canRunHostProcess(LOCAL_MODE, process.env.NODE_ENV === 'production')) {
+      return { error: 'Host-process tools are disabled outside local development mode' };
+    }
     const { language, code, timeoutMs } = args as {
       language?: string;
       code: string;
@@ -1463,6 +1468,9 @@ export function registerCodingToolHandlers(): void {
   // the handler body unchanged.
 
   registerToolHandler('bash', async (args, context) => {
+    if (!canRunHostProcess(LOCAL_MODE, process.env.NODE_ENV === 'production')) {
+      return { error: 'Host-process tools are disabled outside local development mode' };
+    }
     const { command, timeoutMs, cwd } = args as {
       command: string;
       timeoutMs?: number;
