@@ -33,15 +33,15 @@ vi.mock('../../apps/gateway/src/routes/tools.routes.js', async (importOriginal) 
   };
 });
 
-const { initDb, closeDb, getDb } = await import('../../packages/db/src/client.js');
+import { openIsolatedTestDb } from './isolated-db.js';
+
+const { getDb } = await import('../../packages/db/src/client.js');
 const { createInitialState } = await import('../../packages/utils/src/index.js');
 const { runAgentChatLoop } = await import('../../apps/gateway/src/routes/agent-chat-loop.js');
 
-const tmpRoot = process.env.TMPDIR || process.env.TEMP || 'C:\\Users\\pc\\AppData\\Local\\Temp';
 const TENANT = { id: 'tenant-dedupe', name: 'tenant-dedupe' };
 
-let dbPath: string;
-let dataDir: string;
+let testDb: Awaited<ReturnType<typeof openIsolatedTestDb>>;
 
 type Call = { id: string; name: string; args: string };
 
@@ -122,12 +122,7 @@ function resultsOfTurn(result: Awaited<ReturnType<typeof runAgentChatLoop>>, tur
 
 describe('agent-chat-loop: tool call dedupe', () => {
   beforeAll(async () => {
-    dbPath = `${tmpRoot}/dmrx-tool-dedupe-${Date.now()}-${Math.floor(Math.random() * 1e6)}.db`;
-    dataDir = require('node:path').dirname(dbPath);
-    process.env.DMRX_DATA_DIR = dataDir;
-    process.env.DMRX_DB_PATH = dbPath;
-    delete process.env.DMRX_ENCRYPTION_KEY;
-    await initDb();
+    testDb = await openIsolatedTestDb('dmrx-tool-dedupe-');
   });
 
   beforeEach(() => {
@@ -153,21 +148,7 @@ describe('agent-chat-loop: tool call dedupe', () => {
   });
 
   afterAll(async () => {
-    try {
-      await closeDb();
-    } catch {
-      /* ignore */
-    }
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const dbFile = path.join(dataDir, 'data.db');
-    for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`, `${dbFile}.lastgood`, `${dbFile}.enc`]) {
-      try {
-        fs.rmSync(f, { force: true });
-      } catch {
-        /* ignore */
-      }
-    }
+    await testDb.close();
   });
 
   // ------------------------------------------------------------ WITHIN A TURN

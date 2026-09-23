@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
-import { initDb, closeDb, getDb } from '../../packages/db/src/client.js';
+import { getDb } from '../../packages/db/src/client.js';
+import { openIsolatedTestDb } from './isolated-db.js';
 import { createInitialState } from '../../packages/utils/src/index.js';
 import { runAgentChatLoop } from '../../apps/gateway/src/routes/agent-chat-loop.js';
 
@@ -23,11 +24,9 @@ import { runAgentChatLoop } from '../../apps/gateway/src/routes/agent-chat-loop.
  * These fixtures use `''` and `null`, which is what providers actually send.
  */
 
-const tmpRoot = process.env.TMPDIR || process.env.TEMP || 'C:\\Users\\pc\\AppData\\Local\\Temp';
 const TENANT = { id: 'tenant-empty', name: 'tenant-empty' };
 
-let dbPath: string;
-let dataDir: string;
+let testDb: Awaited<ReturnType<typeof openIsolatedTestDb>>;
 
 /** A tool-call turn with EMPTY content — what providers really return. */
 function emptyToolCallResponse(content: string | null = '') {
@@ -99,12 +98,7 @@ function buildLoopArgs(overrides: Partial<LoopArgs> = {}): LoopArgs {
 
 describe('agent-chat-loop: never return an empty reply after tool use', () => {
   beforeAll(async () => {
-    dbPath = `${tmpRoot}/dmrx-empty-reply-${Date.now()}-${Math.floor(Math.random() * 1e6)}.db`;
-    dataDir = require('node:path').dirname(dbPath);
-    process.env.DMRX_DATA_DIR = dataDir;
-    process.env.DMRX_DB_PATH = dbPath;
-    delete process.env.DMRX_ENCRYPTION_KEY;
-    await initDb();
+    testDb = await openIsolatedTestDb('dmrx-empty-reply-');
   });
 
   beforeEach(() => {
@@ -117,21 +111,7 @@ describe('agent-chat-loop: never return an empty reply after tool use', () => {
   });
 
   afterAll(async () => {
-    try {
-      await closeDb();
-    } catch {
-      /* ignore */
-    }
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const dbFile = path.join(dataDir, 'data.db');
-    for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`, `${dbFile}.lastgood`, `${dbFile}.enc`]) {
-      try {
-        fs.rmSync(f, { force: true });
-      } catch {
-        /* ignore */
-      }
-    }
+    await testDb.close();
   });
 
   it('keeps earlier prose when the final turn is an empty tool-call turn', async () => {

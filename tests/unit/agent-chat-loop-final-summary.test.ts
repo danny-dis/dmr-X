@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
-import { initDb, closeDb, getDb } from '../../packages/db/src/client.js';
+import { getDb } from '../../packages/db/src/client.js';
+import { openIsolatedTestDb } from './isolated-db.js';
 import { createInitialState } from '../../packages/utils/src/index.js';
 import { runAgentChatLoop } from '../../apps/gateway/src/routes/agent-chat-loop.js';
 
@@ -25,11 +26,9 @@ import { runAgentChatLoop } from '../../apps/gateway/src/routes/agent-chat-loop.
  * placeholder is only ever a last resort — clearly marked as gateway output.
  */
 
-const tmpRoot = process.env.TMPDIR || process.env.TEMP || 'C:\\Users\\pc\\AppData\\Local\\Temp';
 const TENANT = { id: 'tenant-summary', name: 'tenant-summary' };
 
-let dbPath: string;
-let dataDir: string;
+let testDb: Awaited<ReturnType<typeof openIsolatedTestDb>>;
 
 /** A pure tool-call turn with empty content — what providers really send. */
 function toolCallTurn(id = 'call_1') {
@@ -101,12 +100,7 @@ const PLACEHOLDER_PREFIX = '[dmr-x] No agent output produced';
 
 describe('agent-chat-loop: final summary turn on step limit', () => {
   beforeAll(async () => {
-    dbPath = `${tmpRoot}/dmrx-final-summary-${Date.now()}-${Math.floor(Math.random() * 1e6)}.db`;
-    dataDir = require('node:path').dirname(dbPath);
-    process.env.DMRX_DATA_DIR = dataDir;
-    process.env.DMRX_DB_PATH = dbPath;
-    delete process.env.DMRX_ENCRYPTION_KEY;
-    await initDb();
+    testDb = await openIsolatedTestDb('dmrx-final-summary-');
   });
 
   beforeEach(() => {
@@ -119,21 +113,7 @@ describe('agent-chat-loop: final summary turn on step limit', () => {
   });
 
   afterAll(async () => {
-    try {
-      await closeDb();
-    } catch {
-      /* ignore */
-    }
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const dbFile = path.join(dataDir, 'data.db');
-    for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`, `${dbFile}.lastgood`, `${dbFile}.enc`]) {
-      try {
-        fs.rmSync(f, { force: true });
-      } catch {
-        /* ignore */
-      }
-    }
+    await testDb.close();
   });
 
   it('asks the model for a real answer instead of returning a placeholder', async () => {
