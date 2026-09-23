@@ -5,6 +5,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { Shell } from '@/components/layout';
 import { ErrorBoundary } from '@/components/primitives/ErrorBoundary';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { TooltipProvider } from '@/components/primitives/Tooltip';
 import { queryClient } from '@/lib/queryClient';
 
 // Lazy-load all page components for code splitting
@@ -55,6 +56,9 @@ const ConnectPage = lazy(() => import('@/pages/Connect').then(m => ({ default: m
 const AgentIntegrationsPage = lazy(() => import('@/pages/AgentIntegrations').then(m => ({ default: m.AgentIntegrationsPage })));
 const CostDashboardPage = lazy(() => import('@/pages/CostDashboard').then(m => ({ default: m.CostDashboardPage })));
 const ObservabilityPage = lazy(() => import('@/pages/Observability').then(m => ({ default: m.ObservabilityPage })));
+const RuntimePage = lazy(() => import('@/pages/Runtime').then(m => ({ default: m.RuntimePage })));
+const PerformancePage = lazy(() => import('@/pages/Performance').then(m => ({ default: m.PerformancePage })));
+const HealthPage = lazy(() => import('@/pages/Health').then(m => ({ default: m.HealthPage })));
 
 function PageLoader() {
   return (
@@ -67,6 +71,7 @@ function PageLoader() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
       {/*
         BrowserRouter, not HashRouter: real paths make routes linkable and
         bookmarkable, and the gateway already serves an SPA fallback for
@@ -93,8 +98,13 @@ export default function App() {
                 <Route path="/policies" element={<PoliciesPage />} />
                 <Route path="/fusion" element={<FusionPanelPage />} />
 
-                {/* Monitor */}
+                {/* Observability */}
                 <Route path="/observability" element={<ObservabilityPage />} />
+                <Route path="/performance" element={<PerformancePage />} />
+                <Route path="/health" element={<HealthPage />} />
+
+                {/* Runtime (new) */}
+                <Route path="/runtime" element={<RuntimePage />} />
 
                 {/* Resources — Free Tier and Models are siblings, not tabs */}
                 <Route path="/providers" element={<ProvidersPage />} />
@@ -151,6 +161,7 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       </BrowserRouter>
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }

@@ -133,6 +133,12 @@ export const keys = {
     list: () => [...keys.apiKeys.all, 'list'] as const,
   },
 
+  bandit: {
+    all: ['bandit'] as const,
+    arms: () => [...keys.bandit.all, 'arms'] as const,
+    summary: () => [...keys.bandit.all, 'summary'] as const,
+  },
+
   quota: {
     all: ['quota'] as const,
     byTenant: (tenantId: string) => [...keys.quota.all, tenantId] as const,

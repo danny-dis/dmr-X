@@ -45,6 +45,9 @@ import type {
   ApiMcpAuditConfig,
   ApiMcpFederationConfig,
   ApiMcpA2AConfig,
+  BanditArm,
+  BanditSummary,
+  ModelClassificationsResponse,
 } from '@/types/api';
 
 
@@ -581,8 +584,12 @@ export const Admin = {
     if (opts?.tier) params.set('tier', opts.tier);
     if (opts?.provider_id) params.set('provider_id', opts.provider_id);
     const qs = params.toString();
-    return apiGet<any>(`/admin/models/classifications${qs ? `?${qs}` : ''}`);
+    return apiGet<ModelClassificationsResponse>(`/admin/models/classifications${qs ? `?${qs}` : ''}`);
   },
+
+  // Bandit (router score)
+  listBanditArms: () => apiGet<{ object: string; data: BanditArm[] }>('/admin/bandit/arms').then(r => r.data),
+  getBanditSummary: () => apiGet<BanditSummary>('/admin/bandit/summary'),
   verifyModelFree: (providerId: string, modelId: string) => apiPost<any>('/admin/models/verify-free', { provider_id: providerId, model_id: modelId }),
   getFreeModels: () => apiGet<any>('/admin/models/free'),
 

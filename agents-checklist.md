@@ -2,7 +2,7 @@
 
 | ID | Task | Assigned To | Status | Notes |
 |----|------|-------------|--------|-------|
-| — | — | — | — | — |
+| dmr-x-routing-p0-2026-09-20 | Fix safe P0 routing/candidate-selection faults from live baseline | Jack | 🔄 In Progress | Excludes invalid candidate modalities and improves fallback safety; provider-key policy pending new keys |
 
 ---
 

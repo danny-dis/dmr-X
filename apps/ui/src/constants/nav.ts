@@ -9,6 +9,9 @@ import {
   Terminal,
   TrendingUp,
   Wallet,
+  Activity,
+  BarChart3,
+  HeartPulse,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 
@@ -35,7 +38,7 @@ export interface NavGroup {
 
 export const NAV_GROUPS: NavGroup[] = [
   {
-    label: 'Overview',
+    label: 'Home',
     items: [
       {
         label: 'Dashboard',
@@ -43,6 +46,11 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: SidebarIcons.OverviewIcon,
         description: 'Live overview & KPIs',
       },
+    ],
+  },
+  {
+    label: 'Build',
+    items: [
       {
         label: 'Playground',
         path: '/playground/chat',
@@ -50,83 +58,6 @@ export const NAV_GROUPS: NavGroup[] = [
         description: 'Chat, agents & godmode',
         matches: ['/playground'],
       },
-    ],
-  },
-  {
-    label: 'Traffic',
-    items: [
-      {
-        label: 'Requests',
-        path: '/requests',
-        icon: SidebarIcons.RequestsIcon,
-        description: 'Live request stream',
-      },
-      {
-        label: 'Routing',
-        path: '/routing',
-        icon: SidebarIcons.RoutingIcon,
-        description: 'Decisions & strategies',
-      },
-      {
-        label: 'Fusion Panel',
-        path: '/fusion',
-        icon: Layers,
-        description: 'Multi-model diversity',
-      },
-      {
-        label: 'Policies',
-        path: '/policies',
-        icon: SidebarIcons.PoliciesIcon,
-        description: 'Routing policies & rules',
-      },
-    ],
-  },
-  {
-    label: 'Monitor',
-    items: [
-      {
-        label: 'Observability',
-        path: '/observability',
-        icon: SidebarIcons.ObservabilityIcon,
-        description: 'Metrics & telemetry',
-      },
-    ],
-  },
-  {
-    label: 'Resources',
-    items: [
-      {
-        label: 'Providers',
-        path: '/providers',
-        icon: SidebarIcons.ProvidersIcon,
-        description: 'AI provider catalog',
-      },
-      {
-        // Free and paid are separate surfaces, not tabs of one page: they
-        // answer different questions (what am I saving vs. what am I spending)
-        // and are managed by different flows.
-        label: 'Free Tier',
-        path: '/free-tier',
-        icon: SidebarIcons.FreeTierIcon,
-        description: 'Free models, usage & savings',
-      },
-      {
-        label: 'Models',
-        path: '/models',
-        icon: SidebarIcons.ModelsIcon,
-        description: 'Paid model registry & spend',
-      },
-      {
-        label: 'Tenants',
-        path: '/tenants',
-        icon: SidebarIcons.TenantsIcon,
-        description: 'Tenants & API keys',
-      },
-    ],
-  },
-  {
-    label: 'Agents',
-    items: [
       {
         label: 'Agents',
         path: '/agents',
@@ -135,10 +66,10 @@ export const NAV_GROUPS: NavGroup[] = [
         matches: ['/agents'],
       },
       {
-        label: 'Analytics',
-        path: '/agents/analytics',
-        icon: TrendingUp,
-        description: 'Agent cost & performance',
+        label: 'Runtime',
+        path: '/runtime',
+        icon: Cpu,
+        description: 'Live agent instances & tasks',
       },
       {
         label: 'Jobs',
@@ -146,25 +77,77 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: Briefcase,
         description: 'Multi-agent job board',
       },
+    ],
+  },
+  {
+    label: 'Route',
+    items: [
       {
-        label: 'Marketplace',
-        path: '/marketplace',
-        icon: ShoppingBag,
-        description: 'Community agent marketplace',
+        label: 'Router',
+        path: '/routing',
+        icon: SidebarIcons.RoutingIcon,
+        description: 'Decisions & strategies',
       },
       {
-        label: 'Integrations',
-        path: '/integrations',
-        icon: Terminal,
-        description: 'Claude Code, Codex & Antigravity',
+        label: 'Models',
+        path: '/models',
+        icon: SidebarIcons.ModelsIcon,
+        description: 'Model registry & capabilities',
+      },
+      {
+        label: 'Providers',
+        path: '/providers',
+        icon: SidebarIcons.ProvidersIcon,
+        description: 'AI provider catalog',
+      },
+      {
+        label: 'Policies',
+        path: '/policies',
+        icon: SidebarIcons.PoliciesIcon,
+        description: 'Routing policies & rules',
+      },
+      {
+        label: 'Free Inference',
+        path: '/free-tier',
+        icon: SidebarIcons.FreeTierIcon,
+        description: 'Free models, usage & savings',
       },
     ],
   },
   {
-    label: 'Connectivity',
+    label: 'Observe',
     items: [
       {
-        label: 'MCP Servers',
+        label: 'Requests',
+        path: '/requests',
+        icon: SidebarIcons.RequestsIcon,
+        description: 'Live request stream',
+      },
+      {
+        label: 'Performance',
+        path: '/performance',
+        icon: BarChart3,
+        description: 'Latency & throughput',
+      },
+      {
+        label: 'Costs',
+        path: '/cost',
+        icon: Wallet,
+        description: 'Real-time cost tracking',
+      },
+      {
+        label: 'Health',
+        path: '/health',
+        icon: HeartPulse,
+        description: 'Gateway & provider health',
+      },
+    ],
+  },
+  {
+    label: 'Connect',
+    items: [
+      {
+        label: 'MCP',
         path: '/mcp',
         icon: Plug,
         description: 'Connect & discover MCP servers',
@@ -176,38 +159,16 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: Network,
         description: 'Agent-to-agent protocol',
       },
-    ],
-  },
-  {
-    label: 'Billing',
-    items: [
       {
-        label: 'Billing',
-        path: '/billing',
-        icon: Wallet,
-        description: 'Usage, credits & quotas',
-      },
-      {
-        label: 'Cost Dashboard',
-        path: '/cost',
-        icon: SidebarIcons.UsageIcon,
-        description: 'Real-time cost tracking',
+        label: 'Integrations',
+        path: '/integrations',
+        icon: Terminal,
+        description: 'Claude Code, Codex & more',
       },
     ],
   },
   {
-    label: 'Infrastructure',
-    items: [
-      {
-        label: 'Infrastructure',
-        path: '/infrastructure',
-        icon: Cpu,
-        description: 'Tools, workers & sandbox',
-      },
-    ],
-  },
-  {
-    label: 'Settings',
+    label: 'System',
     items: [
       {
         label: 'Settings',

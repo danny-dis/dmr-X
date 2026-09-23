@@ -59,6 +59,12 @@ export function McpPage() {
         icon={<Plug className="size-5 text-primary" />}
         actions={
           <div className="flex gap-2">
+            <Button variant="ghost" asChild>
+              <Link to="/connect">Connect</Link>
+            </Button>
+            <Button variant="ghost" asChild>
+              <Link to="/a2a">A2A</Link>
+            </Button>
             <Button variant="secondary" asChild>
               <Link to="/mcp/discover">Browse catalog</Link>
             </Button>

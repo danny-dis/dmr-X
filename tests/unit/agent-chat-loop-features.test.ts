@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
-import { initDb, closeDb, getDb } from '../../packages/db/src/client.js';
+import { getDb } from '../../packages/db/src/client.js';
+import { openIsolatedTestDb } from './isolated-db.js';
 import { createInitialState, isStopConditionMet } from '../../packages/utils/src/index.js';
 import { agentSessionStore } from '../../services/agent-runtime/src/agent-session.store.js';
 import type { UnifiedRequest } from '../../packages/core/src/types/request.js';
@@ -17,11 +18,9 @@ import {
  * auth-lookup-hash.test.ts), with a mocked router feeding scripted model turns.
  */
 
-const tmpRoot = process.env.TMPDIR || process.env.TEMP || 'C:\\Users\\pc\\AppData\\Local\\Temp';
 const TENANT = { id: 'tenant-1', name: 'tenant-1' };
 
-let dbPath: string;
-let dataDir: string;
+let testDb: Awaited<ReturnType<typeof openIsolatedTestDb>>;
 
 function unifiedRequest(): UnifiedRequest {
   return {
@@ -105,12 +104,7 @@ function buildLoopArgs(overrides: Partial<LoopArgs> = {}): LoopArgs {
 
 describe('agent-chat-loop feature ports (remediation #13)', () => {
   beforeAll(async () => {
-    dbPath = `${tmpRoot}/dmrx-agent-loop-test-${Date.now()}-${Math.floor(Math.random() * 1e6)}.db`;
-    dataDir = require('node:path').dirname(dbPath);
-    process.env.DMRX_DATA_DIR = dataDir;
-    process.env.DMRX_DB_PATH = dbPath;
-    delete process.env.DMRX_ENCRYPTION_KEY;
-    await initDb();
+    testDb = await openIsolatedTestDb('dmrx-agent-loop-test-');
   });
 
   beforeEach(() => {
@@ -123,21 +117,7 @@ describe('agent-chat-loop feature ports (remediation #13)', () => {
   });
 
   afterAll(async () => {
-    try {
-      await closeDb();
-    } catch {
-      /* ignore */
-    }
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const dbFile = path.join(dataDir, 'data.db');
-    for (const f of [dbFile, `${dbFile}-wal`, `${dbFile}-shm`, `${dbFile}.lastgood`, `${dbFile}.enc`]) {
-      try {
-        fs.rmSync(f, { force: true });
-      } catch {
-        /* ignore */
-      }
-    }
+    await testDb.close();
   });
 
   it('fires onCheckpoint once per completed turn with growing, persisted state', async () => {

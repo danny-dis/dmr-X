@@ -453,7 +453,10 @@ export class AgentRegistryService {
   async createInstance(tenantId: string, input: AgentInstanceCreate): Promise<AgentInstance | null> {
     const db = getDb();
     const definition = await this.getDefinition(input.agentDefinitionId);
-    if (!definition) return null;
+    // Tenant isolation: knowing another tenant's definition UUID must not be
+    // enough to deploy it. Missing and cross-tenant definitions both yield null
+    // so callers can't distinguish them (no existence oracle across tenants).
+    if (!definition || definition.tenantId !== tenantId) return null;
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -948,39 +951,110 @@ export class AgentRegistryService {
   }
 
   async installFromMarketplace(listingId: string, tenantId: string): Promise<{ instance: AgentInstance; listing: AgentListing } | null> {
-    const db = getDb();
     const listing = await this.getListing(listingId);
     if (!listing || listing.status !== 'published') return null;
 
-    // Check if already installed
-    const existing = db.prepare(
-      'SELECT * FROM agent_installs WHERE listing_id = ? AND tenant_id = ?'
-    ).get(listingId, tenantId) as any;
-    if (existing) {
-      const instance = await this.getInstance(existing.agent_instance_id);
-      if (instance) return { instance, listing };
+    const db = getDb();
+    type Outcome =
+      | { kind: 'existing'; instanceId: string }
+      | { kind: 'created'; instanceId: string }
+      | { kind: 'missing' };
+
+    let outcome: Outcome;
+    try {
+      // Atomic cross-tenant install: synchronous statements only, NO await/promise
+      // inside the transaction so concurrent Promise.all installs serialize and
+      // a failed install INSERT rolls back the definition + instance copies.
+      outcome = db.transaction((): Outcome => {
+        const existing = db.prepare(
+          'SELECT agent_instance_id FROM agent_installs WHERE listing_id = ? AND tenant_id = ?'
+        ).get(listingId, tenantId) as any;
+        if (existing) {
+          return { kind: 'existing', instanceId: existing.agent_instance_id };
+        }
+
+        const srcRow = db.prepare(
+          'SELECT id, tenant_id, name FROM agent_definitions WHERE id = ?'
+        ).get(listing.agentDefinitionId) as any;
+        // Missing source: the listing outlived its definition — refuse cleanly.
+        if (!srcRow) return { kind: 'missing' };
+
+        // Same-tenant installs reuse the source; cross-tenant installs copy it
+        // into a PRIVATE definition owned by the installer. Explicit field copy:
+        // never secrets, never IDs/tenant, never the publisher's visibility.
+        let definitionId = srcRow.id as string;
+        if (srcRow.tenant_id !== tenantId) {
+          const rows = db.prepare(
+            'SELECT name FROM agent_definitions WHERE tenant_id = ?'
+          ).all(tenantId) as Array<{ name: string }>;
+          const taken = new Set(rows.map((r) => r.name.toLowerCase()));
+          let candidate = srcRow.name as string;
+          let n = 2;
+          while (taken.has(candidate.toLowerCase())) {
+            candidate = `${srcRow.name} (${n})`;
+            n += 1;
+          }
+          const newDefId = crypto.randomUUID();
+          const nowDef = new Date().toISOString();
+          const inserted = db.prepare(`
+            INSERT INTO agent_definitions (
+              id, tenant_id, name, description, version, system_prompt, personality,
+              preferred_model, model_tier, allowed_tools, custom_tools, workflow, triggers,
+              visibility, tags, category, icon, skills, human_name, skill_nudge_interval,
+              verify_on_stop, plan_mode, history_compaction, godmode_wrap, capabilities,
+              compaction_threshold, compaction_keep_recent, created_at, updated_at
+            )
+            SELECT ?, ?, ?, description, version, system_prompt, personality,
+              preferred_model, model_tier, allowed_tools, custom_tools, workflow, triggers,
+              'private', tags, category, icon, skills, human_name, skill_nudge_interval,
+              verify_on_stop, plan_mode, history_compaction, godmode_wrap, capabilities,
+              compaction_threshold, compaction_keep_recent, ?, ?
+            FROM agent_definitions WHERE id = ?
+          `).run(newDefId, tenantId, candidate, nowDef, nowDef, srcRow.id);
+          if (inserted.changes === 0) return { kind: 'missing' };
+          definitionId = newDefId;
+        }
+
+        // Same fields as createInstance: active status, empty config override.
+        const newInstanceId = crypto.randomUUID();
+        const nowInst = new Date().toISOString();
+        db.prepare(`
+          INSERT INTO agent_instances (id, agent_definition_id, tenant_id, status, config_override, created_at, updated_at)
+          VALUES (?, ?, ?, 'active', '{}', ?, ?)
+        `).run(newInstanceId, definitionId, tenantId, nowInst, nowInst);
+
+        const installId = crypto.randomUUID();
+        db.prepare(`
+          INSERT INTO agent_installs (id, listing_id, tenant_id, agent_instance_id, installed_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(installId, listingId, tenantId, newInstanceId, new Date().toISOString());
+
+        db.prepare('UPDATE agent_listings SET install_count = install_count + 1, updated_at = ? WHERE id = ?')
+          .run(new Date().toISOString(), listingId);
+
+        return { kind: 'created', instanceId: newInstanceId };
+      });
+    } catch (err: any) {
+      // Lost a concurrent race: the winner's install row is already committed.
+      const msg = String(err?.message ?? '');
+      if (msg.includes('UNIQUE constraint failed') && msg.includes('agent_installs')) {
+        const winner = db.prepare(
+          'SELECT agent_instance_id FROM agent_installs WHERE listing_id = ? AND tenant_id = ?'
+        ).get(listingId, tenantId) as any;
+        if (winner) {
+          const instance = await this.getInstance(winner.agent_instance_id);
+          if (instance) {
+            const currentListing = await this.getListing(listingId);
+            return { instance, listing: currentListing! };
+          }
+        }
+      }
+      throw err;
     }
 
-    // Create instance from the listing's definition
-    const instance = await this.createInstance(tenantId, {
-      agentDefinitionId: listing.agentDefinitionId,
-      configOverride: {},
-    });
+    if (outcome.kind === 'missing') return null;
+    const instance = await this.getInstance(outcome.instanceId);
     if (!instance) return null;
-
-    // Record install
-    const installId = crypto.randomUUID();
-    const installDb = getDb();
-    installDb.prepare(`
-      INSERT INTO agent_installs (id, listing_id, tenant_id, agent_instance_id, installed_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(installId, listingId, tenantId, instance.id, new Date().toISOString());
-
-    // Increment install count
-    const installCountDb = getDb();
-    installCountDb.prepare('UPDATE agent_listings SET install_count = install_count + 1, updated_at = ? WHERE id = ?')
-      .run(new Date().toISOString(), listingId);
-
     logger.info({ listingId, tenantId, instanceId: instance.id }, 'Agent installed from marketplace');
     const updatedListing = await this.getListing(listingId);
     return { instance, listing: updatedListing! };

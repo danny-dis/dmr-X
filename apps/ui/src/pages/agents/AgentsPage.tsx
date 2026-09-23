@@ -1,4 +1,4 @@
-import { Bot, MessageSquare, Pause, Play, Plus, Rocket, Trash2, Loader2, Upload } from 'lucide-react';
+import { Bot, Cpu, MessageSquare, Pause, Play, Plus, Rocket, Trash2, Loader2, Upload } from 'lucide-react';
 import * as React from 'react';
 import { Link, useNavigate } from 'react-router';
 
@@ -36,6 +36,7 @@ import {
   type AgentDefinition,
   type AgentInstanceDetail,
 } from '@/lib/queries/agents';
+import { useMcpServers } from '@/lib/queries/mcp';
 
 /**
  * Agent definitions and their deployed instances.
@@ -159,6 +160,7 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
   const deploy = useDeployAgent();
   const remove = useDeleteAgent();
   const setRunning = useSetInstanceRunning();
+  const mcpServers = useMcpServers();
   const [confirmDelete, setConfirmDelete] = React.useState(false);
 
   const active = instances.filter((i) => i.status === 'active');
@@ -211,16 +213,19 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
       </Link>
 
       <div className="mt-3 flex flex-wrap gap-1">
-        {agent.category && (
-          <Badge tone="neutral" variant="outline" size="sm">{agent.category}</Badge>
-        )}
-        <Badge tone="neutral" variant="outline" size="sm">{agent.modelTier}</Badge>
-        {agent.allowedTools.length > 0 && (
-          <Badge tone="neutral" variant="outline" size="sm">
-            {agent.allowedTools.length} tools
-          </Badge>
-        )}
-      </div>
+              {agent.category && (
+                <Badge tone="neutral" variant="outline" size="sm">{agent.category}</Badge>
+              )}
+              <Badge tone="neutral" variant="outline" size="sm">{agent.modelTier}</Badge>
+              {agent.allowedTools.length > 0 && (
+                <Badge tone="neutral" variant="outline" size="sm">
+                  {agent.allowedTools.length} tools
+                </Badge>
+              )}
+              <Badge tone="info" variant="outline" size="sm">
+                {mcpServers.data?.total ?? 0} MCP
+              </Badge>
+            </div>
 
       <div className="mt-3 flex items-center gap-3 text-2xs text-fg-subtle">
         <span>{formatNumber(totalRuns)} runs</span>
@@ -229,34 +234,44 @@ function AgentCard({ agent, instances }: { agent: AgentDefinition; instances: Ag
       </div>
 
       <div className="mt-auto flex items-center gap-1 pt-3">
-        {instances.length === 0 ? (
-          <Button
-            size="sm"
-            leftIcon={<Rocket className="size-3.5" />}
-            loading={deploy.isPending}
-            onClick={() =>
-              deploy.mutate(agent.id, {
-                onSuccess: () =>
-                  toast.success(`${agentLabel} deployed`, { description: 'An instance is now live and ready to chat with.' }),
-                onError: (e) => {
-                  const info = interpretError(e);
-                  toast.error(info.title, { description: info.description });
-                },
-              })
-            }
-          >
-            Deploy
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            variant="secondary"
-            leftIcon={<MessageSquare className="size-3.5" />}
-            onClick={() => navigate(`/playground/agent?instance=${instances[0].id}`)}
-          >
-            Chat
-          </Button>
-        )}
+              {instances.length === 0 ? (
+                <Button
+                  size="sm"
+                  leftIcon={<Rocket className="size-3.5" />}
+                  loading={deploy.isPending}
+                  onClick={() =>
+                    deploy.mutate(agent.id, {
+                      onSuccess: () =>
+                        toast.success(`${agentLabel} deployed`, { description: 'An instance is now live and ready to chat with.' }),
+                      onError: (e) => {
+                        const info = interpretError(e);
+                        toast.error(info.title, { description: info.description });
+                      },
+                    })
+                  }
+                >
+                  Deploy
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    leftIcon={<MessageSquare className="size-3.5" />}
+                    onClick={() => navigate(`/playground/agent?instance=${instances[0].id}`)}
+                  >
+                    Chat
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    leftIcon={<Cpu className="size-3.5" />}
+                    onClick={() => navigate(`/runtime?agent=${agent.id}`)}
+                  >
+                    Runtime
+                  </Button>
+                </>
+              )}
 
         {soleInstance && (
           <Tooltip>

@@ -333,3 +333,264 @@ describe('AgentRegistryService.listSessionSteps', () => {
     expect(steps[0].blockedToolCalls).toEqual(['bash']);
   });
 });
+
+describe('AgentRegistryService.createInstance tenant isolation', () => {
+  it('refuses to deploy another tenant’s private definition and writes no row', async () => {
+    const def = await service.createDefinition('tenant-A', {
+      name: 'tenant-a-secret',
+      visibility: 'private',
+    });
+
+    // Tenant B knows the UUID — that must not be enough to deploy it.
+    const attempt = await service.createInstance('tenant-B', {
+      agentDefinitionId: def.id,
+      configOverride: {},
+    });
+
+    expect(attempt).toBeNull();
+    const rows = getDb()
+      .prepare('SELECT id, tenant_id FROM agent_instances WHERE agent_definition_id = ?')
+      .all(def.id) as Array<{ id: string; tenant_id: string }>;
+    expect(rows).toHaveLength(0);
+  });
+
+  it('returns null when the definition does not exist', async () => {
+    const attempt = await service.createInstance('tenant-B', {
+      agentDefinitionId: crypto.randomUUID(),
+      configOverride: {},
+    });
+
+    expect(attempt).toBeNull();
+  });
+
+  it('still deploys for the owning tenant', async () => {
+    const def = await service.createDefinition('tenant-A', {
+      name: 'tenant-a-own',
+      visibility: 'private',
+    });
+
+    const instance = await service.createInstance('tenant-A', {
+      agentDefinitionId: def.id,
+      configOverride: {},
+    });
+
+    expect(instance).not.toBeNull();
+    expect(instance!.tenantId).toBe('tenant-A');
+    expect(instance!.agentDefinitionId).toBe(def.id);
+  });
+});
+
+describe('AgentRegistryService.installFromMarketplace', () => {
+  /** Publisher-side fixture: definition + published listing under `tenantId`. */
+  async function publishAgent(tenantId: string, name: string) {
+    const source = await service.createDefinition(tenantId, {
+      name,
+      description: `${name} description`,
+      systemPrompt: `DISTINCTIVE_PROMPT_${name}`,
+      personality: 'cheerful',
+      preferredModel: 'gpt-4.1',
+      modelTier: 'premium',
+      allowedTools: ['web_search', 'calculator'],
+      customTools: [{ name: `tool_${name}`, description: `custom tool for ${name}` }],
+      tags: ['fixture', name],
+      category: 'Engineering',
+      icon: 'robot',
+      visibility: 'private',
+    });
+    const listing = await service.createListing(tenantId, {
+      agentDefinitionId: source.id,
+      title: `${name} listing`,
+      description: 'listed by publisher',
+      category: 'Engineering',
+      tags: ['fixture'],
+    });
+    if (!listing) throw new Error('createListing returned null');
+    const published = await service.publishListing(listing.id, tenantId);
+    if (!published) throw new Error('publishListing returned null');
+    return { source, listing: published };
+  }
+
+  it('cross-tenant install succeeds and the instance belongs to the installer', async () => {
+    const { source, listing } = await publishAgent('tenant-A', 'pub-agent');
+
+    const result = await service.installFromMarketplace(listing.id, 'tenant-B');
+
+    expect(result).not.toBeNull();
+    expect(result!.instance.tenantId).toBe('tenant-B');
+    // The strict createInstance check forbids pointing at the publisher's row.
+    expect(result!.instance.agentDefinitionId).not.toBe(source.id);
+  });
+
+  it('copies the definition into tenant B preserving safe functional fields', async () => {
+    const { source, listing } = await publishAgent('tenant-A', 'pub-copy');
+
+    const result = await service.installFromMarketplace(listing.id, 'tenant-B');
+    expect(result).not.toBeNull();
+
+    const copied = await service.getDefinition(result!.instance.agentDefinitionId);
+    expect(copied).not.toBeNull();
+    expect(copied!.tenantId).toBe('tenant-B');
+    expect(copied!.id).not.toBe(source.id);
+
+    // Functional fields survive the copy.
+    expect(copied!.name).toBe(source.name);
+    expect(copied!.description).toBe(source.description);
+    expect(copied!.systemPrompt).toBe(`DISTINCTIVE_PROMPT_pub-copy`);
+    expect(copied!.personality).toBe('cheerful');
+    expect(copied!.preferredModel).toBe('gpt-4.1');
+    expect(copied!.modelTier).toBe('premium');
+    expect(copied!.allowedTools).toEqual(['web_search', 'calculator']);
+    expect(copied!.customTools).toEqual([{ name: 'tool_pub-copy', description: 'custom tool for pub-copy' }]);
+    expect(copied!.tags).toEqual(['fixture', 'pub-copy']);
+    expect(copied!.category).toBe('Engineering');
+    expect(copied!.icon).toBe('robot');
+
+    // The copy must never inherit the publisher's visibility (publishListing
+    // flips the source to 'public'); the installer owns a private definition.
+    const sourceAfter = await service.getDefinition(source.id);
+    expect(sourceAfter!.visibility).toBe('public');
+    expect(copied!.visibility).toBe('private');
+  });
+
+  it('leaves the publisher definition unchanged after a cross-tenant install', async () => {
+    const { source, listing } = await publishAgent('tenant-A', 'pub-source');
+
+    await service.installFromMarketplace(listing.id, 'tenant-B');
+
+    const after = await service.getDefinition(source.id);
+    expect(after).not.toBeNull();
+    expect(after!.tenantId).toBe('tenant-A');
+    expect(after!.name).toBe('pub-source');
+    expect(after!.systemPrompt).toBe('DISTINCTIVE_PROMPT_pub-source');
+    expect(after!.visibility).toBe('public'); // publishListing set it; install must not alter it
+    // No extra instance rows point at the source definition from tenant B.
+    const rows = getDb()
+      .prepare("SELECT id FROM agent_instances WHERE agent_definition_id = ? AND tenant_id = 'tenant-B'")
+      .all(source.id) as Array<{ id: string }>;
+    expect(rows).toHaveLength(0);
+  });
+
+  it('is idempotent for a duplicate cross-tenant install', async () => {
+    const { listing } = await publishAgent('tenant-A', 'pub-dupe');
+
+    const first = await service.installFromMarketplace(listing.id, 'tenant-B');
+    const second = await service.installFromMarketplace(listing.id, 'tenant-B');
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second!.instance.id).toBe(first!.instance.id);
+
+    const installs = getDb()
+      .prepare('SELECT id FROM agent_installs WHERE listing_id = ? AND tenant_id = ?')
+      .all(listing.id, 'tenant-B') as Array<{ id: string }>;
+    expect(installs).toHaveLength(1);
+  });
+
+  it('reuses the source definition for a same-tenant install', async () => {
+    const { source, listing } = await publishAgent('tenant-A', 'pub-same');
+
+    const result = await service.installFromMarketplace(listing.id, 'tenant-A');
+
+    expect(result).not.toBeNull();
+    expect(result!.instance.tenantId).toBe('tenant-A');
+    expect(result!.instance.agentDefinitionId).toBe(source.id);
+  });
+
+  it('returns null when the source definition is missing', async () => {
+    const { source, listing } = await publishAgent('tenant-A', 'pub-gone');
+    getDb().prepare('DELETE FROM agent_definitions WHERE id = ?').run(source.id);
+
+    const result = await service.installFromMarketplace(listing.id, 'tenant-B');
+
+    expect(result).toBeNull();
+  });
+
+  it('assigns a deterministic suffix when the installer already owns the name (case-insensitive)', async () => {
+    const { listing } = await publishAgent('tenant-A', 'collide-name');
+    // Installer already owns a definition with the same name in different case.
+    await service.createDefinition('tenant-B', {
+      name: 'Collide-Name',
+      visibility: 'private',
+    });
+
+    const result = await service.installFromMarketplace(listing.id, 'tenant-B');
+
+    expect(result).not.toBeNull();
+    const copied = await service.getDefinition(result!.instance.agentDefinitionId);
+    expect(copied).not.toBeNull();
+    expect(copied!.tenantId).toBe('tenant-B');
+    // Must not collide (case-insensitive) and must be deterministic suffix.
+    expect(copied!.name.toLowerCase()).not.toBe('collide-name');
+    expect(copied!.name).toMatch(/ \(2\)$/);
+  });
+
+  it('gives distinct suffixed names when two listings share the same source name', async () => {
+    const first = await publishAgent('tenant-A', 'shared-name');
+    const second = await publishAgent('tenant-A', 'shared-name');
+
+    const r1 = await service.installFromMarketplace(first.listing.id, 'tenant-B');
+    const r2 = await service.installFromMarketplace(second.listing.id, 'tenant-B');
+
+    expect(r1).not.toBeNull();
+    expect(r2).not.toBeNull();
+    const d1 = await service.getDefinition(r1!.instance.agentDefinitionId);
+    const d2 = await service.getDefinition(r2!.instance.agentDefinitionId);
+    expect(d1).not.toBeNull();
+    expect(d2).not.toBeNull();
+    expect(d1!.id).not.toBe(d2!.id);
+    // First keeps the base name, second gets a deterministic suffix; never equal case-insensitively.
+    expect(d1!.name).toBe('shared-name');
+    expect(d2!.name.toLowerCase()).not.toBe(d1!.name.toLowerCase());
+    expect(d2!.name).toMatch(/ \(2\)$/);
+  });
+
+  it('rolls back definition and instance copies when the install INSERT fails', async () => {
+    const { listing } = await publishAgent('tenant-A', 'rollback-agent');
+    const db = getDb();
+    const defsBefore = (db.prepare('SELECT COUNT(*) AS c FROM agent_definitions').get() as any).c as number;
+    const instBefore = (db.prepare('SELECT COUNT(*) AS c FROM agent_instances').get() as any).c as number;
+
+    // DB-level fault injection: applies to every connection/wrapper, so it
+    // survives fresh getDb() calls inside the service. The transaction must
+    // roll back the definition + instance copies when this fires.
+    db.prepare(
+      `CREATE TEMP TRIGGER fail_install BEFORE INSERT ON agent_installs BEGIN SELECT RAISE(ABORT, 'injected install INSERT failure'); END;`
+    ).run();
+    try {
+      await expect(service.installFromMarketplace(listing.id, 'tenant-B')).rejects.toThrow(
+        'injected install INSERT failure'
+      );
+    } finally {
+      db.prepare('DROP TRIGGER IF EXISTS fail_install').run();
+    }
+
+    const defsAfter = (db.prepare('SELECT COUNT(*) AS c FROM agent_definitions').get() as any).c as number;
+    const instAfter = (db.prepare('SELECT COUNT(*) AS c FROM agent_instances').get() as any).c as number;
+    expect(defsAfter).toBe(defsBefore);
+    expect(instAfter).toBe(instBefore);
+    const installs = db
+      .prepare('SELECT id FROM agent_installs WHERE listing_id = ? AND tenant_id = ?')
+      .all(listing.id, 'tenant-B') as Array<{ id: string }>;
+    expect(installs).toHaveLength(0);
+  });
+
+  it('is idempotent under concurrent Promise.all for the same listing', async () => {
+    const { listing } = await publishAgent('tenant-A', 'concurrent-agent');
+
+    const [a, b] = await Promise.all([
+      service.installFromMarketplace(listing.id, 'tenant-B'),
+      service.installFromMarketplace(listing.id, 'tenant-B'),
+    ]);
+
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    expect(a!.instance.id).toBe(b!.instance.id);
+
+    const db = getDb();
+    const installs = db
+      .prepare('SELECT id, agent_instance_id FROM agent_installs WHERE listing_id = ? AND tenant_id = ?')
+      .all(listing.id, 'tenant-B') as Array<{ id: string; agent_instance_id: string }>;
+    expect(installs).toHaveLength(1);
+    expect(installs[0].agent_instance_id).toBe(a!.instance.id);
+  });
+});

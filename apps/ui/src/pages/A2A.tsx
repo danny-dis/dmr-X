@@ -1,5 +1,6 @@
 import { AlertTriangle, Ban, Network, RadioTower, Search } from 'lucide-react';
 import * as React from 'react';
+import { Link } from 'react-router';
 
 import { PageContainer, PageHeader } from '@/components/layout';
 import { Badge } from '@/components/primitives/Badge';
@@ -49,12 +50,23 @@ export function A2APage() {
         description="The A2A protocol surface other agents use to discover and task this instance."
         icon={<Network className="size-5 text-primary" />}
         actions={
-          status.isLoading ? null : (
-            <StatusPill
-              status={live ? 'healthy' : enabled ? 'offline' : 'unknown'}
-              label={live ? 'Live' : enabled ? 'Unreachable' : 'Disabled'}
-            />
-          )
+          <div className="flex items-center gap-2">
+            {status.isLoading ? null : (
+              <StatusPill
+                status={live ? 'healthy' : enabled ? 'offline' : 'unknown'}
+                label={live ? 'Live' : enabled ? 'Unreachable' : 'Disabled'}
+              />
+            )}
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/mcp">MCP</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/connect">Connect</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/integrations">Integrations</Link>
+            </Button>
+          </div>
         }
       />
 

@@ -15,14 +15,14 @@ export function Sidebar() {
   const toggle = useUIStore((s) => s.toggleSidebar);
   const location = useLocation();
   const isDesktop = useMediaQuery('(min-width: 1024px)');
-  const expanded = !collapsed && isDesktop;
+  const expanded = !isDesktop || !collapsed;
   const activeItem = findNavItem(location.pathname);
 
   return (
     <aside
       className={cn(
         'h-full shrink-0 flex-col border-r border-border bg-surface-1/60 backdrop-blur transition-[width] duration-200 ease-out flex',
-        collapsed ? 'w-16' : 'w-16 lg:w-60'
+        expanded ? 'w-60' : 'w-16'
       )}
     >
       <div className={cn('flex items-center gap-2.5 border-b border-border', expanded ? 'justify-start px-4 py-4' : 'justify-center px-2 py-4')}>
@@ -50,6 +50,7 @@ export function Sidebar() {
                     key={item.path}
                     to={item.path}
                     end={item.path === '/'}
+                    aria-label={!expanded ? item.label : undefined}
                     className={cn(
                       'group/nav flex items-center gap-2.5 rounded-md transition-all relative text-xs',
                       expanded ? 'h-8 justify-start px-2.5' : 'h-9 justify-center px-2',

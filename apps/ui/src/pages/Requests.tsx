@@ -1,5 +1,6 @@
 import { Workflow, Search, Activity, Download } from 'lucide-react';
 import * as React from 'react';
+import { Link } from 'react-router';
 
 import { TelemetryEventRow } from '@/components/domain/TelemetryEventRow';
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -78,6 +79,18 @@ export function RequestsPage() {
         icon={<Workflow className="size-5" />}
         actions={
           <>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/routing">Routing</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/performance">Performance</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/cost">Costs</Link>
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/health">Health</Link>
+            </Button>
             <Toggle pressed={liveMode} onPressedChange={useUIStore.getState().setLiveMode}>
               <Activity className="size-3" />
               {liveMode ? 'Live' : 'Paused'}

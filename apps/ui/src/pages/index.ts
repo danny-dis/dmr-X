@@ -33,6 +33,9 @@ export { CodexPage } from './Codex';
 export { AntigravityPage } from './Antigravity';
 export { CostDashboardPage } from './CostDashboard';
 export { ObservabilityPage } from './Observability';
+export { RuntimePage } from './Runtime';
+export { PerformancePage } from './Performance';
+export { HealthPage } from './Health';
 
 // Rebuilt surfaces live in their own directories now.
 export { AgentsPage } from './agents/AgentsPage';

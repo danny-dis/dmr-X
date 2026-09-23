@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 
-import { initDb, closeDb, getDb, type DatabaseWrapper } from '../../packages/db/src/client.js';
+import { getDb, type DatabaseWrapper } from '../../packages/db/src/client.js';
+import { openIsolatedTestDb } from './isolated-db.js';
 import { hashApiKey, hashApiKeyWithSalt, verifyApiKey } from '../../packages/utils/src/crypto.js';
 
 /**
@@ -19,17 +20,12 @@ import { hashApiKey, hashApiKeyWithSalt, verifyApiKey } from '../../packages/uti
  */
 
 let db: DatabaseWrapper;
-let dbPath: string;
+let testDb: Awaited<ReturnType<typeof openIsolatedTestDb>>;
 
-const tmpRoot = process.env.TMPDIR || process.env.TEMP || 'C:\\Users\\pc\\AppData\\Local\\Temp';
 
 beforeAll(async () => {
-  dbPath = `${tmpRoot}/dmrx-auth-lookup-test-${Date.now()}-${Math.floor(Math.random() * 1e6)}.db`;
-  process.env.DMRX_DATA_DIR = require('node:path').dirname(dbPath);
-  process.env.DMRX_DB_PATH = dbPath;
-  // Required by initDb for at-rest encryption decisions; absence just skips it.
-  delete process.env.DMRX_ENCRYPTION_KEY;
-  db = await initDb();
+  testDb = await openIsolatedTestDb('dmrx-auth-lookup-test-');
+  db = testDb.db;
 });
 
 beforeEach(async () => {
@@ -46,19 +42,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  try {
-    await closeDb();
-  } catch {
-    /* ignore */
-  }
-  const fs = await import('node:fs');
-  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.pre-migration.*.bak`]) {
-    try {
-      fs.rmSync(f, { force: true });
-    } catch {
-      /* ignore */
-    }
-  }
+  await testDb.close();
 });
 
 describe('migration 064: api_keys.key_lookup_hash', () => {

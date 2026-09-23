@@ -7,6 +7,7 @@ import { CreateModelDialog } from '@/components/domain/CreateModelDialog';
 import { LiveTokenCounter } from '@/components/domain/LiveTokenCounter';
 import { ModelDetailDrawer } from '@/components/domain/ModelDetailDrawer';
 import { PageHeader, PageContainer } from '@/components/layout';
+import { useBanditArms } from '@/lib/queries/bandit';
 import { Badge } from '@/components/primitives/Badge';
 import { Button } from '@/components/primitives/Button';
 import { Card } from '@/components/primitives/Card';
@@ -79,6 +80,10 @@ const AGENTIC_LEVEL_CONFIG: Record<string, { label: string; description: string 
 
 const FREE_TIERS = new Set<PricingTier>(['free', 'free_with_limits']);
 
+export function formatRouterScore(score: { mean: number; pulls: number }): string {
+  return score.pulls > 0 ? (score.mean * 100).toFixed(0) : 'Prior';
+}
+
 const MODEL_TABLE_HEAD = (
   <tr className="border-b border-border">
     <th scope="col" className="text-left py-2 px-3 text-[11px] font-medium text-fg-muted">Model</th>
@@ -86,6 +91,7 @@ const MODEL_TABLE_HEAD = (
     <th scope="col" className="text-left py-2 px-3 text-[11px] font-medium text-fg-muted">Tags</th>
     <th scope="col" className="text-right py-2 px-3 text-[11px] font-medium text-fg-muted">Context</th>
     <th scope="col" className="text-right py-2 px-3 text-[11px] font-medium text-fg-muted">Input / Output ($/1k)</th>
+    <th scope="col" className="text-right py-2 px-3 text-[11px] font-medium text-fg-muted">Router score</th>
     <th scope="col" className="text-left py-2 px-3 text-[11px] font-medium text-fg-muted">Deploy</th>
     <th scope="col" className="w-8 py-2 px-3"><span className="sr-only">Details</span></th>
   </tr>
@@ -93,7 +99,7 @@ const MODEL_TABLE_HEAD = (
 
 /** Matches the loaded table's column shape so the list never reflows when
  * the fetch resolves — a row of skeleton cells, not unrelated stacked bars. */
-const MODELS_TABLE_SKELETON = (
+export const MODELS_TABLE_SKELETON = (
   <div className="overflow-x-auto">
     <table className="w-full text-sm">
       <thead>{MODEL_TABLE_HEAD}</thead>
@@ -105,6 +111,7 @@ const MODELS_TABLE_SKELETON = (
             <td className="py-2.5 px-3"><Skeleton className="h-3 w-24" /></td>
             <td className="py-2.5 px-3"><Skeleton className="h-3 w-12 ml-auto" /></td>
             <td className="py-2.5 px-3"><Skeleton className="h-3 w-20 ml-auto" /></td>
+            <td className="py-2.5 px-3"><Skeleton className="h-3 w-16" /></td>
             <td className="py-2.5 px-3"><Skeleton className="h-3 w-16" /></td>
             <td className="py-2.5 px-3" />
           </tr>
@@ -144,6 +151,24 @@ export function ModelsPage() {
   const models = useModels({ available_only: showUnavailable === 'true' ? 'false' : 'true' });
   const providers = useProviders();
   const classifications = useModelClassifications();
+  const banditArms = useBanditArms();
+
+  // Build a lookup of bandit score by provider_id:model_id
+  const banditScoreMap = React.useMemo(() => {
+    const map = new Map<string, { mean: number; pulls: number }>();
+    for (const arm of banditArms.data ?? []) {
+      map.set(`${arm.providerId}:${arm.modelId}`, { mean: arm.mean, pulls: arm.pulls });
+    }
+    return map;
+  }, [banditArms.data]);
+
+  const getBanditScore = React.useCallback(
+    (m: ApiModel) => {
+      const modelId = m.model_id ?? m.modelId ?? '';
+      return banditScoreMap.get(`${m.provider_id}:${modelId}`);
+    },
+    [banditScoreMap],
+  );
 
   // Build a lookup of provider key status
   const providerKeyStatus = React.useMemo(() => {
@@ -529,6 +554,18 @@ export function ModelsPage() {
                         </td>
                         <td className="py-2.5 px-3 text-right font-mono tabular-nums text-fg">
                           ${m.input_cost_per_1k?.toFixed(3) ?? '—'} / ${m.output_cost_per_1k?.toFixed(3) ?? '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          {(() => {
+                            const score = getBanditScore(m);
+                            if (!score) return <span className="text-fg-muted">—</span>;
+                            return (
+                              <div className="flex items-center justify-end gap-1">
+                                <span className="font-mono tabular-nums text-fg" title={score.pulls > 0 ? 'Observed routing score' : 'Prior; no routing observations'}>{formatRouterScore(score)}</span>
+                                <span className="text-[9px] text-fg-muted">({score.pulls})</span>
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="py-2.5 px-3 text-fg-muted">{m.deployment ?? 'cloud'}</td>
                         <td className="py-2.5 px-3">
