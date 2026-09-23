@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { resolve } from 'node:path';
 import {
   FreeProviderCatalog,
@@ -466,6 +466,18 @@ describe('FreeProviderCatalog — getFreeProviders', () => {
 });
 
 describe('FreeProviderCatalog — seed data integration', () => {
+  // The seed file's sourceVerifiedAt is a fixed date (2026-09-06) while
+  // DEFAULT_POLICY.maxAgeMs is 7 days, so real-clock runs age the seeds out
+  // and eligibility silently flips to 0. Pin the clock to the seed date so
+  // these integration tests are deterministic (time-bomb regression).
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-06T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('loads all 8 seed providers', () => {
     const catalog = new FreeProviderCatalog();
     const count = catalog.loadCatalog(SEED_FILE);
