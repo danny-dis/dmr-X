@@ -1,0 +1,178 @@
+[
+  {
+    "providerId": "gemini",
+    "modelId": "gemini-2.0-flash",
+    "endpoint": "https://generativelanguage.googleapis.com",
+    "plan": "free",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "rpm": 1500,
+      "rpd": 1500,
+      "input_tpm": 1000000
+    },
+    "quotaDimensions": ["requests", "input_tokens"],
+    "scope": "project",
+    "resetSemantics": "fixed_window",
+    "sourceUrls": [
+      "https://ai.google.dev/gemini-api/docs/rate-limits",
+      "https://ai.google.dev/gemini-api/docs/pricing"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.85,
+    "status": "active"
+  },
+  {
+    "providerId": "groq",
+    "modelId": "llama-3.1-70b-versatile",
+    "endpoint": "https://api.groq.com/openai/v1",
+    "plan": "free",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "rpm": 30,
+      "rpd": 14400,
+      "tpm": 131072,
+      "tpd": 131072
+    },
+    "quotaDimensions": ["requests", "input_tokens", "output_tokens"],
+    "scope": "key",
+    "resetSemantics": "fixed_window",
+    "sourceUrls": [
+      "https://console.groq.com/docs/rate-limits"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.9,
+    "status": "active"
+  },
+  {
+    "providerId": "cerebras",
+    "modelId": "gpt-oss-120b",
+    "endpoint": "https://api.cerebras.ai/v1",
+    "plan": "free",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "rpm": 30,
+      "rph": 900,
+      "rpd": 14400,
+      "tpm": 64000,
+      "tpd": 1000000
+    },
+    "quotaDimensions": ["requests", "input_tokens", "output_tokens"],
+    "scope": "organization",
+    "resetSemantics": "token_bucket",
+    "sourceUrls": [
+      "https://inference-docs.cerebras.ai/support/rate-limits",
+      "https://inference-docs.cerebras.ai/support/pricing"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.8,
+    "status": "active"
+  },
+  {
+    "providerId": "sambanova",
+    "modelId": "Meta-Llama-3.1-70B-Instruct",
+    "endpoint": "https://fast-api.snova.ai/v1",
+    "plan": "free",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "rpm": 20,
+      "rpd": 20,
+      "tpd": 200000
+    },
+    "quotaDimensions": ["requests", "input_tokens", "output_tokens"],
+    "scope": "key",
+    "resetSemantics": "fixed_window",
+    "sourceUrls": [
+      "https://docs.sambanova.ai/docs/en/models/rate-limits"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.75,
+    "status": "active"
+  },
+  {
+    "providerId": "openrouter",
+    "modelId": "meta-llama/llama-3.1-70b-instruct:free",
+    "endpoint": "https://openrouter.ai/api/v1",
+    "plan": "free",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "rpm": 20,
+      "rpd": 50
+    },
+    "quotaDimensions": ["requests"],
+    "scope": "account",
+    "resetSemantics": "fixed_window",
+    "sourceUrls": [
+      "https://openrouter.zendesk.com/hc/en-us/articles/39501163636379-OpenRouter-Rate-Limits-What-You-Need-to-Know",
+      "https://openrouter.ai/blog/tutorials/free-llm-apis-compared/"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.7,
+    "status": "active"
+  },
+  {
+    "providerId": "cloudflare",
+    "modelId": "@cf/meta/llama-3.1-70b-instruct",
+    "endpoint": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run",
+    "plan": "workers_free",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "neurons_per_day": 10000
+    },
+    "quotaDimensions": ["neurons"],
+    "scope": "account",
+    "resetSemantics": "fixed_window",
+    "sourceUrls": [
+      "https://developers.cloudflare.com/workers-ai/platform/pricing/"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.8,
+    "status": "active"
+  },
+  {
+    "providerId": "huggingface",
+    "modelId": "meta-llama/Llama-3.1-70B-Instruct",
+    "endpoint": "https://api-inference.huggingface.co/models/{model_id}",
+    "plan": "free_user",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "monthly_credits_usd": 0.10
+    },
+    "quotaDimensions": ["credits"],
+    "scope": "account",
+    "resetSemantics": "fixed_window",
+    "sourceUrls": [
+      "https://huggingface.co/docs/inference-providers/en/pricing"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.6,
+    "status": "active"
+  },
+  {
+    "providerId": "nvidia",
+    "modelId": "meta/llama-3.1-70b-instruct",
+    "endpoint": "https://integrate.api.nvidia.com/v1",
+    "plan": "free_developer",
+    "freeEligibility": "free_with_limits",
+    "publishedLimits": {
+      "rpm": 40,
+      "concurrency": 5
+    },
+    "quotaDimensions": ["requests", "concurrency"],
+    "scope": "account",
+    "resetSemantics": "fixed_window",
+    "sourceUrls": [
+      "https://docs.api.nvidia.com/nim/reference/limits"
+    ],
+    "sourceVerifiedAt": "2026-09-06",
+    "catalogRevision": 1,
+    "confidence": 0.5,
+    "status": "active"
+  }
+]

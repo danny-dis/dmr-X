@@ -123,6 +123,7 @@ function isProviderOverloadedError(error: unknown): boolean {
   return false;
 }
 
+
 function isModelNotFoundError(error: unknown): boolean {
   if (!(error instanceof ProviderError)) {
     // Some adapters surface model-not-found as a plain Error/NotFoundError
@@ -279,6 +280,23 @@ function classifyError(error: unknown): 'rate_limit' | 'context_window' | 'conte
   if (isProviderOverloadedError(error)) return 'provider_overloaded';
   if (isInsufficientQuotaError(error)) return 'insufficient_quota';
   return 'error';
+}
+
+/**
+ * Extract Retry-After header value in milliseconds from a ProviderError.
+ * Returns null if no valid Retry-After header is present.
+ */
+export function extractRetryAfterMs(error: unknown): number | null {
+  if (!(error instanceof ProviderError)) return null;
+  const headers = error.headers;
+  if (!headers) return null;
+  const retryAfter = headers['retry-after'] ?? headers['Retry-After'];
+  if (!retryAfter) return null;
+  const seconds = parseInt(retryAfter, 10);
+  if (!isNaN(seconds)) return seconds * 1000;
+  const date = new Date(retryAfter);
+  if (!isNaN(date.getTime())) return date.getTime() - Date.now();
+  return null;
 }
 
 function trackModelError(providerId: string, modelId: string, category: string): void {
@@ -616,6 +634,8 @@ export async function executeWithFallback(
 
   // Classify the primary error for smart fallback selection
   const errorCategory = classifyError(primaryErrorRaw);
+  // Extract Retry-After from the primary error to honor provider's cooldown
+  const retryAfterMs = extractRetryAfterMs(primaryErrorRaw);
   // Track model-level errors so we skip them on subsequent attempts.
   // Previously only model_not_found / auth_error were tracked; a provider
   // returning a generic transient error (5xx, timeout, connection reset — e.g.
@@ -743,7 +763,7 @@ export async function executeWithFallback(
     }
   }
 
-  for (const step of deduplicated) {
+  for (const [index, step] of deduplicated.entries()) {
     try {
       // Skip models on error cooldown (deprecated, auth errors, etc.)
       if (isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)) {
@@ -772,8 +792,15 @@ export async function executeWithFallback(
         }
       }
 
-      if (step.waitMs && step.waitMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, step.waitMs));
+      // Honor Retry-After from the primary error: if the primary returned 429,
+      // wait the provider's requested cooldown before trying the next fallback.
+      // This gives the provider's quota window time to reset.
+      const stepWaitMs = step.waitMs ?? 0;
+      const waitWithRetryAfter = retryAfterMs && index === 0
+        ? Math.max(stepWaitMs, retryAfterMs)
+        : stepWaitMs;
+      if (waitWithRetryAfter > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitWithRetryAfter));
       }
 
       // Check quota before executing fallback
