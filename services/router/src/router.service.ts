@@ -17,7 +17,7 @@ import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { executeWithFallback, executeWithHedging, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
-import { isMetaModel, resolveMetaModel } from './meta-models.js';
+import { getMetaModel, isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
 import { runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
@@ -137,14 +137,15 @@ export class Router {
     this.candidates = candidates;
   }
 
-  /**
-   * Return the current candidate set. Used by the streaming chat route to
-   * force-inject healthy fallbacks when a meta-model selection yields an empty
-   * fallback chain — guarantees a failed primary always has somewhere to fall
-   * back to before any token reaches the client (DMR-X smooth-flow contract).
-   */
+  /** Candidate pool used for unconstrained streaming fallback. */
   getCandidates(): CandidateSet {
     return this.candidates;
+  }
+
+  getEffectiveCostFilter(model: string, override?: 'free' | 'all'): 'free' | 'all' {
+    const alias = getMetaModel(this.parseModelTarget(model).modelId);
+    if (alias?.costFilter === 'free') return 'free';
+    return override ?? this.config.metaModelCostFilter ?? alias?.costFilter ?? 'all';
   }
 
   getCandidateCount(): number {
@@ -376,6 +377,9 @@ export class Router {
     // point of stickiness for those.
     const stickyPrefs = request.metadata?.providerPreferences;
     const hasHardProviderConstraint = !!(stickyPrefs?.zdr || stickyPrefs?.only?.length || stickyPrefs?.ignore?.length);
+    const stickyCostFilter = (request as any).metadata?.costFilter ?? this.config.metaModelCostFilter;
+    const hasHardCostConstraint = !!(modelTarget.modelId && isMetaModel(modelTarget.modelId) &&
+      (stickyCostFilter === 'free' || getMetaModel(modelTarget.modelId)?.costFilter === 'free'));
 
     // Reusable pipeline result from sticky handler — when the planner decides
     // SWITCH, it returns the pipeline result it already computed so the caller
@@ -387,7 +391,7 @@ export class Router {
     // and the pipeline to avoid redundant message iteration
     const estimatedTokens = this.estimateTokens(request);
 
-    if (conversationHash && !modelTarget.providerName && !hasHardProviderConstraint) {
+    if (conversationHash && !modelTarget.providerName && !hasHardProviderConstraint && !hasHardCostConstraint) {
       const stickyResult = await handleStickySession({
         request, options, candidates: this.candidates,
         adapterExecutor: this.adapterExecutor, config: this.config,
@@ -963,12 +967,13 @@ export class Router {
       // non-decomposed pass. Build one plan whose primary + chain span the
       // composite's own healthy candidates AND auto-agentic's candidates (which
       // we know route to a single large-context model that succeeds on large
-      // prompts). Use cost filter 'all' for the agentic tier so we don't exclude
-      // its working candidates just because the original request was restricted
-      // to free models. A populated chain lets executeWithFallback survive a
-      // single provider 429 instead of giving up after the primary.
+      // prompts). Preserve a free-only request across this fallback; otherwise
+      // the agentic tier can append paid providers to an executable chain.
       const fallbackCandidatePools: ProviderModel[][] = [compositeCandidates];
-      const agenticResolution = resolveMetaModel('auto-agentic', this.candidates, 'all');
+      const agenticCostFilter = compositeCostFilterOverride === 'free' ||
+        getMetaModel(compositeModelTarget.modelId ?? '')?.costFilter === 'free'
+        ? 'free' : 'all';
+      const agenticResolution = resolveMetaModel('auto-agentic', compositeScoped, agenticCostFilter);
       if (agenticResolution && agenticResolution.resolved.length > 0) {
         fallbackCandidatePools.push(agenticResolution.resolved);
       }
