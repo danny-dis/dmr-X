@@ -5,6 +5,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { Shell } from '@/components/layout';
 import { ErrorBoundary } from '@/components/primitives/ErrorBoundary';
 import { Skeleton } from '@/components/primitives/Skeleton';
+import { TooltipProvider } from '@/components/primitives/Tooltip';
 import { queryClient } from '@/lib/queryClient';
 
 // Lazy-load all page components for code splitting
@@ -70,6 +71,7 @@ function PageLoader() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
       {/*
         BrowserRouter, not HashRouter: real paths make routes linkable and
         bookmarkable, and the gateway already serves an SPA fallback for
@@ -159,6 +161,7 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       </BrowserRouter>
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }
