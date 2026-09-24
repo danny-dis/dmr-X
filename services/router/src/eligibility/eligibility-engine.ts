@@ -60,6 +60,8 @@ export class EligibilityEngine {
       }
     }
 
+    // Defense-in-depth: strip any paid-tier candidates that slipped through
+    // (e.g. catalog said free but pricingTier is paid). Fires violation callback.
     if (this.config.freeOnly) {
       for (let i = eligible.length - 1; i >= 0; i--) {
         if ((eligible[i] as ProviderModel).pricingTier === 'paid') {
@@ -89,6 +91,7 @@ export class EligibilityEngine {
   private checkCandidate(candidate: ProviderModel): string | null {
     if (!this.config.freeOnly) return null;
 
+    // Catalog is authoritative when attached.
     if (this.catalog) {
       let verdict: { eligible: boolean; reason: string };
       try {
@@ -102,6 +105,7 @@ export class EligibilityEngine {
       if (!verdict.eligible) {
         return `Free-provider catalog rejects ${candidate.providerId}/${candidate.modelId}: ${verdict.reason}`;
       }
+      // Catalog says free — but paid pricingTier still vetoes (both must agree).
       if (candidate.pricingTier === 'paid') {
         return 'Candidate is paid-tier; free_only requires free eligibility';
       }
@@ -110,17 +114,33 @@ export class EligibilityEngine {
 
     const tier = candidate.pricingTier;
     const hasFreeMetadata = candidate.freeTierMetadata != null;
-    const hasZeroCost = (candidate.costPerInputToken ?? 0) === 0 && (candidate.costPerOutputToken ?? 0) === 0;
+    const hasZeroCost = (candidate.costPerInputToken ?? 0) === 0 &&
+                        (candidate.costPerOutputToken ?? 0) === 0;
 
-    if (tier === 'free') return null;
-    if (tier === 'paid') return 'Candidate is paid-tier; free_only requires free eligibility';
-    if (hasFreeMetadata && !this.config.strictFree) return null;
-    if (hasZeroCost) return null;
-
-    if (this.config.strictFree) {
-      return 'Candidate free eligibility unknown; strictFree requires known free status';
+    // Explicitly paid
+    if (tier === 'paid') {
+      return 'Candidate is paid-tier; free_only requires free eligibility';
     }
 
-    return 'Candidate is paid-tier; free_only requires free eligibility';
+    // Explicitly free or has free metadata
+    if (tier === 'free' || tier === 'free_with_limits' || hasFreeMetadata) {
+      // Under strictFree, unknown tier with only metadata is not enough
+      if (this.config.strictFree && !tier) {
+        return 'Candidate free eligibility unknown; strictFree requires explicit free tier';
+      }
+      return null;
+    }
+
+    // Zero cost but no explicit tier
+    if (hasZeroCost && !this.config.strictFree) {
+      return null;
+    }
+
+    // Unknown eligibility under strictFree
+    if (this.config.strictFree && !tier && !hasFreeMetadata) {
+      return 'Candidate has unknown free eligibility; strictFree requires explicit free tier';
+    }
+
+    return null;
   }
 }
