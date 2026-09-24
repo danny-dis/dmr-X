@@ -547,7 +547,7 @@ function buildFallbackChain(
 /**
  * Filter candidates based on provider preferences (only/ignore lists, max price, quantization, ZDR).
  */
-function applyProviderPreferences(
+export function applyProviderPreferences(
   candidates: CandidateSet,
   prefs: ProviderPreferences,
 ): CandidateSet {
