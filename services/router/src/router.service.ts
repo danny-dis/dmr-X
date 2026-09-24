@@ -20,7 +20,7 @@ import { HandoverSummarizer, type SummarizationExecutor } from './handover/hando
 import { getMetaModel, isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
-import { runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
+import { applyProviderPreferences, runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
 import { hashConversation, setStickyProvider } from './sticky/sticky-session.js';
 import { handleStickySession } from './sticky-session-handler.js';
 
@@ -480,14 +480,23 @@ export class Router {
     // of which branch was taken.
     const directSelection = tracer.startActiveSpan('router.select_candidates', (span) => {
       try {
-        span.setAttribute('router.candidate_pool_size', pipelineCandidates.length);
+        const directCandidates = hasHardProviderConstraint
+          ? applyProviderPreferences(pipelineCandidates, stickyPrefs!)
+          : pipelineCandidates;
+        span.setAttribute('router.candidate_pool_size', directCandidates.length);
         span.setAttribute('router.is_meta_model', modelTarget.modelId ? isMetaModel(modelTarget.modelId) : false);
         if (modelTarget.modelId && !isMetaModel(modelTarget.modelId)) {
-          // pipelineCandidates is already scoped to the pinned provider (if any),
-          // so this exact-match is naturally constrained to that provider.
-          const directMatches = pipelineCandidates.filter(
+          // Direct-model selection must enforce the same hard provider constraints
+          // as the scored pipeline, including every fallback serving this model.
+          const directMatches = directCandidates.filter(
             (c) => c.modelId === modelTarget.modelId && c.isHealthy
           );
+          if (directMatches.length === 0 && hasHardProviderConstraint &&
+              pipelineCandidates.some(c => c.modelId === modelTarget.modelId && c.isHealthy)) {
+            throw new ProviderUnavailableError(
+              pipelineCandidates.map(c => `${c.providerId}/${c.modelId}`), 0,
+            );
+          }
           const directMatch = directMatches[0];
           if (directMatch) {
             span.setAttribute('router.selection', 'direct_model');
@@ -524,9 +533,15 @@ export class Router {
         }
         const providerPreferences: ProviderPreferences | undefined = request.metadata?.providerPreferences;
         if (providerPreferences?.strategy === 'direct' && providerPreferences.order?.length) {
-          const directCandidate = pipelineCandidates.find(
+          const directCandidate = directCandidates.find(
             (c) => c.providerId === providerPreferences.order![0] && c.isHealthy
           );
+          if (!directCandidate && hasHardProviderConstraint &&
+              pipelineCandidates.some(c => c.providerId === providerPreferences.order![0] && c.isHealthy)) {
+            throw new ProviderUnavailableError(
+              pipelineCandidates.map(c => `${c.providerId}/${c.modelId}`), 0,
+            );
+          }
           if (directCandidate) {
             span.setAttribute('router.selection', 'direct_strategy');
             span.setAttribute('router.selected_provider', directCandidate.providerId);
