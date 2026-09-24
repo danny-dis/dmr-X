@@ -1,67 +1,46 @@
-# Issue #15 — Architecture Completion Backlog
+# Issue #16 — Free Inference Control Plane Implementation
 
-You are in the `dmrx-issue15-architecture` worktree on branch `fix/issue15-architecture-closeout`. Base: `268394b`.
+You are in the `dmrx-issue16-free-inference` worktree on branch `fix/issue16-free-inference-impl`. Base: `268394b`.
 
 ## Context
 
-DMR-X has infrastructure across routing, quota (~4800 lines in `services/quota/src/`), adapters, MCP, A2A, and agent runtime. The quota package is being worked on by another session — DO NOT modify it.
+The quota package at `services/quota/src/` has ~4800 lines:
+- `capacity-manager.ts` (395) — atomic reservation engine, InMemoryCapacityStore
+- `capacity-store-distributed.ts` (303) — distributed store
+- `dynamic-limits.ts` (408) — header parsing, quota status
+- `free-provider-catalog.ts` (448) — catalog with eligibility/confidence
+- `provider-adapters.ts` (779) — adapter layer
+- `quota.service.ts` (369) — candidate filtering + usage
+- `quota-dimensions.ts`, `quota-vector.ts`, `rate-limit.service.ts`, `rate-limit-tracker.ts`
 
-## Task
+## Tasks
 
-1. **Explore first.** Map which checklist items below are implemented and which need work.
-2. Implement missing items with tests.
-3. Verify existing items have tests.
-4. Run `bun test` to confirm no regressions.
-5. Commit incrementally.
+### 1. Wire atomic reserve→dispatch→reconcile into quota.service.ts
+Read `services/quota/src/quota.service.ts` lines 35-76 (filterByQuota) and 168-200 (usage recording). Replace read-then-check with atomic reservation: call `tryReserve()` before dispatch, `commit()` + `release()` after. Use `capacity-manager.ts` exports.
 
-## Checklist
+### 2. Fix fail-closed in dynamic-limits.ts
+Read `services/quota/src/dynamic-limits.ts` lines 34-44. `calculateQuotaStatus()` defaults unknown to 100% available — unsafe for `free_only`. Add `failClosed: boolean` param. When true, unknown/stale → `isExhausted=true`.
 
-### P0 — Routing
-- Capability ontology and model capability profiles (`packages/core/src/`)
-- Request Requirement Vector
-- Declarative routing policy engine (`services/routing/` or `packages/routing/`)
-- Routing Decision Trace (traceable reasoning)
-- Provider/model reliability distributions
-- Privacy/PII-aware routing with fail-closed constraints
+### 3. Add multi-instance stampede tests
+Create `tests/capacity-stampede.test.ts`. Verify two concurrent `InMemoryCapacityStore` instances (simulating two gateways) cannot both reserve the same quota. The store's `tryReserve` must be atomic — only one succeeds.
 
-### P0 — Economics
-- Budget reservation/reconciliation (`billing/`, `budget` services)
-- Free-tier allocator (integration with quota service)
-- Free-only/free-first/cheapest-acceptable objectives
-- Quality-per-dollar objective
-- Coding-agent integration test matrix
+### 4. Verify provider adapters reconcile quota
+Read `services/quota/src/provider-adapters.ts`. After each adapter's response handling, verify it calls `recordUsage()` or equivalent. Add if missing.
 
-### P1 — Agent Runtime
-- Formal lifecycle manager
-- Ephemeral agents with TTL/budgets
-- Container/microVM isolation
-- Checkpoint/resume/leases/idempotency
-- Resource-aware scheduling
-- Versioned skill promotion
-- Portable agent packages
+### 5. Add retry classifier
+Create or update a service that classifies 429s by dimension (RPM/TPM/RPD/TPD), honors `Retry-After` headers, and bounds retry budgets.
 
-### P1 — MCP (2026-07-28 compatibility)
-- `packages/mcp/` or `services/mcp/`
-- Stateless remote operation validation
-- Capability-aware tool discovery
-- Tool identity/provenance/side-effect metadata
-- Upstream health/circuit breakers
+### 6. Add free-only guard
+Ensure `free_only` mode makes it impossible to select a paid model. The `free-provider-catalog` eligibility check must be authoritative. Add a test that verifies zero paid selections under `free_only`.
 
-### P1 — A2A (v1.x conformance)
-- `packages/a2a/` or `services/a2a/`
-- Agent identity/authz
-- Idempotency/replay protection
-- Distributed task ownership
-- Artifact store/integrity
-- End-to-end tracing
+### 7. Add metrics counters
+Add counters for: reservations attempted/succeeded/failed, 429s avoided, Retry-After honors, free-only violations (must be zero). Use simple in-memory counters or the existing metrics system.
 
-### P2 — Scale
-- Semantic cache with tenant/privacy boundaries
-- Adaptive concurrency
-- Multi-instance consistency
-- Chaos/load/failure testing
-- Automated model/provider discovery
+### 8. Streaming replay safety
+Ensure streaming failures don't replay as duplicate generations. Check for idempotency keys in stream request paths. Add if missing.
 
-## Boundary rules
-- DMR-X stays independent. No ATHENA/SMS dependencies.
-- Do NOT modify `services/quota/src/` — parallel session owns that.
+## Commands
+
+- Run tests: `bun test services/quota/`
+- Add tests in `tests/` directory
+- Commit incrementally with descriptive messages

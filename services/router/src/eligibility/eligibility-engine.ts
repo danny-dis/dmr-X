@@ -7,6 +7,14 @@ export interface EligibilityConfig {
   minConfidence?: number;
 }
 
+export interface FreeEligibilityCatalog {
+  checkEligibility(
+    providerId: string,
+    modelId: string,
+    policy?: { strictFree?: boolean; minConfidence?: number },
+  ): { eligible: boolean; reason: string };
+}
+
 export interface RejectionReason {
   providerId: string;
   modelId: string;
@@ -19,7 +27,21 @@ export interface EligibilityResult {
 }
 
 export class EligibilityEngine {
-  constructor(private config: EligibilityConfig) {}
+  private catalog: FreeEligibilityCatalog | null = null;
+  private onViolation?: (count: number) => void;
+
+  constructor(
+    private config: EligibilityConfig,
+    catalog?: FreeEligibilityCatalog,
+    onViolation?: (count: number) => void,
+  ) {
+    if (catalog) this.catalog = catalog;
+    if (onViolation) this.onViolation = onViolation;
+  }
+
+  setCatalog(catalog: FreeEligibilityCatalog | null): void {
+    this.catalog = catalog;
+  }
 
   filter(candidates: CandidateSet): EligibilityResult {
     const eligible: CandidateSet = [];
@@ -38,11 +60,57 @@ export class EligibilityEngine {
       }
     }
 
+    // Defense-in-depth: strip any paid-tier candidates that slipped through
+    // (e.g. catalog said free but pricingTier is paid). Fires violation callback.
+    if (this.config.freeOnly) {
+      for (let i = eligible.length - 1; i >= 0; i--) {
+        if ((eligible[i] as ProviderModel).pricingTier === 'paid') {
+          const leaked = eligible.splice(i, 1) as ProviderModel[];
+          rejected.push({
+            providerId: leaked[0].providerId,
+            modelId: leaked[0].modelId,
+            reason: 'Free-only violation blocked: paid-tier candidate reached eligible set',
+          });
+          try {
+            this.onViolation?.(1);
+          } catch {
+            // Metrics must never break routing.
+          }
+        }
+      }
+    }
+
     return { eligible, rejected };
+  }
+
+  assertNoPaidLeakage(eligible: CandidateSet): number {
+    if (!this.config.freeOnly) return 0;
+    return eligible.filter((c) => (c as ProviderModel).pricingTier === 'paid').length;
   }
 
   private checkCandidate(candidate: ProviderModel): string | null {
     if (!this.config.freeOnly) return null;
+
+    // Catalog is authoritative when attached.
+    if (this.catalog) {
+      let verdict: { eligible: boolean; reason: string };
+      try {
+        verdict = this.catalog.checkEligibility(candidate.providerId, candidate.modelId, {
+          strictFree: this.config.strictFree,
+          minConfidence: this.config.minConfidence,
+        });
+      } catch {
+        return 'Free-provider catalog unavailable; failing closed for free_only';
+      }
+      if (!verdict.eligible) {
+        return `Free-provider catalog rejects ${candidate.providerId}/${candidate.modelId}: ${verdict.reason}`;
+      }
+      // Catalog says free — but paid pricingTier still vetoes (both must agree).
+      if (candidate.pricingTier === 'paid') {
+        return 'Candidate is paid-tier; free_only requires free eligibility';
+      }
+      return null;
+    }
 
     const tier = candidate.pricingTier;
     const hasFreeMetadata = candidate.freeTierMetadata != null;
@@ -54,8 +122,12 @@ export class EligibilityEngine {
       return 'Candidate is paid-tier; free_only requires free eligibility';
     }
 
-    // Explicitly free
+    // Explicitly free or has free metadata
     if (tier === 'free' || tier === 'free_with_limits' || hasFreeMetadata) {
+      // Under strictFree, unknown tier with only metadata is not enough
+      if (this.config.strictFree && !tier) {
+        return 'Candidate free eligibility unknown; strictFree requires explicit free tier';
+      }
       return null;
     }
 
@@ -64,7 +136,7 @@ export class EligibilityEngine {
       return null;
     }
 
-    // Unknown eligibility
+    // Unknown eligibility under strictFree
     if (this.config.strictFree && !tier && !hasFreeMetadata) {
       return 'Candidate has unknown free eligibility; strictFree requires explicit free tier';
     }
