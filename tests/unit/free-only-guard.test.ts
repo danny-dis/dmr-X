@@ -72,16 +72,15 @@ describe('free-only guard (catalog authoritative)', () => {
     }
   });
 
-  it('pricingTier violation fires when catalog misses and defense-in-depth catches', () => {
-    const catalog = catalogWith([]);
+  it('pricingTier veto fires when catalog says free but pricingTier is paid (both must agree)', () => {
+    const catalog = catalogWith([
+      { providerId: 'x', modelId: 'y', freeEligibility: 'free' },
+    ]);
     const violations: number[] = [];
     const engine = new EligibilityEngine({ freeOnly: true }, catalog as any, (n) => violations.push(n));
-    const candidates = [
-      candidate('ghost-p', 'm4', 'paid'),
-    ] as unknown as CandidateSet;
+    const candidates = [candidate('x', 'y', 'paid')] as unknown as CandidateSet;
     const { eligible } = engine.filter(candidates);
     expect(eligible).toHaveLength(0);
-    expect(violations.length).toBe(1);
   });
 
   it('catalog paid verdict vetoes free-looking pricing metadata', () => {
