@@ -53,13 +53,19 @@ const speedPrior = (c: any): number => {
   return 0.5;
 };
 
-const isFree = (c: any) => {
+export const isFree = (c: any) => {
   if (c.pricingTier === 'paid' || c.pricingTier === 'subscription_only') return false;
+  const id = String(c.modelId ?? '');
+  // Mixed aggregators' discovery API supplies no pricing: a stored zero is not
+  // evidence that an unmarked model is free (including provider-level tiers).
+  if (c.providerName === 'tokenrouter' || c.providerName === 'opencode-zen') {
+    return /:free$|-free$/i.test(id) &&
+      (c.costPerInputToken ?? 0) === 0 && (c.costPerOutputToken ?? 0) === 0;
+  }
   if (c.pricingTier === 'free' || c.pricingTier === 'free_with_limits') return true;
   if (c.freeTierMetadata) return true;
   // Providers that namespace their free tier in the model id (OpenRouter's
   // `…:free`, opencode-zen's `…-free`).
-  const id = String(c.modelId ?? '');
   if (/:free$|-free$/.test(id)) return true;
   // DMRX_FREE_PROVIDERS is an operator declaration that a provider's KEY is a
   // free-tier key — it is NOT a claim that every model that provider serves is
@@ -90,6 +96,8 @@ const isFree = (c: any) => {
   if ((input ?? 0) === 0 && (output ?? 0) === 0) return true;
   return false;
 };
+
+const SPECIALIST_ONLY_CHAT_MODEL = /guard(?:[-_.]|$)|content[-_]safety|(?:^|[/_-])(?:translate|parse)(?=[-_./]|$)/i;
 
 /**
  * Meta-model aliases for dynamic routing.
@@ -605,7 +613,10 @@ export function resolveMetaModel(
   }
 
   // Cache miss — run the ranker
-  const ranked = metaModel.ranker(candidates, effectiveFilter);
+  const ranked = metaModel.ranker(
+    candidates.filter(c => c.modality !== 'llm' || !SPECIALIST_ONLY_CHAT_MODEL.test(c.modelId)),
+    effectiveFilter,
+  );
   if (ranked.length === 0) return null;
 
   // Store in cache (with LRU eviction if full)

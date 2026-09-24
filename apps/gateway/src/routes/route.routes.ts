@@ -9,6 +9,7 @@ import { parseQualityTarget } from '../utils/quality-target.js';
 
 const RouteRequestSchema = z.object({
   model: z.string(),
+  costFilter: z.enum(['free', 'all']).optional(),
   messages: z.array(ChatMessageSchema).min(1),
   tools: z.array(ToolSchema).optional(),
   tool_choice: z.any().optional(),
@@ -58,7 +59,7 @@ export async function routeDecisionRoutes(server: FastifyInstance): Promise<void
         requestId,
         tenant: (request as any).tenant,
         freeTierStrategy: (request.headers['x-free-tier-strategy'] as string) || undefined,
-        costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
+        costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || body.costFilter,
       },
     };
 

@@ -15,6 +15,7 @@ import { hashConversation, breakStickySession } from '@dmr-x/router';
 
 const ChatRequestSchema = z.object({
   model: z.string(),
+  costFilter: z.enum(['free', 'all']).optional(),
   messages: z.array(ChatMessageSchema).min(1),
   tools: z.array(ToolSchema).optional(),
   tool_choice: z.any().optional(),
@@ -63,7 +64,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             ensureGodmodeProxy,
             buildGodmodeWrapOrder,
           } = await import('../lib/godmode-guard.js');
-          const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
+          const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || body.costFilter;
           const candidates = router.getCandidates();
 
           if (body.stream) {
@@ -304,7 +305,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         // default decompose decision is unchanged.
         ...(body.decompose === false ? { skipDecomposition: true } : {}),
         freeTierStrategy: (request.headers['x-free-tier-strategy'] as string) || undefined,
-        costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
+        costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || body.costFilter,
         // X-Provider-Preferences (see ../utils/provider-preferences.ts) wins
         // over any body.metadata.providerPreferences above — it's validated
         // input, the body spread above is not.
@@ -794,14 +795,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // A cached response was selected under whatever constraints (or lack of
-    // them) were in effect the first time this exact body was seen — the
-    // cache key is body-only (see services/cache/src/cache.service.ts:
-    // generateCacheKey, "Provider is NOT included"). Serving it to a request
-    // that now carries providerPreferences (order/ignore/only/zdr/...) could
-    // silently hand back a response from a provider this call was told to
-    // exclude, which is exactly the failure this fix exists to close.
-    const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences && body.decompose !== false;
+    // Cache keys omit routing headers; constrained requests must neither read
+    // unconstrained responses nor overwrite them (exact and semantic caches).
+    const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences && !unifiedRequest.metadata?.costFilter && body.decompose !== false;
 
     // The cache stores the internal UnifiedResponse, but this endpoint is the
     // OpenAI-compatible surface. Returning the cached value verbatim shipped

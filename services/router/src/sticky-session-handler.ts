@@ -110,7 +110,7 @@ function buildStickyFallbackChain(
       score: model.qualityScore,
     },
     trigger: index === 0 ? ('timeout' as const) : ('error' as const),
-    waitMs: index === 0 ? 1000 : 0,
+    waitMs: sameModel.length > 0 && index >= sameModel.length ? 1 : 0,
   }));
 }
 

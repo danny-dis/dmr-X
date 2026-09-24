@@ -488,7 +488,10 @@ function buildFallbackChain(
   primary: SelectedProvider,
   freeTierStrategy?: string
 ): FallbackStep[] {
-  let crossProvider = remaining.filter(m => m.providerId !== primary.providerId);
+  const remainingModels = remaining.filter(m =>
+    m.providerId !== primary.providerId || m.modelId !== primary.modelId
+  );
+  let crossProvider = remainingModels.filter(m => m.providerId !== primary.providerId);
   // When freeTierStrategy is 'prioritize', sort free models first
   if (freeTierStrategy === 'prioritize') {
     crossProvider = crossProvider.sort((a, b) => {
@@ -513,9 +516,9 @@ function buildFallbackChain(
   // "200 with empty content") burned all fallbacks and surfaced
   // AllProvidersFailedError — the whole point of a fallback chain is to
   // survive exactly that. Take the best model per DISTINCT provider first,
-  // then backfill with the next-best remaining models if the chain is still
-  // short. Same chain length, same latency budget, but the steps can no
-  // longer be defeated by one bad upstream.
+  // then backfill with eligible models from any provider if the chain is still
+  // short. A JSON-only pool may contain several models on one provider;
+  // excluding the primary provider entirely would leave it with no fallback.
   const seenProviders = new Set<string>([primary.providerId]);
   const diversified: ProviderModel[] = [];
   for (const model of crossProvider) {
@@ -525,7 +528,7 @@ function buildFallbackChain(
     diversified.push(model);
   }
   if (diversified.length < maxFallbacks) {
-    for (const model of crossProvider) {
+    for (const model of remainingModels) {
       if (diversified.length >= maxFallbacks) break;
       if (diversified.includes(model)) continue;
       diversified.push(model);

@@ -17,7 +17,7 @@ import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { executeWithFallback, executeWithHedging, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
-import { getMetaModel, isMetaModel, resolveMetaModel } from './meta-models.js';
+import { getMetaModel, isFree, isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
 import { applyProviderPreferences, runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
@@ -378,8 +378,8 @@ export class Router {
     const stickyPrefs = request.metadata?.providerPreferences;
     const hasHardProviderConstraint = !!(stickyPrefs?.zdr || stickyPrefs?.only?.length || stickyPrefs?.ignore?.length);
     const stickyCostFilter = (request as any).metadata?.costFilter ?? this.config.metaModelCostFilter;
-    const hasHardCostConstraint = !!(modelTarget.modelId && isMetaModel(modelTarget.modelId) &&
-      (stickyCostFilter === 'free' || getMetaModel(modelTarget.modelId)?.costFilter === 'free'));
+    const hasHardCostConstraint = stickyCostFilter === 'free' ||
+      getMetaModel(modelTarget.modelId ?? '')?.costFilter === 'free';
 
     // Reusable pipeline result from sticky handler — when the planner decides
     // SWITCH, it returns the pipeline result it already computed so the caller
@@ -430,13 +430,15 @@ export class Router {
     // because meta-model resolution is a sub-step of "what is this request?".)
     // When the caller pins a provider explicitly, constrain the candidate pool
     // to that provider before any selection or scoring happens.
-    const scopedCandidates = modelTarget.providerName
-      ? this.candidates.filter(c => c.providerName === modelTarget.providerName)
-      : this.candidates;
-    let pipelineCandidates = scopedCandidates;
-    // Cost filter: per-request header overrides router-level env var default
     const costFilterOverride = (request as any).metadata?.costFilter as 'free' | 'all' | undefined
       || this.config.metaModelCostFilter;
+    const requireFreePool = costFilterOverride === 'free' ||
+      getMetaModel(modelTarget.modelId ?? '')?.costFilter === 'free';
+    const providerScoped = modelTarget.providerName
+      ? this.candidates.filter(c => c.providerName === modelTarget.providerName)
+      : this.candidates;
+    const scopedCandidates = requireFreePool ? providerScoped.filter(isFree) : providerScoped;
+    let pipelineCandidates = scopedCandidates;
 
     let metaModelFilteredFree = false;
     if (modelTarget.modelId && isMetaModel(modelTarget.modelId)) {
@@ -491,6 +493,12 @@ export class Router {
           const directMatches = directCandidates.filter(
             (c) => c.modelId === modelTarget.modelId && c.isHealthy
           );
+          if (directMatches.length === 0 && requireFreePool) {
+            throw new ProviderUnavailableError(
+              providerScoped.filter(c => c.modelId === modelTarget.modelId)
+                .map(c => `${c.providerId}/${c.modelId}`), 0,
+            );
+          }
           if (directMatches.length === 0 && hasHardProviderConstraint &&
               pipelineCandidates.some(c => c.modelId === modelTarget.modelId && c.isHealthy)) {
             throw new ProviderUnavailableError(
