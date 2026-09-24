@@ -10,6 +10,6 @@
     },
     "types": ["vitest/globals", "node"]
   },
-  "include": ["unit/fallback-deadline.test.ts", "unit/free-degraded-fallback.test.ts", "unit/adapter-retry-log-redaction.test.ts"],
+  "include": ["unit/fallback-deadline.test.ts", "unit/free-degraded-fallback.test.ts", "unit/adapter-retry-log-redaction.test.ts", "unit/auto-json-transient-retry.test.ts"],
   "exclude": ["../node_modules"]
 }

@@ -211,8 +211,12 @@ function isQuotaError(error: unknown): boolean {
  * model-not-found 400 is a real verdict and must NOT be retried, because the
  * second attempt would fail identically.
  */
-function isAmbiguousTransientError(error: unknown): boolean {
+function isAmbiguousTransientError(error: unknown, jsonMode = false): boolean {
   if (!(error instanceof ProviderError)) return false;
+  if (jsonMode && error.statusCode === 502 &&
+      error.message === 'Gemini chat: upstream returned invalid JSON object') {
+    return true;
+  }
   if (isContextWindowError(error) || isContentPolicyError(error) || isModelNotFoundError(error)) {
     return false;
   }
@@ -526,7 +530,7 @@ export async function executeWithFallback(
       try {
         return await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
       } catch (err) {
-        if (!isAmbiguousTransientError(err)) throw err;
+        if (!isAmbiguousTransientError(err, request.response_format?.type === 'json_object')) throw err;
         logger.warn(
           { provider: plan.primary.providerId, modelId: plan.primary.modelId, err },
           'Primary provider returned an ambiguous transient failure — retrying the same model once'
