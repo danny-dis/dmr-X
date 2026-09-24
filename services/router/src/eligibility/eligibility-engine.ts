@@ -113,8 +113,13 @@ export class EligibilityEngine {
     const hasZeroCost = (candidate.costPerInputToken ?? 0) === 0 && (candidate.costPerOutputToken ?? 0) === 0;
 
     if (tier === 'free') return null;
+    if (tier === 'paid') return 'Candidate is paid-tier; free_only requires free eligibility';
     if (hasFreeMetadata && !this.config.strictFree) return null;
     if (hasZeroCost) return null;
+
+    if (this.config.strictFree) {
+      return 'Candidate free eligibility unknown; strictFree requires known free status';
+    }
 
     return 'Candidate is paid-tier; free_only requires free eligibility';
   }
