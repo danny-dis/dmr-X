@@ -74,6 +74,22 @@ export interface ProviderQuotaAdapter {
     messages?: unknown[];
     max_tokens?: number;
   }): DemandVector;
+
+  /**
+   * Reconcile quota after a provider response (Issue #16 Task 4).
+   *
+   * Parses response headers into canonical dimensions AND invokes the
+   * `onUsage` hook (the `recordUsage()` equivalent) so actual token usage
+   * is reconciled against the reservation. Every adapter must expose this —
+   * pure `parseHeaders` alone leaves usage unreconciled.
+   */
+  reconcileResponse?(params: {
+    headers: Record<string, string>;
+    scopeInfo: ScopeInfo;
+    promptTokens?: number;
+    completionTokens?: number;
+    onUsage?: (tokens: number, dimensions: QuotaDimension[]) => void;
+  }): QuotaDimension[];
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +772,44 @@ const ADAPTERS: Map<string, ProviderQuotaAdapter> = new Map([
 ]);
 
 const GENERIC = new GenericAdapter();
+
+export interface ReconcileAdapterParams {
+  headers: Record<string, string>;
+  scopeInfo: ScopeInfo;
+  promptTokens?: number;
+  completionTokens?: number;
+  onUsage?: (tokens: number, dimensions: QuotaDimension[]) => void;
+}
+
+/**
+ * Shared reconcile path (Issue #16 Task 4): parse headers into canonical
+ * dimensions, then invoke `onUsage` (the `recordUsage()` equivalent) with
+ * the observed token total. Callers wire `onUsage` to
+ * `RateLimitTracker.recordTokenUsage` / `QuotaService.recordUsage` so every
+ * adapter response reconciles quota — no silent non-reconciliation.
+ */
+export function reconcileAdapterResponse(
+  adapter: ProviderQuotaAdapter,
+  params: ReconcileAdapterParams,
+): QuotaDimension[] {
+  const dimensions = adapter.parseHeaders(params.headers, params.scopeInfo);
+  const totalTokens = (params.promptTokens ?? 0) + (params.completionTokens ?? 0);
+  params.onUsage?.(totalTokens, dimensions);
+  return dimensions;
+}
+
+// Ensure every registered adapter exposes the reconcile path (Issue #16
+// Task 4). Adapters defined above predate the reconcile hook; bind the
+// shared implementation as the default so `adapter.reconcileResponse(...)`
+// always parses headers AND reconciles usage via `onUsage`.
+const allAdapters: ProviderQuotaAdapter[] = [...ADAPTERS.values(), GENERIC];
+for (const adapter of allAdapters) {
+  if (!adapter.reconcileResponse) {
+    const bound: ProviderQuotaAdapter = adapter;
+    adapter.reconcileResponse = (params: ReconcileAdapterParams) =>
+      reconcileAdapterResponse(bound, params);
+  }
+}
 
 /**
  * Get the adapter for a provider. Falls back to generic for unknown providers.

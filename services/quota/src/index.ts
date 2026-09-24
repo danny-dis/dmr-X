@@ -52,7 +52,28 @@ export {
   getProviderAdapter,
   hasProviderAdapter,
   getRegisteredProviders,
+  reconcileAdapterResponse,
   type ProviderQuotaAdapter,
   type ScopeInfo,
   type QuotaEvent,
+  type ReconcileAdapterParams,
 } from './provider-adapters.js';
+export {
+  incReservationsAttempted,
+  incReservationsSucceeded,
+  incReservationsFailed,
+  inc429Avoided,
+  incRetryAfterHonors,
+  incFreeOnlyViolations,
+  getFreeInferenceMetrics,
+  resetFreeInferenceMetrics,
+  type FreeInferenceMetricsSnapshot,
+} from './free-inference-metrics.js';
+export {
+  RetryClassifier,
+  classify429Dimension,
+  parseRetryAfterMs,
+  type RetryDimension,
+  type RetryClassification,
+  type RetryClassifierConfig,
+} from './retry-classifier.js';

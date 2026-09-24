@@ -8,6 +8,20 @@ import { logger } from '@dmr-x/utils';
 
 import { creditService } from '@dmr-x/billing';
 
+import {
+  CapacityManager,
+  InMemoryCapacityStore,
+  type CapacityReservation,
+  type CapacityStore,
+  type ReservationResult,
+} from './capacity-manager.js';
+import type { DemandVector, QuotaVector } from './quota-dimensions.js';
+import {
+  incReservationsAttempted,
+  incReservationsSucceeded,
+  incReservationsFailed,
+} from './free-inference-metrics.js';
+
 
 const quotaCache = createNamespacedCache('quota');
 const budgetCache = createNamespacedCache('freebudget');
@@ -29,6 +43,96 @@ export interface QuotaUsage {
 }
 
 export class QuotaService {
+  private capacityStore: CapacityStore = new InMemoryCapacityStore();
+  private capacityManager: CapacityManager = new CapacityManager({
+    store: this.capacityStore,
+  });
+
+  /**
+   * Inject a shared CapacityStore (SQLite/Redis for multi-instance) and
+   * rebind the manager to it. Single-node defaults to InMemory.
+   */
+  configureCapacityStore(store: CapacityStore, leaseMs?: number): void {
+    this.capacityStore = store;
+    this.capacityManager = new CapacityManager({
+      store,
+      ...(leaseMs !== undefined ? { leaseMs } : {}),
+    });
+  }
+
+  getCapacityManager(): CapacityManager {
+    return this.capacityManager;
+  }
+
+  registerQuotaVector(vector: QuotaVector): void {
+    this.capacityManager.registerVector(vector);
+  }
+
+  /**
+   * Atomic reserve→dispatch→reconcile path (Issue #16 Task 1).
+   *
+   * Call `reserveForDispatch()` before dispatch instead of read-then-check
+   * (`filterByQuota` + `checkQuota`), then `commitDispatch()` on success or
+   * `releaseDispatch()` on failure. The store's `tryReserve` is atomic — it
+   * succeeds entirely or fails entirely, so N concurrent gateways cannot all
+   * observe the same remaining quota and oversubscribe it.
+   */
+  async reserveForDispatch(
+    providerId: string,
+    modelId: string,
+    keyId: string,
+    request: unknown,
+  ): Promise<ReservationResult> {
+    incReservationsAttempted();
+    const result = await this.capacityManager.reserve(providerId, modelId, keyId, request);
+    if (result.success) {
+      incReservationsSucceeded();
+    } else {
+      incReservationsFailed();
+    }
+    return result;
+  }
+
+  async commitDispatch(reservationId: string, actualUsage: DemandVector): Promise<void> {
+    await this.capacityManager.commit(reservationId, actualUsage);
+  }
+
+  async releaseDispatch(reservationId: string): Promise<void> {
+    await this.capacityManager.release(reservationId);
+  }
+
+  /**
+   * Convenience wrapper: reserve → execute → commit/release.
+   * `estimateActual` converts the provider response into actual usage for
+   * reconciliation; when omitted the manager refunds the reservation delta
+   * from the request estimate.
+   */
+  async dispatchWithReservation<T>(
+    providerId: string,
+    modelId: string,
+    keyId: string,
+    request: unknown,
+    execute: (reservation: CapacityReservation) => Promise<T>,
+    estimateActual?: (result: T) => DemandVector,
+  ): Promise<T> {
+    const reserved = await this.reserveForDispatch(providerId, modelId, keyId, request);
+    if (!reserved.success || !reserved.reservation) {
+      throw new QuotaExhaustedError();
+    }
+    const reservation = reserved.reservation;
+    try {
+      const result = await execute(reservation);
+      const actual: DemandVector = estimateActual
+        ? estimateActual(result)
+        : { requests: 1, inputTokens: 0, outputTokens: 0, concurrency: 1 };
+      await this.commitDispatch(reservation.id, actual);
+      return result;
+    } catch (err) {
+      await this.releaseDispatch(reservation.id);
+      throw err;
+    }
+  }
+
   /**
    * Filter candidates based on tenant quota
    */

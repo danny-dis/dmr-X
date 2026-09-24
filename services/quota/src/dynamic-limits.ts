@@ -294,7 +294,13 @@ export function supportsRateLimitHeaders(provider: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Calculate quota status for a key based on rate limit headers
+ * Calculate quota status for a key based on rate limit headers.
+ *
+ * When `failClosed` is true (required for `free_only`), unknown quota —
+ * no remaining/limit data at all — is treated as exhausted instead of the
+ * legacy "unknown = assume 100% available" default. Fail-open stays the
+ * default for backward compatibility; callers serving `free_only` traffic
+ * must opt into fail-closed explicitly.
  */
 export function calculateQuotaStatus(params: {
   keyId: string;
@@ -305,8 +311,12 @@ export function calculateQuotaStatus(params: {
     rpm?: number;
     tpm?: number;
   };
+  /** When true, unknown/stale quota → isExhausted=true (safe for free_only). */
+  failClosed?: boolean;
+  /** When true (with failClosed), treat explicitly stale observations as exhausted. */
+  isStale?: boolean;
 }): KeyQuotaStatus {
-  const { keyId, providerId, modelId, headers, defaultLimits } = params;
+  const { keyId, providerId, modelId, headers, defaultLimits, failClosed = false, isStale = false } = params;
 
   // Use discovered limits or fall back to defaults
   const requestsLimit = headers.requestsLimit ?? defaultLimits?.rpm ?? null;
@@ -330,9 +340,19 @@ export function calculateQuotaStatus(params: {
   }
 
   // Check if exhausted
-  const isExhausted = 
+  const explicitlyExhausted =
     (requestsRemaining !== null && requestsRemaining <= 0) ||
     (tokensRemaining !== null && tokensRemaining <= 0);
+
+  // Fail-closed for free_only: unknown (no remaining data on any axis) or
+  // stale observations must not be treated as 100% available.
+  const isUnknown = requestsRemaining === null && tokensRemaining === null;
+  const isExhausted = explicitlyExhausted || (failClosed && (isUnknown || isStale));
+
+  // Fail-closed reports 0% remaining for unknown/stale so sorters deprioritize it.
+  if (failClosed && isExhausted && isUnknown) {
+    percentRemaining = 0;
+  }
 
   return {
     keyId,
