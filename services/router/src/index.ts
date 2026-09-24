@@ -18,4 +18,9 @@ export { hashConversation, breakStickySession } from './sticky/sticky-session.js
 export { selectLeastBusy, incrementInFlight, decrementInFlight } from './strategies/least-busy.js';
 export { selectUsageBased, recordRequest, getUsageStats } from './strategies/usage-based.js';
 export { selectLowestLatency, recordLatency, getLatencyStats } from './strategies/latency-based.js';
+export { selectByEconomics, type EconomicsResult } from './strategies/economics.js';
+
+export { decisionTrace, type DecisionTraceEntry, type DecisionTraceFilter } from './observability/decision-trace.js';
+export { ReliabilityDistribution, ReliabilityRegistry, type ReliabilityObservation } from './reliability/distributions.js';
+export { detectPii, applyPrivacyRules, type PiiDetectionResult, type PrivacyRule } from './privacy/pii-routing.js';
 export { selectByTags, filterByTags } from './strategies/tag-based.js';

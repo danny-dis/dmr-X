@@ -11,3 +11,5 @@ export * from './provider-preferences.js';
 export * from './model-metadata.js';
 export * from './tool-types.js';
 export * from './model-bindings.js';
+export * from './requirement-vector.js';
+export * from './capability-ontology.js';

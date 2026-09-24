@@ -57,6 +57,13 @@ const backendAlias = {
   '@dmr-x/router': resolve(__dirname, 'services/router/src'),
   '@dmr-x/agent-registry': resolve(__dirname, 'services/agent-registry/src'),
   '@dmr-x/agent-runtime': resolve(__dirname, 'services/agent-runtime/src'),
+  '@dmr-x/quota': resolve(__dirname, 'services/quota/src'),
+  '@dmr-x/workers': resolve(__dirname, 'services/workers/src'),
+  '@dmr-x/mcp-client': resolve(__dirname, 'services/mcp-client/src'),
+  '@dmr-x/telemetry': resolve(__dirname, 'services/telemetry/src'),
+  '@dmr-x/tool-search': resolve(__dirname, 'services/tool-search/src'),
+  '@dmr-x/plugin-loader': resolve(__dirname, 'services/plugin-loader-bootstrap/src'),
+  '@dmr-x/gateway': resolve(__dirname, 'apps/gateway/src'),
   // fastify — only in apps/gateway, not hoisted to root. Versions are
   // resolved from the store dynamically so bumps don't break resolution.
   'fastify': resolveStorePath('fastify', 'fastify'),

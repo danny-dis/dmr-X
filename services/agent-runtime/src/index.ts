@@ -102,6 +102,16 @@ export {
 } from './job-orchestrator.js';
 
 export {
+  AgentLifecycleManager,
+  lifecycleManager,
+  canTransition,
+  type AgentLifecycle,
+  type AgentLifecycleConfig,
+  type AgentLifecycleState,
+  type LifecycleTransition,
+} from './lifecycle.js';
+
+export {
   RECEPTIONIST_AGENT_NAME,
   RECEPTIONIST_TOOLS,
   getReceptionistToolHandlers,
