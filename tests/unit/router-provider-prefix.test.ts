@@ -243,4 +243,42 @@ describe('sticky sessions vs. hard providerPreferences constraints', () => {
     expect(second.plan.primary.providerId).toBe(firstPick);
     expect(calls[calls.length - 1].providerId).toBe(firstPick);
   });
+
+  it('never executes or falls back to explicitly paid models under costFilter=free', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'free', modelId: 'free-model', pricingTier: 'free', qualityScore: 0.4 }),
+      makeCandidate({
+        providerId: 'paid', modelId: 'mislabelled:free', pricingTier: 'paid',
+        costPerInputToken: 0.001, costPerOutputToken: 0.002, qualityScore: 0.99,
+      }),
+    ];
+    const { router, calls } = makeRouter(candidates);
+    const request = makeRequest('auto');
+    request.metadata = { ...request.metadata, costFilter: 'free' } as any;
+
+    const { plan } = await router.route(request, ROUTE_OPTS);
+    expect(plan.primary.providerId).toBe('free');
+    expect(plan.chain.every(step => step.provider.providerId === 'free')).toBe(true);
+    expect(calls.every(call => call.providerId === 'free')).toBe(true);
+  });
+
+  it('does not reuse a paid sticky pin when the next turn requests costFilter=free', async () => {
+    const candidates: CandidateSet = [
+      makeCandidate({ providerId: 'paid', providerName: 'paid-provider', modelId: 'paid-model', pricingTier: 'paid', costPerInputToken: 0.001 }),
+      makeCandidate({ providerId: 'free', providerName: 'free-provider', modelId: 'free-model', pricingTier: 'free' }),
+    ];
+    const { router, calls } = makeRouter(candidates);
+    const prompt = `sticky-free-policy-${Date.now()}-${Math.random()}`;
+    const first = makeFixedRequest(prompt, { only: ['paid-provider'] });
+    first.model = 'auto';
+    expect((await router.route(first, ROUTE_OPTS)).plan.primary.providerId).toBe('paid');
+
+    const second = makeFixedRequest(prompt);
+    second.model = 'auto';
+    second.metadata = { ...second.metadata, costFilter: 'free' } as any;
+    const { plan } = await router.route(second, ROUTE_OPTS);
+    expect(plan.primary.providerId).toBe('free');
+    expect(plan.chain.every(step => step.provider.providerId === 'free')).toBe(true);
+    expect(calls[calls.length - 1].providerId).toBe('free');
+  });
 });

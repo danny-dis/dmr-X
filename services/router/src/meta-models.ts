@@ -54,6 +54,7 @@ const speedPrior = (c: any): number => {
 };
 
 const isFree = (c: any) => {
+  if (c.pricingTier === 'paid' || c.pricingTier === 'subscription_only') return false;
   if (c.pricingTier === 'free' || c.pricingTier === 'free_with_limits') return true;
   if (c.freeTierMetadata) return true;
   // Providers that namespace their free tier in the model id (OpenRouter's

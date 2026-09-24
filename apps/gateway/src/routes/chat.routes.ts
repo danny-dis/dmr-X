@@ -1,6 +1,6 @@
 import { ValidationError, ProviderUnavailableError, type UnifiedRequest } from '@dmr-x/core';
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
-import type { Router } from '@dmr-x/router';
+import { getMetaModel, type Router } from '@dmr-x/router';
 import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -426,10 +426,13 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         })),
       ];
 
-      // Force-inject healthy fallbacks from the router's candidate pool when the
-      // chain is too short to survive a primary failure. This is the core fix:
-      // a 404 on the primary must never reach the client as "Stream failed".
-      try {
+      // Augment the planned chain only for unconstrained all-cost meta-models.
+      // Global candidates may include paid or excluded providers.
+      const streamPrefs = unifiedRequest.metadata?.providerPreferences;
+      const unconstrainedMetaModel = getMetaModel(body.model)?.costFilter === 'all' &&
+        router.getEffectiveCostFilter(body.model, unifiedRequest.metadata?.costFilter as 'free' | 'all' | undefined) === 'all' &&
+        !streamPrefs?.zdr && !streamPrefs?.only?.length && !streamPrefs?.ignore?.length;
+      if (unconstrainedMetaModel) try {
         const routerAny = router as unknown as { getCandidates?: () => Array<{ providerId: string; modelId: string; score: number; isHealthy?: boolean; providerName?: string }> };
         const allCandidates = routerAny.getCandidates?.();
         if (allCandidates && allCandidates.length) {

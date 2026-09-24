@@ -14,6 +14,13 @@ image:
 imagePullSecrets:
   - name: ghcr-pull-secret
 
+# -- Persist the local SQLite database (single replica by default)
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""
+  annotations: {}
+
 # -- Override the name of the chart
 nameOverride: ""
 fullnameOverride: ""
