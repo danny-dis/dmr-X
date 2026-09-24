@@ -22,3 +22,11 @@ export {
   type CreditBalance,
   type CreditTransaction,
 } from './credit.service.js';
+
+export {
+  InMemoryBudgetStore,
+  reserveAndDispatch,
+  type BudgetReservation,
+  type ReservationResult,
+  type BudgetReservationStore,
+} from './reservation.js';

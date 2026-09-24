@@ -151,10 +151,12 @@ export function evaluateVector(
     }
   }
 
-  const admissible = blocking.length === 0;
-  const reason = admissible
-    ? `All ${requiredDimensions.length} dimensions have headroom`
-    : blockingExplanation(blocking, nowMs);
+  const admissible = requiredDimensions.length > 0 && blocking.length === 0;
+  const reason = requiredDimensions.length === 0
+    ? 'No capacity dimensions available for admission'
+    : admissible
+      ? `All ${requiredDimensions.length} dimensions have headroom`
+      : blockingExplanation(blocking, nowMs);
 
   let recommendation: QuotaSnapshot['recommendation'] = 'route';
   if (!admissible) {
@@ -192,6 +194,7 @@ function selectDimensionsForDemand(
   if (demand.requests > 0) units.push('requests');
   if (demand.inputTokens > 0) units.push('input_tokens');
   if (demand.outputTokens > 0) units.push('output_tokens');
+  if (demand.inputTokens > 0 || demand.outputTokens > 0) units.push('total_tokens');
   if (demand.credits && demand.credits > 0) units.push('credits');
   return vector.dimensions.filter(d => units.includes(d.unit));
 }

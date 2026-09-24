@@ -34,4 +34,53 @@ describe('Free Policy Invariant', () => {
       expect(chainCandidate?.pricingTier).not.toBe('paid');
     }
   });
+
+  const retryCandidates: CandidateSet = [
+    { providerId: 'free', providerName: 'free', modelId: 'free-model', modality: 'llm', capabilities: [], intelligenceLayer: 'executor', capabilityTier: 'executor', costPerInputToken: 0, costPerOutputToken: 0, avgLatencyMs: 1000, pricingTier: 'free', qualityScore: 0.5, isHealthy: true } as any,
+    { providerId: 'paid', providerName: 'paid', modelId: 'paid-model', modality: 'llm', capabilities: [], intelligenceLayer: 'executor', capabilityTier: 'executor', costPerInputToken: 0.001, costPerOutputToken: 0.002, avgLatencyMs: 1000, pricingTier: 'paid', qualityScore: 0.99, isHealthy: true } as any,
+  ];
+
+  function retryLimiter(recoveringModels: string[]) {
+    const attempts = new Map<string, number>();
+    return {
+      isOnCooldown: () => false,
+      getCooldownExpiry: () => null,
+      checkLimit: (_providerId: string, modelId: string) => {
+        const count = (attempts.get(modelId) ?? 0) + 1;
+        attempts.set(modelId, count);
+        return count > 1 && recoveringModels.includes(modelId)
+          ? { allowed: true }
+          : { allowed: false, retryAfterMs: 1, reason: 'RPM exhausted' };
+      },
+      getPenaltyPoints: () => 0,
+      getState: () => ({ config: { rpm: 10 }, currentRPM: 0, currentRPD: 0, currentTPM: 0, currentTPD: 0, penaltyPoints: 0 }),
+    };
+  }
+
+  const taskProfile = { modality: 'llm', capabilities: [], sizeEstimate: { inputTokens: 100, outputTokensEst: 500 }, priority: 5, streaming: false, qualityTarget: 'balanced' } as const;
+
+  it('does not restore paid candidates to a free-only fallback chain after rate-limit wait', async () => {
+    const result = await runPipeline({
+      taskProfile: taskProfile as any,
+      candidates: retryCandidates,
+      eligibilityEngine: new EligibilityEngine({ freeOnly: true }),
+      rateLimitService: retryLimiter(['free-model', 'paid-model']) as any,
+      epsilon: 0,
+      maxWaitMs: 10,
+    });
+    expect(result.selected.providerId).toBe('free');
+    expect(result.scoredCandidates.every(candidate => candidate.pricingTier !== 'paid')).toBe(true);
+    expect(result.chain.every(step => step.provider.providerId !== 'paid')).toBe(true);
+  });
+
+  it('fails rather than select a paid candidate when only paid capacity recovers', async () => {
+    await expect(runPipeline({
+      taskProfile: taskProfile as any,
+      candidates: retryCandidates,
+      eligibilityEngine: new EligibilityEngine({ freeOnly: true }),
+      rateLimitService: retryLimiter(['paid-model']) as any,
+      epsilon: 0,
+      maxWaitMs: 10,
+    })).rejects.toMatchObject({ name: 'ProviderUnavailableError' });
+  });
 });
