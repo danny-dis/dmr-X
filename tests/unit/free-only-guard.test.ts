@@ -50,14 +50,13 @@ function catalogWith(records: Array<{ providerId: string; modelId: string; freeE
 }
 
 describe('free-only guard (catalog authoritative)', () => {
-  it('zero paid selections under free_only across a mixed pool', () => {
+  it('catalog authority blocks paid candidates before pricingTier defense-in-depth', () => {
     const catalog = catalogWith([
       { providerId: 'free-p', modelId: 'm1', freeEligibility: 'free' },
       { providerId: 'limits-p', modelId: 'm2', freeEligibility: 'free_with_limits' },
       { providerId: 'paid-p', modelId: 'm3', freeEligibility: 'paid' },
     ]);
-    const violations: number[] = [];
-    const engine = new EligibilityEngine({ freeOnly: true }, catalog as any, (n) => violations.push(n));
+    const engine = new EligibilityEngine({ freeOnly: true }, catalog as any);
     const candidates = [
       candidate('free-p', 'm1', 'free'),
       candidate('limits-p', 'm2', 'free_with_limits'),
@@ -71,7 +70,18 @@ describe('free-only guard (catalog authoritative)', () => {
     for (const c of eligible as any[]) {
       expect(c.pricingTier).not.toBe('paid');
     }
-    expect(violations.length).toBeGreaterThan(0);
+  });
+
+  it('pricingTier violation fires when catalog misses and defense-in-depth catches', () => {
+    const catalog = catalogWith([]);
+    const violations: number[] = [];
+    const engine = new EligibilityEngine({ freeOnly: true }, catalog as any, (n) => violations.push(n));
+    const candidates = [
+      candidate('ghost-p', 'm4', 'paid'),
+    ] as unknown as CandidateSet;
+    const { eligible } = engine.filter(candidates);
+    expect(eligible).toHaveLength(0);
+    expect(violations.length).toBe(1);
   });
 
   it('catalog paid verdict vetoes free-looking pricing metadata', () => {
