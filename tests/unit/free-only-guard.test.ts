@@ -56,7 +56,8 @@ describe('free-only guard (catalog authoritative)', () => {
       { providerId: 'limits-p', modelId: 'm2', freeEligibility: 'free_with_limits' },
       { providerId: 'paid-p', modelId: 'm3', freeEligibility: 'paid' },
     ]);
-    const engine = new EligibilityEngine({ freeOnly: true }, catalog as any);
+    const violations: number[] = [];
+    const engine = new EligibilityEngine({ freeOnly: true }, catalog as any, (n) => violations.push(n));
     const candidates = [
       candidate('free-p', 'm1', 'free'),
       candidate('limits-p', 'm2', 'free_with_limits'),
@@ -70,6 +71,7 @@ describe('free-only guard (catalog authoritative)', () => {
     for (const c of eligible as any[]) {
       expect(c.pricingTier).not.toBe('paid');
     }
+    expect(violations.length).toBeGreaterThan(0);
   });
 
   it('catalog paid verdict vetoes free-looking pricing metadata', () => {

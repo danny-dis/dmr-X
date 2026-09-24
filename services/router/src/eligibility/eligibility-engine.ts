@@ -1,6 +1,5 @@
 // services/router/src/eligibility/eligibility-engine.ts
 import type { CandidateSet, ProviderModel } from '@dmr-x/core';
-import { incFreeOnlyViolations } from '../../../quota/src/free-inference-metrics.js';
 
 export interface EligibilityConfig {
   freeOnly: boolean;
@@ -8,13 +7,6 @@ export interface EligibilityConfig {
   minConfidence?: number;
 }
 
-/**
- * Structural catalog contract (Issue #16 Task 6). Uses structural typing —
- * not a direct import of `@dmr-x/quota` — so the router does not create a
- * runtime cycle with the quota package. Any object exposing
- * `checkEligibility(providerId, modelId, policy)` (e.g. FreeProviderCatalog)
- * can be attached via constructor or `setCatalog()`.
- */
 export interface FreeEligibilityCatalog {
   checkEligibility(
     providerId: string,
@@ -36,15 +28,17 @@ export interface EligibilityResult {
 
 export class EligibilityEngine {
   private catalog: FreeEligibilityCatalog | null = null;
+  private onViolation?: (count: number) => void;
 
   constructor(
     private config: EligibilityConfig,
     catalog?: FreeEligibilityCatalog,
+    onViolation?: (count: number) => void,
   ) {
     if (catalog) this.catalog = catalog;
+    if (onViolation) this.onViolation = onViolation;
   }
 
-  /** Attach (or replace) the authoritative free-provider catalog. */
   setCatalog(catalog: FreeEligibilityCatalog | null): void {
     this.catalog = catalog;
   }
@@ -66,20 +60,17 @@ export class EligibilityEngine {
       }
     }
 
-    // Defense-in-depth (Issue #16 Task 6/7): under free_only, a paid-tier
-    // candidate in the eligible set is a violation — it must be impossible.
-    // Count it (metric must stay zero) and strip it rather than leaking.
     if (this.config.freeOnly) {
       for (let i = eligible.length - 1; i >= 0; i--) {
         if ((eligible[i] as ProviderModel).pricingTier === 'paid') {
-          const leaked = eligible.splice(i, 1)[0] as ProviderModel;
+          const leaked = eligible.splice(i, 1) as ProviderModel[];
           rejected.push({
-            providerId: leaked.providerId,
-            modelId: leaked.modelId,
+            providerId: leaked[0].providerId,
+            modelId: leaked[0].modelId,
             reason: 'Free-only violation blocked: paid-tier candidate reached eligible set',
           });
           try {
-            incFreeOnlyViolations(1);
+            this.onViolation?.(1);
           } catch {
             // Metrics must never break routing.
           }
@@ -90,10 +81,6 @@ export class EligibilityEngine {
     return { eligible, rejected };
   }
 
-  /**
-   * Assert zero paid selections under free_only. Returns the count of paid
-   * candidates in `eligible` (expected 0). Used by tests and audits.
-   */
   assertNoPaidLeakage(eligible: CandidateSet): number {
     if (!this.config.freeOnly) return 0;
     return eligible.filter((c) => (c as ProviderModel).pricingTier === 'paid').length;
@@ -102,10 +89,6 @@ export class EligibilityEngine {
   private checkCandidate(candidate: ProviderModel): string | null {
     if (!this.config.freeOnly) return null;
 
-    // Catalog is authoritative when attached (Issue #16 Task 6): a candidate
-    // is eligible under free_only ONLY if the catalog says so. This closes
-    // the gap where pricingTier/freeTierMetadata alone could elect a paid
-    // model the catalog knows is paid (or unknown).
     if (this.catalog) {
       let verdict: { eligible: boolean; reason: string };
       try {
@@ -119,7 +102,6 @@ export class EligibilityEngine {
       if (!verdict.eligible) {
         return `Free-provider catalog rejects ${candidate.providerId}/${candidate.modelId}: ${verdict.reason}`;
       }
-      // Catalog says free — paid pricingTier still vetoes (both must agree).
       if (candidate.pricingTier === 'paid') {
         return 'Candidate is paid-tier; free_only requires free eligibility';
       }
@@ -128,29 +110,12 @@ export class EligibilityEngine {
 
     const tier = candidate.pricingTier;
     const hasFreeMetadata = candidate.freeTierMetadata != null;
-    const hasZeroCost = (candidate.costPerInputToken ?? 0) === 0 &&
-                        (candidate.costPerOutputToken ?? 0) === 0;
+    const hasZeroCost = (candidate.costPerInputToken ?? 0) === 0 && (candidate.costPerOutputToken ?? 0) === 0;
 
-    // Explicitly paid
-    if (tier === 'paid') {
-      return 'Candidate is paid-tier; free_only requires free eligibility';
-    }
+    if (tier === 'free') return null;
+    if (hasFreeMetadata && !this.config.strictFree) return null;
+    if (hasZeroCost) return null;
 
-    // Explicitly free
-    if (tier === 'free' || tier === 'free_with_limits' || hasFreeMetadata) {
-      return null;
-    }
-
-    // Zero cost but no explicit tier
-    if (hasZeroCost && !this.config.strictFree) {
-      return null;
-    }
-
-    // Unknown eligibility
-    if (this.config.strictFree && !tier && !hasFreeMetadata) {
-      return 'Candidate has unknown free eligibility; strictFree requires explicit free tier';
-    }
-
-    return null;
+    return 'Candidate is paid-tier; free_only requires free eligibility';
   }
 }
