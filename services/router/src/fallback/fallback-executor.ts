@@ -2,6 +2,7 @@ import type { RoutingPlan, UnifiedRequest, UnifiedResponse, ModelBinding } from 
 import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, QuotaExhaustedError } from '@dmr-x/core';
 import type { RateLimitService, QuotaService, KeyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
+import { getMetaModel } from '../meta-models.js';
 
 // Model error tracking: temporarily skip models that returned 404/410
 // TTL: a 404 "model not found" means the model was removed upstream and will
@@ -77,6 +78,8 @@ export interface FallbackStepConfig {
 }
 
 export interface FallbackOptions {
+  /** Effective router policy, including its configured default. */
+  freeOnly?: boolean;
   rateLimitService?: RateLimitService;
   quotaService?: QuotaService;
   tenantId?: string;
@@ -93,6 +96,8 @@ export interface FallbackOptions {
    * every dead candidate sequentially. Default 12_000 (12s). Set 0 to disable.
    */
   globalTimeoutMs?: number;
+  /** Internal absolute budget shared across hedged retries. */
+  deadlineAt?: number;
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -412,8 +417,29 @@ export async function executeWithFallback(
   // providers can't stall the request past the client's patience. When the
   // timer fires we fail fast with ProviderUnavailableError (retryable) instead
   // of walking every dead candidate sequentially.
-  const globalTimeoutMs = options?.globalTimeoutMs ?? 12_000;
-  const globalDeadline = globalTimeoutMs > 0 ? Date.now() + globalTimeoutMs : 0;
+  // Use the router's request budget rather than an unrelated 12-second
+  // default; callers may still set a tighter explicit fallback deadline.
+  const globalTimeoutMs = options?.globalTimeoutMs ?? Math.min(plan.timeoutMs ?? 12_000, 30_000);
+  const globalDeadline = options?.deadlineAt ?? (globalTimeoutMs > 0 ? Date.now() + globalTimeoutMs : 0);
+  const freeOnly = options?.freeOnly || request.metadata?.costFilter === 'free' ||
+    getMetaModel(request.model ?? '')?.costFilter === 'free';
+
+  async function withinDeadline<T>(operation: () => Promise<T>): Promise<T> {
+    if (!globalDeadline) return operation();
+    const remainingMs = globalDeadline - Date.now();
+    if (remainingMs <= 0) throw new ProviderUnavailableError(tried, globalTimeoutMs);
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new ProviderUnavailableError(tried, globalTimeoutMs)), remainingMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  }
 
   // Pool health check: if the vast majority of candidates are on cooldown,
   // fail fast instead of probing them one by one. This turns a 30s sequential
@@ -485,7 +511,7 @@ export async function executeWithFallback(
 
     // Check quota before executing
     if (qs && tenantId) {
-      await qs.checkQuota(tenantId, plan.primary.providerId, 0, 0);
+      await withinDeadline(() => qs.checkQuota(tenantId, plan.primary.providerId, 0, 0));
     }
     tried.push(plan.primary.providerId);
     // Some upstreams intermittently reject a request they will accept on the
@@ -496,7 +522,7 @@ export async function executeWithFallback(
     // model was cooled down and the caller got a 502 for a model that works.
     // One immediate in-place retry converts that class of flake into a success
     // without consuming a cross-provider fallback slot.
-    const response = await withConcurrencySlot(plan.primary.providerId, async () => {
+    const response = await withinDeadline(() => withConcurrencySlot(plan.primary.providerId, async () => {
       try {
         return await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
       } catch (err) {
@@ -507,25 +533,28 @@ export async function executeWithFallback(
         );
         return await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
       }
-    });
+    }));
     // Record circuit breaker success (wrapped in try/catch)
     try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
-    // Record successful usage (fire-and-forget, never fail the request)
+    // Usage failures are nonfatal, but a hung usage backend must respect the request deadline.
     try {
-      if (rls) {
-        const tokens = response.usage?.total_tokens || 0;
-        await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, tokens);
-      }
-      if (qs && tenantId) {
-        const tokens = response.usage?.total_tokens || 0;
-        await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
-        await qs.recordProviderBudgetUsage(tenantId, plan.primary.providerId, tokens);
-      }
+      await withinDeadline(async () => {
+        if (rls) await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, response.usage?.total_tokens || 0);
+        if (qs && tenantId) {
+          const tokens = response.usage?.total_tokens || 0;
+          await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
+          await qs.recordProviderBudgetUsage(tenantId, plan.primary.providerId, tokens);
+        }
+      });
     } catch (usageErr) {
+      if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
       logger.warn({ err: usageErr, provider: plan.primary.providerId, requestId: options?.requestId }, 'Failed to record usage for primary provider');
     }
     return response;
   } catch (error) {
+    if (globalDeadline && Date.now() >= globalDeadline) {
+      throw new ProviderUnavailableError(tried, globalTimeoutMs);
+    }
     primaryErrorRaw = error;
     recordTriedError(plan.primary.providerId, error);
     // Record circuit breaker failure (wrapped in try/catch to prevent callback errors from breaking fallback chain)
@@ -551,8 +580,9 @@ export async function executeWithFallback(
         logger.warn({ err: learnErr, provider: plan.primary.providerId }, 'Failed to learn limit from error');
       }
       try {
-        await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0);
+        await withinDeadline(async () => { await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, 0); });
       } catch (usageErr) {
+        if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
         logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record rate limit usage');
       }
     }
@@ -588,11 +618,12 @@ export async function executeWithFallback(
     if (nextKey) {
       try {
         logger.info({ provider: plan.primary.providerId }, 'Trying next key on same provider');
-        const response = await withConcurrencySlot(plan.primary.providerId, () =>
+        const response = await withinDeadline(() => withConcurrencySlot(plan.primary.providerId, () =>
           executor.execute(plan.primary.providerId, plan.primary.modelId, request)
-        );
+        ));
         try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
         try {
+          await withinDeadline(async () => {
           if (rls) {
             const tokens = response.usage?.total_tokens || 0;
             await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, tokens);
@@ -610,14 +641,17 @@ export async function executeWithFallback(
               tenantId,
               plan.primary.providerId,
               tokens,
-              options.keyRotationService.hashKey(nextKey)
+              options.keyRotationService!.hashKey(nextKey)
             );
           }
+          });
         } catch (usageErr) {
+          if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
           logger.warn({ err: usageErr, provider: plan.primary.providerId }, 'Failed to record usage for key retry');
         }
         return response;
       } catch (keyRetryError) {
+        if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
         logger.warn({ err: keyRetryError, provider: plan.primary.providerId }, 'Key retry also failed, falling through to cross-provider fallback');
         // The rotated key hit a limit too — learn from it like any other 429.
         if (rls && isRateLimitError(keyRetryError)) {
@@ -656,10 +690,16 @@ export async function executeWithFallback(
 
   // Try configured fallbacks first (from config.yaml), then built-in chain
   const configuredSteps = options?.configuredFallbacks || [];
+  // The router's plan is drawn from its free-verified candidate pool. An
+  // operator-configured fallback is not; allow it only if the same binding is
+  // independently present in that verified plan.
+  const allowedBindings = new Set([plan.primary, ...plan.chain.map(s => s.provider)]
+    .map(p => `${p.providerId}\u0000${p.modelId}`));
   const allFallbackSteps = [
     // Configured fallbacks filtered by error category
     ...configuredSteps
-      .filter(f => f.trigger === errorCategory || f.trigger === 'error')
+      .filter(f => (f.trigger === errorCategory || f.trigger === 'error') &&
+        (!freeOnly || allowedBindings.has(`${f.providerId}\u0000${f.modelId}`)))
       .map(f => ({
         provider: { providerId: f.providerId, modelId: f.modelId, adapterType: '', score: 0 },
         trigger: f.trigger as any,
@@ -696,60 +736,52 @@ export async function executeWithFallback(
           if (!limitCheck.allowed) throw new Error('rate-limited');
         }
         if (qs && tenantId) {
-          await qs.checkQuota(tenantId, step.provider.providerId, 0, 0);
+          await withinDeadline(() => qs.checkQuota(tenantId, step.provider.providerId, 0, 0));
         }
         tried.push(step.provider.providerId);
         // Race each probe against the global deadline so a slow provider
         // can't hold back the entire chain past the timeout.
-        const remainingMs = globalDeadline > 0 ? Math.max(1, globalDeadline - Date.now()) : 0;
-        const execPromise = withConcurrencySlot(step.provider.providerId, () =>
+        const response = await withinDeadline(() => withConcurrencySlot(step.provider.providerId, () =>
           executor.execute(step.provider.providerId, step.provider.modelId, request)
-        );
-        const response = remainingMs > 0
-          ? await Promise.race([
-              execPromise,
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('global timeout')), remainingMs)
-              ),
-            ])
-          : await execPromise;
+        ));
         return { step, response };
       })()
     );
 
-    const results = await Promise.allSettled(probePromises);
     let winner: { step: typeof immediateSteps[0]; response: UnifiedResponse } | null = null;
-
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (result.status === 'fulfilled' && !winner) {
-        winner = result.value;
-      } else if (result.status === 'rejected') {
+    try {
+      // Return the first success rather than waiting for every probe to settle.
+      winner = await Promise.any(probePromises.map((probe, i) => probe.catch(async error => {
         const step = immediateSteps[i];
-        const category = classifyError(result.reason);
+        const category = classifyError(error);
         // Apply the same penalty/cooldown bookkeeping as the sequential loop:
         // a probed step that loses the race to a sibling must still be demoted
         // (429 penalty + escalating cooldown, 402/403/529 cooldowns) — otherwise
         // it is re-selected hot on the next request.
-        await applyFailurePenalties(rls, step.provider.providerId, step.provider.modelId, result.reason);
+        await withinDeadline(() => applyFailurePenalties(rls, step.provider.providerId, step.provider.modelId, error));
         trackModelError(step.provider.providerId, step.provider.modelId, category);
-        recordTriedError(step.provider.providerId, result.reason);
+        recordTriedError(step.provider.providerId, error);
+        throw error;
+      })));
+    } catch {
+      if (globalDeadline && Date.now() >= globalDeadline) {
+        throw new ProviderUnavailableError(tried, globalTimeoutMs);
       }
     }
 
     if (winner) {
       try { options?.onSuccess?.(winner.step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
       try {
-        if (rls) {
-          const tokens = winner.response.usage?.total_tokens || 0;
-          await rls.recordUsage(winner.step.provider.providerId, winner.step.provider.modelId, tokens);
-        }
-        if (qs && tenantId) {
-          const tokens = winner.response.usage?.total_tokens || 0;
-          await qs.recordUsage(tenantId, winner.step.provider.providerId, tokens, 0);
-          await qs.recordProviderBudgetUsage(tenantId, winner.step.provider.providerId, tokens);
-        }
+        await withinDeadline(async () => {
+          if (rls) await rls.recordUsage(winner.step.provider.providerId, winner.step.provider.modelId, winner.response.usage?.total_tokens || 0);
+          if (qs && tenantId) {
+            const tokens = winner.response.usage?.total_tokens || 0;
+            await qs.recordUsage(tenantId, winner.step.provider.providerId, tokens, 0);
+            await qs.recordProviderBudgetUsage(tenantId, winner.step.provider.providerId, tokens);
+          }
+        });
       } catch (usageErr) {
+        if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
         logger.warn({ err: usageErr, provider: winner.step.provider.providerId }, 'Failed to record usage for parallel fallback');
       }
       winner.response.fallback = {
@@ -800,31 +832,31 @@ export async function executeWithFallback(
         ? Math.max(stepWaitMs, retryAfterMs)
         : stepWaitMs;
       if (waitWithRetryAfter > 0) {
-        await new Promise((resolve) => setTimeout(resolve, waitWithRetryAfter));
+        await withinDeadline(() => new Promise<void>(resolve => setTimeout(resolve, waitWithRetryAfter)));
       }
 
       // Check quota before executing fallback
       if (qs && tenantId) {
-        await qs.checkQuota(tenantId, step.provider.providerId, 0, 0);
+        await withinDeadline(() => qs.checkQuota(tenantId, step.provider.providerId, 0, 0));
       }
       tried.push(step.provider.providerId);
-      const response = await withConcurrencySlot(step.provider.providerId, () =>
+      const response = await withinDeadline(() => withConcurrencySlot(step.provider.providerId, () =>
         executor.execute(step.provider.providerId, step.provider.modelId, request)
-      );
+      ));
       // Record circuit breaker success (wrapped in try/catch)
       try { options?.onSuccess?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
-      // Record successful usage (fire-and-forget, never fail the request)
+      // Usage failures are nonfatal, but a hung usage backend must respect the deadline.
       try {
-        if (rls) {
-          const tokens = response.usage?.total_tokens || 0;
-          await rls.recordUsage(step.provider.providerId, step.provider.modelId, tokens);
-        }
-        if (qs && tenantId) {
-          const tokens = response.usage?.total_tokens || 0;
-          await qs.recordUsage(tenantId, step.provider.providerId, tokens, 0);
-          await qs.recordProviderBudgetUsage(tenantId, step.provider.providerId, tokens);
-        }
+        await withinDeadline(async () => {
+          if (rls) await rls.recordUsage(step.provider.providerId, step.provider.modelId, response.usage?.total_tokens || 0);
+          if (qs && tenantId) {
+            const tokens = response.usage?.total_tokens || 0;
+            await qs.recordUsage(tenantId, step.provider.providerId, tokens, 0);
+            await qs.recordProviderBudgetUsage(tenantId, step.provider.providerId, tokens);
+          }
+        });
       } catch (usageErr) {
+        if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
         logger.warn({ err: usageErr, provider: step.provider.providerId, requestId: options?.requestId }, 'Failed to record usage for fallback provider');
       }
       logger.info(
@@ -866,7 +898,7 @@ export async function executeWithFallback(
       // On 429/402/403/529, apply the shared penalty + cooldown bookkeeping
       // (429 → penalty + escalating cooldown + usage, 402 → 24h payment
       // cooldown, 403 → 24h forbidden cooldown, 529/530 → 5m overload cooldown).
-      await applyFailurePenalties(rls, step.provider.providerId, step.provider.modelId, error);
+      await withinDeadline(() => applyFailurePenalties(rls, step.provider.providerId, step.provider.modelId, error));
       // Track model-level errors so we skip them on subsequent attempts.
       // Mirror the primary-provider handling: also track provider_overloaded
       // and generic transient 'error' (not just model_not_found / auth_error)
@@ -886,7 +918,9 @@ export async function executeWithFallback(
   // that trades quality for availability. This keeps the request alive when
   // the pool is temporarily unhealthy — better a degraded answer than a 503.
   // Only triggers when we haven't already tried the degraded model.
-  const degradedModel = process.env.DMRX_DEGRADED_MODEL;
+  // The configured degraded target bypasses the candidate pool, so it cannot
+  // be verified against free-only pricing or capability requirements here.
+  const degradedModel = freeOnly ? undefined : process.env.DMRX_DEGRADED_MODEL;
   if (degradedModel && !tried.some(id => id.includes('degraded'))) {
     try {
       const [degradedProviderId, degradedModelId] = degradedModel.includes('/')
@@ -896,7 +930,7 @@ export async function executeWithFallback(
         { requestId: options?.requestId, degradedModel, degradedProviderId, degradedModelId },
         'All providers failed — attempting graceful degradation'
       );
-      const response = await executor.execute(degradedProviderId, degradedModelId, request);
+      const response = await withinDeadline(() => executor.execute(degradedProviderId, degradedModelId, request));
       response.fallback = {
         fromProviderId: plan.primary.providerId,
         fromModelId: plan.primary.modelId,
@@ -906,6 +940,7 @@ export async function executeWithFallback(
       };
       return response;
     } catch (degradedErr) {
+      if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
       logger.warn({ requestId: options?.requestId, err: degradedErr }, 'Graceful degradation also failed');
     }
   }
@@ -1004,6 +1039,21 @@ export async function executeWithHedging(
 ): Promise<UnifiedResponse> {
   const hedge = getHedgeConfig();
   const rls = options?.rateLimitService;
+  const budgetMs = options?.globalTimeoutMs ?? Math.min(plan.timeoutMs ?? 12_000, 30_000);
+  const deadlineAt = options?.deadlineAt ?? (budgetMs > 0 ? Date.now() + budgetMs : 0);
+  const sharedOptions = { ...options, deadlineAt };
+  const deadlineError = () => new ProviderUnavailableError([plan.primary.providerId], budgetMs);
+  async function bounded<T>(operation: () => Promise<T>): Promise<T> {
+    if (!deadlineAt) return operation();
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw deadlineError();
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      return await Promise.race([operation(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(deadlineError()), remaining);
+      })]);
+    } finally { clearTimeout(timer!); }
+  }
 
   const hedgeable =
     hedge.enabled &&
@@ -1012,12 +1062,12 @@ export async function executeWithHedging(
     plan.chain.length > 0;
 
   if (!hedgeable) {
-    return executeWithFallback(plan, request, executor, options);
+    return executeWithFallback(plan, request, executor, sharedOptions);
   }
 
   const hedgeStep = selectHedgeStep(plan, rls);
   if (!hedgeStep || !tryAcquireHedgeCredit(hedge.maxPerMinute)) {
-    return executeWithFallback(plan, request, executor, options);
+    return executeWithFallback(plan, request, executor, sharedOptions);
   }
 
   const requestId = options?.requestId || crypto.randomUUID();
@@ -1044,7 +1094,7 @@ export async function executeWithHedging(
     primaryOnlyPlan,
     request,
     executor,
-    options,
+    sharedOptions,
   ).then(
     (response): Outcome => {
       primarySettled = true;
@@ -1057,7 +1107,8 @@ export async function executeWithHedging(
   );
 
   const hedgeAttempt: Promise<Outcome> = (async (): Promise<Outcome> => {
-    await new Promise((resolve) => setTimeout(resolve, hedge.delayMs));
+    try { await bounded(() => new Promise<void>(resolve => setTimeout(resolve, hedge.delayMs))); }
+    catch (error) { return { kind: 'hedge-failed', error }; }
     if (primarySettled) {
       // Primary finished inside the threshold — never fire the duplicate.
       return new Promise<Outcome>(() => {}); // never settles; dropped by the race
@@ -1069,7 +1120,10 @@ export async function executeWithHedging(
     const slotId = `${hedgeStep.providerId}:${requestId}:hedge`;
     if (rls) rls.acquireConcurrencySlot(hedgeStep.providerId, slotId);
     try {
-      const response = await executor.execute(hedgeStep.providerId, hedgeStep.modelId, request);
+      if (options?.quotaService && options?.tenantId) {
+        await bounded(() => options.quotaService!.checkQuota(options.tenantId!, hedgeStep.providerId, 0, 0));
+      }
+      const response = await bounded(() => executor.execute(hedgeStep.providerId, hedgeStep.modelId, request));
       return { kind: 'hedge', response };
     } catch (error) {
       return { kind: 'hedge-failed', error };
@@ -1078,7 +1132,7 @@ export async function executeWithHedging(
     }
   })();
 
-  const winner = await Promise.race([primaryAttempt, hedgeAttempt]);
+  const winner = await bounded(() => Promise.race([primaryAttempt, hedgeAttempt]));
 
   if (winner.kind === 'primary') {
     return winner.response;
@@ -1086,10 +1140,9 @@ export async function executeWithHedging(
 
   if (winner.kind === 'primary-failed') {
     // Primary died before the hedge fired (or while racing). Full chain takes
-    // over from here; the hedge attempt, if in flight, resolves unobserved and
-    // its usage is recorded below via the detached handler.
+    // over from here; the hedge attempt, if in flight, resolves unobserved.
     void hedgeAttempt.catch(() => {});
-    return executeWithFallback(plan, request, executor, options);
+    return executeWithFallback(plan, request, executor, sharedOptions);
   }
 
   if (winner.kind === 'hedge') {
@@ -1100,14 +1153,15 @@ export async function executeWithHedging(
     try {
       if (rls) {
         const tokens = winner.response.usage?.total_tokens || 0;
-        await rls.recordUsage(hedgeStep.providerId, hedgeStep.modelId, tokens);
+        await bounded(async () => { await rls.recordUsage(hedgeStep.providerId, hedgeStep.modelId, tokens); });
       }
       if (options?.quotaService && options?.tenantId) {
         const tokens = winner.response.usage?.total_tokens || 0;
-        await options.quotaService.recordUsage(options.tenantId, hedgeStep.providerId, tokens, 0);
-        await options.quotaService.recordProviderBudgetUsage(options.tenantId, hedgeStep.providerId, tokens);
+        await bounded(() => options.quotaService!.recordUsage(options.tenantId!, hedgeStep.providerId, tokens, 0));
+        await bounded(() => options.quotaService!.recordProviderBudgetUsage(options.tenantId!, hedgeStep.providerId, tokens));
       }
     } catch (usageErr) {
+      if (deadlineAt && Date.now() >= deadlineAt) throw deadlineError();
       logger.warn({ err: usageErr, provider: hedgeStep.providerId }, 'Failed to record usage for hedge winner');
     }
     winner.response.fallback = {
@@ -1127,13 +1181,13 @@ export async function executeWithHedging(
   // Hedge fired and failed: apply the standard failure bookkeeping so the
   // losing alternate is demoted like any other failed candidate, then let the
   // (already-running) primary outcome decide.
-  await applyFailurePenalties(rls, hedgeStep.providerId, hedgeStep.modelId, winner.error);
+  await bounded(() => applyFailurePenalties(rls, hedgeStep.providerId, hedgeStep.modelId, winner.error));
   trackModelError(hedgeStep.providerId, hedgeStep.modelId, classifyError(winner.error));
-  return primaryAttempt.then((outcome) => {
+  return bounded(() => primaryAttempt.then((outcome) => {
     if (outcome.kind === 'primary') return outcome.response;
     // Primary ALSO failed — hand the whole thing to the sequential chain.
-    return executeWithFallback(plan, request, executor, options);
-  });
+    return executeWithFallback(plan, request, executor, sharedOptions);
+  }));
 }
 
 /**

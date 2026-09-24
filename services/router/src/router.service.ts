@@ -765,6 +765,7 @@ export class Router {
         span.setAttribute('router.fallback_count', plan.chain.length);
         if (!this.adapterExecutor) throw new Error('No adapter executor configured');
         const res = await executeWithHedging(plan, request, this.adapterExecutor, {
+          freeOnly: this.getEffectiveCostFilter(request.model ?? '', request.metadata?.costFilter as 'free' | 'all' | undefined) === 'free',
           rateLimitService: this.config.rateLimitService,
           quotaService: this.config.quotaService,
           tenantId,
