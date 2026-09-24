@@ -11,7 +11,7 @@ function makeCandidate(overrides: Partial<CandidateSet[0]> = {}): CandidateSet[0
     modelId: 'test-model',
     modality: 'llm',
     intelligenceLayer: 'executor',
-    capabilityTier: 'executor',
+    capabilityTier: 'fast',
     capabilities: [],
     costPerInputToken: 0.001,
     costPerOutputToken: 0.002,
@@ -302,6 +302,52 @@ describe('retryWithWait', () => {
     // After retry, backup-model should still be available
     expect(result.selected).toBeDefined();
     expect(['retry-model', 'backup-model']).toContain(result.selected.modelId);
+  });
+
+  it('fails promptly with the real reset hint when every candidate is blocked beyond the wait budget', async () => {
+    const candidates: CandidateSet = [makeCandidate({ modelId: 'free-limited', costPerInputToken: 0, costPerOutputToken: 0 })];
+    const rls = {
+      ...makeMockRateLimitService(),
+      checkLimit: () => ({ allowed: false, retryAfterMs: 60_000, reason: 'Free-tier RPM exhausted' }),
+    };
+    const start = performance.now();
+    let failure: unknown;
+    try {
+      await runPipeline({ taskProfile: makeTaskProfile(), candidates, rateLimitService: rls as any, maxWaitMs: 150 });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ProviderUnavailableError);
+    expect((failure as ProviderUnavailableError).retryAfter).toBe(60);
+    expect(performance.now() - start).toBeLessThan(100);
+  });
+
+  it('does not invent a quota reset when no candidate survives deterministic filtering', async () => {
+    let failure: unknown;
+    try {
+      await runPipeline({
+        taskProfile: makeTaskProfile({ modality: 'llm' }),
+        candidates: [makeCandidate({ modality: 'diffusion' })],
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ProviderUnavailableError);
+    expect((failure as ProviderUnavailableError).retryAfter).toBe(0);
+  });
+
+  it('does not invent a quota reset when a limiter provides no reset time', async () => {
+    const candidates: CandidateSet = [makeCandidate({ modelId: 'limited' })];
+    const rls = {
+      ...makeMockRateLimitService(),
+      checkLimit: () => ({ allowed: false, reason: 'Unknown rate limit' }),
+    };
+    let failure: unknown;
+    try {
+      await runPipeline({ taskProfile: makeTaskProfile(), candidates, rateLimitService: rls as any });
+    } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderUnavailableError);
+    expect((failure as ProviderUnavailableError).retryAfter).toBe(0);
   });
 
   it('should use maxWaitMs to cap wait time', async () => {

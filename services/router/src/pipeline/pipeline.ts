@@ -279,12 +279,15 @@ export async function runPipelineFromFiltered(input: {
   if (filtered.length === 0 && retryWithWait !== false && rateLimitResult && rateLimitResult.earliestResetMs > 0) {
     // Default 8s (free-tier windows are often 5-10s); override via DMRX_RATE_LIMIT_MAX_WAIT_MS
     const maxWait = inputMaxWaitMs ?? (Number(process.env.DMRX_RATE_LIMIT_MAX_WAIT_MS) || 8000);
-    const waitMs = Math.min(rateLimitResult.earliestResetMs, maxWait);
+    // Waiting for only part of a known reset window cannot make a blocked
+    // candidate usable; return its actual retry hint instead of rechecking.
+    const waitMs = rateLimitResult.earliestResetMs <= maxWait ? rateLimitResult.earliestResetMs : 0;
     if (waitMs > 0) {
       logger.info({ waitMs, rateLimitedCount: rateLimitResult.rateLimited.length }, 'All providers rate-limited, waiting for reset');
       await new Promise(resolve => setTimeout(resolve, waitMs));
       // Re-run rate-limit with candidates that existed before rate-limit filtering
       const recheck = await rateLimitFilter(preRateLimitCandidates, rateLimitService!, estimatedTokens);
+      rateLimitResult = recheck;
       filtered = recheck.allowed;
       // Retry starts from the pre-eligibility set, so enforce hard constraints again.
       if (eligibilityEngine) {
@@ -305,8 +308,14 @@ export async function runPipelineFromFiltered(input: {
 
   if (filtered.length === 0) {
     const tried = preRateLimitCandidates.map(c => `${c.providerId}/${c.modelId}`);
-    // Convert earliestResetMs to seconds for ProviderUnavailableError
-    const retryAfterSeconds = rateLimitResult?.earliestResetMs ? Math.ceil(rateLimitResult.earliestResetMs / 1000) : 30;
+    // Only advertise a reset when every pre-rate-limit candidate was blocked
+    // by that limiter. No candidates (or policy/eligibility rejection) is not
+    // evidence of an upstream quota window.
+    const allRateLimited = preRateLimitCandidates.length > 0 &&
+      rateLimitResult?.rateLimited.length === preRateLimitCandidates.length;
+    const retryAfterSeconds = allRateLimited && rateLimitResult!.earliestResetMs > 0
+      ? Math.ceil(rateLimitResult!.earliestResetMs / 1000)
+      : 0;
     throw new ProviderUnavailableError(tried, retryAfterSeconds);
   }
 

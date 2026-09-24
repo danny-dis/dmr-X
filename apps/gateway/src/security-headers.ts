@@ -80,6 +80,11 @@ export function registerSecurity(server: FastifyInstance): void {
     // 5xx JSON bodies, making 4xx responses and successes uncorrelatable
     // from the client side.
     reply.header('X-Request-Id', request.id);
+    // ProviderUnavailableError.retryAfter is in seconds. An explicit reset
+    // hint lets clients pace retries without exposing upstream error details.
+    if (code === 'PROVIDER_UNAVAILABLE' && Number.isFinite(err.retryAfter) && err.retryAfter > 0) {
+      reply.header('Retry-After', String(Math.ceil(err.retryAfter)));
+    }
 
     // For 5xx, include the request id so users can quote it in support
     // tickets (matches the pattern used by Stripe, GitHub, Cloudflare).

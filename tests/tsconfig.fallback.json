@@ -6,10 +6,11 @@
     "paths": {
       "@dmr-x/core": ["packages/core/src/index.ts"],
       "@dmr-x/quota": ["services/quota/src/index.ts"],
-      "@dmr-x/utils": ["packages/utils/src/index.ts"]
+      "@dmr-x/utils": ["packages/utils/src/index.ts"],
+      "fastify": ["apps/gateway/node_modules/fastify"]
     },
     "types": ["vitest/globals", "node"]
   },
-  "include": ["unit/fallback-deadline.test.ts", "unit/free-degraded-fallback.test.ts", "unit/adapter-retry-log-redaction.test.ts", "unit/auto-json-transient-retry.test.ts"],
+  "include": ["unit/fallback-deadline.test.ts", "unit/free-degraded-fallback.test.ts", "unit/adapter-retry-log-redaction.test.ts", "unit/auto-json-transient-retry.test.ts", "unit/pipeline.test.ts", "unit/free-pool-exhaustion.test.ts", "unit/provider-unavailable-retry-after.test.ts"],
   "exclude": ["../node_modules"]
 }

@@ -643,11 +643,16 @@ export class Router {
             thompsonSampler: this.thompsonSampler,
           });
         } catch (error) {
+          // The pipeline has already waited when a reset fit its budget.
+          // Rechecking a depleted free-only pool cannot add paid capacity.
+          if (requireFreePool && error instanceof ProviderUnavailableError && error.retryAfter > 0) {
+            throw error;
+          }
           const retryable = error instanceof ProviderUnavailableError || isRetryable5xx(error);
           if (retryable) {
             // (a) Transient rate-limit cooldown: brief wait then retry the same pool.
             if (error instanceof ProviderUnavailableError && error.retryAfter) {
-              const waitMs = Math.min(error.retryAfter, 3000);
+              const waitMs = Math.min(error.retryAfter * 1000, 3000);
               logger.info({ waitMs }, 'All providers temporarily unavailable, retrying after wait');
               span.addEvent('router.retry_after_wait', { 'wait_ms': waitMs });
               await new Promise(resolve => setTimeout(resolve, waitMs));
