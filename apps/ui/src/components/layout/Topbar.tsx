@@ -17,6 +17,7 @@ export function Topbar() {
   const liveMode = useUIStore((s) => s.liveMode);
   const setLiveMode = useUIStore((s) => s.setLiveMode);
   const setMobileMenuOpen = useUIStore((s) => s.setMobileMenuOpen);
+  const mobileMenuOpen = useUIStore((s) => s.mobileMenuOpen);
   const location = useLocation();
   const page = findNavItem(location.pathname);
   const { data: health, isError: healthError } = useHealth();
@@ -67,6 +68,9 @@ export function Topbar() {
         className="lg:hidden"
         onClick={() => setMobileMenuOpen(true)}
         aria-label="Open menu"
+        aria-expanded={mobileMenuOpen}
+        aria-controls="mobile-navigation"
+        data-mobile-menu-trigger=""
       >
         <Menu className="size-4" />
       </Button>
