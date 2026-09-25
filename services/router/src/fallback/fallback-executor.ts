@@ -301,15 +301,22 @@ export function extractRetryAfterMs(error: unknown): number | null {
   if (!headers) return null;
   const retryAfter = headers['retry-after'] ?? headers['Retry-After'];
   if (!retryAfter) return null;
-  const seconds = parseInt(retryAfter, 10);
-  if (!isNaN(seconds)) return seconds * 1000;
-  const date = new Date(retryAfter);
-  if (!isNaN(date.getTime())) return date.getTime() - Date.now();
-  return null;
+  const maxRetryAfterMs = 24 * 60 * 60_000;
+  const value = retryAfter.trim();
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    const ms = seconds * 1000;
+    return Number.isSafeInteger(ms) && ms > 0 && ms <= maxRetryAfterMs ? ms : null;
+  }
+  const date = new Date(value);
+  const ms = date.getTime() - Date.now();
+  return Number.isFinite(ms) && ms > 0 && ms <= maxRetryAfterMs ? ms : null;
 }
 
-function trackModelError(providerId: string, modelId: string, category: string): void {
-  const ttl = MODEL_ERROR_TTL[category] || 5 * 60_000;
+function trackModelError(providerId: string, modelId: string, category: string, retryAfterMs: number | null = null): void {
+  const ttl = category === 'rate_limit' && retryAfterMs !== null && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+    ? retryAfterMs
+    : MODEL_ERROR_TTL[category] || 5 * 60_000;
   const key = `${providerId}:${modelId}`;
   modelErrorCache.set(key, { category, expiresAt: Date.now() + ttl });
   logger.warn({ providerId, modelId, category, ttl }, 'Tracked model error — will skip for cooldown period');
@@ -342,7 +349,7 @@ async function applyFailurePenalties(
     rls.addPenalty(providerId, modelId);
     // Escalating cooldown (2m -> 10m -> 1h -> 24h) so a repeatedly 429'd
     // provider/model backs off progressively instead of being retried hot.
-    rls.recordRateLimitHit?.(providerId, modelId);
+    rls.recordRateLimitHit?.(providerId, modelId, extractRetryAfterMs(error) ?? undefined);
     // Self-correcting limits: parse the provider's reported ceiling from the
     // error message and push it into the live config (only ever lowers).
     try {
@@ -576,7 +583,7 @@ export async function executeWithFallback(
       rls.addPenalty(plan.primary.providerId, plan.primary.modelId);
       // Escalating cooldown (2m -> 10m -> 1h -> 24h) so a repeatedly 429'd
       // provider/model backs off progressively instead of being retried hot.
-      rls.recordRateLimitHit?.(plan.primary.providerId, plan.primary.modelId);
+      rls.recordRateLimitHit?.(plan.primary.providerId, plan.primary.modelId, extractRetryAfterMs(error) ?? undefined);
       // Self-correcting limits: learn the real ceiling from the error message.
       try {
         rls.learnLimitFromError?.(plan.primary.providerId, plan.primary.modelId, error instanceof Error ? error : { message: String(error) });
@@ -689,7 +696,7 @@ export async function executeWithFallback(
   if (errorCategory === 'model_not_found' || errorCategory === 'auth_error' ||
       errorCategory === 'provider_overloaded' || errorCategory === 'error' ||
       errorCategory === 'rate_limit') {
-    trackModelError(plan.primary.providerId, plan.primary.modelId, errorCategory);
+    trackModelError(plan.primary.providerId, plan.primary.modelId, errorCategory, retryAfterMs);
   }
 
   // Try configured fallbacks first (from config.yaml), then built-in chain
@@ -763,7 +770,7 @@ export async function executeWithFallback(
         // (429 penalty + escalating cooldown, 402/403/529 cooldowns) — otherwise
         // it is re-selected hot on the next request.
         await withinDeadline(() => applyFailurePenalties(rls, step.provider.providerId, step.provider.modelId, error));
-        trackModelError(step.provider.providerId, step.provider.modelId, category);
+        trackModelError(step.provider.providerId, step.provider.modelId, category, extractRetryAfterMs(error));
         recordTriedError(step.provider.providerId, error);
         throw error;
       })));
@@ -799,7 +806,7 @@ export async function executeWithFallback(
     }
   }
 
-  for (const [index, step] of deduplicated.entries()) {
+  for (const step of deduplicated) {
     try {
       // Skip models on error cooldown (deprecated, auth errors, etc.)
       if (isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)) {
@@ -828,15 +835,14 @@ export async function executeWithFallback(
         }
       }
 
-      // Honor Retry-After from the primary error: if the primary returned 429,
-      // wait the provider's requested cooldown before trying the next fallback.
-      // This gives the provider's quota window time to reset.
+      // Retry-After belongs to the failed primary provider, not a different
+      // provider's independent quota window. Preserve explicit step waits.
       const stepWaitMs = step.waitMs ?? 0;
-      const waitWithRetryAfter = retryAfterMs && index === 0
+      const waitMs = retryAfterMs && step.provider.providerId === plan.primary.providerId
         ? Math.max(stepWaitMs, retryAfterMs)
         : stepWaitMs;
-      if (waitWithRetryAfter > 0) {
-        await withinDeadline(() => new Promise<void>(resolve => setTimeout(resolve, waitWithRetryAfter)));
+      if (waitMs > 0) {
+        await withinDeadline(() => new Promise<void>(resolve => setTimeout(resolve, waitMs)));
       }
 
       // Check quota before executing fallback
@@ -913,7 +919,7 @@ export async function executeWithFallback(
       if (fallbackErrorCategory === 'model_not_found' || fallbackErrorCategory === 'auth_error' ||
           fallbackErrorCategory === 'provider_overloaded' || fallbackErrorCategory === 'error' ||
           fallbackErrorCategory === 'rate_limit') {
-        trackModelError(step.provider.providerId, step.provider.modelId, fallbackErrorCategory);
+        trackModelError(step.provider.providerId, step.provider.modelId, fallbackErrorCategory, extractRetryAfterMs(error));
       }
     }
   }
@@ -1186,7 +1192,7 @@ export async function executeWithHedging(
   // losing alternate is demoted like any other failed candidate, then let the
   // (already-running) primary outcome decide.
   await bounded(() => applyFailurePenalties(rls, hedgeStep.providerId, hedgeStep.modelId, winner.error));
-  trackModelError(hedgeStep.providerId, hedgeStep.modelId, classifyError(winner.error));
+  trackModelError(hedgeStep.providerId, hedgeStep.modelId, classifyError(winner.error), extractRetryAfterMs(winner.error));
   return bounded(() => primaryAttempt.then((outcome) => {
     if (outcome.kind === 'primary') return outcome.response;
     // Primary ALSO failed — hand the whole thing to the sequential chain.

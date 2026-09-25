@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { executeWithFallback, executeWithMultiBindingFallback, resetModelErrorCache } from '../../services/router/src/fallback/fallback-executor.js';
+import { executeWithFallback, executeWithHedging, executeWithMultiBindingFallback, extractRetryAfterMs, isModelOnErrorCooldown, resetHedgeState, resetModelErrorCache } from '../../services/router/src/fallback/fallback-executor.js';
 import {
   AllProvidersFailedError,
   ProviderError,
@@ -42,6 +42,7 @@ function createMockRLS() {
     checkLimit: vi.fn().mockReturnValue({ allowed: true }),
     recordUsage: vi.fn().mockResolvedValue(undefined),
     addPenalty: vi.fn().mockReturnValue(0),
+    recordRateLimitHit: vi.fn(),
     isOnCooldown: vi.fn().mockReturnValue(false),
     getCooldownExpiry: vi.fn().mockReturnValue(null),
     setCooldown: vi.fn(),
@@ -162,6 +163,86 @@ describe('executeWithFallback', () => {
   });
 
   describe('primary 429 rate-limit error', () => {
+    it('releases a failed 429 hedge when its upstream window resets', async () => {
+      vi.stubEnv('DMRX_HEDGE_DELAY_MS', '1');
+      resetHedgeState();
+      try {
+        mockExecutor.execute.mockImplementation(async (provider: string) => {
+          if (provider === 'prov-b') throw new ProviderError('Rate limited', provider, 429, true, { 'retry-after': '1' });
+          await new Promise(resolve => setTimeout(resolve, 30));
+          return makeResponse();
+        });
+        await executeWithHedging(makePlan(), dummyRequest, mockExecutor, {
+          rateLimitService: mockRLS,
+          freeOnly: true,
+        });
+        expect(mockRLS.recordRateLimitHit).toHaveBeenCalledWith('prov-b', 'model-b', 1_000);
+        expect(isModelOnErrorCooldown('prov-b', 'model-b')).toBe(true);
+        vi.useFakeTimers();
+        vi.advanceTimersByTime(1_001);
+        expect(isModelOnErrorCooldown('prov-b', 'model-b')).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('ignores malformed and elapsed Retry-After values', () => {
+      for (const header of ['1junk', '-2', '0', '1.5', 'Infinity', '86401', 'Fri, 01 Jan 1999 00:00:00 GMT']) {
+        expect(extractRetryAfterMs(new ProviderError('Rate limited', 'prov-a', 429, true, { 'retry-after': header }))).toBeNull();
+      }
+      const farFuture = new Date(Date.now() + 25 * 60 * 60_000).toUTCString();
+      expect(extractRetryAfterMs(new ProviderError('Rate limited', 'prov-a', 429, true, { 'retry-after': farFuture }))).toBeNull();
+    });
+
+    it('uses valid Retry-After for service and model error cooldowns', async () => {
+      vi.useFakeTimers();
+      try {
+        mockExecutor.execute.mockRejectedValue(new ProviderError('Rate limited', 'prov-a', 429, true, { 'retry-after': '1' }));
+        await expect(executeWithFallback(makePlan({ chain: [] }), dummyRequest, mockExecutor, {
+          rateLimitService: mockRLS,
+          freeOnly: true,
+          globalTimeoutMs: 0,
+        })).rejects.toThrow();
+        expect(mockRLS.recordRateLimitHit).toHaveBeenCalledWith('prov-a', 'model-a', 1_000);
+        expect(isModelOnErrorCooldown('prov-a', 'model-a')).toBe(true);
+        vi.advanceTimersByTime(1_001);
+        expect(isModelOnErrorCooldown('prov-a', 'model-a')).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not wait for a failed provider reset before trying a different provider', async () => {
+      mockExecutor.execute
+        .mockRejectedValueOnce(new ProviderError('Rate limited', 'prov-a', 429, true, { 'retry-after': '60' }))
+        .mockResolvedValueOnce(makeResponse({ providerId: 'prov-b', modelId: 'model-b' }));
+      const result = await executeWithFallback(makePlan(), dummyRequest, mockExecutor, {
+        rateLimitService: mockRLS,
+        freeOnly: true,
+        globalTimeoutMs: 100,
+      });
+      expect(result.providerId).toBe('prov-b');
+      expect(mockExecutor.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the primary reset wait for a same-provider fallback', async () => {
+      const plan = makePlan({ chain: [{
+        provider: { providerId: 'prov-a', modelId: 'model-b', adapterType: 'test', score: 0.8 },
+        trigger: 'error' as const,
+        waitMs: 0,
+      }] });
+      mockExecutor.execute
+        .mockRejectedValueOnce(new ProviderError('Rate limited', 'prov-a', 429, true, { 'retry-after': '60' }))
+        .mockResolvedValueOnce(makeResponse({ providerId: 'prov-a', modelId: 'model-b' }));
+      await expect(executeWithFallback(plan, dummyRequest, mockExecutor, {
+        rateLimitService: mockRLS,
+        freeOnly: true,
+        globalTimeoutMs: 100,
+      })).rejects.toThrow(ProviderUnavailableError);
+      expect(mockExecutor.execute).toHaveBeenCalledTimes(1);
+    });
+
     it('adds penalty and records zero usage then falls through to fallback', async () => {
       mockExecutor.execute
         .mockRejectedValueOnce(new ProviderError('Rate limited', 'prov-a', 429))
@@ -344,6 +425,63 @@ describe('executeWithFallback', () => {
       await expect(
         executeWithFallback(makePlan(), dummyRequest, mockExecutor, { rateLimitService: mockRLS }),
       ).rejects.toThrow(ProviderUnavailableError);
+    });
+
+    it('forwards fallback 429 Retry-After to the cooldown service', async () => {
+      mockExecutor.execute
+        .mockRejectedValueOnce(new ProviderError('Server error', 'prov-a', 500))
+        .mockRejectedValueOnce(new ProviderError('Rate limited', 'prov-b', 429, true, { 'retry-after': '3' }));
+      await expect(executeWithFallback(makePlan(), dummyRequest, mockExecutor, {
+        rateLimitService: mockRLS,
+        freeOnly: true,
+      })).rejects.toThrow();
+      expect(mockRLS.recordRateLimitHit).toHaveBeenCalledWith('prov-b', 'model-b', 3_000);
+    });
+
+    it('expires a fallback model error at its upstream reset', async () => {
+      vi.useFakeTimers();
+      try {
+        mockExecutor.execute
+          .mockRejectedValueOnce(new ProviderError('Server error', 'prov-a', 500))
+          .mockRejectedValueOnce(new ProviderError('Rate limited', 'prov-b', 429, true, { 'retry-after': '3' }));
+        await expect(executeWithFallback(makePlan(), dummyRequest, mockExecutor, {
+          rateLimitService: mockRLS,
+          freeOnly: true,
+          globalTimeoutMs: 0,
+        })).rejects.toThrow();
+        expect(isModelOnErrorCooldown('prov-b', 'model-b')).toBe(true);
+        vi.advanceTimersByTime(3_001);
+        expect(isModelOnErrorCooldown('prov-b', 'model-b')).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('expires a failed parallel probe at its upstream reset', async () => {
+      vi.useFakeTimers();
+      try {
+        const plan = makePlan();
+        plan.chain.push({
+          provider: { providerId: 'prov-c', modelId: 'model-c', adapterType: 'test', score: 0.3 },
+          trigger: 'error' as const,
+          waitMs: 0,
+        });
+        mockExecutor.execute.mockImplementation(async (provider: string) => {
+          if (provider === 'prov-b') throw new ProviderError('Rate limited', provider, 429, true, { 'retry-after': '3' });
+          throw new ProviderError('Server error', provider, 500);
+        });
+        await expect(executeWithFallback(plan, dummyRequest, mockExecutor, {
+          rateLimitService: mockRLS,
+          freeOnly: true,
+          globalTimeoutMs: 0,
+        })).rejects.toThrow();
+        expect(mockRLS.recordRateLimitHit).toHaveBeenCalledWith('prov-b', 'model-b', 3_000);
+        expect(isModelOnErrorCooldown('prov-b', 'model-b')).toBe(true);
+        vi.advanceTimersByTime(3_001);
+        expect(isModelOnErrorCooldown('prov-b', 'model-b')).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('applies 429 handling (addPenalty + recordUsage) on fallback step errors', async () => {
