@@ -52,6 +52,7 @@ export class SQLiteCapacityStore implements CapacityStore {
 
   async tryReserve(
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
+    reservationId: string,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const db = getDb();
     const now = Date.now();
@@ -66,7 +67,6 @@ export class SQLiteCapacityStore implements CapacityStore {
     }
 
     // Apply reservation atomically within a transaction
-    const reservationId = `sqlite-${now}-${Math.random().toString(36).slice(2, 10)}`;
     const insert = db.prepare(`
       INSERT INTO capacity_reservations (reservation_id, unit, scope_id, amount, expires_at, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'reserved', ?)
@@ -177,6 +177,7 @@ export class RedisCapacityStore implements CapacityStore {
 
   async tryReserve(
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
+    reservationId: string,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const redis = await this.getClient();
     const now = Date.now();
@@ -208,7 +209,6 @@ export class RedisCapacityStore implements CapacityStore {
     if (result === null) return null;
 
     // Store reservation record for later release/commit
-    const reservationId = `redis-${now}-${Math.random().toString(36).slice(2, 10)}`;
     const reservationKey = `${this.keyPrefix}reservation:${reservationId}`;
     await redis.set(reservationKey, JSON.stringify({
       id: reservationId,

@@ -13,6 +13,8 @@
  * See docs/DMRX-FREE-INFERENCE-IMPLEMENTATION-PLAN.md Phase 2.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import {
   QuotaVector,
   QuotaDimension,
@@ -68,6 +70,7 @@ export interface CapacityStore {
    */
   tryReserve(
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
+    reservationId: string,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null>;
 
   /**
@@ -237,15 +240,17 @@ export class CapacityManager {
       return { success: false, reason: 'No dimensions to reserve' };
     }
 
-    // Attempt atomic reservation
-    const reserved = await this.store.tryReserve(reservationDims);
+    // Allocate the identity before the store write so reconciliation addresses
+    // the same durable reservation record the store created.
+    const reservationId = `res-${randomUUID()}`;
+    const reserved = await this.store.tryReserve(reservationDims, reservationId);
     if (!reserved) {
       return { success: false, reason: 'Atomic reservation failed (race condition or stale data)' };
     }
 
     // Create reservation record
     const reservation: CapacityReservation = {
-      id: `res-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      id: reservationId,
       candidateId,
       dimensions: reservationDims.map((d, i) => ({
         unit: d.unit,
