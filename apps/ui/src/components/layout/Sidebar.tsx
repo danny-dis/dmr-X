@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import * as React from 'react';
 import { NavLink, useLocation } from 'react-router';
 
@@ -17,6 +17,11 @@ export function Sidebar() {
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const expanded = !isDesktop || !collapsed;
   const activeItem = findNavItem(location.pathname);
+  const mobileMenuOpen = useUIStore((s) => s.mobileMenuOpen);
+  const setMobileMenuOpen = useUIStore((s) => s.setMobileMenuOpen);
+  // Mobile drawer needs an in-drawer close control (Phase 9); desktop has
+  // no overlay drawer, so the button stays hidden at lg+.
+  const showMobileClose = !isDesktop && mobileMenuOpen;
 
   return (
     <aside
@@ -28,6 +33,18 @@ export function Sidebar() {
       <div className={cn('flex items-center gap-2.5 border-b border-border', expanded ? 'justify-start px-4 py-4' : 'justify-center px-2 py-4')}>
         <BrandMark size={28} className="shrink-0" />
         {expanded && <BrandWordmark height={20} className="shrink-0" />}
+        {showMobileClose && (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="ml-auto"
+            aria-label="Close menu"
+            data-mobile-menu-close=""
+            onClick={() => setMobileMenuOpen(false)}
+          >
+            <X className="size-4" />
+          </Button>
+        )}
       </div>
 
       <nav aria-label="Main navigation" className="flex-1 overflow-y-auto px-2 py-3">
