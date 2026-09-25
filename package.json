@@ -31,12 +31,12 @@
     "clean:src": "bun run scripts/clean-src-artifacts.ts"
   },
   "devDependencies": {
-    "@eslint/js": "9.17.0",
+    "@eslint/js": "9.39.2",
     "@modelcontextprotocol/client": "^2.0.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/sdk-trace-base": "2.9.0",
     "@types/inquirer": "9.0.9",
-    "eslint": "9.17.0",
+    "eslint": "9.39.2",
     "globals": "^15.14.0",
     "turbo": "2.10.1",
     "typescript": "5.9.3",
@@ -67,10 +67,14 @@
     "find-my-way": "^9.7.0",
     "@opentelemetry/propagator-jaeger": ">=2.9.0",
     "postcss": "^8.5.18",
-    "protobufjs": "^7.5.4",
+    "protobufjs": "^7.6.5",
     "tmp": "^0.2.6",
     "vite": "6.4.3",
     "js-yaml": "^4.3.2",
-    "nanoid": "^3.3.18"
+    "nanoid": "^3.3.18",
+    "@hono/node-server": "^1.19.15",
+    "fastify": "^5.12.1",
+    "hono": "^4.13.5",
+    "qs": "^6.16.0"
   }
 }

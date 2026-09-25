@@ -1,6 +1,6 @@
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
-import { Resource } from '@opentelemetry/resources';
+import { resourceFromAttributes } from '@opentelemetry/resources';
 import type { MetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 // ATTR_SERVICE_NAME was added in semantic-conventions 1.27+;
@@ -92,7 +92,7 @@ export class TelemetryService {
       return;
     }
 
-    const resource = new Resource({
+    const resource = resourceFromAttributes({
       [ATTR_SERVICE_NAME]: this.config.serviceName,
     });
 
@@ -117,30 +117,11 @@ export class TelemetryService {
       logger.info({ endpoint: this.config.otlpEndpoint }, 'OTLP trace exporter initialized');
     }
 
-    // Build and start the SDK
-    // PrometheusExporter extends its own MetricReader (from a nested
-    // @opentelemetry/sdk-metrics declaration), but NodeSDK's
-    // NodeSDKConfiguration.metricReader is typed against the top-level
-    // @opentelemetry/sdk-metrics MetricReader. The two are the same runtime
-    // class but nominally distinct in TypeScript ("separate declarations of
-    // a private property '_shutdown'"). Cast through unknown — they share
-    // the same public surface and the OTel version pin is fixed in bun.lock.
-    const metricReader: MetricReader | undefined = this.prometheusExporter
-      ? (this.prometheusExporter as unknown as MetricReader)
-      : undefined;
-
+    const metricReader: MetricReader | undefined = this.prometheusExporter ?? undefined;
     this.sdk = new NodeSDK({
-      // The telemetry package pins @opentelemetry/resources and
-      // @opentelemetry/sdk-metrics at v1.30.1, but @opentelemetry/sdk-node
-      // transitively brings in v2.7.1 and types its `resource` /
-      // `metricReader` options against that newer version. The runtime
-      // shapes are compatible (v1.30.1's `Resource` exposes the same
-      // public attributes / merge() that NodeSDK reads), so we cast
-      // through `any` at the call site to bridge the type-version gap.
-      // If we ever bump this package to v2.x directly, drop the casts.
-      resource: resource as any,
+      resource,
       traceExporter,
-      metricReader: metricReader as any,
+      metricReader,
     });
 
     this.sdk.start();

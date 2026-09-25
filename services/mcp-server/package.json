@@ -35,7 +35,8 @@
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "@modelcontextprotocol/server-legacy": "^2.0.0",
-    "fastify": "^5.0.0",
+    "fastify": "^5.12.1",
+    "hono": "^4.13.5",
     "zod": "^4.2.0"
   },
   "devDependencies": {
