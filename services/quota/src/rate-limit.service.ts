@@ -438,7 +438,7 @@ export class RateLimitService {
    * Record a 429 hit for escalation tracking.
    * Returns the cooldown duration to apply.
    */
-  recordRateLimitHit(providerId: string, modelId: string): number {
+  recordRateLimitHit(providerId: string, modelId: string, upstreamRetryAfterMs?: number): number {
     const key = `${providerId}:${modelId}`;
     const now = Date.now();
     const hit = this.rateLimitHits.get(key) || { timestamps: [] };
@@ -448,9 +448,11 @@ export class RateLimitService {
     hit.timestamps.push(now);
     this.rateLimitHits.set(key, hit);
 
-    // Escalate based on hit count
+    // A valid upstream reset supersedes a locally inferred escalation. Keep
+    // tracking hits so an error without a reset still uses conservative backoff.
+    const hasReset = upstreamRetryAfterMs !== undefined && Number.isFinite(upstreamRetryAfterMs) && upstreamRetryAfterMs > 0 && upstreamRetryAfterMs <= 24 * 60 * 60_000;
     const idx = Math.min(hit.timestamps.length - 1, COOLDOWN_DURATIONS.length - 1);
-    const duration = COOLDOWN_DURATIONS[idx];
+    const duration = hasReset ? upstreamRetryAfterMs : COOLDOWN_DURATIONS[idx];
 
     this.setCooldown(providerId, modelId, duration);
     logger.warn({ providerId, modelId, hitCount: hit.timestamps.length, cooldownMs: duration }, 'Escalating cooldown applied');

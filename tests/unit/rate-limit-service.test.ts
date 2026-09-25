@@ -324,6 +324,21 @@ describe('RateLimitService', () => {
   // ── Escalating Cooldown (rateLimitHit) ─────────────────────────────────
 
   describe('rateLimitHit tracking', () => {
+    it('uses a valid upstream reset rather than escalating beyond it', () => {
+      expect(service.recordRateLimitHit('p', 'm', 1_000)).toBe(1_000);
+      expect(service.getCooldownExpiry('p', 'm')).toBe(Date.now() + 1_000);
+      expect(service.recordRateLimitHit('p', 'm', 2_000)).toBe(2_000);
+      expect(service.getCooldownExpiry('p', 'm')).toBe(Date.now() + 2_000);
+      vi.advanceTimersByTime(2_001);
+      expect(service.isOnCooldown('p', 'm')).toBe(false);
+    });
+
+    it('rejects an unreasonable upstream reset and retains local backoff', () => {
+      expect(service.recordRateLimitHit('p', 'm', 25 * 60 * 60_000)).toBe(2 * 60_000);
+      expect(service.recordRateLimitHit('p', 'm', Number.POSITIVE_INFINITY)).toBe(10 * 60_000);
+      expect(service.getCooldownExpiry('p', 'm')).toBe(Date.now() + 10 * 60_000);
+    });
+
     it('should return escalating cooldown durations for successive hits', () => {
       expect(service.recordRateLimitHit('p', 'm')).toBe(2 * 60_000);
       expect(service.recordRateLimitHit('p', 'm')).toBe(10 * 60_000);
