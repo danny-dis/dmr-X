@@ -103,7 +103,7 @@ export function buildVector(params: BuildVectorParams): QuotaVector {
  * failover, or reject. The evaluation is conservative:
  * - any required dimension that is not 'available' blocks routing
  * - for 'free_only', unknown/stale dimensions count as blocking
- * - retryAtMs is derived from the earliest reset/cool-down expiry
+ * - retryAtMs is derived from the latest blocking reset/cool-down expiry
  */
 export function evaluateVector(
   vector: QuotaVector,
@@ -113,6 +113,7 @@ export function evaluateVector(
   const blocking: QuotaDimension[] = [];
   let estimatedRemaining: number | null = null;
   let retryAtMs: number | null = null;
+  let hasUnknownRetry = false;
 
   const requiredDimensions = selectDimensionsForDemand(vector, demand);
 
@@ -129,9 +130,8 @@ export function evaluateVector(
 
       // Derive retry time from reset or stale threshold
       const dimRetry = deriveRetryTime(dim, nowMs);
-      if (dimRetry !== null && (retryAtMs === null || dimRetry < retryAtMs)) {
-        retryAtMs = dimRetry;
-      }
+      if (dimRetry === null) hasUnknownRetry = true;
+      else if (retryAtMs === null || dimRetry > retryAtMs) retryAtMs = dimRetry;
       continue;
     }
 
@@ -140,9 +140,8 @@ export function evaluateVector(
       if (headroom < 0) {
         blocking.push(dim);
         const dimRetry = deriveRetryTime(dim, nowMs);
-        if (dimRetry !== null && (retryAtMs === null || dimRetry < retryAtMs)) {
-          retryAtMs = null;
-        }
+        if (dimRetry === null) hasUnknownRetry = true;
+        else if (retryAtMs === null || dimRetry > retryAtMs) retryAtMs = dimRetry;
         continue;
       }
       if (estimatedRemaining === null || headroom < estimatedRemaining) {
@@ -151,6 +150,7 @@ export function evaluateVector(
     }
   }
 
+  if (hasUnknownRetry) retryAtMs = null;
   const admissible = requiredDimensions.length > 0 && blocking.length === 0;
   const reason = requiredDimensions.length === 0
     ? 'No capacity dimensions available for admission'
