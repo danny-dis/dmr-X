@@ -13,3 +13,4 @@ export * from './tool-types.js';
 export * from './model-bindings.js';
 export * from './requirement-vector.js';
 export * from './capability-ontology.js';
+export * from './resource-cell.js';
