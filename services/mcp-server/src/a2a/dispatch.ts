@@ -56,6 +56,7 @@ const MAX_CONTEXT_MESSAGES = 20;
 function buildContextMessages(
   task: Task,
   currentText: string,
+  ownerId?: string,
 ): Array<{ role: 'user' | 'assistant'; content: string }> | null {
   const tm = getTaskManager();
   const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
