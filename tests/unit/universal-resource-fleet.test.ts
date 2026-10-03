@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import {
+import type {
   ResourceCell,
-  type ResourceCellIdentity,
+  ResourceCellIdentity,
   normalizeQuotaPoolId,
 } from '@dmr-x/core';
 import {
