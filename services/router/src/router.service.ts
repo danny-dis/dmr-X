@@ -991,7 +991,7 @@ export class Router {
       // prompts). Preserve a free-only request across this fallback; otherwise
       // the agentic tier can append paid providers to an executable chain.
       const fallbackCandidatePools: ProviderModel[][] = [compositeCandidates];
-      const agenticCostFilter = compositeCostFilterOverride === 'free' ||
+      const agenticCostFilter = freeTierStrategy === 'free_only' || compositeCostFilterOverride === 'free' ||
         getMetaModel(compositeModelTarget.modelId ?? '')?.costFilter === 'free'
         ? 'free' : 'all';
       const agenticResolution = resolveMetaModel('auto-agentic', compositeScoped, agenticCostFilter);
@@ -1002,7 +1002,12 @@ export class Router {
       const healthy = fallbackCandidatePools
         .flat()
         .filter((c) => c.isHealthy);
-      const ordered = healthy.length > 0 ? healthy : fallbackCandidatePools.flat();
+      const orderedPool = fallbackCandidatePools.flat().filter((c) =>
+        freeTierStrategy !== 'free_only' || isStrictlyFreeCandidate(c),
+      );
+      const ordered = healthy.length > 0 ? healthy.filter((c) =>
+        freeTierStrategy !== 'free_only' || isStrictlyFreeCandidate(c),
+      ) : orderedPool;
       if (ordered.length === 0) {
         logger.warn(
           { metaModel: compositeModelTarget.modelId },
