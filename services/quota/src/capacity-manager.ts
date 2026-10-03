@@ -68,6 +68,8 @@ export interface CapacityStore {
    */
   tryReserve(
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
+    reservationId?: string,
+    leaseMs?: number,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null>;
 
   /**
