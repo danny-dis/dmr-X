@@ -531,6 +531,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           : {}),
       });
     } finally {
+      await agentRuntimeService.markInstanceReady(instanceId, tenant.id).catch((err) => {
+        logger.warn({ instanceId, err }, 'Failed to park hosted agent instance after resume');
+      });
       releaseLock();
     }
   });
