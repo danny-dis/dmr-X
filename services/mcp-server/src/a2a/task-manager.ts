@@ -283,13 +283,13 @@ export class A2ATaskManager {
   }
 
   /** All tasks sharing a contextId, oldest first (used to rebuild multi-turn context). */
-  getContextTasks(contextId: string): Task[] {
+  getContextTasks(contextId: string, ownerId?: string): Task[] {
     const ids = this.contexts.get(contextId);
     if (!ids) return [];
     const out: Task[] = [];
     for (const id of ids) {
       const t = this.tasks.get(id);
-      if (t) out.push(t);
+      if (t && (!ownerId || this.owners.get(t.id) === ownerId)) out.push(t);
     }
     return out;
   }
