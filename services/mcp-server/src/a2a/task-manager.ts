@@ -150,6 +150,7 @@ export class A2ATaskManager {
   private push = new Map<string, PushNotificationConfig>();
   private owners = new Map<string, string>();
   private messageIndex = new Map<string, string>();
+  private controllers = new Map<string, AbortController>();
   private listeners = new Map<string, Set<TaskListener>>();
   private readonly maxTasks: number;
 
@@ -335,6 +336,7 @@ export class A2ATaskManager {
     if (!task) return { error: 'not-found' };
     if (ownerId && this.owners.get(taskId) !== ownerId) return { error: 'not-found' };
     if (isTerminal(task.status.state)) return { error: 'not-cancelable' };
+    this.controllers.get(taskId)?.abort();
     task.status = {
       state: 'canceled',
       message: textMessage('agent', 'Task canceled by client request', { taskId: id }),
