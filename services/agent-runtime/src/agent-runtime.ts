@@ -67,6 +67,10 @@ export class AgentRuntimeService {
     // stopped, draining, and retired identities reject new work. A ready
     // identity is woken into running for the duration of this request; it
     // returns to ready after the request completes.
+    if (instance.runtimeMode === 'ephemeral' && this.isInstanceExpired(instance)) {
+      await agentRegistryService.transitionInstanceLifecycle(instance.id, tenantId, 'stopped').catch(() => undefined);
+      return null;
+    }
     if (!['ready', 'running'].includes(instance.lifecycleState)) {
       return null;
     }
@@ -128,6 +132,18 @@ export class AgentRuntimeService {
       runtimeMode: 'persistent',
       accessScope: 'shared',
     });
+  }
+
+  /** Check the persisted TTL/idle policy for ephemeral instances. */
+  private isInstanceExpired(instance: AgentInstance): boolean {
+    if (instance.runtimeMode !== 'ephemeral') return false;
+    const now = Date.now();
+    const createdAt = Date.parse(instance.createdAt);
+    const lastActivity = Date.parse(instance.lastActivityAt ?? instance.createdAt);
+    const { maxTtlMs, idleTimeoutMs } = instance.lifecyclePolicy;
+    if (maxTtlMs != null && Number.isFinite(createdAt) && now - createdAt >= maxTtlMs) return true;
+    if (idleTimeoutMs != null && Number.isFinite(lastActivity) && now - lastActivity >= idleTimeoutMs) return true;
+    return false;
   }
 
   /** Return a durable instance to ready state after a request finishes. */
