@@ -237,15 +237,18 @@ export class CapacityManager {
       return { success: false, reason: 'No dimensions to reserve' };
     }
 
+    // Generate the durable id before the store call so every backend records the
+    // exact same reservation identifier used later by commit/release.
+    const reservationId = `res-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     // Attempt atomic reservation
-    const reserved = await this.store.tryReserve(reservationDims);
+    const reserved = await this.store.tryReserve(reservationDims, reservationId, this.leaseMs);
     if (!reserved) {
       return { success: false, reason: 'Atomic reservation failed (race condition or stale data)' };
     }
 
     // Create reservation record
     const reservation: CapacityReservation = {
-      id: `res-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      id: reservationId,
       candidateId,
       dimensions: reservationDims.map((d, i) => ({
         unit: d.unit,
@@ -390,6 +393,14 @@ function estimateForUnit(demand: DemandVector, unit: QuotaUnit): number {
     case 'total_tokens': return demand.inputTokens + demand.outputTokens;
     case 'concurrency': return demand.concurrency;
     case 'credits': return demand.credits ?? 0;
+    case 'neurons': return demand.neurons ?? 0;
+    case 'seconds': return demand.seconds ?? 0;
+    case 'minutes': return demand.minutes ?? 0;
+    case 'characters': return demand.characters ?? 0;
+    case 'jobs': return demand.jobs ?? 0;
+    case 'gpu_seconds': return demand.gpuSeconds ?? 0;
+    case 'gpu_hours': return demand.gpuHours ?? 0;
+    case 'ip_requests': return demand.ipRequests ?? 0;
     default: return 0;
   }
 }
