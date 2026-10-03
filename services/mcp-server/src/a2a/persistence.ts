@@ -29,6 +29,9 @@ export interface A2APersistenceConfig {
 // `any` because node:sqlite is only loaded on demand (see initPersistence).
 let db: any = null;
 let cfg: A2APersistenceConfig = {};
+let readyResolve: (() => void) | null = null;
+let readyReject: ((err: unknown) => void) | null = null;
+let readyPromise: Promise<void> = Promise.resolve();
 const pushConfigs = new Map<string, PushNotificationConfig>();
 
 /**
@@ -54,7 +57,8 @@ function setupDb(handle: any): void {
       context_id TEXT,
       state TEXT,
       data TEXT,
-      updated_at INTEGER
+      updated_at INTEGER,
+      owner_id TEXT
     );
     CREATE TABLE IF NOT EXISTS a2a_push_configs (
       task_id TEXT PRIMARY KEY,
@@ -77,6 +81,7 @@ function setupDb(handle: any): void {
   } catch {
     // A missing/legacy table is not fatal — continue with memory only.
   }
+  try { handle.exec('ALTER TABLE a2a_tasks ADD COLUMN owner_id TEXT'); } catch { /* already exists */ }
 }
 
 /**
@@ -165,9 +170,13 @@ function openDatabaseWithRecovery(open: () => any, engine: string): any {
   return handle;
 }
 
-export function initPersistence(config: A2APersistenceConfig = {}): void {
+export function initPersistence(config: A2APersistenceConfig = {}): Promise<void> {
   cfg = { pushEnabled: true, ...config };
-  if (!cfg.dbPath) return; // in-memory only
+  readyPromise = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  if (!cfg.dbPath) {
+    readyResolve?.();
+    return readyPromise;
+  } // in-memory only
   try {
     const dir = dirname(cfg.dbPath as string);
     if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -181,8 +190,7 @@ export function initPersistence(config: A2APersistenceConfig = {}): void {
     .then(({ Database }: { Database: new (path: string) => any }) => {
       try {
         db = openDatabaseWithRecovery(() => new Database(cfg.dbPath as string), 'bun:sqlite');
-        if (db) setupDb(db);
-        else openNodeSqlite();
+        if (db) { setupDb(db); readyResolve?.(); } else openNodeSqlite();
       } catch (e) {
         console.error('[a2a] persistence init (bun:sqlite) failed:', (e as Error).message);
         db = null;
@@ -201,7 +209,7 @@ function openNodeSqlite(): void {
     .then(({ DatabaseSync }) => {
       try {
         db = openDatabaseWithRecovery(() => new DatabaseSync(cfg.dbPath as string), 'node:sqlite');
-        if (db) setupDb(db);
+        if (db) { setupDb(db); readyResolve?.(); }
       } catch (e) {
         console.error('[a2a] persistence init failed, falling back to memory:', (e as Error).message);
         db = null;
@@ -210,27 +218,32 @@ function openNodeSqlite(): void {
     .catch((e) => {
       console.error('[a2a] node:sqlite unavailable, running in-memory:', (e as Error).message);
       db = null;
+      readyResolve?.();
     });
+}
+
+export async function waitForPersistenceReady(): Promise<void> {
+  await readyPromise;
 }
 
 export function persistTask(task: Task): void {
   if (!db) return;
   try {
     db.prepare(
-      `INSERT INTO a2a_tasks (id, context_id, state, data, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET context_id=excluded.context_id, state=excluded.state, data=excluded.data, updated_at=excluded.updated_at`
-    ).run(task.id, task.contextId, task.status.state, JSON.stringify(task), Date.now());
+      `INSERT INTO a2a_tasks (id, context_id, state, data, updated_at, owner_id)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET context_id=excluded.context_id, state=excluded.state, data=excluded.data, updated_at=excluded.updated_at, owner_id=excluded.owner_id`
+    ).run(task.id, task.contextId, task.status.state, JSON.stringify(task), Date.now(), (task as Task & { __ownerId?: string }).__ownerId ?? null);
   } catch (e) {
     console.error('[a2a] persistTask failed:', (e as Error).message);
   }
 }
 
-export function loadPersistedTasks(): Task[] {
+export function loadPersistedTasks(): Array<{ task: Task; ownerId?: string }> {
   if (!db) return [];
   try {
-    const rows = db.prepare('SELECT data FROM a2a_tasks').all() as Array<{ data: string }>;
-    return rows.map((r) => JSON.parse(r.data) as Task);
+    const rows = db.prepare('SELECT data, owner_id FROM a2a_tasks').all() as Array<{ data: string; owner_id?: string | null }>;
+    return rows.map((r) => ({ task: JSON.parse(r.data) as Task, ownerId: r.owner_id || undefined }));
   } catch {
     return [];
   }
