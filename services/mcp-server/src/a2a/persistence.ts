@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Task, PushNotificationConfig } from './task-manager.js';
+import { validateWebhookUrl } from './security.js';
 
 export interface A2APersistenceConfig {
   /** Absolute path to the sqlite file. Empty/in-memory if not set. */
@@ -271,29 +272,62 @@ export function getPushConfig(taskId: string): PushNotificationConfig | undefine
 /**
  /** Fire the task's push webhook if configured. Best-effort: failures are
   * logged but never throw (a dead webhook must not break task completion). */
- const PUSH_TIMEOUT_MS = 10_000;
- export async function firePushNotification(task: Task): Promise<void> {
-   if (!cfg.pushEnabled) return;
-   const pc = pushConfigs.get(task.id);
-   if (!pc?.url) return;
-   try {
-     const ctrl = new AbortController();
-     const timer = setTimeout(() => ctrl.abort(), PUSH_TIMEOUT_MS);
-     const res = await fetch(pc.url, {
-       method: 'POST',
-       headers: {
-         'content-type': 'application/json',
-         ...(pc.token ? { authorization: `Bearer ${pc.token}` } : {}),
-       },
-       body: JSON.stringify({ id: task.id, contextId: task.contextId, status: task.status, artifacts: task.artifacts }),
-       signal: ctrl.signal,
-     });
-     clearTimeout(timer);
-     if (!res.ok) console.warn(`[a2a] push to ${pc.url} returned ${res.status}`);
-   } catch (e) {
-     console.warn(`[a2a] push to ${pc.url} failed:`, (e as Error).message);
-   }
- }
+const PUSH_TIMEOUT_MS = 10_000;
+const PUSH_RETRIES = 3;
+
+export async function firePushNotification(task: Task): Promise<void> {
+  if (!cfg.pushEnabled) return;
+  const pc = pushConfigs.get(task.id);
+  if (!pc?.url) return;
+
+  const valid = await validateWebhookUrl(pc.url);
+  if (!valid.ok) {
+    console.warn(`[a2a] refusing unsafe push destination for ${task.id}: ${valid.reason}`);
+    return;
+  }
+
+  const payload = {
+    task: {
+      id: task.id,
+      contextId: task.contextId,
+      status: task.status,
+      artifacts: task.artifacts,
+    },
+  };
+
+  for (let attempt = 0; attempt < PUSH_RETRIES; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), PUSH_TIMEOUT_MS);
+    try {
+      const res = await fetch(pc.url, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/a2a+json',
+          ...(pc.authentication?.credentials ? { authorization: pc.authentication.credentials } : {}),
+          ...(pc.token ? { authorization: `Bearer ${pc.token}` } : {}),
+          'x-a2a-task-id': task.id,
+          'x-a2a-event-id': `${task.id}:${task.status.timestamp}:${task.status.state}`,
+        },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) return;
+      if (res.status >= 400 && res.status < 500) {
+        console.warn(`[a2a] push to ${pc.url} returned ${res.status}; not retrying`);
+        return;
+      }
+    } catch (e) {
+      clearTimeout(timer);
+      if (attempt === PUSH_RETRIES - 1) {
+        console.warn(`[a2a] push to ${pc.url} failed after retries:`, (e as Error).message);
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+  }
+}
 
 export function closePersistence(): void {
   try { db?.exec('PRAGMA optimize;'); } catch {
