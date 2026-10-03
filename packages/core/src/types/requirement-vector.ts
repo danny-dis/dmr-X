@@ -14,13 +14,35 @@ export type RequirementAxis =
   | 'video'
   | 'embedding'
   | 'reranking'
-  | 'moderation';
+  | 'moderation'
+  | 'ocr'
+  | 'document_understanding'
+  | 'classification'
+  | 'decision'
+  | 'scoring'
+  | 'verification'
+  | 'stt'
+  | 'tts'
+  | 'image_generation'
+  | 'video_generation'
+  | 'music_generation'
+  | 'web_search'
+  | 'web_fetch'
+  | 'local_inference'
+  | 'webgpu'
+  | 'eeg'
+  | 'bci'
+  | 'biosignal';
 
 export type BudgetPolicy =
   | 'free_only'
   | 'free_first'
+  | 'paid_only'
   | 'cheapest_acceptable'
   | 'quality_per_dollar'
+  | 'budgeted'
+  | 'local_first'
+  | 'private_first'
   | 'unconstrained';
 
 export type LatencyBudget =
@@ -52,6 +74,19 @@ export interface RequestRequirementVector {
 
   /** Required provider capabilities (e.g., 'streaming', 'function_calling'). */
   requiredCapabilities?: string[];
+
+  /** More precise economic units than a token-only budget. */
+  economicUnits?: import('./resource-cell.js').EconomicUnit[];
+
+  /** Hard privacy/data-use requirements used by policy layers such as AETHER. */
+  privacy?: {
+    dataRetention?: 'no_retention' | 'provider_retained';
+    trainingUse?: 'not_used' | 'may_be_used';
+    residency?: string;
+  };
+
+  /** Preserve scarce free/local capacity for higher-value workloads. */
+  preserveScarceCapacity?: boolean;
 }
 
 export const DEFAULT_REQUIREMENT_VECTOR: RequestRequirementVector = {
