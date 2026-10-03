@@ -356,7 +356,7 @@ export async function handleRpcStream(
         );
         return;
       }
-      registerInlinePushConfig(task.id, req.params);
+      await registerInlinePushConfig(task.id, req.params, context.principal);
 
       // First event is the Task itself (spec), then one status-update per real
       // state change. Previously the second event re-sent the *same* `submitted`
