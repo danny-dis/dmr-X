@@ -383,6 +383,17 @@ export class AgentScheduler {
       ? await agentRegistryService.getInstance(job.agentInstanceId)
       : null;
 
+    // A corrupted/stale pin must never cross tenant or definition boundaries.
+    // Treat it as missing and create a fresh owned instance.
+    if (
+      instance &&
+      (instance.tenantId !== job.tenantId ||
+        instance.agentDefinitionId !== job.agentDefinitionId)
+    ) {
+      instance = null;
+      job.agentInstanceId = undefined;
+    }
+
     if (!instance || instance.lifecycleState === 'retired') {
       instance = await agentRegistryService.createInstance(job.tenantId, {
         agentDefinitionId: job.agentDefinitionId,
