@@ -60,7 +60,7 @@ function buildContextMessages(
   const tm = getTaskManager();
   const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   const siblings = tm
-    .getContextTasks(task.contextId)
+    .getContextTasks(task.contextId, ownerId)
     .filter((t) => t.id !== task.id)
     .sort((a, b) => a.status.timestamp.localeCompare(b.status.timestamp));
 
@@ -106,7 +106,7 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
     return finalize(taskId, 'failed', 'A2A agent key not configured (DMRX_MCP_AGENT_API_KEY / X-DMR-Tenant-Key)');
   }
 
-  const messages = buildContextMessages(task, taskText);
+  const messages = buildContextMessages(task, taskText, (task as Task & { __ownerId?: string }).__ownerId);
   const turnCount = messages ? messages.length : 1;
 
   try {
