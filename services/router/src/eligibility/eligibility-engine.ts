@@ -114,9 +114,6 @@ export class EligibilityEngine {
 
     const tier = candidate.pricingTier;
     const hasFreeMetadata = candidate.freeTierMetadata != null;
-    const hasZeroCost = (candidate.costPerInputToken ?? 0) === 0 &&
-                        (candidate.costPerOutputToken ?? 0) === 0;
-
     // Explicit paid candidates are always rejected.
     if (tier === 'paid' || tier === 'subscription_only') {
       return 'Candidate is not a free API entitlement';
@@ -135,8 +132,6 @@ export class EligibilityEngine {
       return null;
     }
 
-    // hasZeroCost is intentionally not accepted here: unknown != free.
-    void hasZeroCost;
     return 'Candidate free eligibility is unknown; free_only fails closed';
   }
 }
