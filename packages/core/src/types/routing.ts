@@ -1,6 +1,6 @@
 import { Modality, IntelligenceLayer, CapabilityTier, QualityTarget, ArchitectureTier, ContextTier, DeploymentModel, ReasoningMode, SafetyTier, AgenticLevel } from './modality.js';
 
-export type FreeTierStrategy = 'prioritize' | 'load_balance' | 'fallback' | 'none';
+export type FreeTierStrategy = 'free_only' | 'prioritize' | 'load_balance' | 'fallback' | 'none';
 
 export type TurnType =
   | 'tool_use'
