@@ -91,11 +91,48 @@ export interface StreamSink {
 }
 
 const VALID_PART_KINDS = new Set(['text', 'file', 'data']);
+const V1_STATE: Record<string, string> = {
+  submitted: 'TASK_STATE_SUBMITTED',
+  working: 'TASK_STATE_WORKING',
+  'input-required': 'TASK_STATE_INPUT_REQUIRED',
+  completed: 'TASK_STATE_COMPLETED',
+  canceled: 'TASK_STATE_CANCELED',
+  failed: 'TASK_STATE_FAILED',
+  rejected: 'TASK_STATE_REJECTED',
+  'auth-required': 'TASK_STATE_AUTH_REQUIRED',
+  unknown: 'TASK_STATE_UNKNOWN',
+};
+
+function normalizeRole(role: unknown): 'user' | 'agent' | null {
+  if (role === 'user' || role === 'ROLE_USER') return 'user';
+  if (role === 'agent' || role === 'ROLE_AGENT') return 'agent';
+  return null;
+}
+
+function toWireMessage(message: TaskMessage, version?: string): TaskMessage {
+  if (version !== '1.0') return message;
+  return { ...message, role: message.role === 'user' ? 'ROLE_USER' as never : 'ROLE_AGENT' as never };
+}
+
+function toWireTask(task: Task, version?: string): Task {
+  if (version !== '1.0') return task;
+  return {
+    ...task,
+    status: {
+      ...task.status,
+      state: V1_STATE[task.status.state] || 'TASK_STATE_UNKNOWN',
+      ...(task.status.message ? { message: toWireMessage(task.status.message, version) } : {}),
+    },
+    history: task.history.map((m) => toWireMessage(m, version)),
+  };
+}
+
 
 function validateMessage(params: any): TaskMessage | null {
   const msg = params?.message;
   if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return null;
-  if (msg.role !== 'user' && msg.role !== 'agent') return null;
+  const role = normalizeRole(msg.role);
+  if (!role) return null;
   if (!Array.isArray(msg.parts)) return null;
   // Reject structurally invalid parts rather than storing junk that later
   // serializes back to the client as a spec-invalid Message.
@@ -106,7 +143,7 @@ function validateMessage(params: any): TaskMessage | null {
   if (msg.taskId !== undefined && typeof msg.taskId !== 'string') return null;
   if (msg.contextId !== undefined && typeof msg.contextId !== 'string') return null;
   return {
-    role: msg.role,
+    role,
     parts: msg.parts,
     // `messageId` is REQUIRED on a spec Message. Previously an omitted id was
     // stored as `undefined` and dropped on serialization, so the task history
@@ -173,7 +210,7 @@ export async function handleRpc(
       }
       await registerInlinePushConfig(task.id, req.params, context.principal);
       const finalTask = await dispatchTask(task.id, headers);
-      return rpcResult(id, finalTask);
+      return rpcResult(id, toWireTask(finalTask, context.version));
     }
 
     case 'tasks/get': {
@@ -187,7 +224,7 @@ export async function handleRpc(
       }
       const task = tm.getTask(taskId, historyLength, context.principal);
       if (!task) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
-      return rpcResult(id, task);
+      return rpcResult(id, toWireTask(task, context.version));
     }
 
     case 'tasks/cancel': {
@@ -198,7 +235,7 @@ export async function handleRpc(
       const { task, error } = tm.cancelTask(taskId, context.principal);
       if (error === 'not-found') return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
       if (error === 'not-cancelable') return rpcError(id, A2A_ERR.TASK_NOT_CANCELABLE, 'Task not cancelable');
-      return rpcResult(id, task);
+      return rpcResult(id, toWireTask(task, context.version));
     }
 
     case 'tasks/list': {
@@ -228,7 +265,7 @@ export async function handleRpc(
       // `nextPageToken` is omitted: TaskManager holds an in-memory map with no
       // cursor, so real pagination would be a storage change. Returning no
       // token is spec-legal (it signals "no further pages").
-      return rpcResult(id, { tasks });
+      return rpcResult(id, { tasks: tasks.map((t) => toWireTask(t, context.version)), nextPageToken: '' });
     }
 
     case 'tasks/pushNotificationConfig/set': {
@@ -325,18 +362,18 @@ export async function handleRpcStream(
       // state change. Previously the second event re-sent the *same* `submitted`
       // snapshot — `working` was never observable because it is only set inside
       // dispatchTask, which had not run yet.
-      sink.send(rpcResult(id, task));
+      sink.send(rpcResult(id, toWireTask(task, context.version)));
       const seen = new Set<string>([task.status.timestamp + task.status.state]);
       const unsubscribe = tm.subscribe(task.id, (updated) => {
         const key = updated.status.timestamp + updated.status.state;
         if (seen.has(key)) return;
         seen.add(key);
-        sink.send(rpcResult(id, statusUpdateEvent(updated)));
+        sink.send(rpcResult(id, statusUpdateEvent(updated, context.version)));
       });
       try {
         const finalTask = await dispatchTask(task.id, headers);
         const finalKey = finalTask.status.timestamp + finalTask.status.state;
-        if (!seen.has(finalKey)) sink.send(rpcResult(id, statusUpdateEvent(finalTask)));
+        if (!seen.has(finalKey)) sink.send(rpcResult(id, statusUpdateEvent(finalTask, context.version)));
       } finally {
         unsubscribe();
       }
@@ -354,7 +391,7 @@ export async function handleRpcStream(
       // A single replay event used to be the whole implementation, so a client
       // resubscribing to an in-flight task got one `working` frame and an
       // immediate close instead of the completion it was waiting for.
-      sink.send(rpcResult(id, statusUpdateEvent(task)));
+      sink.send(rpcResult(id, statusUpdateEvent(task, context.version)));
       if (isTerminal(task.status.state)) return;
       await followToTerminal(tm, task.id, id, sink);
       return;
@@ -389,7 +426,7 @@ function followToTerminal(
     // `unref` so a dangling subscriber can never hold the process open.
     (timer as unknown as { unref?: () => void }).unref?.();
     const unsubscribe = tm.subscribe(taskId, (updated) => {
-      sink.send(rpcResult(rpcId, statusUpdateEvent(updated)));
+      sink.send(rpcResult(rpcId, statusUpdateEvent(updated, undefined)));
       if (isTerminal(updated.status.state)) finish();
     });
     // Guard against the task having terminated between the replay and subscribe.
@@ -398,13 +435,14 @@ function followToTerminal(
 }
 
 /** Build a TaskStatusUpdateEvent (spec streaming event shape). */
-function statusUpdateEvent(task: Task) {
+function statusUpdateEvent(task: Task, version?: string) {
+  const wire = toWireTask(task, version);
   return {
-    taskId: task.id,
-    contextId: task.contextId,
+    taskId: wire.id,
+    contextId: wire.contextId,
     kind: 'status-update' as const,
-    status: task.status,
+    status: wire.status,
     final: isTerminal(task.status.state),
-    artifacts: task.artifacts,
+    artifacts: wire.artifacts,
   };
 }
