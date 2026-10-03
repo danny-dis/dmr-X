@@ -31,7 +31,6 @@ export interface A2APersistenceConfig {
 let db: any = null;
 let cfg: A2APersistenceConfig = {};
 let readyResolve: (() => void) | null = null;
-let readyReject: ((err: unknown) => void) | null = null;
 let readyPromise: Promise<void> = Promise.resolve();
 const pushConfigs = new Map<string, PushNotificationConfig>();
 
@@ -173,7 +172,7 @@ function openDatabaseWithRecovery(open: () => any, engine: string): any {
 
 export function initPersistence(config: A2APersistenceConfig = {}): Promise<void> {
   cfg = { pushEnabled: true, ...config };
-  readyPromise = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  readyPromise = new Promise<void>((resolve) => { readyResolve = resolve; });
   if (!cfg.dbPath) {
     readyResolve?.();
     return readyPromise;
