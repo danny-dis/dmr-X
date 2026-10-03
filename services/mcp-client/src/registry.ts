@@ -540,6 +540,6 @@ export class MCPServerRegistry {
     this.servers.clear();
     this.toolIndex.clear();
     this.namespacedToolIndex.clear();
-    this.pendingReconnects.clear;
+    this.pendingReconnects.clear();
   }
 }
