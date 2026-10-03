@@ -3000,3 +3000,6 @@ export function searchProviders(query: string): ProviderTemplate[] {
 }
 
 export { VERIFIED_FREE_PROVIDERS } from './verified-free-labs.js';
+
+export { PROVIDER_BEHAVIORS, getProviderBehavior } from './provider-behaviors.js';
+export { DISCOVERED_FREE_RESOURCES, getDiscoveredFreeResources } from './free-resource-discovery.js';
