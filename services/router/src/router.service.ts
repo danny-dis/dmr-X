@@ -20,7 +20,7 @@ import { HandoverSummarizer, type SummarizationExecutor } from './handover/hando
 import { getMetaModel, isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
-import { applyProviderPreferences, runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
+import { applyProviderPreferences, runPipeline, runDeterministicFilters, runPipelineFromFiltered, isStrictlyFreeCandidate } from './pipeline/pipeline.js';
 import { hashConversation, setStickyProvider } from './sticky/sticky-session.js';
 import { handleStickySession } from './sticky-session-handler.js';
 
@@ -356,6 +356,8 @@ export class Router {
     const conversationHash = hashConversation(messages, request.model);
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
     const effectiveFreeTierStrategy = freeTierStrategy;
+    const requestCostFilter = (request as any).metadata?.costFilter as 'free' | 'all' | undefined;
+    const hardFreeConstraint = effectiveFreeTierStrategy === 'free_only' || requestCostFilter === 'free';
 
     // Parse an optional `providerName/modelId` prefix out of the requested
     // model. The prefix is only honored when it names a known provider —
@@ -489,7 +491,7 @@ export class Router {
           // Direct-model selection must enforce the same hard provider constraints
           // as the scored pipeline, including every fallback serving this model.
           const directMatches = directCandidates.filter(
-            (c) => c.modelId === modelTarget.modelId && c.isHealthy
+            (c) => c.modelId === modelTarget.modelId && c.isHealthy && (!hardFreeConstraint || isStrictlyFreeCandidate(c))
           );
           if (directMatches.length === 0 && hasHardProviderConstraint &&
               pipelineCandidates.some(c => c.modelId === modelTarget.modelId && c.isHealthy)) {
@@ -945,6 +947,10 @@ export class Router {
 
     // Step 2: Execute via composite executor
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
+    const compositeCostFilter = (request as any).metadata?.costFilter as 'free' | 'all' | undefined;
+    if (freeTierStrategy === 'free_only' || compositeCostFilter === 'free') {
+      compositeCandidates = compositeCandidates.filter(isStrictlyFreeCandidate);
+    }
     const result = await this.compositeExecutor!.execute(
       decomposed,
       compositeCandidates,
