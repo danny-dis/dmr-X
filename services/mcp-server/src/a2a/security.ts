@@ -78,7 +78,7 @@ export function supportedA2AVersion(raw: string | string[] | undefined): boolean
 
 export function negotiatedA2AVersion(raw: string | string[] | undefined): '1.0' | '0.3' {
   const version = Array.isArray(raw) ? raw[0] : raw;
-  return version === LEGACY_VERSION ? LEGACY_VERSION : A2A_VERSION;
+  return !version || version === LEGACY_VERSION ? LEGACY_VERSION : A2A_VERSION;
 }
 
 function isPrivateAddress(address: string): boolean {
