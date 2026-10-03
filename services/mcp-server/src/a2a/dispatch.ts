@@ -92,6 +92,7 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
   if (!task) throw new Error(`Task ${taskId} not found`);
 
   tm.setStatus(taskId, 'working');
+  const taskController = tm.registerController(taskId);
 
   const gatewayUrl = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
   const apiKey = resolveGatewayKey(headers);
@@ -119,7 +120,12 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
       }),
       // Without a deadline a wedged gateway pins the A2A request open forever;
       // the client sees a hang instead of a `failed` task.
-      signal: AbortSignal.timeout(taskTimeoutMs(turnCount)),
+      signal: (() => {
+        const timeout = setTimeout(() => taskController.abort(), taskTimeoutMs(turnCount));
+        const signal = taskController.signal;
+        signal.addEventListener('abort', () => clearTimeout(timeout), { once: true });
+        return signal;
+      })(),
     });
     const json: any = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -129,6 +135,8 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
       typeof json.content === 'string' ? json.content : JSON.stringify(json.content ?? json);
     return finalize(taskId, 'completed', resultText);
   } catch (err) {
+    const canceled = taskController.signal.aborted && tm.getTask(taskId)?.status.state === 'canceled';
+    if (canceled) return tm.getTask(taskId)!;
     const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
     const text = timedOut
       ? `Dispatch timed out after ${taskTimeoutMs(turnCount)}ms`
