@@ -158,8 +158,11 @@ export class A2ATaskManager {
     this.maxTasks =
       opts?.maxTasks ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_TASKS);
     // Rehydrate tasks persisted from a previous run (survives restart).
-    for (const t of loadPersistedTasks()) {
+    for (const persisted of loadPersistedTasks()) {
+      const t = persisted.task;
       this.tasks.set(t.id, t);
+      if (persisted.ownerId) this.owners.set(t.id, persisted.ownerId);
+      for (const message of t.history) this.messageIndex.set(message.messageId, t.id);
       const set = this.contexts.get(t.contextId) ?? new Set<string>();
       set.add(t.id);
       this.contexts.set(t.contextId, set);
@@ -219,7 +222,10 @@ export class A2ATaskManager {
     };
 
     this.tasks.set(id, task);
-    if (opts?.ownerId) this.owners.set(id, opts.ownerId);
+    if (opts?.ownerId) {
+      this.owners.set(id, opts.ownerId);
+      Object.defineProperty(task, '__ownerId', { value: opts.ownerId, enumerable: false, writable: true });
+    }
     this.messageIndex.set(message.messageId, id);
     const set = this.contexts.get(contextId) ?? new Set<string>();
     set.add(id);
