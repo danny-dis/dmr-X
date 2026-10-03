@@ -6,6 +6,7 @@
  */
 
 import { MODEL_BENCHMARKS } from './benchmarks.generated.js';
+import { VERIFIED_FREE_PROVIDERS, VERIFIED_FREE_OFFERS, getVerifiedFreeOffers } from './verified-free-labs.js';
 
 export interface OAuthProviderConfig {
   flow: 'authorization_code' | 'client_credentials' | 'device_code';
@@ -122,6 +123,17 @@ export interface FreeTierInfo {
   monthlyTokenBudget: number;  // 0 = unlimited within rate limits
   intelligenceRank: number;    // 1-10 scale
   speedRank: number;           // 1-10 scale
+
+  /** General economic shape of the free offer. */
+  offerKind?: 'recurring_free' | 'free_with_limits' | 'trial' | 'promo_credits' | 'startup_credits' | 'device_local' | 'keyless_public' | 'subscription_entitlement';
+  /** Daily free-token allowance for providers that are not monthly-token based. */
+  dailyTokenBudget?: number;
+  /** The actual quota owner; do not assume one API key == one quota pool. */
+  scope?: 'account' | 'organization' | 'project' | 'credential' | 'model' | 'endpoint' | 'ip' | 'device';
+  /** Trial duration, when the offer is temporary. */
+  trialDays?: number;
+  /** Whether enrollment requires a payment method. */
+  requiresPaymentMethod?: boolean;
 }
 
 /**
@@ -2886,6 +2898,17 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 ];
 
+// Provider identities that have their own execution surface are appended here.
+// Free offers for existing providers are kept in VERIFIED_FREE_OFFERS so quota
+// semantics can evolve without duplicating provider identities.
+for (const provider of VERIFIED_FREE_PROVIDERS) {
+  if (!PROVIDER_CATALOG.some((existing) => existing.id === provider.id)) {
+    PROVIDER_CATALOG.push(provider);
+  }
+}
+
+export { VERIFIED_FREE_OFFERS, getVerifiedFreeOffers } from './verified-free-labs.js';
+
 // ---------------------------------------------------------------------------
 // Auto-populate pricingTier for every model.
 // Uses explicit catalog metadata rather than runtime heuristics.
@@ -2901,7 +2924,8 @@ for (const provider of PROVIDER_CATALOG) {
     } else {
       const inputCost = model.inputCostPer1M ?? 0;
       const outputCost = model.outputCostPer1M ?? 0;
-      model.pricingTier = (inputCost > 0 || outputCost > 0) ? 'paid' : 'free';
+      // Missing pricing metadata is not evidence of a free entitlement.
+      model.pricingTier = (inputCost > 0 || outputCost > 0) ? 'paid' : 'unknown';
     }
   }
 }
