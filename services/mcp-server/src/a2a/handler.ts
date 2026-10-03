@@ -143,7 +143,7 @@ export async function handleA2ARoutes(
 
   const taskIdMatch = path.match(/^\/a2a\/tasks\/([^/]+)$/);
   if (taskIdMatch && req.method === 'GET') {
-    const task = getTaskManager().getTask(taskIdMatch[1]);
+    const task = getTaskManager().getTask(taskIdMatch[1], undefined, (req as IncomingMessage & { a2aPrincipal?: string }).a2aPrincipal);
     if (!task) {
       sendJson(res, 404, { error: 'Task not found' });
       return true;
