@@ -73,6 +73,15 @@ export interface PipelineOutput {
   scoredCandidates: CandidateSet;
 }
 
+/**
+ * Strict economic predicate used at every route boundary.
+ * Unknown pricing is deliberately NOT considered free. A free-only request
+ * must have explicit free catalog metadata before it can reach execution.
+ */
+export function isStrictlyFreeCandidate(candidate: ProviderModel): boolean {
+  return candidate.pricingTier === 'free' || candidate.pricingTier === 'free_with_limits';
+}
+
 export async function runPipeline(input: PipelineInput): Promise<PipelineOutput> {
   const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, eligibilityEngine, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler, routingStrategy = 'thompson' } = input;
 
@@ -259,6 +268,15 @@ export async function runPipelineFromFiltered(input: {
   }
 
   // Stage 5.5: Eligibility Filter (free_only enforcement)
+  // free_only is a hard economic constraint, not just a scoring preference.
+  // Enforce it even when the optional catalog-backed EligibilityEngine is not
+  // injected, so direct/fallback/composite callers cannot leak paid/unknown
+  // candidates into the execution path.
+  const strictFree = freeTierStrategy === 'free_only' || metaModelFilteredFree;
+  if (strictFree) {
+    filtered = filtered.filter(isStrictlyFreeCandidate);
+  }
+
   if (eligibilityEngine) {
     const beforeCount = filtered.length;
     const eligibilityResult = eligibilityEngine.filter(filtered);
@@ -289,6 +307,9 @@ export async function runPipelineFromFiltered(input: {
       // Retry starts from the pre-eligibility set, so enforce hard constraints again.
       if (eligibilityEngine) {
         filtered = eligibilityEngine.filter(filtered).eligible;
+      }
+      if (freeTierStrategy === 'free_only' || metaModelFilteredFree) {
+        filtered = filtered.filter(isStrictlyFreeCandidate);
       }
       // Re-apply policy filter (tenant-scoped, doesn't change in a 3s window —
       // but re-applying is cheap and avoids staleness if the caller's policy
