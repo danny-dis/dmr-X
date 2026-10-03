@@ -103,6 +103,12 @@ export async function handleA2ARoutes(
 
   // --- Primary JSON-RPC 2.0 endpoint ---
   if (path === '/a2a' && req.method === 'POST') {
+    const contentType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+    const negotiated = (req as IncomingMessage & { a2aVersion?: string }).a2aVersion;
+    if (negotiated === '1.0' && contentType !== 'application/a2a+json' && contentType !== 'application/json') {
+      sendJson(res, 415, { error: 'A2A v1.0 requests require application/a2a+json' });
+      return true;
+    }
     return handleJsonRpc(req, res);
   }
 
