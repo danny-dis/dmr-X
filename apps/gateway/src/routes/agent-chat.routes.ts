@@ -167,6 +167,12 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       let loadedSkillIds: string[];
       const persisted = agentSessionStore.get(tenant.id, convId);
       if (persisted) {
+        if (
+          persisted.agentInstanceId !== context.instanceId ||
+          persisted.agentDefinitionId !== definition.id
+        ) {
+          return reply.code(404).send({ error: { message: 'Conversation not found' } });
+        }
         conversation = persisted.state as ConversationState;
         loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');
         conversation = updateState(conversation, {
@@ -419,6 +425,12 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       }
       const persisted = agentSessionStore.get(tenant.id, conversationId);
       if (!persisted) {
+        return reply.code(404).send({ error: { message: 'No durable session to resume' } });
+      }
+      if (
+        persisted.agentInstanceId !== context.instanceId ||
+        persisted.agentDefinitionId !== context.definition.id
+      ) {
         return reply.code(404).send({ error: { message: 'No durable session to resume' } });
       }
       const loadedSkillIds = JSON.parse(persisted.metadata?.loadedSkillIds ?? '[]');

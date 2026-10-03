@@ -35,7 +35,8 @@ import { initDb, closeDb } from '@dmr-x/db';
 import { registryService, autoRegisterProviders } from '@dmr-x/registry';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
-import { setLastRequestHeaders } from './tenant-key.js';
+import { runWithRequestHeaders } from './tenant-key.js';
+import { guardHttpRequest } from './http-security.js';
 
 import {
   loadConfigFile,
@@ -270,24 +271,10 @@ function readBodyWithLimit(
 // CORS configuration
 // ---------------------------------------------------------------------------
 
-const CORS_ORIGIN = resolveConfig(configFileForAuth, 'corsOrigin', 'DMRX_MCP_CORS_ORIGIN', '*');
+// Empty allowlist is deliberate: browser clients must configure exact Origins.
+const CORS_ORIGIN = resolveConfig(configFileForAuth, 'corsOrigin', 'DMRX_MCP_CORS_ORIGIN', '');
 
-function setCorsHeaders(res: import('node:http').ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN);
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, Last-Event-ID');
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
-
-function handlePreflight(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): boolean {
-  if (req.method === 'OPTIONS') {
-    setCorsHeaders(res);
-    res.writeHead(204);
-    res.end();
-    return true;
-  }
-  return false;
-}
+// Both HTTP transports use the same Origin and A2A authentication boundary.
 
 // ---------------------------------------------------------------------------
 // Session idle timeout and cleanup
@@ -713,13 +700,8 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
       description: t.description,
     }));
 
-  const httpServer = http.createServer(async (req, res) => {
-    // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
-    // can be resolved at request time inside tool handlers.
-    setLastRequestHeaders(req.headers);
-    // CORS preflight
-    setCorsHeaders(res);
-    if (handlePreflight(req, res)) return;
+  const httpServer = http.createServer((req, res) => runWithRequestHeaders(req.headers, async () => {
+    if (!guardHttpRequest(req, res, CORS_ORIGIN, checkAuthAndGetAllowedTools)) return;
 
     // Handle A2A routes
     if (config.a2a?.enabled) {
@@ -836,7 +818,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
-  });
+  }));
 
   httpServer.listen(port, host, () => {
     console.log(`DMR-X MCP server (SSE) listening on http://${host}:${port}`);
@@ -891,13 +873,8 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
       description: t.description,
     }));
 
-  const httpServer = http.createServer(async (req, res) => {
-    // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
-    // can be resolved at request time inside tool handlers.
-    setLastRequestHeaders(req.headers);
-    // CORS preflight
-    setCorsHeaders(res);
-    if (handlePreflight(req, res)) return;
+  const httpServer = http.createServer((req, res) => runWithRequestHeaders(req.headers, async () => {
+    if (!guardHttpRequest(req, res, CORS_ORIGIN, checkAuthAndGetAllowedTools)) return;
 
     // Handle A2A routes
     if (config.a2a?.enabled) {
@@ -1024,7 +1001,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
-  });
+  }));
 
   httpServer.listen(port, host, () => {
     console.log(`DMR-X MCP server (Streamable HTTP) listening on http://${host}:${port}`);

@@ -122,6 +122,8 @@ When you find a bug but don't fix it:
 
 ## 🔨 Active Work
 
+- ✅ Audit / initial YAGNI fixes — **Jack/Astra + Sol workers**, 2026-09-28: company gateway plan and staging guide saved; conversation-instance binding, MCP async credential isolation, HTTP Origin/A2A auth boundary, and real Bun-compatible pinned peer probe verified. 1737 unit tests, 18 isolated HTTP checks passed; free-only live sample 16/18. Daily listener not restarted. **Production HOLD**: task/session ownership, safe A2A webhooks, current protocol conformance, runtime cancellation/deadlines/scheduler crash semantics, budget admission and operations remain gated. See `docs/plans/2026-09-28-production-gateway.md` and `reports/production-2026-09-28-gate.md`.
+
 | # | Item | Agent | Started | ETA | Notes |
 |---|------|-------|---------|-----|-------|
 | G-1 | Fix `restartGodmodeProxy` apiKey drop (B-006) + test | opencode | 2026-08-19 | 2026-08-19 | ✅ Done — pass `api_key` through all 3 `setGodmodeConfig` calls; 3 regression tests added; live service re-verified (no more 401s) |

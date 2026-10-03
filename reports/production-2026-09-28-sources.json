@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": 1,
+      "url": "https://modelcontextprotocol.io/specification/latest/basic/transports",
+      "title": "",
+      "accessed": "2026-09-28"
+    },
+    {
+      "id": 2,
+      "url": "https://modelcontextprotocol.io/specification/latest/basic/authorization",
+      "title": "",
+      "accessed": "2026-09-28"
+    },
+    {
+      "id": 3,
+      "url": "https://a2a-protocol.org/v1.0.0/specification",
+      "title": "",
+      "accessed": "2026-09-28"
+    },
+    {
+      "id": 4,
+      "url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http",
+      "title": "",
+      "accessed": "2026-09-28"
+    },
+    {
+      "id": 5,
+      "url": "https://docs.litellm.ai/docs/proxy/virtual_keys",
+      "title": "",
+      "accessed": "2026-09-28"
+    },
+    {
+      "id": 6,
+      "url": "https://docs.litellm.ai/docs/proxy/users",
+      "title": "",
+      "accessed": "2026-09-28"
+    },
+    {
+      "id": 7,
+      "url": "https://openrouter.ai/docs/limits",
+      "title": "",
+      "accessed": "2026-09-28"
+    }
+  ]
+}

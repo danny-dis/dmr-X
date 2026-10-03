@@ -1,0 +1,96 @@
+[
+  {
+    "label": "agent-card",
+    "http_status": 200,
+    "rpc_error": null,
+    "result_keys": [],
+    "content_type": "application/json",
+    "advertised_interfaces": [
+      {
+        "url": "http://127.0.0.1:47114/a2a",
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": "1.0"
+      }
+    ],
+    "legacy_protocol": "0.3.0"
+  },
+  {
+    "label": "ListTasks",
+    "http_status": 200,
+    "rpc_error": {
+      "code": -32601,
+      "message": "Method not found: ListTasks"
+    },
+    "result_keys": [],
+    "content_type": "text/event-stream"
+  },
+  {
+    "label": "tasks/list",
+    "http_status": 200,
+    "rpc_error": null,
+    "result_keys": [
+      "tasks"
+    ],
+    "content_type": "text/event-stream",
+    "task_count": 1,
+    "nextPageToken_present": false
+  },
+  {
+    "label": "MCP-2026-tools-list",
+    "http_status": 400,
+    "rpc_error": {
+      "code": -32000,
+      "message": "Bad Request: Server not initialized"
+    },
+    "result_keys": [],
+    "content_type": "application/json"
+  },
+  {
+    "label": "MCP-invalid-origin",
+    "http_status": 400,
+    "rpc_error": {
+      "code": -32000,
+      "message": "Bad Request: Server not initialized"
+    },
+    "result_keys": [],
+    "content_type": "application/json"
+  },
+  {
+    "label": "MCP-legacy-initialize",
+    "http_status": 200,
+    "rpc_error": null,
+    "result_keys": [
+      "protocolVersion",
+      "capabilities",
+      "serverInfo"
+    ],
+    "content_type": "text/event-stream"
+  },
+  {
+    "label": "MCP-legacy-initialized",
+    "http_status": 202,
+    "rpc_error": null,
+    "result_keys": [],
+    "content_type": "text/plain; charset=UTF-8"
+  },
+  {
+    "label": "MCP-legacy-tools-list",
+    "http_status": 200,
+    "rpc_error": null,
+    "result_keys": [
+      "tools"
+    ],
+    "content_type": "text/event-stream",
+    "tool_count": 332,
+    "readonly_candidates": [
+      "dmrx_status"
+    ]
+  },
+  {
+    "label": "MCP-close-own-session",
+    "http_status": 200,
+    "rpc_error": null,
+    "result_keys": [],
+    "content_type": "text/plain; charset=UTF-8"
+  }
+]

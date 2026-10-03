@@ -9,6 +9,8 @@
  * key (see autoProvisionTenantKey) is used.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { logger } from '@dmr-x/utils';
 
 export const DMR_TENANT_KEY_HEADER = 'x-dmr-tenant-key';
@@ -21,19 +23,23 @@ export type RequestHeaders = Record<string, string | string[] | undefined>;
  */
 let autoProvisionedKey: string | undefined;
 
-/** Captures the headers of the most recent inbound MCP HTTP request. */
-let lastRequestHeaders: RequestHeaders | undefined;
+/** Request-scoped headers; concurrent clients must never share credentials. */
+const requestHeadersStorage = new AsyncLocalStorage<RequestHeaders>();
+
+export function runWithRequestHeaders<T>(headers: RequestHeaders, callback: () => T): T {
+  return requestHeadersStorage.run(headers, callback);
+}
 
 /** Notified once auto-provisioning resolves (succeeds or fails). */
 const provisionWaiters: Array<(key: string | undefined) => void> = [];
 let provisionResolved = false;
 
 export function setLastRequestHeaders(headers: RequestHeaders | undefined): void {
-  lastRequestHeaders = headers;
+  requestHeadersStorage.enterWith(headers ?? {});
 }
 
 export function getLastRequestHeaders(): RequestHeaders | undefined {
-  return lastRequestHeaders;
+  return requestHeadersStorage.getStore();
 }
 
 export function setAutoProvisionedKey(key: string | undefined): void {
@@ -58,12 +64,12 @@ export function getAutoProvisionedKey(): string | undefined {
  *   2. Config/env `DMRX_MCP_AGENT_API_KEY` (legacy shared tenant).
  *   3. Best-effort auto-provisioned tenant key (see autoProvisionTenantKey).
  *
- * @param requestHeaders Optional per-request headers. If omitted, the most
- *   recently captured request headers are used (fallback for call sites that
+ * @param requestHeaders Optional per-request headers. If omitted, the
+ *   current async request's headers are used (fallback for call sites that
  *   cannot access the inbound request directly).
  */
 export function resolveGatewayKey(requestHeaders?: RequestHeaders): string | undefined {
-  const headers = requestHeaders ?? lastRequestHeaders;
+  const headers = requestHeaders ?? requestHeadersStorage.getStore();
   const tenantKeyHeader = headers?.[DMR_TENANT_KEY_HEADER];
   const tenantKey = Array.isArray(tenantKeyHeader) ? tenantKeyHeader[0] : tenantKeyHeader;
   if (tenantKey && typeof tenantKey === 'string' && tenantKey.trim().length > 0) {

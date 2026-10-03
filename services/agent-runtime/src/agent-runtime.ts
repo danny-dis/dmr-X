@@ -65,6 +65,9 @@ export class AgentRuntimeService {
 
     const definition = await agentRegistryService.getDefinition(instance.agentDefinitionId);
     if (!definition) return null;
+    // Re-check on every run/resume, including previously deployed shared agents.
+    if (definition.tenantId !== tenantId &&
+        !await agentRegistryService.canAccessDefinition(definition.id, tenantId, 'run')) return null;
 
     return {
       instanceId: instance.id,
