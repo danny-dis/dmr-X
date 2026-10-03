@@ -1084,9 +1084,19 @@ async function main(): Promise<void> {
   if (mcpConfig.a2a?.enabled) {
     const { initPersistence } = await import('./a2a/persistence.js');
     const dbPath = process.env.DMRX_A2A_DB_PATH || '';
-    const { waitForPersistenceReady } = await import('./a2a/persistence.js');
+    const { waitForPersistenceReady, isPersistenceDurable } = await import('./a2a/persistence.js');
+    if (process.env.NODE_ENV === 'production' && !dbPath) {
+      console.error('FATAL: DMRX_A2A_DB_PATH must be set when A2A is enabled in production.');
+      await disposeAndExit(externalMcpClient, 1);
+      return;
+    }
     await initPersistence({ dbPath: dbPath || undefined });
     await waitForPersistenceReady();
+    if (process.env.NODE_ENV === 'production' && !isPersistenceDurable()) {
+      console.error('FATAL: A2A durable persistence could not be initialized in production.');
+      await disposeAndExit(externalMcpClient, 1);
+      return;
+    }
   }
 
   // Start telemetry service (Prometheus metrics + OTel tracing)
