@@ -236,6 +236,7 @@ export class AgentScheduler {
     nextRunAt: string;
     lastRunAt?: string;
     enabled: boolean;
+    agentInstanceId?: string;
   }> {
     return Array.from(this.jobs.values()).map((job) => ({
       id: job.id,
@@ -245,6 +246,7 @@ export class AgentScheduler {
       nextRunAt: job.nextRunAt.toISOString(),
       lastRunAt: job.lastRunAt?.toISOString(),
       enabled: job.enabled,
+      agentInstanceId: job.agentInstanceId,
     }));
   }
 
