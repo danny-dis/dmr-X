@@ -167,6 +167,14 @@ function actualForUnit(actual: DemandVector, unit: QuotaUnit): number {
     case 'total_tokens': return actual.inputTokens + actual.outputTokens;
     case 'concurrency': return actual.concurrency;
     case 'credits': return actual.credits ?? 0;
+    case 'neurons': return actual.neurons ?? 0;
+    case 'seconds': return actual.seconds ?? 0;
+    case 'minutes': return actual.minutes ?? 0;
+    case 'characters': return actual.characters ?? 0;
+    case 'jobs': return actual.jobs ?? 0;
+    case 'gpu_seconds': return actual.gpuSeconds ?? 0;
+    case 'gpu_hours': return actual.gpuHours ?? 0;
+    case 'ip_requests': return actual.ipRequests ?? 0;
     default: return 0;
   }
 }
