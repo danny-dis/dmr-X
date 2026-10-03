@@ -11,6 +11,9 @@ export {
   isSystemAgentName,
   SYSTEM_AGENT_PREFIX,
   getDefinitionByName,
+  canTransitionInstanceLifecycle,
+  DEFAULT_PERSISTENT_LIFECYCLE_POLICY,
+  DEFAULT_EPHEMERAL_LIFECYCLE_POLICY,
 } from './agent-registry.service.js';
 
 // NOTE: createEvaluation / listEvaluations / getEvaluation / deleteEvaluation
