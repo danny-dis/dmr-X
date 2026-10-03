@@ -161,7 +161,10 @@ export class A2ATaskManager {
     for (const persisted of loadPersistedTasks()) {
       const t = persisted.task;
       this.tasks.set(t.id, t);
-      if (persisted.ownerId) this.owners.set(t.id, persisted.ownerId);
+      if (persisted.ownerId) {
+        this.owners.set(t.id, persisted.ownerId);
+        Object.defineProperty(t, '__ownerId', { value: persisted.ownerId, enumerable: false, writable: true });
+      }
       for (const message of t.history) this.messageIndex.set(message.messageId, t.id);
       const set = this.contexts.get(t.contextId) ?? new Set<string>();
       set.add(t.id);
