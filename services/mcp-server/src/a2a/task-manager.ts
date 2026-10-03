@@ -260,10 +260,11 @@ export class A2ATaskManager {
    * `history` is dropped by default: a listing renders status and timing, and
    * full transcripts for every retained task would dominate the payload.
    */
-  listTasks(opts: { state?: TaskState; contextId?: string; limit?: number; includeHistory?: boolean } = {}): Task[] {
+  listTasks(opts: { state?: TaskState; contextId?: string; limit?: number; includeHistory?: boolean; ownerId?: string } = {}): Task[] {
     const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
 
     let tasks = Array.from(this.tasks.values());
+    if (opts.ownerId) tasks = tasks.filter((t) => this.owners.get(t.id) === opts.ownerId);
     if (opts.state) tasks = tasks.filter((t) => t.status.state === opts.state);
     if (opts.contextId) tasks = tasks.filter((t) => t.contextId === opts.contextId);
 
@@ -331,12 +332,12 @@ export class A2ATaskManager {
   }
 
   /** Cancel a task. Returns { task } or an error reason for JSON-RPC mapping. */
-  cancelTask(id: string): { task?: Task; error?: 'not-found' | 'not-cancelable' } {
+  cancelTask(id: string, ownerId?: string): { task?: Task; error?: 'not-found' | 'not-cancelable' } {
     const task = this.tasks.get(id);
     if (!task) return { error: 'not-found' };
-    if (ownerId && this.owners.get(taskId) !== ownerId) return { error: 'not-found' };
+    if (ownerId && this.owners.get(id) !== ownerId) return { error: 'not-found' };
     if (isTerminal(task.status.state)) return { error: 'not-cancelable' };
-    this.controllers.get(taskId)?.abort();
+    this.controllers.get(id)?.abort();
     task.status = {
       state: 'canceled',
       message: textMessage('agent', 'Task canceled by client request', { taskId: id }),
@@ -354,14 +355,16 @@ export class A2ATaskManager {
     return !!task && isTerminal(task.status.state);
   }
 
-  setPushConfig(id: string, config: PushNotificationConfig): boolean {
+  setPushConfig(id: string, config: PushNotificationConfig, ownerId?: string): boolean {
     if (!this.tasks.has(id)) return false;
+    if (ownerId && this.owners.get(id) !== ownerId) return false;
     this.push.set(id, config);
     persistPushConfig(id, config);
     return true;
   }
 
-  getPushConfig(id: string): PushNotificationConfig | null {
+  getPushConfig(id: string, ownerId?: string): PushNotificationConfig | null {
+    if (ownerId && this.owners.get(id) !== ownerId) return null;
     return this.push.get(id) ?? loadPushConfig(id) ?? null;
   }
 
