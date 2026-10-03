@@ -135,10 +135,11 @@ function readHistoryLength(raw: unknown): number | undefined | false {
  * never fire. Registering here — before dispatch — makes the advertised
  * `pushNotifications: true` capability real.
  */
-function registerInlinePushConfig(taskId: string, params: any): void {
+async function registerInlinePushConfig(taskId: string, params: any, ownerId?: string): Promise<void> {
   const cfg = params?.configuration?.pushNotificationConfig as PushNotificationConfig | undefined;
   if (cfg?.url && typeof cfg.url === 'string') {
-    getTaskManager().setPushConfig(taskId, cfg);
+    const valid = await validateWebhookUrl(cfg.url);
+    if (valid.ok) getTaskManager().setPushConfig(taskId, cfg, ownerId);
   }
 }
 
@@ -170,7 +171,7 @@ export async function handleRpc(
           'Task is in a terminal state and cannot accept further messages; start a new task with the same contextId',
         );
       }
-      registerInlinePushConfig(task.id, req.params);
+      await registerInlinePushConfig(task.id, req.params, context.principal);
       const finalTask = await dispatchTask(task.id, headers);
       return rpcResult(id, finalTask);
     }
