@@ -19,9 +19,12 @@ export type QuotaScope =
   | 'organization'
   | 'project'
   | 'key'
+  | 'credential'
   | 'model'
   | 'endpoint'
-  | 'upstream';
+  | 'upstream'
+  | 'ip'
+  | 'device';
 
 // ---------------------------------------------------------------------------
 // Replenishment — how a quota window resets
@@ -56,7 +59,14 @@ export type QuotaUnit =
   | 'total_tokens'
   | 'concurrency'
   | 'credits'
-  | 'neurons';
+  | 'neurons'
+  | 'seconds'
+  | 'minutes'
+  | 'characters'
+  | 'jobs'
+  | 'gpu_seconds'
+  | 'gpu_hours'
+  | 'ip_requests';
 
 // ---------------------------------------------------------------------------
 // QuotaDimension — a single measured axis of provider capacity
@@ -101,10 +111,22 @@ export interface QuotaDimension {
 // QuotaVector — full capacity picture for one provider+key+model tuple
 // ---------------------------------------------------------------------------
 
+export interface QuotaPool {
+  /** Stable capacity identity. This may be account/project/org/IP scoped. */
+  poolId: string;
+  providerId: string;
+  scope: QuotaScope;
+  scopeId: string;
+  /** Credentials contributing to the pool are metadata, not the capacity key. */
+  credentialIds?: string[];
+}
+
 export interface QuotaVector {
   providerId: string;
   modelId: string;
   keyId: string;
+  /** Optional authoritative pool identity shared by several credentials/models. */
+  poolId?: string;
 
   /** All measured dimensions for this tuple. */
   dimensions: QuotaDimension[];
@@ -151,6 +173,14 @@ export interface DemandVector {
   outputTokens: number;
   concurrency: number;
   credits?: number;
+  neurons?: number;
+  seconds?: number;
+  minutes?: number;
+  characters?: number;
+  jobs?: number;
+  gpuSeconds?: number;
+  gpuHours?: number;
+  ipRequests?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,4 +229,17 @@ export function computeTokenBucketRemaining(dim: QuotaDimension, nowMs: number =
 /** Freshness window used when none is explicitly provided. */
 export function defaultStaleAfterMs(): number {
   return DEFAULT_STALE_AFTER_MS;
+}
+
+
+/** Build a stable capacity-pool key without conflating a credential with quota ownership. */
+export function buildQuotaPoolId(providerId: string, scope: QuotaScope, scopeId: string): string {
+  return `${providerId}::${scope}::${scopeId}`;
+}
+
+/** Normalize a provider/account scope into the canonical pool identity used by the scheduler. */
+export function normalizeQuotaPoolId(params: { providerId: string; scope?: QuotaScope; scopeId?: string; keyId?: string }): string {
+  const scope = params.scope ?? 'key';
+  const scopeId = params.scopeId ?? params.keyId ?? 'unknown';
+  return buildQuotaPoolId(params.providerId, scope, scopeId);
 }
