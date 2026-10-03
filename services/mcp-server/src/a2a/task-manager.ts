@@ -277,6 +277,42 @@ export class A2ATaskManager {
     return tasks.map((t) => ({ ...t, history: [] }));
   }
 
+  listTasksPage(opts: {
+    state?: TaskState;
+    contextId?: string;
+    limit?: number;
+    includeHistory?: boolean;
+    ownerId?: string;
+    pageToken?: string;
+  } = {}): { tasks: Task[]; nextPageToken: string; totalSize: number } {
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 100);
+    let tasks = Array.from(this.tasks.values());
+    if (opts.ownerId) tasks = tasks.filter((t) => this.owners.get(t.id) === opts.ownerId);
+    if (opts.state) tasks = tasks.filter((t) => t.status.state === opts.state);
+    if (opts.contextId) tasks = tasks.filter((t) => t.contextId === opts.contextId);
+    tasks.sort((a, b) => b.status.timestamp.localeCompare(a.status.timestamp) || b.id.localeCompare(a.id));
+
+    let start = 0;
+    if (opts.pageToken) {
+      try {
+        const cursor = JSON.parse(Buffer.from(opts.pageToken, 'base64url').toString('utf8')) as { ts: string; id: string };
+        const index = tasks.findIndex((t) => t.status.timestamp === cursor.ts && t.id === cursor.id);
+        start = index < 0 ? tasks.length : index + 1;
+      } catch {
+        start = tasks.length;
+      }
+    }
+
+    const page = tasks.slice(start, start + limit);
+    const last = page[page.length - 1];
+    const nextPageToken = start + page.length < tasks.length && last
+      ? Buffer.from(JSON.stringify({ ts: last.status.timestamp, id: last.id })).toString('base64url')
+      : '';
+
+    const visible = opts.includeHistory ? page : page.map((t) => ({ ...t, history: [] }));
+    return { tasks: visible, nextPageToken, totalSize: tasks.length };
+  }
+
   /** Number of retained tasks, before any filtering. */
   taskCount(): number {
     return this.tasks.size;
