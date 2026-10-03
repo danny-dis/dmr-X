@@ -15,6 +15,7 @@
  */
 
 import type { RequestHeaders } from '../tenant-key.js';
+import { validateWebhookUrl } from './security.js';
 import { dispatchTask } from './dispatch.js';
 import {
   getTaskManager,
@@ -58,6 +59,8 @@ export interface JsonRpcRequest {
   method?: string;
   params?: any;
 }
+
+export interface A2ARequestContext { principal?: string; version?: string; }
 
 export interface JsonRpcResponse {
   jsonrpc: '2.0';
@@ -146,6 +149,7 @@ function registerInlinePushConfig(taskId: string, params: any): void {
 export async function handleRpc(
   req: JsonRpcRequest,
   headers: RequestHeaders,
+  context: A2ARequestContext = {},
 ): Promise<JsonRpcResponse> {
   const id = req.id ?? null;
   const tm = getTaskManager();
@@ -157,6 +161,7 @@ export async function handleRpc(
       const { task, error } = tm.createTask(message, {
         contextId: req.params?.message?.contextId,
         metadata: req.params?.metadata,
+        ownerId: context.principal,
       });
       if (error === 'terminal-task' || !task) {
         return rpcError(
@@ -179,7 +184,7 @@ export async function handleRpc(
       if (historyLength === false) {
         return rpcError(id, A2A_ERR.INVALID_PARAMS, 'historyLength must be a non-negative integer');
       }
-      const task = tm.getTask(taskId, historyLength);
+      const task = tm.getTask(taskId, historyLength, context.principal);
       if (!task) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
       return rpcResult(id, task);
     }
@@ -189,7 +194,7 @@ export async function handleRpc(
       if (!taskId || typeof taskId !== 'string') {
         return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing task id');
       }
-      const { task, error } = tm.cancelTask(taskId);
+      const { task, error } = tm.cancelTask(taskId, context.principal);
       if (error === 'not-found') return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
       if (error === 'not-cancelable') return rpcError(id, A2A_ERR.TASK_NOT_CANCELABLE, 'Task not cancelable');
       return rpcResult(id, task);
@@ -216,6 +221,7 @@ export async function handleRpc(
         contextId: p.contextId,
         limit: p.pageSize ?? 50, // spec default when unspecified
         includeHistory: p.includeHistory === true,
+        ownerId: context.principal,
       });
 
       // `nextPageToken` is omitted: TaskManager holds an in-memory map with no
@@ -228,8 +234,11 @@ export async function handleRpc(
       const taskId = req.params?.taskId ?? req.params?.id;
       const config = req.params?.pushNotificationConfig as PushNotificationConfig | undefined;
       if (!taskId || !config?.url) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing taskId or config url');
-      if (!tm.setPushConfig(taskId, config)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
-      return rpcResult(id, { taskId, pushNotificationConfig: config });
+      if (!tm.getTask(taskId, undefined, context.principal)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
+      const webhook = await validateWebhookUrl(config.url);
+      if (!webhook.ok) return rpcError(id, A2A_ERR.INVALID_PARAMS, webhook.reason || 'Invalid webhook URL');
+      if (!tm.setPushConfig(taskId, config, context.principal)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
+      return rpcResult(id, { taskId, pushNotificationConfig: { ...config, token: undefined } });
     }
 
     case 'tasks/pushNotificationConfig/get': {
@@ -237,8 +246,8 @@ export async function handleRpc(
       if (!taskId) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing taskId');
       // -32003 means "this agent does not support push notifications at all",
       // which is a lie here — we do, this task simply has no config yet.
-      if (!tm.getTask(taskId)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
-      const config = tm.getPushConfig(taskId);
+      if (!tm.getTask(taskId, undefined, context.principal)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
+      const config = tm.getPushConfig(taskId, context.principal);
       if (!config) {
         return rpcError(id, A2A_ERR.INVALID_PARAMS, 'No push notification config set for this task');
       }
@@ -280,6 +289,7 @@ export async function handleRpcStream(
   req: JsonRpcRequest,
   headers: RequestHeaders,
   sink: StreamSink,
+  context: A2ARequestContext = {},
 ): Promise<void> {
   const id = req.id ?? null;
   const tm = getTaskManager();
@@ -294,6 +304,7 @@ export async function handleRpcStream(
       const { task, error } = tm.createTask(message, {
         contextId: req.params?.message?.contextId,
         metadata: req.params?.metadata,
+        ownerId: context.principal,
       });
       if (error === 'terminal-task' || !task) {
         sink.send(
@@ -331,7 +342,7 @@ export async function handleRpcStream(
 
     if (req.method === 'tasks/resubscribe') {
       const taskId = req.params?.id;
-      const task = taskId && typeof taskId === 'string' ? tm.getTask(taskId) : null;
+      const task = taskId && typeof taskId === 'string' ? tm.getTask(taskId, undefined, context.principal) : null;
       if (!task) {
         sink.send(rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found'));
         return;
