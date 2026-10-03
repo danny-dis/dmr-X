@@ -51,12 +51,13 @@ export class SQLiteCapacityStore implements CapacityStore {
   }
 
   async tryReserve(
+    dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
     reservationId?: string,
     leaseMs: number = 30_000,
-    dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const db = getDb();
     const now = Date.now();
+    const stableReservationId = reservationId ?? `sqlite-${now}-${Math.random().toString(36).slice(2, 10)}`;
 
     const insert = db.prepare(`
       INSERT INTO capacity_reservations (reservation_id, unit, scope_id, amount, expires_at, status, created_at)
@@ -174,9 +175,9 @@ export class RedisCapacityStore implements CapacityStore {
   }
 
   async tryReserve(
+    dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
     reservationId?: string,
     leaseMs: number = this.leaseMs,
-    dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const redis = await this.getClient();
     const now = Date.now();
