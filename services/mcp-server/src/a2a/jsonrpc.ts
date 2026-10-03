@@ -243,6 +243,7 @@ export async function handleRpc(
         contextId?: string;
         status?: string;
         pageSize?: number;
+        pageToken?: string;
         includeHistory?: boolean;
       };
 
