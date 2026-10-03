@@ -245,28 +245,47 @@ export async function handleRpc(
         pageSize?: number;
         pageToken?: string;
         includeHistory?: boolean;
+        includeArtifacts?: boolean;
       };
 
-      // Spec caps page_size at 100 (min 1). Reject out-of-range explicitly
-      // rather than silently clamping, so a client learns its request was wrong.
-      if (p.pageSize !== undefined) {
-        if (!Number.isInteger(p.pageSize) || p.pageSize < 1 || p.pageSize > 100) {
-          return rpcError(id, A2A_ERR.INVALID_PARAMS, 'pageSize must be an integer between 1 and 100');
-        }
+      if (p.pageSize !== undefined && (!Number.isInteger(p.pageSize) || p.pageSize < 1 || p.pageSize > 100)) {
+        return rpcError(id, A2A_ERR.INVALID_PARAMS, 'pageSize must be an integer between 1 and 100');
       }
 
-      const tasks = tm.listTasks({
-        state: p.status as never,
+      const statusMap: Record<string, string> = {
+        TASK_STATE_SUBMITTED: 'submitted',
+        TASK_STATE_WORKING: 'working',
+        TASK_STATE_INPUT_REQUIRED: 'input-required',
+        TASK_STATE_COMPLETED: 'completed',
+        TASK_STATE_CANCELED: 'canceled',
+        TASK_STATE_FAILED: 'failed',
+        TASK_STATE_REJECTED: 'rejected',
+        TASK_STATE_AUTH_REQUIRED: 'auth-required',
+        TASK_STATE_UNKNOWN: 'unknown',
+      };
+      const status = typeof p.status === 'string' ? (statusMap[p.status] || p.status) : undefined;
+      const page = tm.listTasksPage({
+        state: status as never,
         contextId: p.contextId,
-        limit: p.pageSize ?? 50, // spec default when unspecified
+        limit: p.pageSize ?? 50,
         includeHistory: p.includeHistory === true,
         ownerId: context.principal,
+        pageToken: p.pageToken,
       });
 
-      // `nextPageToken` is omitted: TaskManager holds an in-memory map with no
-      // cursor, so real pagination would be a storage change. Returning no
-      // token is spec-legal (it signals "no further pages").
-      return rpcResult(id, { tasks: tasks.map((t) => toWireTask(t, context.version)), nextPageToken: '' });
+      const wireTasks = page.tasks.map((t) => toWireTask(t, context.version)).map((t) => {
+        if (p.includeArtifacts === true) return t;
+        const copy = { ...t } as Task;
+        delete (copy as any).artifacts;
+        return copy;
+      });
+
+      return rpcResult(id, {
+        tasks: wireTasks,
+        totalSize: page.totalSize,
+        pageSize: p.pageSize ?? 50,
+        nextPageToken: page.nextPageToken,
+      });
     }
 
     case 'tasks/pushNotificationConfig/set': {
