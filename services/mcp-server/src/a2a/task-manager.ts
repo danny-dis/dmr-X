@@ -148,6 +148,8 @@ export class A2ATaskManager {
   private tasks = new Map<string, Task>();
   private contexts = new Map<string, Set<string>>();
   private push = new Map<string, PushNotificationConfig>();
+  private owners = new Map<string, string>();
+  private messageIndex = new Map<string, string>();
   private listeners = new Map<string, Set<TaskListener>>();
   private readonly maxTasks: number;
 
@@ -177,9 +179,20 @@ export class A2ATaskManager {
    */
   createTask(
     message: TaskMessage,
-    opts?: { contextId?: string; metadata?: Record<string, unknown> },
+    opts?: { contextId?: string; metadata?: Record<string, unknown>; ownerId?: string },
   ): CreateTaskResult {
+    const indexed = this.messageIndex.get(message.messageId);
+    if (!message.taskId && indexed) {
+      const duplicate = this.tasks.get(indexed);
+      if (duplicate && (!opts?.ownerId || this.owners.get(duplicate.id) === opts.ownerId)) {
+        return { task: duplicate };
+      }
+    }
+
     const existing = message.taskId ? this.tasks.get(message.taskId) : undefined;
+    if (existing && opts?.ownerId && this.owners.get(existing.id) !== opts.ownerId) {
+      return { error: 'terminal-task' };
+    }
     if (existing) {
       if (isTerminal(existing.status.state)) return { error: 'terminal-task' };
       existing.history.push({ ...message, taskId: existing.id, contextId: existing.contextId });
@@ -206,6 +219,8 @@ export class A2ATaskManager {
     };
 
     this.tasks.set(id, task);
+    if (opts?.ownerId) this.owners.set(id, opts.ownerId);
+    this.messageIndex.set(message.messageId, id);
     const set = this.contexts.get(contextId) ?? new Set<string>();
     set.add(id);
     this.contexts.set(contextId, set);
@@ -216,8 +231,9 @@ export class A2ATaskManager {
     return { task };
   }
 
-  getTask(id: string, historyLength?: number): Task | null {
+  getTask(id: string, historyLength?: number, ownerId?: string): Task | null {
     const task = this.tasks.get(id);
+    if (ownerId && this.owners.get(id) !== ownerId) return null;
     if (!task) return null;
     if (historyLength === undefined) return task;
     return { ...task, history: task.history.slice(-Math.max(0, historyLength)) };
@@ -308,6 +324,7 @@ export class A2ATaskManager {
   cancelTask(id: string): { task?: Task; error?: 'not-found' | 'not-cancelable' } {
     const task = this.tasks.get(id);
     if (!task) return { error: 'not-found' };
+    if (ownerId && this.owners.get(taskId) !== ownerId) return { error: 'not-found' };
     if (isTerminal(task.status.state)) return { error: 'not-cancelable' };
     task.status = {
       state: 'canceled',
