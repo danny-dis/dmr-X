@@ -86,8 +86,13 @@ describe('Universal inference resource fleet', () => {
     const speechmatics = getVerifiedFreeOffers('speechmatics');
     const cloudflareSearch = getVerifiedFreeOffers('cloudflare-ai-search');
     expect(z[0].kind).toBe('trial');
-    expect(fireworks[0].kind).toBe('promo_credits');
+    expect(fireworks[0].kind).toBe('startup_credits');
     expect(aws[0].kind).toBe('promo_credits');
+    expect(inception[0].unit).toBe('tokens');
+    expect(alibaba[0].expiresAfterDays).toBe(90);
+    expect(speechmatics[0].amount).toBe(100);
+    const embeddingOffers = alibaba.filter((o) => o.modelId?.includes('embedding'));
+    expect(embeddingOffers).toHaveLength(2);
     expect(cloudflareSearch).toHaveLength(2);
   });
 
@@ -109,7 +114,7 @@ describe('Universal inference resource fleet', () => {
   it('exposes the verified offer registry without duplicating provider identities', () => {
     const zaiMatches = PROVIDER_CATALOG.filter((p) => p.id === 'zai-coding');
     expect(zaiMatches).toHaveLength(1);
-    expect(getVerifiedFreeOffers().length).toBeGreaterThanOrEqual(15);
+    expect(getVerifiedFreeOffers().length).toBeGreaterThanOrEqual(23);
   });
 });
 
