@@ -214,7 +214,7 @@ export class RedisCapacityStore implements CapacityStore {
     await redis.set(reservationKey, JSON.stringify({
       id: stableReservationId,
       dimensions: dimensions.map(d => ({ unit: d.unit, scopeId: d.scopeId, amount: d.amount })),
-      expiresAt: now + this.leaseMs,
+      expiresAt: now + leaseMs,
       status: 'reserved',
     }), { PX: leaseMs });
 
