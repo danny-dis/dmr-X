@@ -226,6 +226,10 @@ export async function waitForPersistenceReady(): Promise<void> {
   await readyPromise;
 }
 
+export function isPersistenceDurable(): boolean {
+  return db !== null;
+}
+
 export function persistTask(task: Task): void {
   if (!db) return;
   try {
