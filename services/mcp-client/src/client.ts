@@ -146,7 +146,15 @@ export class MCPClient {
       throw new Error(`No MCP server found hosting tool: ${toolName}`);
     }
 
-    return this.registry.callTool(server.config.id, toolName, args);
+    // DMR-X exposes aggregated tools as <serverId>__<toolName>. Resolve the
+    // namespace for routing, but pass only the original upstream name to MCP.
+    const separator = '__';
+    const separatorIndex = toolName.indexOf(separator);
+    const upstreamTool = separatorIndex > 0
+      ? toolName.slice(separatorIndex + separator.length)
+      : toolName;
+
+    return this.registry.callTool(server.config.id, upstreamTool, args);
   }
 
   /**
