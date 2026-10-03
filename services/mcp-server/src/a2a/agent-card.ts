@@ -147,8 +147,10 @@ export interface AgentCard {
   documentationUrl?: string;
   /** Named security schemes, OpenAPI 3 style (spec 0.3.0) */
   securitySchemes?: Record<string, unknown>;
-  /** Security requirements referencing `securitySchemes` (spec 0.3.0) */
+  /** Security requirements referencing `securitySchemes` (legacy compatibility). */
   security?: Array<Record<string, string[]>>;
+  /** Native v1.0 security requirements. */
+  securityRequirements?: Array<{ schemes: Record<string, { list: string[] }> }>;
   /** Whether an authenticated extended card is available (spec 0.3.0) */
   supportsAuthenticatedExtendedCard: boolean;
   /** Default input media types */
