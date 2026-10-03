@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/A2A-ready-2563eb?style=for-the-badge" alt="A2A" />
 </p>
 
-DMR-X is an **independent, local-first AI infrastructure platform** between applications/agents and AI execution. It normalizes provider interfaces, selects the best execution path for each request, manages cost/quality/latency/privacy trade-offs, and can optionally run isolated agents.
+DMR-X is an **independent, local-first AI infrastructure platform** between applications/agents and AI execution. It normalizes provider interfaces, selects the best execution path for each request, manages cost/quality/latency/privacy trade-offs, and can optionally run isolated agents. It treats cloud APIs, free tiers, trials, promotional credits, local runtimes, browser WebGPU, media jobs, and future neural resources as one schedulable inference fleet.
 
 **ATHENA, ARGUS, Ghost Factory, Claude Code, Codex, and unrelated applications can all use DMR-X. None are dependencies.**
 
@@ -67,7 +67,8 @@ DMR-X optimizes across **capability, quality, cost, latency, reliability, privac
 - 📊 **Evaluation + observability** — routing traces, cost, latency, reliability, outcomes and audit.
 - 🧪 **Benchmarking** — compare models/providers by task and capability instead of one global leaderboard.
 - 🎛️ **Multi-tenant controls** — keys, quotas, policies, budgets and usage accounting.
-- 🎨 **Multimodal infrastructure** — text, vision, embeddings, reranking, speech and specialist generation workloads.
+- 🎨 **Multimodal infrastructure** — text, vision, embeddings, reranking, speech, diffusion/media jobs, search, decision/verification workloads and specialist inference.
+- 🆓 **Universal free-resource fleet** — recurring quotas, account credits, trials, IP/device capacity and provider-specific entitlements are modeled separately with provenance and live verification.
 
 ---
 
@@ -227,6 +228,7 @@ dmr-X/
 |---|---|
 | [`DMRX-PRODUCT-AND-ARCHITECTURE.md`](docs/DMRX-PRODUCT-AND-ARCHITECTURE.md) | Canonical product definition and architecture |
 | [`DMRX-RESEARCH-2026-09.md`](docs/DMRX-RESEARCH-2026-09.md) | Current research and decisions |
+| [`DMRX-UNIVERSAL-INFERENCE-RESOURCE-FLEET-2026-10.md`](docs/DMRX-UNIVERSAL-INFERENCE-RESOURCE-FLEET-2026-10.md) | Universal inference economics, free-lab research and resource-fleet architecture |
 | [`DMRX-ROADMAP-2026-09.md`](docs/DMRX-ROADMAP-2026-09.md) | Current implementation roadmap |
 | [`MCP-2026.md`](docs/MCP-2026.md) | MCP architecture/conformance target |
 | [`A2A.md`](docs/A2A.md) | A2A architecture/conformance target |
