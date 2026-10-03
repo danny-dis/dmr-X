@@ -29,6 +29,8 @@ interface ScheduledJob {
   enabled: boolean;
   prompt?: string;
   maxSteps?: number;
+  /** Stable hosted instance reused across schedule fires. */
+  agentInstanceId?: string;
   running: boolean;
 }
 
@@ -164,7 +166,7 @@ export class AgentScheduler {
     agentDefinitionId: string,
     tenantId: string,
     cron: string,
-    options?: { prompt?: string; maxSteps?: number; timezone?: string },
+    options?: { prompt?: string; maxSteps?: number; timezone?: string; agentInstanceId?: string },
   ): void {
     const jobId = crypto.randomUUID();
     const nextRunAt = calculateNextRun(cron, options?.timezone);
@@ -173,8 +175,11 @@ export class AgentScheduler {
     // Persist to SQLite
     const db = getDb();
     db.prepare(`
-      INSERT INTO agent_scheduled_jobs (id, agent_definition_id, tenant_id, trigger_type, trigger_config, next_run_at, enabled, prompt, max_steps, created_at, updated_at)
-      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?, ?, ?)
+      INSERT INTO agent_scheduled_jobs (
+        id, agent_definition_id, tenant_id, trigger_type, trigger_config,
+        next_run_at, enabled, prompt, max_steps, agent_instance_id, created_at, updated_at
+      )
+      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       jobId,
       agentDefinitionId,
@@ -183,6 +188,7 @@ export class AgentScheduler {
       nextRunAt.toISOString(),
       options?.prompt ?? null,
       options?.maxSteps ?? 5,
+      options?.agentInstanceId ?? null,
       now,
       now,
     );
@@ -198,6 +204,7 @@ export class AgentScheduler {
       enabled: true,
       prompt: options?.prompt,
       maxSteps: options?.maxSteps ?? 5,
+      agentInstanceId: options?.agentInstanceId,
       running: false,
     });
 
@@ -266,6 +273,7 @@ export class AgentScheduler {
           enabled: row.enabled === 1,
           prompt: row.prompt ?? undefined,
           maxSteps: row.max_steps != null ? Number(row.max_steps) : undefined,
+          agentInstanceId: row.agent_instance_id ?? undefined,
           running: row.running === 1,
         });
       }
@@ -368,14 +376,39 @@ export class AgentScheduler {
     }
 
     // Create an execution record
-    const instance = await agentRegistryService.createInstance(job.tenantId, {
-      agentDefinitionId: job.agentDefinitionId,
-      configOverride: { triggeredBy: 'schedule', jobId: job.id },
-    });
+    // A schedule owns a stable persistent identity. Create it once on first
+    // fire, then wake/reuse the same instance on every later fire.
+    let instance = job.agentInstanceId
+      ? await agentRegistryService.getInstance(job.agentInstanceId)
+      : null;
 
-    if (!instance) {
-      logger.warn({ jobId: job.id }, 'Failed to create agent instance for scheduled job');
-      return;
+    if (!instance || instance.lifecycleState === 'retired') {
+      instance = await agentRegistryService.createInstance(job.tenantId, {
+        agentDefinitionId: job.agentDefinitionId,
+        configOverride: { triggeredBy: 'schedule', jobId: job.id },
+        runtimeMode: 'persistent',
+        accessScope: 'private',
+      });
+
+      if (!instance) {
+        logger.warn({ jobId: job.id }, 'Failed to create agent instance for scheduled job');
+        return;
+      }
+
+      job.agentInstanceId = instance.id;
+      db.prepare(
+        'UPDATE agent_scheduled_jobs SET agent_instance_id = ?, updated_at = datetime(\'now\') WHERE id = ?',
+      ).run(instance.id, job.id);
+    } else if (['paused', 'stopped'].includes(instance.lifecycleState)) {
+      instance = await agentRegistryService.transitionInstanceLifecycle(
+        instance.id,
+        job.tenantId,
+        'ready',
+      );
+      if (!instance) {
+        logger.warn({ jobId: job.id, instanceId: job.agentInstanceId }, 'Failed to wake scheduled agent instance');
+        return;
+      }
     }
 
     const prompt = job.prompt || `Scheduled run for ${definition.name}`;
