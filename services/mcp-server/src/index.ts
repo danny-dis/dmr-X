@@ -1084,7 +1084,9 @@ async function main(): Promise<void> {
   if (mcpConfig.a2a?.enabled) {
     const { initPersistence } = await import('./a2a/persistence.js');
     const dbPath = process.env.DMRX_A2A_DB_PATH || '';
-    initPersistence({ dbPath: dbPath || undefined });
+    const { waitForPersistenceReady } = await import('./a2a/persistence.js');
+    await initPersistence({ dbPath: dbPath || undefined });
+    await waitForPersistenceReady();
   }
 
   // Start telemetry service (Prometheus metrics + OTel tracing)
