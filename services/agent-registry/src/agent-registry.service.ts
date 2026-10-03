@@ -474,6 +474,9 @@ export class AgentRegistryService {
         const instance = await this.createInstance(tenantId, {
           agentDefinitionId: definition.id,
           configOverride: {},
+          runtimeMode: 'persistent',
+          accessScope: 'shared',
+          lifecyclePolicy: {},
         });
         if (!instance) throw new Error('Failed to create agent instance');
 
