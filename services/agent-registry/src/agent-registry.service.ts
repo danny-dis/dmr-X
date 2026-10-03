@@ -6,6 +6,11 @@ import type {
   AgentDefinitionCreate,
   AgentDefinitionUpdate,
   AgentInstanceCreate,
+  AgentInstanceRuntimeUpdate,
+  AgentRuntimeMode,
+  AgentAccessScope,
+  AgentLifecyclePolicy,
+  AgentLifecycleState,
   AgentListingCreate,
   AgentRatingCreate,
   AgentListQuery,
@@ -66,6 +71,12 @@ export interface AgentInstance {
   tenantId: string;
   status: string;
   configOverride: Record<string, unknown>;
+  runtimeMode: AgentRuntimeMode;
+  accessScope: AgentAccessScope;
+  lifecycleState: AgentLifecycleState;
+  lifecyclePolicy: AgentLifecyclePolicy;
+  lastActivityAt: string | null;
+  lastHeartbeatAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -116,6 +127,49 @@ function safeJsonParse<T>(raw: unknown, fallback: T): T {
 export const SYSTEM_AGENT_PREFIX = '__';
 export function isSystemAgentName(name: string | null | undefined): boolean {
   return typeof name === 'string' && name.startsWith(SYSTEM_AGENT_PREFIX);
+}
+
+export const DEFAULT_PERSISTENT_LIFECYCLE_POLICY: AgentLifecyclePolicy = {
+  maxTtlMs: null,
+  idleTimeoutMs: null,
+  maxBudgetCents: null,
+};
+
+export const DEFAULT_EPHEMERAL_LIFECYCLE_POLICY: AgentLifecyclePolicy = {
+  maxTtlMs: 30 * 60 * 1000,
+  idleTimeoutMs: 5 * 60 * 1000,
+  maxBudgetCents: 100,
+};
+
+const INSTANCE_LIFECYCLE_TRANSITIONS: Record<AgentLifecycleState, readonly AgentLifecycleState[]> = {
+  registered: ['provisioned', 'retired'],
+  provisioned: ['ready', 'retired'],
+  ready: ['running', 'paused', 'draining', 'stopped', 'retired'],
+  running: ['ready', 'paused', 'draining', 'stopped'],
+  paused: ['ready', 'running', 'stopped', 'retired'],
+  draining: ['stopped', 'retired'],
+  stopped: ['ready', 'retired'],
+  retired: [],
+};
+
+export function canTransitionInstanceLifecycle(
+  from: AgentLifecycleState,
+  to: AgentLifecycleState,
+): boolean {
+  return INSTANCE_LIFECYCLE_TRANSITIONS[from]?.includes(to) ?? false;
+}
+
+function normalizedLifecyclePolicy(
+  runtimeMode: AgentRuntimeMode,
+  policy?: AgentLifecyclePolicy,
+): AgentLifecyclePolicy {
+  const defaults = runtimeMode === 'ephemeral'
+    ? DEFAULT_EPHEMERAL_LIFECYCLE_POLICY
+    : DEFAULT_PERSISTENT_LIFECYCLE_POLICY;
+  return {
+    ...defaults,
+    ...(policy ?? {}),
+  };
 }
 
 export interface AgentExecution {
@@ -460,13 +514,35 @@ export class AgentRegistryService {
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const runtimeMode = input.runtimeMode ?? 'persistent';
+    const accessScope = input.accessScope ?? 'shared';
+    const lifecyclePolicy = normalizedLifecyclePolicy(runtimeMode, input.lifecyclePolicy);
 
     db.prepare(`
-      INSERT INTO agent_instances (id, agent_definition_id, tenant_id, status, config_override, created_at, updated_at)
-      VALUES (?, ?, ?, 'active', ?, ?, ?)
-    `).run(id, input.agentDefinitionId, tenantId, JSON.stringify(input.configOverride ?? {}), now, now);
+      INSERT INTO agent_instances (
+        id, agent_definition_id, tenant_id, status, config_override,
+        runtime_mode, access_scope, lifecycle_state, lifecycle_policy,
+        last_activity_at, last_heartbeat_at, created_at, updated_at
+      )
+      VALUES (?, ?, ?, 'active', ?, ?, ?, 'ready', ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.agentDefinitionId,
+      tenantId,
+      JSON.stringify(input.configOverride ?? {}),
+      runtimeMode,
+      accessScope,
+      JSON.stringify(lifecyclePolicy),
+      now,
+      now,
+      now,
+      now,
+    );
 
-    logger.info({ id, tenantId, definitionId: input.agentDefinitionId }, 'Agent instance created');
+    logger.info(
+      { id, tenantId, definitionId: input.agentDefinitionId, runtimeMode, accessScope },
+      'Agent instance created',
+    );
     return this.getInstance(id);
   }
 
@@ -490,7 +566,7 @@ export class AgentRegistryService {
    */
   async listInstances(
     tenantId: string,
-    opts: { status?: string; limit?: number; offset?: number } = {},
+    opts: { accessScope?: AgentAccessScope; runtimeMode?: AgentRuntimeMode; lifecycleState?: AgentLifecycleState; status?: string; limit?: number; offset?: number } = {},
   ): Promise<{ items: AgentInstanceDetail[]; total: number }> {
     const db = getDb();
     const conditions = ['i.tenant_id = ?'];
@@ -498,6 +574,18 @@ export class AgentRegistryService {
     if (opts.status) {
       conditions.push('i.status = ?');
       params.push(opts.status);
+    }
+    if (opts.accessScope) {
+      conditions.push('i.access_scope = ?');
+      params.push(opts.accessScope);
+    }
+    if (opts.runtimeMode) {
+      conditions.push('i.runtime_mode = ?');
+      params.push(opts.runtimeMode);
+    }
+    if (opts.lifecycleState) {
+      conditions.push('i.lifecycle_state = ?');
+      params.push(opts.lifecycleState);
     }
     const where = conditions.join(' AND ');
 
@@ -565,6 +653,85 @@ export class AgentRegistryService {
     return { items, total };
   }
 
+  /** Return the current durable runtime state for an instance. */
+  async getInstanceRuntime(id: string, tenantId: string): Promise<AgentInstance | null> {
+    const row = getDb()
+      .prepare('SELECT * FROM agent_instances WHERE id = ? AND tenant_id = ?')
+      .get(id, tenantId) as any;
+    return row ? this.rowToInstance(row) : null;
+  }
+
+  /** Update runtime policy without changing the agent definition. */
+  async updateInstanceRuntime(
+    id: string,
+    tenantId: string,
+    input: AgentInstanceRuntimeUpdate,
+  ): Promise<AgentInstance | null> {
+    const current = await this.getInstanceRuntime(id, tenantId);
+    if (!current) return null;
+
+    const runtimeMode = input.runtimeMode ?? current.runtimeMode;
+    const lifecyclePolicy = normalizedLifecyclePolicy(
+      runtimeMode,
+      input.lifecyclePolicy ?? current.lifecyclePolicy,
+    );
+    const accessScope = input.accessScope ?? current.accessScope;
+    const now = new Date().toISOString();
+
+    getDb().prepare(
+      'UPDATE agent_instances SET runtime_mode = ?, access_scope = ?, lifecycle_policy = ?, updated_at = ? WHERE id = ? AND tenant_id = ?',
+    ).run(
+      runtimeMode,
+      accessScope,
+      JSON.stringify(lifecyclePolicy),
+      now,
+      id,
+      tenantId,
+    );
+    return this.getInstanceRuntime(id, tenantId);
+  }
+
+  /** Persist a runtime lifecycle transition and keep legacy status in sync. */
+  async transitionInstanceLifecycle(
+    id: string,
+    tenantId: string,
+    target: AgentLifecycleState,
+  ): Promise<AgentInstance | null> {
+    const current = await this.getInstanceRuntime(id, tenantId);
+    if (!current) return null;
+    if (current.lifecycleState === target) return current;
+    if (!canTransitionInstanceLifecycle(current.lifecycleState, target)) {
+      throw new Error(`Invalid agent lifecycle transition: ${current.lifecycleState} -> ${target}`);
+    }
+
+    const now = new Date().toISOString();
+    const legacyStatus = ['paused', 'draining', 'stopped', 'retired'].includes(target)
+      ? 'paused'
+      : 'active';
+    const activity = target === 'running' ? now : current.lastActivityAt;
+
+    getDb().prepare(
+      'UPDATE agent_instances SET lifecycle_state = ?, status = ?, last_activity_at = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?',
+    ).run(target, legacyStatus, activity, now, now, id, tenantId);
+
+    logger.info(
+      { id, tenantId, from: current.lifecycleState, to: target },
+      'Agent instance lifecycle transitioned',
+    );
+    return this.getInstanceRuntime(id, tenantId);
+  }
+
+  /** Touch an instance when work arrives or a heartbeat is received. */
+  async touchInstance(id: string, tenantId: string): Promise<AgentInstance | null> {
+    const current = await this.getInstanceRuntime(id, tenantId);
+    if (!current) return null;
+    const now = new Date().toISOString();
+    getDb().prepare(
+      'UPDATE agent_instances SET last_activity_at = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?',
+    ).run(now, now, now, id, tenantId);
+    return this.getInstanceRuntime(id, tenantId);
+  }
+
   /**
    * Set an instance's lifecycle status.
    *
@@ -579,10 +746,16 @@ export class AgentRegistryService {
     const row = db.prepare('SELECT * FROM agent_instances WHERE id = ? AND tenant_id = ?').get(id, tenantId) as any;
     if (!row) return null;
 
-    db.prepare('UPDATE agent_instances SET status = ?, updated_at = ? WHERE id = ?')
-      .run(status, new Date().toISOString(), id);
+    const currentState = (row.lifecycle_state ?? (status === 'active' ? 'ready' : 'paused')) as AgentLifecycleState;
+    const targetState: AgentLifecycleState = status === 'active' ? 'ready' : 'paused';
+    if (currentState !== targetState && !canTransitionInstanceLifecycle(currentState, targetState)) return null;
 
-    logger.info({ id, tenantId, status }, 'Agent instance status changed');
+    const now = new Date().toISOString();
+    db.prepare(
+      'UPDATE agent_instances SET status = ?, lifecycle_state = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?',
+    ).run(status, targetState, now, now, id, tenantId);
+
+    logger.info({ id, tenantId, status, lifecycleState: targetState }, 'Agent instance status changed');
     return this.getInstance(id);
   }
 
@@ -1183,12 +1356,23 @@ export class AgentRegistryService {
   }
 
   private rowToInstance(row: any): AgentInstance {
+    const runtimeMode = (row.runtime_mode ?? 'persistent') as AgentRuntimeMode;
+    const lifecyclePolicy = safeJsonParse<AgentLifecyclePolicy>(
+      row.lifecycle_policy,
+      normalizedLifecyclePolicy(runtimeMode),
+    );
     return {
       id: row.id,
       agentDefinitionId: row.agent_definition_id,
       tenantId: row.tenant_id,
       status: row.status,
       configOverride: JSON.parse(row.config_override || '{}'),
+      runtimeMode,
+      accessScope: (row.access_scope ?? 'shared') as AgentAccessScope,
+      lifecycleState: (row.lifecycle_state ?? (row.status === 'paused' ? 'paused' : 'ready')) as AgentLifecycleState,
+      lifecyclePolicy,
+      lastActivityAt: row.last_activity_at ?? null,
+      lastHeartbeatAt: row.last_heartbeat_at ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
