@@ -259,10 +259,12 @@ export async function handleRpc(
       // Alias — some clients use the 0.3.0-era name for the same operation.
       /* falls through */
     case 'agent/authenticatedExtendedCard': {
-      if (!agentCardProvider) {
-        return rpcError(id, A2A_ERR.INTERNAL, 'Agent card provider not registered');
+      if (!agentCardProvider) return rpcError(id, A2A_ERR.INTERNAL, 'Agent card provider not registered');
+      const card: any = agentCardProvider();
+      if (card?.capabilities?.extendedAgentCard !== true) {
+        return rpcError(id, A2A_ERR.UNSUPPORTED_OPERATION, 'Extended Agent Card is not supported');
       }
-      return rpcResult(id, agentCardProvider());
+      return rpcResult(id, card);
     }
 
     case 'message/stream':
