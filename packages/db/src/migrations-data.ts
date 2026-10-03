@@ -2846,7 +2846,8 @@ COMMIT;
 PRAGMA defer_foreign_keys=OFF;
 PRAGMA foreign_keys=ON;
 `,
-  },  82: {
+  },
+  82: {
     filename: '082_hosted_agent_instances.sql',
     sql: `-- 082: Hosted agent instances
 -- Give deployed agent instances a durable runtime identity independent of any
