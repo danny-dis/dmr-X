@@ -362,6 +362,7 @@ export class AgentScheduler {
    * Run the actual job: create an instance, call the gateway, record result.
    */
   private async runJob(job: ScheduledJob): Promise<void> {
+    const db = getDb();
     logger.info({ jobId: job.id, agentDefinitionId: job.agentDefinitionId }, 'Running scheduled agent job');
 
     const definition = await agentRegistryService.getDefinition(job.agentDefinitionId);
@@ -475,7 +476,6 @@ export class AgentScheduler {
     job.lastRunAt = new Date();
 
     // Persist updated schedule
-    const db = getDb();
     db.prepare(`
       UPDATE agent_scheduled_jobs
       SET next_run_at = ?, last_run_at = ?, updated_at = datetime('now')
