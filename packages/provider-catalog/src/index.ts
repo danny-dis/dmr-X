@@ -2911,22 +2911,23 @@ export { VERIFIED_FREE_OFFERS, getVerifiedFreeOffers } from './verified-free-lab
 
 // ---------------------------------------------------------------------------
 // Auto-populate pricingTier for every model.
+// ---------------------------------------------------------------------------
+
+/** Infer economic state conservatively: missing pricing is unknown, never free. */
+export function inferPricingTier(model: ModelTemplate): PricingTier {
+  if (model.subscriptionOnly) return 'subscription_only';
+  if (model.freeTier) return model.freeTier.monthlyTokenBudget > 0 || model.freeTier.dailyTokenBudget != null
+    ? 'free'
+    : 'free_with_limits';
+  const inputCost = model.inputCostPer1M ?? 0;
+  const outputCost = model.outputCostPer1M ?? 0;
+  return (inputCost > 0 || outputCost > 0) ? 'paid' : 'unknown';
+}
 // Uses explicit catalog metadata rather than runtime heuristics.
 // ---------------------------------------------------------------------------
 for (const provider of PROVIDER_CATALOG) {
   for (const model of provider.models) {
-    if (model.subscriptionOnly) {
-      model.pricingTier = 'subscription_only';
-    } else if (model.freeTier) {
-      // Has a monthly token budget → truly free (generous).
-      // No monthly budget → free but strictly rate-limited.
-      model.pricingTier = model.freeTier.monthlyTokenBudget > 0 ? 'free' : 'free_with_limits';
-    } else {
-      const inputCost = model.inputCostPer1M ?? 0;
-      const outputCost = model.outputCostPer1M ?? 0;
-      // Missing pricing metadata is not evidence of a free entitlement.
-      model.pricingTier = (inputCost > 0 || outputCost > 0) ? 'paid' : 'unknown';
-    }
+    model.pricingTier = inferPricingTier(model);
   }
 }
 
@@ -2997,3 +2998,5 @@ export function searchProviders(query: string): ProviderTemplate[] {
       p.id.includes(lower)
   );
 }
+
+export { VERIFIED_FREE_PROVIDERS } from './verified-free-labs.js';
