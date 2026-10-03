@@ -195,7 +195,6 @@ export const VERIFIED_FREE_PROVIDERS: ProviderTemplate[] = [
     signupUrl: 'https://nebius.com/services/token-factory/inference-service',
   },
   {
-    id: 'zai-coding',  {
     id: 'zai-coding',
     name: 'Z.ai Coding',
     category: 'cloud_llm',
