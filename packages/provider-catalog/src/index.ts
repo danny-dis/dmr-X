@@ -1,7 +1,7 @@
 /**
  * Comprehensive AI Provider Catalog
  *
- * 35+ providers with API details, modalities, and adapter configurations.
+ * 120+ provider templates with API details, modalities, and adapter configurations.
  * Users can add any of these via: dmrx add-provider <provider-id>
  */
 
