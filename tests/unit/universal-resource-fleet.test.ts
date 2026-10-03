@@ -81,6 +81,9 @@ describe('Universal inference resource fleet', () => {
     const z = getVerifiedFreeOffers('zai-coding');
     const fireworks = getVerifiedFreeOffers('fireworks');
     const aws = getVerifiedFreeOffers('aws-bedrock');
+    const inception = getVerifiedFreeOffers('inception');
+    const alibaba = getVerifiedFreeOffers('alibaba-model-studio');
+    const speechmatics = getVerifiedFreeOffers('speechmatics');
     const cloudflareSearch = getVerifiedFreeOffers('cloudflare-ai-search');
     expect(z[0].kind).toBe('trial');
     expect(fireworks[0].kind).toBe('promo_credits');
