@@ -51,22 +51,13 @@ export class SQLiteCapacityStore implements CapacityStore {
   }
 
   async tryReserve(
+    reservationId?: string,
+    leaseMs: number = 30_000,
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const db = getDb();
     const now = Date.now();
 
-    // Check if all dimensions can be satisfied
-    for (const d of dimensions) {
-      const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
-      const current = d.currentRemaining ?? 0;
-      if (current - reserved < d.amount) {
-        return null;
-      }
-    }
-
-    // Apply reservation atomically within a transaction
-    const reservationId = `sqlite-${now}-${Math.random().toString(36).slice(2, 10)}`;
     const insert = db.prepare(`
       INSERT INTO capacity_reservations (reservation_id, unit, scope_id, amount, expires_at, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'reserved', ?)
@@ -76,8 +67,15 @@ export class SQLiteCapacityStore implements CapacityStore {
 
     try {
       db.transaction(() => {
+        // Keep capacity checks inside the same SQLite write transaction.
+        // This closes the cross-replica stale-read admission race.
         for (const d of dimensions) {
-          insert.run(reservationId, d.unit, d.scopeId, d.amount, now + 30_000, now);
+          const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
+          const current = d.currentRemaining ?? 0;
+          if (current - reserved < d.amount) throw new Error('capacity_exhausted');
+        }
+        for (const d of dimensions) {
+          insert.run(stableReservationId, d.unit, d.scopeId, d.amount, now + leaseMs, now);
           const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
           result.push({ unit: d.unit, scopeId: d.scopeId, newRemaining: (d.currentRemaining ?? 0) - reserved });
         }
@@ -176,6 +174,8 @@ export class RedisCapacityStore implements CapacityStore {
   }
 
   async tryReserve(
+    reservationId?: string,
+    leaseMs: number = this.leaseMs,
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const redis = await this.getClient();
@@ -208,14 +208,14 @@ export class RedisCapacityStore implements CapacityStore {
     if (result === null) return null;
 
     // Store reservation record for later release/commit
-    const reservationId = `redis-${now}-${Math.random().toString(36).slice(2, 10)}`;
-    const reservationKey = `${this.keyPrefix}reservation:${reservationId}`;
+    const stableReservationId = reservationId ?? `redis-${now}-${Math.random().toString(36).slice(2, 10)}`;
+    const reservationKey = `${this.keyPrefix}reservation:${stableReservationId}`;
     await redis.set(reservationKey, JSON.stringify({
-      id: reservationId,
+      id: stableReservationId,
       dimensions: dimensions.map(d => ({ unit: d.unit, scopeId: d.scopeId, amount: d.amount })),
       expiresAt: now + this.leaseMs,
       status: 'reserved',
-    }), { PX: this.leaseMs });
+    }), { PX: leaseMs });
 
     return dimensions.map((d, i) => ({
       unit: d.unit,
@@ -298,6 +298,14 @@ function actualForUnit(actual: import('./quota-dimensions.js').DemandVector, uni
     case 'total_tokens': return actual.inputTokens + actual.outputTokens;
     case 'concurrency': return actual.concurrency;
     case 'credits': return actual.credits ?? 0;
+    case 'neurons': return actual.neurons ?? 0;
+    case 'seconds': return actual.seconds ?? 0;
+    case 'minutes': return actual.minutes ?? 0;
+    case 'characters': return actual.characters ?? 0;
+    case 'jobs': return actual.jobs ?? 0;
+    case 'gpu_seconds': return actual.gpuSeconds ?? 0;
+    case 'gpu_hours': return actual.gpuHours ?? 0;
+    case 'ip_requests': return actual.ipRequests ?? 0;
     default: return 0;
   }
 }
