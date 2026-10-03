@@ -1085,6 +1085,11 @@ async function main(): Promise<void> {
     const { initPersistence } = await import('./a2a/persistence.js');
     const dbPath = process.env.DMRX_A2A_DB_PATH || '';
     const { waitForPersistenceReady, isPersistenceDurable } = await import('./a2a/persistence.js');
+    if (process.env.NODE_ENV === 'production' && mcpConfig.a2a?.agentCard?.url && !mcpConfig.a2a.agentCard.url.startsWith('https://')) {
+      console.error('FATAL: A2A Agent Card URL must use HTTPS in production.');
+      await disposeAndExit(externalMcpClient, 1);
+      return;
+    }
     if (process.env.NODE_ENV === 'production' && !dbPath) {
       console.error('FATAL: DMRX_A2A_DB_PATH must be set when A2A is enabled in production.');
       await disposeAndExit(externalMcpClient, 1);
