@@ -213,6 +213,7 @@ function openNodeSqlite(): void {
       } catch (e) {
         console.error('[a2a] persistence init failed, falling back to memory:', (e as Error).message);
         db = null;
+        readyResolve?.();
       }
     })
     .catch((e) => {
