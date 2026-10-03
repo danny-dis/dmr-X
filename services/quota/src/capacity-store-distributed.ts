@@ -208,15 +208,27 @@ export class RedisCapacityStore implements CapacityStore {
 
     if (result === null) return null;
 
-    // Store reservation record for later release/commit
+    // Persist reservation metadata. If this write fails after the Lua
+    // decrement, compensate the counter so capacity is not leaked.
     const stableReservationId = reservationId ?? `redis-${now}-${Math.random().toString(36).slice(2, 10)}`;
     const reservationKey = `${this.keyPrefix}reservation:${stableReservationId}`;
-    await redis.set(reservationKey, JSON.stringify({
-      id: stableReservationId,
-      dimensions: dimensions.map(d => ({ unit: d.unit, scopeId: d.scopeId, amount: d.amount })),
-      expiresAt: now + leaseMs,
-      status: 'reserved',
-    }), { PX: leaseMs });
+    try {
+      await redis.set(reservationKey, JSON.stringify({
+        id: stableReservationId,
+        dimensions: dimensions.map(d => ({ unit: d.unit, scopeId: d.scopeId, amount: d.amount })),
+        expiresAt: now + leaseMs,
+        status: 'reserved',
+      }), { PX: leaseMs });
+    } catch (err) {
+      const rollbackScript = `
+        for i, key in ipairs(KEYS) do
+          redis.call('INCRBY', key, tonumber(ARGV[i]))
+        end
+        return 1
+      `;
+      await redis.eval(rollbackScript, { keys, arguments: args.map(String) }).catch(() => {});
+      throw err;
+    }
 
     return dimensions.map((d, i) => ({
       unit: d.unit,
