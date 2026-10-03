@@ -63,6 +63,27 @@ export class AgentRuntimeService {
       return null;
     }
 
+    // A hosted instance is a durable identity, not a resident process. Paused,
+    // stopped, draining, and retired identities reject new work. A ready
+    // identity is woken into running for the duration of this request; it
+    // returns to ready after the request completes.
+    if (!['ready', 'running'].includes(instance.lifecycleState)) {
+      return null;
+    }
+    if (instance.lifecycleState === 'ready') {
+      const running = await agentRegistryService.transitionInstanceLifecycle(
+        instance.id,
+        tenantId,
+        'running',
+      );
+      if (!running) return null;
+      instance = running;
+    } else {
+      await agentRegistryService.touchInstance(instance.id, tenantId);
+      const refreshed = await agentRegistryService.getInstance(instance.id);
+      if (refreshed) instance = refreshed;
+    }
+
     const definition = await agentRegistryService.getDefinition(instance.agentDefinitionId);
     if (!definition) return null;
 
@@ -87,8 +108,15 @@ export class AgentRuntimeService {
     const definition = await agentRegistryService.getDefinitionByName(tenantId, nameRef);
     if (!definition) return null;
 
-    const { items } = await agentRegistryService.listInstances(tenantId, { status: 'active' });
-    const existing = items.find((i) => i.agentDefinitionId === definition.id);
+    const { items } = await agentRegistryService.listInstances(tenantId, {
+      status: 'active',
+      accessScope: 'shared',
+    });
+    const existing = items.find(
+      (i) =>
+        i.agentDefinitionId === definition.id &&
+        !['paused', 'draining', 'stopped', 'retired'].includes(i.lifecycleState),
+    );
     if (existing) return existing;
 
     // ponytail: linear scan of active instances per lookup — fine at hundreds
@@ -97,12 +125,59 @@ export class AgentRuntimeService {
     return agentRegistryService.createInstance(tenantId, {
       agentDefinitionId: definition.id,
       configOverride: {},
+      runtimeMode: 'persistent',
+      accessScope: 'shared',
     });
   }
 
+  /** Return a durable instance to ready state after a request finishes. */
+  async markInstanceReady(instanceId: string, tenantId: string): Promise<void> {
+    const instance = await agentRegistryService.getInstance(instanceId);
+    if (!instance || instance.tenantId !== tenantId) return;
+    if (instance.lifecycleState === 'running') {
+      await agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'ready');
+    }
+  }
+
+  /** Wake a paused/stopped hosted instance. */
+  async wakeInstance(instanceId: string, tenantId: string): Promise<AgentInstance | null> {
+    const current = await agentRegistryService.getInstance(instanceId);
+    if (!current || current.tenantId !== tenantId) return null;
+    if (current.lifecycleState === 'retired') return null;
+    if (current.lifecycleState === 'stopped' || current.lifecycleState === 'paused') {
+      return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'ready');
+    }
+    return current;
+  }
+
+  /** Park an instance. Its identity and sessions remain durable in SQLite. */
+  async sleepInstance(instanceId: string, tenantId: string): Promise<AgentInstance | null> {
+    const current = await agentRegistryService.getInstance(instanceId);
+    if (!current || current.tenantId !== tenantId) return null;
+    if (current.lifecycleState === 'running') {
+      return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'paused');
+    }
+    if (current.lifecycleState === 'ready') {
+      return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'paused');
+    }
+    return current;
+  }
+
+  /** Permanently retire an instance while retaining its audit/history rows. */
+  async retireInstance(instanceId: string, tenantId: string): Promise<AgentInstance | null> {
+    const current = await agentRegistryService.getInstance(instanceId);
+    if (!current || current.tenantId !== tenantId) return null;
+    if (current.lifecycleState === 'retired') return current;
+    if (current.lifecycleState === 'running') {
+      await agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'stopped');
+    }
+    const latest = await agentRegistryService.getInstance(instanceId);
+    if (!latest || latest.lifecycleState === 'retired') return latest;
+    return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'retired');
+  }
+
   /**
-   * Build the system prompt for an agent, incorporating its definition.
-   *
+   * Build the system prompt for an agent, incorporating its definition.   *
    * Skills use PROGRESSIVE DISCLOSURE (borrowed from Vercel EVE): each
    * declared skill's *description* is always advertised as a one-line hint,
    * but only the bodies of skills in `loadedSkillIds` are inlined into the
