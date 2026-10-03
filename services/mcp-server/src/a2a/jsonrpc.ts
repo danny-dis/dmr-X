@@ -393,7 +393,7 @@ export async function handleRpcStream(
       // immediate close instead of the completion it was waiting for.
       sink.send(rpcResult(id, statusUpdateEvent(task, context.version)));
       if (isTerminal(task.status.state)) return;
-      await followToTerminal(tm, task.id, id, sink);
+      await followToTerminal(tm, task.id, id, sink, context.version);
       return;
     }
 
@@ -412,6 +412,7 @@ function followToTerminal(
   taskId: string,
   rpcId: string | number | null,
   sink: StreamSink,
+  version?: string,
 ): Promise<void> {
   return new Promise<void>((resolve) => {
     let done = false;
@@ -426,7 +427,7 @@ function followToTerminal(
     // `unref` so a dangling subscriber can never hold the process open.
     (timer as unknown as { unref?: () => void }).unref?.();
     const unsubscribe = tm.subscribe(taskId, (updated) => {
-      sink.send(rpcResult(rpcId, statusUpdateEvent(updated, undefined)));
+      sink.send(rpcResult(rpcId, statusUpdateEvent(updated, version)));
       if (isTerminal(updated.status.state)) finish();
     });
     // Guard against the task having terminated between the replay and subscribe.
