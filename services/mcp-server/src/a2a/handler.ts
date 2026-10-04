@@ -17,6 +17,7 @@ import { createLogger } from '@dmr-x/utils';
 
 import type { RequestHeaders } from '../tenant-key.js';
 import { buildAgentCard, type AgentCardConfig } from './agent-card.js';
+import { resolveOwnerId } from './owner.js';
 import {
   handleRpc,
   handleRpcStream,
@@ -49,6 +50,10 @@ export async function handleA2ARoutes(
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const path = url.pathname;
+  // Every task-addressing route resolves the caller's authenticated principal
+  // through the same identity seam the JSON-RPC surface uses, so the legacy REST
+  // shims cannot become a way around ownership enforcement.
+  const ownerId = await resolveOwnerId(req.headers as RequestHeaders);
 
   // Keep the RPC-facing card in step with the discovery endpoint — both build
   // from the same config + live tool list.
@@ -90,21 +95,25 @@ export async function handleA2ARoutes(
     const limit = limitParam ? parseInt(limitParam, 10) : undefined;
 
     const manager = getTaskManager();
-    const tasks = manager.listTasks({
+    // Owner-scoped: `total` and `retained` both describe THIS principal's tasks
+    // only, so a listing cannot be used to infer another tenant's task count.
+    const tasks = manager.listOwnedTasks(ownerId, {
       state: state as never,
       contextId,
       limit: Number.isFinite(limit) ? limit : undefined,
       includeHistory: url.searchParams.get('includeHistory') === 'true',
     });
 
-    sendJson(res, 200, { tasks, total: tasks.length, retained: manager.taskCount() });
+    sendJson(res, 200, { tasks, total: tasks.length, retained: manager.ownedTaskCount(ownerId) });
     return true;
   }
 
   const taskIdMatch = path.match(/^\/a2a\/tasks\/([^/]+)$/);
   if (taskIdMatch && req.method === 'GET') {
-    const task = getTaskManager().getTask(taskIdMatch[1]);
+    const task = getTaskManager().getOwnedTask(ownerId, taskIdMatch[1]);
     if (!task) {
+      // 404, not 403: a caller must not be able to probe for the existence of
+      // another principal's task by comparing status codes.
       sendJson(res, 404, { error: 'Task not found' });
       return true;
     }
@@ -241,7 +250,11 @@ async function legacyShim(
   const rpc: JsonRpcRequest = { jsonrpc: '2.0', id: 1, method, params: toParams(body) };
   const result = await handleRpc(rpc, req.headers as RequestHeaders);
   if (result.error) {
-    const status = result.error.code === A2A_ERR.TASK_NOT_FOUND ? 404 : 400;
+    // A cross-owner task is reported as 404 (not 403) so the shim does not leak
+    // the existence of another principal's task; a missing principal is 401,
+    // which is the honest answer about our own authentication state.
+    const status =
+      result.error.code === A2A_ERR.AUTH_REQUIRED ? 401 : result.error.code === A2A_ERR.TASK_NOT_FOUND ? 404 : 400;
     sendJson(res, status, { error: result.error.message });
     return true;
   }

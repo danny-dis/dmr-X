@@ -13,9 +13,13 @@ import { randomUUID } from 'node:crypto';
 import {
   persistTask,
   loadPersistedTasks,
+  persistOwnerBinding,
+  loadOwnerBindings,
   setPushConfig as persistPushConfig,
   getPushConfig as loadPushConfig,
 } from './persistence.js';
+
+import { legacyUnownedVisibility, ownerIdMatches, type OwnerId } from './owner.js';
 
 import { createLogger } from '@dmr-x/utils';
 
@@ -103,6 +107,28 @@ export function newMessageId(): string {
   return randomUUID();
 }
 
+/**
+ * Decode a `tasks/list` cursor into the task id it resumes after.
+ *
+ * Returns `undefined` for anything that is not a well-formed token this server
+ * issued. The caller treats that as "end of listing" instead of restarting, so
+ * a client cannot be handed page 1 forever by a corrupt or replayed token.
+ */
+function decodeTaskCursor(pageToken: string): string | undefined {
+  try {
+    const raw = Buffer.from(pageToken, 'base64url').toString('utf8');
+    // Bound the decode: a client may send an arbitrarily large string.
+    if (raw.length > 512) return undefined;
+    const parsed = JSON.parse(raw) as { v?: unknown; after?: unknown };
+    if (parsed?.v !== 1 || typeof parsed.after !== 'string' || parsed.after.length === 0) {
+      return undefined;
+    }
+    return parsed.after;
+  } catch {
+    return undefined;
+  }
+}
+
 export function textMessage(role: 'user' | 'agent', text: string, extra?: Partial<TaskMessage>): TaskMessage {
   return {
     role,
@@ -131,6 +157,10 @@ export interface CreateTaskResult {
   task?: Task;
   /** Client referenced `message.taskId` of an already-terminal task. */
   error?: 'terminal-task';
+  /** The referenced task exists but belongs to a different principal. */
+  errorOwner?: 'forbidden';
+  /** The referenced `contextId` belongs to a different principal. */
+  errorContext?: 'forbidden';
 }
 
 /** Callback invoked on every state change of a subscribed task. */
@@ -149,6 +179,17 @@ export class A2ATaskManager {
   private contexts = new Map<string, Set<string>>();
   private push = new Map<string, PushNotificationConfig>();
   private listeners = new Map<string, Set<TaskListener>>();
+  /**
+   * Immutable owner digest per task, and per contextId.
+   *
+   * A task with no entry here is UNOWNED — persisted by a build that predates
+   * ownership. Unowned tasks are never handed to a remote principal; see
+   * `canReadUnowned`.
+   */
+  private owners = new Map<string, OwnerId>();
+  private contextOwners = new Map<string, OwnerId>();
+  /** In-flight downstream dispatch per task, so a cancel can abort it. */
+  private inflight = new Map<string, AbortController>();
   private readonly maxTasks: number;
 
   constructor(opts?: { maxTasks?: number }) {
@@ -162,11 +203,142 @@ export class A2ATaskManager {
       set.add(t.id);
       this.contexts.set(t.contextId, set);
     }
+    // Rehydrate ownership from the same store. Without this a restart produced
+    // a store where every task looked unowned, so a legitimate owner would be
+    // told their task did not exist after a bounce.
+    const bindings = loadOwnerBindings();
+    for (const b of bindings.tasks) this.owners.set(b.taskId, b.ownerId);
+    for (const [contextId, ownerId] of bindings.contexts) this.contextOwners.set(contextId, ownerId);
     this.evict();
   }
 
+  // -------------------------------------------------------------------------
+  // Ownership guards — the single place authorization decisions are made.
+  // -------------------------------------------------------------------------
+
   /**
-   * Create a task from an inbound user message (spec: message/send).
+   * Whether an unowned (legacy) task may be read.
+   *
+   * `ownerId` is always supplied for remote calls and is `undefined` only for
+   * the in-process operator listing. Remote principals therefore never match.
+   */
+  private canReadUnowned(ownerId: OwnerId | undefined): boolean {
+    return ownerId === undefined && legacyUnownedVisibility();
+  }
+
+  /** True when `ownerId` owns `taskId`. The one task-ownership check. */
+  isTaskOwnedBy(taskId: string, ownerId: OwnerId | undefined): boolean {
+    if (!ownerId) return false;
+    const owner = this.owners.get(taskId);
+    if (!owner) return this.canReadUnowned(ownerId);
+    return ownerIdMatches(owner, ownerId);
+  }
+
+  /** True when `ownerId` owns `contextId`, or the context does not exist yet. */
+  isContextOwnedBy(contextId: string, ownerId: OwnerId | undefined): boolean {
+    if (!ownerId) return false;
+    const owner = this.contextOwners.get(contextId);
+    if (!owner) return true; // unclaimed context — first writer binds it
+    return ownerIdMatches(owner, ownerId);
+  }
+
+  /**
+   * Authorize a task access. Returns the task when the caller owns it, else
+   * `null` — the caller maps that to the same "not found" answer it gives for a
+   * genuinely absent task, so a foreign task's existence is never revealed.
+   */
+  private authorize(taskId: string, ownerId: OwnerId | undefined): Task | null {
+    const task = this.tasks.get(taskId);
+    if (!task) return null;
+    if (!this.isTaskOwnedBy(taskId, ownerId)) {
+      logger.warn({ taskId }, 'A2A cross-owner access denied');
+      return null;
+    }
+    return task;
+  }
+
+  // -------------------------------------------------------------------------
+  // Owner-scoped API (the ONLY surface jsonrpc.ts / handler.ts may use)
+  // -------------------------------------------------------------------------
+
+  /** Owner-scoped task read. `null` when absent, unowned-by-caller, or unauthenticated. */
+  getOwnedTask(ownerId: OwnerId | undefined, id: string, historyLength?: number): Task | null {
+    const task = this.authorize(id, ownerId);
+    if (!task) return null;
+    if (historyLength === undefined) return task;
+    return { ...task, history: task.history.slice(-Math.max(0, historyLength)) };
+  }
+
+  /**
+   * Owner-scoped listing, newest first.
+   *
+   * This is the entry point every remote surface uses, so it is defined for the
+   * NO-principal case too: an unauthenticated caller sees nothing (or, under the
+   * documented legacy-unowned opt-in, only the unowned set). It must never fall
+   * through to the unfiltered store — doing so handed every task in the process
+   * to an anonymous `tasks/list`.
+   */
+  listOwnedTasks(
+    ownerId: OwnerId | undefined,
+    opts: {
+      state?: TaskState;
+      contextId?: string;
+      limit?: number;
+      includeHistory?: boolean;
+      pageToken?: string;
+    } = {},
+  ): Task[] {
+    const authorized = ownerId
+      ? (taskId: string) => this.isTaskOwnedBy(taskId, ownerId)
+      : (taskId: string) => !this.owners.has(taskId) && legacyUnownedVisibility();
+    return this.listTasks({ ...opts, authorized });
+  }
+
+  /** Owner-scoped retained-task count (backs the legacy REST `retained` field). */
+  ownedTaskCount(ownerId: OwnerId | undefined): number {
+    if (ownerId) {
+      let count = 0;
+      for (const id of this.tasks.keys()) if (this.isTaskOwnedBy(id, ownerId)) count++;
+      return count;
+    }
+    let count = 0;
+    for (const id of this.tasks.keys()) {
+      if (!this.owners.has(id) && legacyUnownedVisibility()) count++;
+    }
+    return count;
+  }
+
+  /** Owner-scoped cancel. Aborts any in-flight downstream request. */
+  cancelOwnedTask(ownerId: OwnerId | undefined, id: string): { task?: Task; error?: 'not-found' | 'not-cancelable' } {
+    if (!this.authorize(id, ownerId)) return { error: 'not-found' };
+    return this.cancelTask(id);
+  }
+
+  /** Owner-scoped push-config write. Validates the URL before storing it. */
+  async setOwnedPushConfig(
+    ownerId: OwnerId | undefined,
+    id: string,
+    config: PushNotificationConfig,
+  ): Promise<boolean> {
+    if (!this.authorize(id, ownerId)) return false;
+    return this.setPushConfig(id, config);
+  }
+
+  /** Owner-scoped push-config read. */
+  getOwnedPushConfig(ownerId: OwnerId | undefined, id: string): PushNotificationConfig | null {
+    if (!this.authorize(id, ownerId)) return null;
+    return this.getPushConfig(id);
+  }
+
+  /** Owner-scoped subscribe. Returns a no-op unsubscribe when not authorized. */
+  subscribeOwned(ownerId: OwnerId | undefined, id: string, listener: TaskListener): () => void {
+    if (!this.authorize(id, ownerId)) return () => {};
+    return this.subscribe(id, listener);
+  }
+
+  /**
+   * Create a task from an inbound user message (spec: message/send), binding it
+   * immutably to `opts.ownerId`.
    *
    * If `message.taskId` names a task that already exists, this CONTINUES that
    * task (appends to its history) rather than silently replacing it — replacing
@@ -174,13 +346,23 @@ export class A2ATaskManager {
    * task that already reached a terminal state is rejected: per spec a terminal
    * task is immutable and follow-up turns belong to a NEW task sharing the same
    * `contextId`.
+   *
+   * Ownership: continuing an existing task requires owning it, and reusing an
+   * existing `contextId` requires owning that context. Without both checks a
+   * second caller could attach a turn to someone else's task — or, by naming
+   * only their `contextId`, silently append into a private conversation.
    */
   createTask(
     message: TaskMessage,
-    opts?: { contextId?: string; metadata?: Record<string, unknown> },
+    opts?: { contextId?: string; metadata?: Record<string, unknown>; ownerId?: OwnerId },
   ): CreateTaskResult {
+    const ownerId = opts?.ownerId;
     const existing = message.taskId ? this.tasks.get(message.taskId) : undefined;
     if (existing) {
+      if (!this.isTaskOwnedBy(existing.id, ownerId)) {
+        logger.warn({ taskId: existing.id }, 'A2A cross-owner task continuation denied');
+        return { errorOwner: 'forbidden' };
+      }
       if (isTerminal(existing.status.state)) return { error: 'terminal-task' };
       existing.history.push({ ...message, taskId: existing.id, contextId: existing.contextId });
       existing.status = { state: 'submitted', timestamp: new Date().toISOString() };
@@ -193,6 +375,12 @@ export class A2ATaskManager {
 
     const id = message.taskId || randomUUID();
     const contextId = opts?.contextId || message.contextId || randomUUID();
+    // Reusing another principal's contextId would splice this turn into their
+    // conversation, so a context is claimed by its first writer and never shared.
+    if (!this.isContextOwnedBy(contextId, ownerId)) {
+      logger.warn({ contextId }, 'A2A cross-owner context continuation denied');
+      return { errorContext: 'forbidden' };
+    }
     const now = new Date().toISOString();
 
     const task: Task = {
@@ -209,6 +397,13 @@ export class A2ATaskManager {
     const set = this.contexts.get(contextId) ?? new Set<string>();
     set.add(id);
     this.contexts.set(contextId, set);
+    // Bind BEFORE the task is observable, so there is no window in which a task
+    // exists but nobody owns it (which would make it an unowned legacy task).
+    if (ownerId) {
+      this.owners.set(id, ownerId);
+      if (!this.contextOwners.has(contextId)) this.contextOwners.set(contextId, ownerId);
+      persistOwnerBinding(id, contextId, ownerId);
+    }
     persistTask(task);
     this.evict();
 
@@ -233,21 +428,67 @@ export class A2ATaskManager {
    *
    * `history` is dropped by default: a listing renders status and timing, and
    * full transcripts for every retained task would dominate the payload.
+   *
+   * When `opts.authorized` is supplied the result is restricted to the tasks it
+   * approves. It is omitted only by the in-process operator path, which runs
+   * behind the MCP server's own listener rather than the A2A transport.
+   *
+   * When `opts.pageToken` is supplied the window resumes after that cursor
+   * instead of restarting at the newest task. An unparseable or unknown token
+   * yields an EMPTY page rather than page 1: handing back page 1 to a client
+   * that is looping on `nextPageToken` never terminates.
    */
-  listTasks(opts: { state?: TaskState; contextId?: string; limit?: number; includeHistory?: boolean } = {}): Task[] {
+  listTasks(
+    opts: {
+      state?: TaskState;
+      contextId?: string;
+      limit?: number;
+      includeHistory?: boolean;
+      /** Restricts the result to the tasks this predicate authorizes. */
+      authorized?: (taskId: string) => boolean;
+      /** Opaque cursor from a previous page's `nextPageToken`. */
+      pageToken?: string;
+    } = {},
+  ): Task[] {
     const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
+    const { authorized, ...filters } = opts;
 
     let tasks = Array.from(this.tasks.values());
-    if (opts.state) tasks = tasks.filter((t) => t.status.state === opts.state);
-    if (opts.contextId) tasks = tasks.filter((t) => t.contextId === opts.contextId);
+    // Filter BEFORE slicing to `limit`, so an unauthorized task cannot displace
+    // an authorized one from the page.
+    if (authorized) tasks = tasks.filter((t) => authorized(t.id));
+    if (filters.state) tasks = tasks.filter((t) => t.status.state === filters.state);
+    if (filters.contextId) tasks = tasks.filter((t) => t.contextId === filters.contextId);
 
     // Insertion order is chronological (Map preserves it, and ids are only
     // ever added), so reversing gives newest-first without needing a timestamp
     // that Task does not carry.
-    tasks = tasks.reverse().slice(0, limit);
+    tasks = tasks.reverse();
 
-    if (opts.includeHistory) return tasks;
+    if (filters.pageToken) {
+      const cursor = decodeTaskCursor(filters.pageToken);
+      // No cursor, or one that no longer names a retained task (evicted, or a
+      // token from a different filter set): terminate the walk.
+      if (!cursor) return [];
+      const at = tasks.findIndex((t) => t.id === cursor);
+      tasks = at < 0 ? [] : tasks.slice(at + 1);
+    }
+
+    tasks = tasks.slice(0, limit);
+
+    if (filters.includeHistory) return tasks;
     return tasks.map((t) => ({ ...t, history: [] }));
+  }
+
+  /**
+   * Encode the cursor that resumes a listing strictly after `taskId`.
+   *
+   * The token is opaque base64url. It carries no task data, so a client cannot
+   * read another principal's ids out of it; it is a position, not a payload.
+   */
+  nextPageTokenFor(taskId: string | undefined): string {
+    if (!taskId) return '';
+    return Buffer.from(JSON.stringify({ v: 1, after: taskId }), 'utf8').toString('base64url');
   }
 
   /** Number of retained tasks, before any filtering. */
@@ -304,7 +545,14 @@ export class A2ATaskManager {
     return task;
   }
 
-  /** Cancel a task. Returns { task } or an error reason for JSON-RPC mapping. */
+  /**
+   * Cancel a task. Returns { task } or an error reason for JSON-RPC mapping.
+   *
+   * Cancelling also ABORTS the in-flight downstream dispatch. Otherwise the
+   * upstream HTTP request (and the provider call behind it) kept running to
+   * completion after the client had been told the task was canceled, burning
+   * quota for a result nobody would ever read.
+   */
   cancelTask(id: string): { task?: Task; error?: 'not-found' | 'not-cancelable' } {
     const task = this.tasks.get(id);
     if (!task) return { error: 'not-found' };
@@ -315,9 +563,43 @@ export class A2ATaskManager {
       timestamp: new Date().toISOString(),
     };
     persistTask(task);
+    // Abort AFTER the terminal status is set, so the aborted dispatch's own
+    // error path observes an already-terminal task and cannot resurrect it.
+    this.abortDispatch(id);
     this.emit(task);
     logger.info({ taskId: id }, 'A2A task canceled');
     return { task };
+  }
+
+  // -------------------------------------------------------------------------
+  // In-flight dispatch registry (cancellation)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Register the AbortController for a task's downstream dispatch. A second
+   * dispatch for the same task aborts the first so they cannot interleave.
+   * Returns a disposer that only clears the entry if it is still ours.
+   */
+  registerDispatch(id: string, controller: AbortController): () => void {
+    this.inflight.get(id)?.abort(new Error('superseded by a newer dispatch'));
+    this.inflight.set(id, controller);
+    return () => {
+      if (this.inflight.get(id) === controller) this.inflight.delete(id);
+    };
+  }
+
+  /** Abort a task's in-flight downstream request, if any. */
+  abortDispatch(id: string): boolean {
+    const controller = this.inflight.get(id);
+    if (!controller) return false;
+    this.inflight.delete(id);
+    controller.abort(new Error('A2A task canceled'));
+    return true;
+  }
+
+  /** True when a downstream request is currently in flight for a task. */
+  isDispatchInflight(id: string): boolean {
+    return this.inflight.has(id);
   }
 
   /** True if the task exists and has already reached a terminal state. */
@@ -376,6 +658,8 @@ export class A2ATaskManager {
       this.tasks.delete(id);
       this.push.delete(id);
       this.listeners.delete(id);
+      this.owners.delete(id);
+      this.inflight.delete(id);
       const set = this.contexts.get(task.contextId);
       if (set) {
         set.delete(id);

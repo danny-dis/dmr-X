@@ -16,6 +16,8 @@
 
 import type { RequestHeaders } from '../tenant-key.js';
 import { dispatchTask } from './dispatch.js';
+import { resolveOwnerId, type OwnerId } from './owner.js';
+import { assertWebhookUrlAllowed, WebhookPolicyError } from './egress.js';
 import {
   getTaskManager,
   isTerminal,
@@ -36,7 +38,26 @@ export const A2A_ERR = {
   TASK_NOT_CANCELABLE: -32002,
   PUSH_NOT_SUPPORTED: -32003,
   UNSUPPORTED_OPERATION: -32004,
+  /**
+   * No authenticated principal on the request. Distinct from TASK_NOT_FOUND so
+   * "you are not authenticated" is never reported as "that task does not exist",
+   * which would be a lie about our own state.
+   */
+  AUTH_REQUIRED: -32005,
+  /**
+   * A push-notification URL was refused by the egress policy. Reported instead
+   * of accepting the config, so a caller learns immediately that its webhook
+   * will never fire.
+   */
+  WEBHOOK_NOT_ALLOWED: -32006,
 } as const;
+
+/** Map an owner-scoped refusal onto the wire code. */
+function notFoundOrAuth(ownerId: OwnerId | undefined): { code: number; message: string } {
+  return ownerId
+    ? { code: A2A_ERR.TASK_NOT_FOUND, message: 'Task not found' }
+    : { code: A2A_ERR.AUTH_REQUIRED, message: 'A2A requires an authenticated principal' };
+}
 
 /**
  * Supplies the current Agent Card to the `agent/getExtendedCard` method.
@@ -131,12 +152,26 @@ function readHistoryLength(raw: unknown): number | undefined | false {
  * call, so a config set afterwards via tasks/pushNotificationConfig/set can
  * never fire. Registering here — before dispatch — makes the advertised
  * `pushNotifications: true` capability real.
+ *
+ * The URL passes the egress policy (egress.ts) BEFORE being stored, so an
+ * internal-only address is never persisted as a supposedly working webhook.
  */
-function registerInlinePushConfig(taskId: string, params: any): void {
+async function registerInlinePushConfig(
+  taskId: string,
+  params: any,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const cfg = params?.configuration?.pushNotificationConfig as PushNotificationConfig | undefined;
-  if (cfg?.url && typeof cfg.url === 'string') {
-    getTaskManager().setPushConfig(taskId, cfg);
+  if (!cfg?.url || typeof cfg.url !== 'string') return { ok: true };
+  try {
+    await assertWebhookUrlAllowed(cfg.url);
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof WebhookPolicyError ? err.message : 'egress policy check failed',
+    };
   }
+  getTaskManager().setPushConfig(taskId, cfg);
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -149,15 +184,27 @@ export async function handleRpc(
 ): Promise<JsonRpcResponse> {
   const id = req.id ?? null;
   const tm = getTaskManager();
+  const ownerId = await resolveOwnerId(headers);
 
   switch (req.method) {
     case 'message/send': {
       const message = validateMessage(req.params);
       if (!message) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Invalid or missing message');
-      const { task, error } = tm.createTask(message, {
+      // An unauthenticated caller cannot create a task: an unbound task would
+      // have no provable owner and would be permanently unreachable afterwards.
+      if (!ownerId) {
+        return rpcError(id, A2A_ERR.AUTH_REQUIRED, 'A2A requires an authenticated principal');
+      }
+      const { task, error, errorOwner, errorContext } = tm.createTask(message, {
         contextId: req.params?.message?.contextId,
         metadata: req.params?.metadata,
+        ownerId,
       });
+      if (errorOwner || errorContext) {
+        // Same answer as "task not found": do not confirm that another
+        // principal's task or context exists.
+        return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
+      }
       if (error === 'terminal-task' || !task) {
         return rpcError(
           id,
@@ -165,7 +212,10 @@ export async function handleRpc(
           'Task is in a terminal state and cannot accept further messages; start a new task with the same contextId',
         );
       }
-      registerInlinePushConfig(task.id, req.params);
+      const push = await registerInlinePushConfig(task.id, req.params);
+      if (!push.ok) {
+        return rpcError(id, A2A_ERR.WEBHOOK_NOT_ALLOWED, `Push notification URL rejected: ${push.error}`);
+      }
       const finalTask = await dispatchTask(task.id, headers);
       return rpcResult(id, finalTask);
     }
@@ -179,8 +229,11 @@ export async function handleRpc(
       if (historyLength === false) {
         return rpcError(id, A2A_ERR.INVALID_PARAMS, 'historyLength must be a non-negative integer');
       }
-      const task = tm.getTask(taskId, historyLength);
-      if (!task) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
+      const task = tm.getOwnedTask(ownerId, taskId, historyLength);
+      if (!task) {
+        const { code, message } = notFoundOrAuth(ownerId);
+        return rpcError(id, code, message);
+      }
       return rpcResult(id, task);
     }
 
@@ -189,8 +242,11 @@ export async function handleRpc(
       if (!taskId || typeof taskId !== 'string') {
         return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing task id');
       }
-      const { task, error } = tm.cancelTask(taskId);
-      if (error === 'not-found') return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
+      const { task, error } = tm.cancelOwnedTask(ownerId, taskId);
+      if (error === 'not-found') {
+        const { code, message } = notFoundOrAuth(ownerId);
+        return rpcError(id, code, message);
+      }
       if (error === 'not-cancelable') return rpcError(id, A2A_ERR.TASK_NOT_CANCELABLE, 'Task not cancelable');
       return rpcResult(id, task);
     }
@@ -200,6 +256,7 @@ export async function handleRpc(
         contextId?: string;
         status?: string;
         pageSize?: number;
+        pageToken?: string;
         includeHistory?: boolean;
       };
 
@@ -211,24 +268,52 @@ export async function handleRpc(
         }
       }
 
-      const tasks = tm.listTasks({
+      // Owner-scoped: a principal only ever sees its own tasks. With no
+      // principal the list is empty rather than a leak of everyone's work.
+      const tasks = tm.listOwnedTasks(ownerId, {
         state: p.status as never,
         contextId: p.contextId,
         limit: p.pageSize ?? 50, // spec default when unspecified
         includeHistory: p.includeHistory === true,
+        pageToken: p.pageToken,
       });
 
-      // `nextPageToken` is omitted: TaskManager holds an in-memory map with no
-      // cursor, so real pagination would be a storage change. Returning no
-      // token is spec-legal (it signals "no further pages").
-      return rpcResult(id, { tasks });
+      // Cursor pagination. The token resumes strictly after the last task of
+      // this page, so a client walking pages sees every owned task exactly once
+      // even while new tasks arrive. It is omitted (not emptied) on the final
+      // page, which is how the spec signals "no further pages".
+      //
+      // The cursor is applied INSIDE the owner filter, so a token naming a task
+      // this principal cannot see simply ends the walk: it can never be used to
+      // probe for another principal's tasks.
+      const lastId = tasks.length > 0 ? tasks[tasks.length - 1].id : undefined;
+      const nextPageToken = tasks.length >= (p.pageSize ?? 50) ? tm.nextPageTokenFor(lastId) : '';
+      return nextPageToken
+        ? rpcResult(id, { tasks, nextPageToken })
+        : rpcResult(id, { tasks });
     }
-
     case 'tasks/pushNotificationConfig/set': {
       const taskId = req.params?.taskId ?? req.params?.id;
       const config = req.params?.pushNotificationConfig as PushNotificationConfig | undefined;
       if (!taskId || !config?.url) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing taskId or config url');
-      if (!tm.setPushConfig(taskId, config)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
+      if (!ownerId) return rpcError(id, A2A_ERR.AUTH_REQUIRED, 'A2A requires an authenticated principal');
+      // Authorization FIRST, then validation. A non-owner learns only that the
+      // task is not theirs; running the egress check first would both leak the
+      // webhook policy to unauthorized callers and make them trigger a DNS
+      // lookup for a URL they may not register.
+      if (!tm.getOwnedTask(ownerId, taskId)) {
+        const { code, message } = notFoundOrAuth(ownerId);
+        return rpcError(id, code, message);
+      }
+      // Registration-time egress gate: refuse to store a URL that would be
+      // rejected at delivery time, so the advertised capability is honest.
+      try {
+        await assertWebhookUrlAllowed(config.url);
+      } catch (err) {
+        const message = err instanceof WebhookPolicyError ? err.message : 'egress policy check failed';
+        return rpcError(id, A2A_ERR.WEBHOOK_NOT_ALLOWED, `Push notification URL rejected: ${message}`);
+      }
+      await tm.setOwnedPushConfig(ownerId, taskId, config);
       return rpcResult(id, { taskId, pushNotificationConfig: config });
     }
 
@@ -237,8 +322,11 @@ export async function handleRpc(
       if (!taskId) return rpcError(id, A2A_ERR.INVALID_PARAMS, 'Missing taskId');
       // -32003 means "this agent does not support push notifications at all",
       // which is a lie here — we do, this task simply has no config yet.
-      if (!tm.getTask(taskId)) return rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found');
-      const config = tm.getPushConfig(taskId);
+      if (!tm.getOwnedTask(ownerId, taskId)) {
+        const { code, message } = notFoundOrAuth(ownerId);
+        return rpcError(id, code, message);
+      }
+      const config = tm.getOwnedPushConfig(ownerId, taskId);
       if (!config) {
         return rpcError(id, A2A_ERR.INVALID_PARAMS, 'No push notification config set for this task');
       }
@@ -283,6 +371,7 @@ export async function handleRpcStream(
 ): Promise<void> {
   const id = req.id ?? null;
   const tm = getTaskManager();
+  const ownerId = await resolveOwnerId(headers);
 
   try {
     if (req.method === 'message/stream') {
@@ -291,10 +380,19 @@ export async function handleRpcStream(
         sink.send(rpcError(id, A2A_ERR.INVALID_PARAMS, 'Invalid or missing message'));
         return;
       }
-      const { task, error } = tm.createTask(message, {
+      if (!ownerId) {
+        sink.send(rpcError(id, A2A_ERR.AUTH_REQUIRED, 'A2A requires an authenticated principal'));
+        return;
+      }
+      const { task, error, errorOwner, errorContext } = tm.createTask(message, {
         contextId: req.params?.message?.contextId,
         metadata: req.params?.metadata,
+        ownerId,
       });
+      if (errorOwner || errorContext) {
+        sink.send(rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found'));
+        return;
+      }
       if (error === 'terminal-task' || !task) {
         sink.send(
           rpcError(
@@ -305,7 +403,11 @@ export async function handleRpcStream(
         );
         return;
       }
-      registerInlinePushConfig(task.id, req.params);
+      const push = await registerInlinePushConfig(task.id, req.params);
+      if (!push.ok) {
+        sink.send(rpcError(id, A2A_ERR.WEBHOOK_NOT_ALLOWED, `Push notification URL rejected: ${push.error}`));
+        return;
+      }
 
       // First event is the Task itself (spec), then one status-update per real
       // state change. Previously the second event re-sent the *same* `submitted`
@@ -313,7 +415,7 @@ export async function handleRpcStream(
       // dispatchTask, which had not run yet.
       sink.send(rpcResult(id, task));
       const seen = new Set<string>([task.status.timestamp + task.status.state]);
-      const unsubscribe = tm.subscribe(task.id, (updated) => {
+      const unsubscribe = tm.subscribeOwned(ownerId, task.id, (updated) => {
         const key = updated.status.timestamp + updated.status.state;
         if (seen.has(key)) return;
         seen.add(key);
@@ -331,9 +433,10 @@ export async function handleRpcStream(
 
     if (req.method === 'tasks/resubscribe') {
       const taskId = req.params?.id;
-      const task = taskId && typeof taskId === 'string' ? tm.getTask(taskId) : null;
+      const task = taskId && typeof taskId === 'string' ? tm.getOwnedTask(ownerId, taskId) : null;
       if (!task) {
-        sink.send(rpcError(id, A2A_ERR.TASK_NOT_FOUND, 'Task not found'));
+        const { code, message } = notFoundOrAuth(ownerId);
+        sink.send(rpcError(id, code, message));
         return;
       }
       // Replay current state, then follow the task to its terminal state.
@@ -342,7 +445,7 @@ export async function handleRpcStream(
       // immediate close instead of the completion it was waiting for.
       sink.send(rpcResult(id, statusUpdateEvent(task)));
       if (isTerminal(task.status.state)) return;
-      await followToTerminal(tm, task.id, id, sink);
+      await followToTerminal(tm, ownerId, task.id, id, sink);
       return;
     }
 
@@ -358,6 +461,7 @@ const RESUBSCRIBE_TIMEOUT_MS = 5 * 60_000;
 /** Stream status updates for `taskId` until it reaches a terminal state. */
 function followToTerminal(
   tm: ReturnType<typeof getTaskManager>,
+  ownerId: OwnerId | undefined,
   taskId: string,
   rpcId: string | number | null,
   sink: StreamSink,
@@ -374,7 +478,7 @@ function followToTerminal(
     const timer = setTimeout(finish, RESUBSCRIBE_TIMEOUT_MS);
     // `unref` so a dangling subscriber can never hold the process open.
     (timer as unknown as { unref?: () => void }).unref?.();
-    const unsubscribe = tm.subscribe(taskId, (updated) => {
+    const unsubscribe = tm.subscribeOwned(ownerId, taskId, (updated) => {
       sink.send(rpcResult(rpcId, statusUpdateEvent(updated)));
       if (isTerminal(updated.status.state)) finish();
     });

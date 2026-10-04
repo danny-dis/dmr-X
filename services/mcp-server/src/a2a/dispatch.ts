@@ -85,6 +85,11 @@ function buildContextMessages(
  * Run a task to completion against the gateway dispatcher and update its state.
  * Never throws — failures land as a `failed` task status so callers can just
  * read the final task.
+ *
+ * The downstream request is registered with the task manager so a concurrent
+ * `tasks/cancel` aborts it. Without that, canceling a task only changed the
+ * stored status: the provider call kept running to completion and its result
+ * was then discarded, so the client paid for work nobody could receive.
  */
 export async function dispatchTask(taskId: string, headers: RequestHeaders): Promise<Task> {
   const tm = getTaskManager();
@@ -107,6 +112,14 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
 
   const messages = buildContextMessages(task, taskText);
   const turnCount = messages ? messages.length : 1;
+  const timeoutMs = taskTimeoutMs(turnCount);
+
+  // One controller for both the deadline and the cancel path, so there is a
+  // single signal and a cancel cannot race a fresh timeout.
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(new DOMException('Dispatch timed out', 'TimeoutError')), timeoutMs);
+  (deadline as unknown as { unref?: () => void }).unref?.();
+  const releaseDispatch = tm.registerDispatch(taskId, controller);
 
   try {
     const res = await fetch(`${gatewayUrl}/v1/agentic/dispatch`, {
@@ -118,8 +131,9 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
         ...(messages ? { messages } : {}),
       }),
       // Without a deadline a wedged gateway pins the A2A request open forever;
-      // the client sees a hang instead of a `failed` task.
-      signal: AbortSignal.timeout(taskTimeoutMs(turnCount)),
+      // the client sees a hang instead of a `failed` task. The same signal is
+      // tripped by `tasks/cancel`.
+      signal: controller.signal,
     });
     const json: any = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -129,11 +143,20 @@ export async function dispatchTask(taskId: string, headers: RequestHeaders): Pro
       typeof json.content === 'string' ? json.content : JSON.stringify(json.content ?? json);
     return finalize(taskId, 'completed', resultText);
   } catch (err) {
+    // A cancel trips the same signal, so distinguish "the client canceled us"
+    // from a genuine timeout instead of reporting a cancel as a failure.
+    if (tm.isTaskTerminal(taskId)) {
+      logger.info({ taskId }, 'A2A dispatch aborted — task reached a terminal state');
+      return tm.getTask(taskId)!;
+    }
     const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
     const text = timedOut
-      ? `Dispatch timed out after ${taskTimeoutMs(turnCount)}ms`
+      ? `Dispatch timed out after ${timeoutMs}ms`
       : `Dispatch error: ${err instanceof Error ? err.message : String(err)}`;
     return finalize(taskId, 'failed', text);
+  } finally {
+    clearTimeout(deadline);
+    releaseDispatch();
   }
 }
 

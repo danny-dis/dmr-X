@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Task, PushNotificationConfig } from './task-manager.js';
+import { deliverWebhook } from './egress.js';
 
 export interface A2APersistenceConfig {
   /** Absolute path to the sqlite file. Empty/in-memory if not set. */
@@ -61,6 +62,17 @@ function setupDb(handle: any): void {
       url TEXT,
       token TEXT,
       updated_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS a2a_owners (
+      task_id TEXT PRIMARY KEY,
+      context_id TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      created_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS a2a_context_owners (
+      context_id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      created_at INTEGER
     );
   `);
   // Rehydrate push configs. The table was written but never read, so a
@@ -236,6 +248,78 @@ export function loadPersistedTasks(): Task[] {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Ownership bindings
+//
+// Deliberately SEPARATE tables rather than columns on a2a_tasks: ownership is
+// immutable, so it is written exactly once at task creation and never updated
+// with the task data. Keeping it out of the task row also means the digest can
+// never be serialized back to a client by accident, and a task written by an
+// older build simply has no binding (UNOWNED) with no schema migration needed.
+// ---------------------------------------------------------------------------
+
+export interface PersistedOwnerBinding {
+  taskId: string;
+  contextId: string;
+  ownerId: string;
+}
+
+/**
+ * Record the immutable owner of a task and of its context.
+ * Idempotent: an existing binding is never overwritten, so continuing a task
+ * cannot re-bind it to a different principal.
+ */
+export function persistOwnerBinding(taskId: string, contextId: string, ownerId: string): void {
+  if (!db) return;
+  try {
+    db.prepare(
+      `INSERT INTO a2a_owners (task_id, context_id, owner_id, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(task_id) DO NOTHING`,
+    ).run(taskId, contextId, ownerId, Date.now());
+  } catch (e) {
+    console.error('[a2a] persistOwnerBinding failed:', (e as Error).message);
+  }
+  try {
+    db.prepare(
+      `INSERT INTO a2a_context_owners (context_id, owner_id, created_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(context_id) DO NOTHING`,
+    ).run(contextId, ownerId, Date.now());
+  } catch (e) {
+    console.error('[a2a] persistContextOwner failed:', (e as Error).message);
+  }
+}
+
+/** Rehydrate every ownership binding so ownership survives a process restart. */
+export function loadOwnerBindings(): { tasks: PersistedOwnerBinding[]; contexts: Map<string, string> } {
+  const tasks: PersistedOwnerBinding[] = [];
+  const contexts = new Map<string, string>();
+  if (!db) return { tasks, contexts };
+  try {
+    const rows = db
+      .prepare('SELECT task_id, context_id, owner_id FROM a2a_owners')
+      .all() as Array<{ task_id: string; context_id: string; owner_id: string }>;
+    for (const row of rows) {
+      if (!row.task_id || !row.owner_id) continue;
+      tasks.push({ taskId: row.task_id, contextId: row.context_id, ownerId: row.owner_id });
+    }
+  } catch {
+    // No table (legacy db) — every task stays unowned, which is the safe default.
+  }
+  try {
+    const rows = db
+      .prepare('SELECT context_id, owner_id FROM a2a_context_owners')
+      .all() as Array<{ context_id: string; owner_id: string }>;
+    for (const row of rows) {
+      if (row.context_id && row.owner_id) contexts.set(row.context_id, row.owner_id);
+    }
+  } catch {
+    // Same as above.
+  }
+  return { tasks, contexts };
+}
+
 export function setPushConfig(taskId: string, config: PushNotificationConfig): void {
   pushConfigs.set(taskId, config);
   if (db) {
@@ -256,31 +340,42 @@ export function getPushConfig(taskId: string): PushNotificationConfig | undefine
 }
 
 /**
- /** Fire the task's push webhook if configured. Best-effort: failures are
-  * logged but never throw (a dead webhook must not break task completion). */
- const PUSH_TIMEOUT_MS = 10_000;
- export async function firePushNotification(task: Task): Promise<void> {
-   if (!cfg.pushEnabled) return;
-   const pc = pushConfigs.get(task.id);
-   if (!pc?.url) return;
-   try {
-     const ctrl = new AbortController();
-     const timer = setTimeout(() => ctrl.abort(), PUSH_TIMEOUT_MS);
-     const res = await fetch(pc.url, {
-       method: 'POST',
-       headers: {
-         'content-type': 'application/json',
-         ...(pc.token ? { authorization: `Bearer ${pc.token}` } : {}),
-       },
-       body: JSON.stringify({ id: task.id, contextId: task.contextId, status: task.status, artifacts: task.artifacts }),
-       signal: ctrl.signal,
-     });
-     clearTimeout(timer);
-     if (!res.ok) console.warn(`[a2a] push to ${pc.url} returned ${res.status}`);
-   } catch (e) {
-     console.warn(`[a2a] push to ${pc.url} failed:`, (e as Error).message);
-   }
- }
+/** Fire the task's push webhook if configured.
+ *
+ *  Delivery re-runs the full egress policy (egress.ts) instead of handing the
+ *  URL to `fetch`: the config was validated at registration, but the address it
+ *  resolves to may have changed since (DNS rebinding), and only a check that
+ *  pins the freshly-validated IP closes that window. Failures are logged but
+ *  never thrown — a dead webhook must not break task completion.
+ */
+export async function firePushNotification(task: Task, signal?: AbortSignal): Promise<void> {
+  if (!cfg.pushEnabled) return;
+  const pc = pushConfigs.get(task.id);
+  if (!pc?.url) return;
+  try {
+    const result = await deliverWebhook(
+      pc.url,
+      JSON.stringify({
+        id: task.id,
+        contextId: task.contextId,
+        status: task.status,
+        artifacts: task.artifacts,
+      }),
+      {
+        'content-type': 'application/json',
+        ...(pc.token ? { authorization: `Bearer ${pc.token}` } : {}),
+      },
+      signal,
+    );
+    if (!result.ok) {
+      console.warn(
+        `[a2a] push to ${pc.url} failed${result.status ? ` (HTTP ${result.status})` : ''}: ${result.error ?? 'unknown error'}`,
+      );
+    }
+  } catch (e) {
+    console.warn(`[a2a] push to ${pc.url} failed:`, (e as Error).message);
+  }
+}
 
 export function closePersistence(): void {
   try { db?.exec('PRAGMA optimize;'); } catch {
