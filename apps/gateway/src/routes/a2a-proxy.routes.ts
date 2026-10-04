@@ -1,7 +1,10 @@
 import fs from 'node:fs';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
 import { logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
+
 import { z } from 'zod';
 
 import { validateBaseUrlForSSRF } from './admin-ssrf.js';
@@ -22,6 +25,7 @@ import { validateBaseUrlForSSRF } from './admin-ssrf.js';
 // continue to reach directly on the sidecar.
 
 const A2A_TIMEOUT_MS = 10_000;
+const A2A_PEER_CARD_MAX_BYTES = 1_048_576;
 
 /** Config shape persisted in dmrx-mcp.config.json under `a2a`. */
 const A2AConfigSchema = z.object({
@@ -64,6 +68,58 @@ function sidecarBase(): string {
   const host = process.env.DMRX_MCP_HOST || '127.0.0.1';
   const port = process.env.DMRX_MCP_PORT || '47114';
   return `http://${host}:${port}`;
+}
+
+/** Read an untrusted peer card without buffering an unbounded response. */
+async function readPeerCard(
+  url: string,
+  validated: Awaited<ReturnType<typeof validateBaseUrlForSSRF>>,
+  signal: AbortSignal,
+): Promise<Record<string, any> | null> {
+  // Bun's built-in undici shim ignores dispatchers. Native requests honor a
+  // lookup hook on both runtimes and never follow redirects automatically.
+  const request = new URL(url).protocol === 'https:' ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    const req = request(url, {
+      signal,
+      agent: false,
+      headers: { accept: 'application/json' },
+      lookup: ((_hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
+        if (options.all) callback(null, [{ address: validated.ip, family: validated.family }]);
+        else callback(null, validated.ip, validated.family);
+      }) as import('node:net').LookupFunction,
+    }, (res) => {
+      res.on('error', reject);
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        res.destroy();
+        reject(new Error('Peer did not return a successful response'));
+        return;
+      }
+      if (Number(res.headers['content-length']) > A2A_PEER_CARD_MAX_BYTES) {
+        res.destroy();
+        reject(new Error('Agent card response is too large'));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      res.on('data', (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > A2A_PEER_CARD_MAX_BYTES) {
+          res.destroy(new Error('Agent card response is too large'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        try {
+          const text = Buffer.concat(chunks).toString('utf-8');
+          resolve(text ? JSON.parse(text) : null);
+        } catch (error) { reject(error); }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 /**
@@ -327,11 +383,9 @@ export async function a2aProxyRoutes(server: FastifyInstance): Promise<void> {
     try {
       for (const url of candidates) {
         try {
-          const res = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' } });
-          if (!res.ok) continue;
           // A remote card is untrusted input — read it defensively rather
           // than trusting any field to be present or well-typed.
-          const card = (await res.json()) as Record<string, any> | null;
+          const card = await readPeerCard(url, validated, controller.signal);
           return reply.send({
             ok: true,
             url,
@@ -355,6 +409,7 @@ export async function a2aProxyRoutes(server: FastifyInstance): Promise<void> {
       });
     } finally {
       clearTimeout(timer);
+
     }
   });
 }

@@ -243,6 +243,43 @@ export class AgentRegistryService {
     return this.rowToDefinition(row);
   }
 
+  /** Explicit grants share the definition only; all executions stay recipient-owned. */
+  async shareDefinition(id: string, ownerTenantId: string, recipientTenantId: string, permission: 'read' | 'run'): Promise<boolean> {
+    const db = getDb();
+    if (permission !== 'read' && permission !== 'run') return false;
+    const definition = await this.getDefinition(id);
+    if (!definition || definition.tenantId !== ownerTenantId || ownerTenantId === recipientTenantId) return false;
+    if (!db.prepare('SELECT id FROM tenants WHERE id = ?').get(recipientTenantId)) return false;
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO agent_definition_shares (agent_definition_id, recipient_tenant_id, permission, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(agent_definition_id, recipient_tenant_id)
+      DO UPDATE SET permission = excluded.permission, updated_at = excluded.updated_at`).run(id, recipientTenantId, permission, now, now);
+    return true;
+  }
+
+  async revokeDefinitionShare(id: string, ownerTenantId: string, recipientTenantId: string): Promise<boolean> {
+    const definition = await this.getDefinition(id);
+    if (!definition || definition.tenantId !== ownerTenantId) return false;
+    getDb().prepare('DELETE FROM agent_definition_shares WHERE agent_definition_id = ? AND recipient_tenant_id = ?').run(id, recipientTenantId);
+    return true;
+  }
+
+  async canAccessDefinition(id: string, tenantId: string, permission: 'read' | 'run' = 'read'): Promise<boolean> {
+    if (permission !== 'read' && permission !== 'run') return false;
+    return !!getDb().prepare(`SELECT d.id FROM agent_definitions d WHERE d.id = ? AND
+      (d.tenant_id = ? OR EXISTS (SELECT 1 FROM agent_definition_shares s
+        WHERE s.agent_definition_id = d.id AND s.recipient_tenant_id = ?
+        AND (? = 'read' OR s.permission = 'run')))`)
+      .get(id, tenantId, tenantId, permission);
+  }
+
+  async listSharedDefinitions(tenantId: string): Promise<AgentDefinition[]> {
+    const rows = getDb().prepare(`SELECT d.* FROM agent_definitions d
+      JOIN agent_definition_shares s ON s.agent_definition_id = d.id
+      WHERE s.recipient_tenant_id = ? ORDER BY d.updated_at DESC`).all(tenantId) as any[];
+    return rows.map(row => this.rowToDefinition(row));
+  }
+
   /** Look up a definition by tenant + id or name. Returns null if not found. */
   async getDefinitionByName(tenantId: string, ref: string): Promise<AgentDefinition | null> {
     const db = getDb();
@@ -453,10 +490,10 @@ export class AgentRegistryService {
   async createInstance(tenantId: string, input: AgentInstanceCreate): Promise<AgentInstance | null> {
     const db = getDb();
     const definition = await this.getDefinition(input.agentDefinitionId);
-    // Tenant isolation: knowing another tenant's definition UUID must not be
-    // enough to deploy it. Missing and cross-tenant definitions both yield null
-    // so callers can't distinguish them (no existence oracle across tenants).
-    if (!definition || definition.tenantId !== tenantId) return null;
+    // Definition knowledge alone grants nothing. Only its owner or an explicit
+    // run grantee can deploy; the new instance always belongs to the caller.
+    if (!definition || (definition.tenantId !== tenantId &&
+        !await this.canAccessDefinition(definition.id, tenantId, 'run'))) return null;
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();

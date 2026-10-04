@@ -2733,7 +2733,10 @@ WHERE trim(skills) LIKE '[%]'
 -- After this migration NULL means "unpriced / unknown" and 0 means "verified
 -- free". The router's isFree() and the registry's verifyModelFree() treat NULL
 -- as NOT free.
-PRAGMA foreign_keys=OFF;
+-- legacy_alter_table disables FK enforcement during the table rebuild so the
+-- RENAME/CREATE/DROP dance doesn't trip "foreign key constraint failed" from
+-- tables that reference model_profiles (e.g. playground_feedback).
+PRAGMA legacy_alter_table=ON;
 PRAGMA defer_foreign_keys=ON;
 BEGIN TRANSACTION;
 
@@ -2843,8 +2846,24 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_agentic_level ON model_profiles(ag
 CREATE INDEX IF NOT EXISTS idx_model_profiles_architecture ON model_profiles(architecture);
 
 COMMIT;
+PRAGMA legacy_alter_table=OFF;
 PRAGMA defer_foreign_keys=OFF;
-PRAGMA foreign_keys=ON;
+`,
+  },
+  82: {
+    filename: '082_agent_definition_shares.sql',
+    sql: `-- Explicit workspace-to-workspace grants. Sharing does not transfer instance,
+-- session, memory, credentials, usage, edit or administration ownership.
+CREATE TABLE IF NOT EXISTS agent_definition_shares (
+  agent_definition_id TEXT NOT NULL REFERENCES agent_definitions(id) ON DELETE CASCADE,
+  recipient_tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL CHECK (permission IN ('read', 'run')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_definition_id, recipient_tenant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_definition_shares_recipient
+  ON agent_definition_shares(recipient_tenant_id);
 `,
   },
 };

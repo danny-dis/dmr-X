@@ -1,0 +1,142 @@
+[
+  {
+    "transport": "http",
+    "checks": [
+      {
+        "name": "public discovery",
+        "expected": 200,
+        "status": 200,
+        "passed": true,
+        "body": "{\"protocolVersion\":\"0.3.0\",\"name\":\"DMR-X Agent\",\"description\":\"DMR-X MCP Server with intelligent routing\",\"version\":\"0.5.0\",\"url\":\"http://localhost:47114\",\"preferredTransport\":\"JSONRPC\",\"capabilities\":{\"streaming\":true,\"pushNotifications\":true,\"state"
+      },
+      {
+        "name": "A2A no key",
+        "expected": 401,
+        "status": 401,
+        "passed": true,
+        "body": "{\"error\":\"Unauthorized \u2014 missing Bearer token\"}"
+      },
+      {
+        "name": "A2A bogus key",
+        "expected": 401,
+        "status": 401,
+        "passed": true,
+        "body": "{\"error\":\"Unauthorized \u2014 invalid Bearer token\"}"
+      },
+      {
+        "name": "A2A restricted key",
+        "expected": 403,
+        "status": 403,
+        "passed": true,
+        "body": "{\"error\":\"Tool-restricted keys cannot access A2A\"}"
+      },
+      {
+        "name": "A2A valid key",
+        "expected": 200,
+        "status": 200,
+        "passed": true,
+        "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tasks\":[]}}"
+      },
+      {
+        "name": "reject hostile Origin",
+        "expected": 403,
+        "status": 403,
+        "passed": true,
+        "body": "{\"error\":\"Forbidden Origin\"}"
+      },
+      {
+        "name": "reject hostile preflight",
+        "expected": 403,
+        "status": 403,
+        "passed": true,
+        "body": "{\"error\":\"Forbidden Origin\"}"
+      },
+      {
+        "name": "allowed preflight",
+        "expected": 204,
+        "status": 204,
+        "passed": true,
+        "body": ""
+      },
+      {
+        "name": "MCP no key",
+        "expected": 401,
+        "status": 401,
+        "passed": true,
+        "body": "{\"error\":\"Unauthorized \u2014 missing Bearer token\"}"
+      }
+    ],
+    "passed": true,
+    "log": "C:\\Users\\pc\\AppData\\Local\\Temp\\dmrx-production-http-vyf4krmd\\listener.log"
+  },
+  {
+    "transport": "sse",
+    "checks": [
+      {
+        "name": "public discovery",
+        "expected": 200,
+        "status": 200,
+        "passed": true,
+        "body": "{\"protocolVersion\":\"0.3.0\",\"name\":\"DMR-X Agent\",\"description\":\"DMR-X MCP Server with intelligent routing\",\"version\":\"0.5.0\",\"url\":\"http://localhost:47114\",\"preferredTransport\":\"JSONRPC\",\"capabilities\":{\"streaming\":true,\"pushNotifications\":true,\"state"
+      },
+      {
+        "name": "A2A no key",
+        "expected": 401,
+        "status": 401,
+        "passed": true,
+        "body": "{\"error\":\"Unauthorized \u2014 missing Bearer token\"}"
+      },
+      {
+        "name": "A2A bogus key",
+        "expected": 401,
+        "status": 401,
+        "passed": true,
+        "body": "{\"error\":\"Unauthorized \u2014 invalid Bearer token\"}"
+      },
+      {
+        "name": "A2A restricted key",
+        "expected": 403,
+        "status": 403,
+        "passed": true,
+        "body": "{\"error\":\"Tool-restricted keys cannot access A2A\"}"
+      },
+      {
+        "name": "A2A valid key",
+        "expected": 200,
+        "status": 200,
+        "passed": true,
+        "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tasks\":[]}}"
+      },
+      {
+        "name": "reject hostile Origin",
+        "expected": 403,
+        "status": 403,
+        "passed": true,
+        "body": "{\"error\":\"Forbidden Origin\"}"
+      },
+      {
+        "name": "reject hostile preflight",
+        "expected": 403,
+        "status": 403,
+        "passed": true,
+        "body": "{\"error\":\"Forbidden Origin\"}"
+      },
+      {
+        "name": "allowed preflight",
+        "expected": 204,
+        "status": 204,
+        "passed": true,
+        "body": ""
+      },
+      {
+        "name": "MCP no key",
+        "expected": 401,
+        "status": 401,
+        "passed": true,
+        "body": "{\"error\":\"Unauthorized \u2014 missing Bearer token\"}"
+      }
+    ],
+    "passed": true,
+    "log": "C:\\Users\\pc\\AppData\\Local\\Temp\\dmrx-production-http-fvxw4j9y\\listener.log"
+  }
+]
