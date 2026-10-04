@@ -2,11 +2,8 @@
   "name": "@dmr-x/braces-safe",
   "version": "1.0.0",
   "private": true,
-  "description": "Security-maintained local fork of braces 3.0.3 (MIT), preserving its API",
+  "description": "Security-maintained local fork of braces 3.0.3 (MIT), preserving its API. Dependencies (fill-range, to-regex-range, is-number; all MIT) are vendored under vendor/ so the fork is fully self-contained and needs no registry install.",
   "license": "MIT",
   "main": "index.js",
-  "type": "commonjs",
-  "dependencies": {
-    "fill-range": "^7.1.1"
-  }
+  "type": "commonjs"
 }

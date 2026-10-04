@@ -1,6 +1,6 @@
 'use strict';
 
-const fill = require('fill-range');
+const fill = require('../vendor/fill-range');
 const utils = require('./utils');
 
 const compile = (ast, options = {}) => {
