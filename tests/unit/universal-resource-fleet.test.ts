@@ -3,19 +3,22 @@ import { describe, expect, it } from 'vitest';
 import type {
   ResourceCell,
   ResourceCellIdentity,
-  normalizeQuotaPoolId,
 } from '@dmr-x/core';
 import {
   inferPricingTier,
   getProviderTemplate,
   getVerifiedFreeOffers,
   PROVIDER_CATALOG,
+  getProviderBehavior,
 } from '@dmr-x/provider-catalog';
 import {
   CapacityManager,
   type CapacityStore,
+  normalizeQuotaPoolId,
+  type QuotaUnit,
+  type QuotaScope,
 } from '@dmr-x/quota';
-import type { DemandVector, QuotaUnit } from '@dmr-x/quota';
+import type { DemandVector } from '@dmr-x/quota';
 
 describe('Universal inference resource fleet', () => {
   it('keeps quota-pool identity separate from credential identity', () => {
@@ -115,6 +118,28 @@ describe('Universal inference resource fleet', () => {
     const zaiMatches = PROVIDER_CATALOG.filter((p) => p.id === 'zai-coding');
     expect(zaiMatches).toHaveLength(1);
     expect(getVerifiedFreeOffers().length).toBeGreaterThanOrEqual(23);
+  });
+
+  it('types inception quotaOwner as credential-scoped (fail-closed compile guard)', () => {
+    // Inception's free entitlement is credential-scoped token-credit based.
+    // This test fails to compile if 'credential' is absent from the
+    // ProviderBehavior.quotaOwner union — guarding the PR32 typecheck fix.
+    const behavior = getProviderBehavior('inception');
+    expect(behavior?.quotaOwner).toBe('credential');
+  });
+
+  it('normalizes a credential-scoped pool without leaking the credential id', () => {
+    // RED before fix: normalizeQuotaPoolId was imported from @dmr-x/core
+    // (undefined) and 'credential' was not a valid QuotaScope. After fix the
+    // pool identity strips the credentialId from the pool key.
+    const pool = normalizeQuotaPoolId({
+      providerId: 'inception',
+      scope: 'credential' as QuotaScope,
+      scopeId: 'cred-9',
+      keyId: 'cred-9',
+    });
+    expect(pool).toBe('inception::credential::cred-9');
+    expect(pool).not.toContain('secret');
   });
 });
 

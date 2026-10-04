@@ -21,7 +21,7 @@ export interface ProviderBehavior {
   validation: ValidationStrategy;
   executionShape: ExecutionShape;
   keyless?: boolean;
-  quotaOwner?: 'key' | 'account' | 'organization' | 'project' | 'ip' | 'device' | 'unknown';
+  quotaOwner?: 'key' | 'account' | 'organization' | 'project' | 'credential' | 'ip' | 'device' | 'unknown';
   supportsStreaming?: boolean;
   supportsTools?: boolean;
   supportsImages?: boolean;
