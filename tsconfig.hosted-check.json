@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@dmr-x/agent-registry": ["services/agent-registry/src/index.ts"],
+      "@dmr-x/agent-runtime": ["services/agent-runtime/src/index.ts"],
+      "@dmr-x/billing": ["services/billing/src/index.ts"],
+      "@dmr-x/core": ["packages/core/src/index.ts"],
+      "@dmr-x/db": ["packages/db/src/index.ts"],
+      "@dmr-x/memory": ["services/memory/src/index.ts"],
+      "@dmr-x/router": ["services/router/src/index.ts"],
+      "@dmr-x/utils": ["packages/utils/src/index.ts"],
+      "@dmr-x/quota": ["services/quota/src/index.ts"],
+      "@dmr-x/policy": ["services/policy/src/index.ts"]
+    }
+  },
+  "include": [
+    "services/agent-registry/src",
+    "services/agent-runtime/src",
+    "apps/gateway/src/routes/agent-chat.routes.ts",
+    "apps/gateway/src/routes/agent-dispatch.routes.ts",
+    "apps/gateway/src/routes/agent.routes.ts",
+    "apps/gateway/src/routes/agent-chat-loop.ts"
+  ]
+}

@@ -29,6 +29,15 @@ interface ScheduledJob {
   enabled: boolean;
   prompt?: string;
   maxSteps?: number;
+  /** Stable hosted instance reused across schedule fires. */
+  agentInstanceId?: string;
+  /**
+   * Deterministic key (`<jobId>:<claimed next_run_at>`) for the most recently
+   * claimed fire. Persisted so a restart cannot refire an already-claimed
+   * occurrence, and passed into the gateway call + execution record as an
+   * idempotency key.
+   */
+  lastOccurrenceKey?: string;
   running: boolean;
 }
 
@@ -164,7 +173,7 @@ export class AgentScheduler {
     agentDefinitionId: string,
     tenantId: string,
     cron: string,
-    options?: { prompt?: string; maxSteps?: number; timezone?: string },
+    options?: { prompt?: string; maxSteps?: number; timezone?: string; agentInstanceId?: string },
   ): void {
     const jobId = crypto.randomUUID();
     const nextRunAt = calculateNextRun(cron, options?.timezone);
@@ -173,8 +182,11 @@ export class AgentScheduler {
     // Persist to SQLite
     const db = getDb();
     db.prepare(`
-      INSERT INTO agent_scheduled_jobs (id, agent_definition_id, tenant_id, trigger_type, trigger_config, next_run_at, enabled, prompt, max_steps, created_at, updated_at)
-      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?, ?, ?)
+      INSERT INTO agent_scheduled_jobs (
+        id, agent_definition_id, tenant_id, trigger_type, trigger_config,
+        next_run_at, enabled, prompt, max_steps, agent_instance_id, created_at, updated_at
+      )
+      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       jobId,
       agentDefinitionId,
@@ -183,6 +195,7 @@ export class AgentScheduler {
       nextRunAt.toISOString(),
       options?.prompt ?? null,
       options?.maxSteps ?? 5,
+      options?.agentInstanceId ?? null,
       now,
       now,
     );
@@ -198,6 +211,7 @@ export class AgentScheduler {
       enabled: true,
       prompt: options?.prompt,
       maxSteps: options?.maxSteps ?? 5,
+      agentInstanceId: options?.agentInstanceId,
       running: false,
     });
 
@@ -229,6 +243,8 @@ export class AgentScheduler {
     nextRunAt: string;
     lastRunAt?: string;
     enabled: boolean;
+    agentInstanceId?: string;
+    lastOccurrenceKey?: string;
   }> {
     return Array.from(this.jobs.values()).map((job) => ({
       id: job.id,
@@ -238,6 +254,8 @@ export class AgentScheduler {
       nextRunAt: job.nextRunAt.toISOString(),
       lastRunAt: job.lastRunAt?.toISOString(),
       enabled: job.enabled,
+      agentInstanceId: job.agentInstanceId,
+      lastOccurrenceKey: job.lastOccurrenceKey,
     }));
   }
 
@@ -266,6 +284,8 @@ export class AgentScheduler {
           enabled: row.enabled === 1,
           prompt: row.prompt ?? undefined,
           maxSteps: row.max_steps != null ? Number(row.max_steps) : undefined,
+          agentInstanceId: row.agent_instance_id ?? undefined,
+          lastOccurrenceKey: row.last_occurrence_key ?? undefined,
           running: row.running === 1,
         });
       }
@@ -319,62 +339,137 @@ export class AgentScheduler {
   }
 
   /**
-   * Execute a single scheduled job. Uses atomic compare-and-swap to ensure
-   * at-most-once delivery across multiple scheduler instances.
+   * Execute a single scheduled job. Claims the occurrence AND advances
+   * `next_run_at` in one atomic compare-and-swap, then runs the job tagged with
+   * the claimed occurrence key.
+   *
+   * Advancing at claim time (rather than after the external gateway call) is
+   * what makes a crash between the call and schedule bookkeeping unable to
+   * refire the same occurrence. The `running` guard still serialises
+   * concurrent in-process claims; the CAS on `next_run_at` serialises across
+   * processes. Delivery contract: at-most-once ADVANCEMENT per occurrence,
+   * at-least-once downstream execution (a call accepted before a crash may
+   * still have run) — downstream consumers must treat the occurrence key as an
+   * idempotency key. Exactly-once external side effects are NOT promised.
    */
   private async executeJob(job: ScheduledJob): Promise<void> {
     const db = getDb();
-    const now = new Date();
+    const claimedNextRun = job.nextRunAt.toISOString();
+    const occurrenceKey = `${job.id}:${claimedNextRun}`;
+    // Compute the advanced fire ONCE and share it with runJob so the persisted
+    // row and the in-memory job cannot drift apart.
+    const nextRunAt = calculateNextRun(job.triggerConfig.cron, job.triggerConfig.timezone);
 
-    // At-most-once: atomic compare-and-swap on next_run_at + running
-    // Only the instance that successfully sets running = 1 proceeds to run
+    // Claim AND advance in ONE atomic UPDATE.
     const casResult = db.prepare(`
       UPDATE agent_scheduled_jobs
-      SET running = 1
+      SET running = 1,
+          next_run_at = ?,
+          last_occurrence_key = ?,
+          updated_at = datetime('now')
       WHERE id = ? AND next_run_at = ? AND enabled = 1 AND running = 0
-    `).run(job.id, job.nextRunAt.toISOString());
+    `).run(nextRunAt.toISOString(), occurrenceKey, job.id, claimedNextRun);
 
     if (casResult.changes === 0) {
-      // Another instance already claimed this job
+      // Another instance (or an earlier tick) already claimed this occurrence.
       logger.debug({ jobId: job.id }, 'Scheduler CAS lost, skipping job');
       return;
     }
 
     job.running = true;
+    job.nextRunAt = nextRunAt;
+    job.lastOccurrenceKey = occurrenceKey;
     try {
-      await this.runJob(job);
+      await this.runJob(job, occurrenceKey);
     } finally {
       job.running = false;
-      // Reset running flag in DB
+      // Reset the running flag in DB. next_run_at is NOT touched here — it was
+      // already advanced by the claim above.
       db.prepare('UPDATE agent_scheduled_jobs SET running = 0 WHERE id = ?').run(job.id);
     }
   }
 
   /**
    * Run the actual job: create an instance, call the gateway, record result.
+   *
+   * `occurrenceKey` was claimed and stamped on the job row by `executeJob`
+   * before this runs. If a prior delivery of the SAME occurrence already
+   * recorded an execution (duplicate delivery, or a crash-replay after the
+   * claim), the gateway call is skipped — the unique index on
+   * (tenant, instance, occurrence_key) is the backstop.
    */
-  private async runJob(job: ScheduledJob): Promise<void> {
-    logger.info({ jobId: job.id, agentDefinitionId: job.agentDefinitionId }, 'Running scheduled agent job');
+  private async runJob(job: ScheduledJob, occurrenceKey: string): Promise<void> {
+    const db = getDb();
+    logger.info({ jobId: job.id, agentDefinitionId: job.agentDefinitionId, occurrenceKey }, 'Running scheduled agent job');
 
     const definition = await agentRegistryService.getDefinition(job.agentDefinitionId);
     if (!definition) {
       logger.warn({ jobId: job.id }, 'Agent definition not found, disabling job');
       job.enabled = false;
 
-      const db = getDb();
       db.prepare('UPDATE agent_scheduled_jobs SET enabled = 0, updated_at = datetime(\'now\') WHERE id = ?')
         .run(job.id);
       return;
     }
 
     // Create an execution record
-    const instance = await agentRegistryService.createInstance(job.tenantId, {
-      agentDefinitionId: job.agentDefinitionId,
-      configOverride: { triggeredBy: 'schedule', jobId: job.id },
-    });
+    // A schedule owns a stable persistent identity. Create it once on first
+    // fire, then wake/reuse the same instance on every later fire.
+    let instance = job.agentInstanceId
+      ? await agentRegistryService.getInstance(job.agentInstanceId)
+      : null;
 
-    if (!instance) {
-      logger.warn({ jobId: job.id }, 'Failed to create agent instance for scheduled job');
+    // A corrupted/stale pin must never cross tenant or definition boundaries.
+    // Treat it as missing and create a fresh owned instance.
+    if (
+      instance &&
+      (instance.tenantId !== job.tenantId ||
+        instance.agentDefinitionId !== job.agentDefinitionId)
+    ) {
+      instance = null;
+      job.agentInstanceId = undefined;
+    }
+
+    if (!instance || instance.lifecycleState === 'retired') {
+      instance = await agentRegistryService.createInstance(job.tenantId, {
+        agentDefinitionId: job.agentDefinitionId,
+        configOverride: { triggeredBy: 'schedule', jobId: job.id },
+        runtimeMode: 'persistent',
+        accessScope: 'private',
+      });
+
+      if (!instance) {
+        logger.warn({ jobId: job.id }, 'Failed to create agent instance for scheduled job');
+        return;
+      }
+
+      job.agentInstanceId = instance.id;
+      db.prepare(
+        'UPDATE agent_scheduled_jobs SET agent_instance_id = ?, updated_at = datetime(\'now\') WHERE id = ?',
+      ).run(instance.id, job.id);
+    } else if (['paused', 'stopped'].includes(instance.lifecycleState)) {
+      instance = await agentRegistryService.transitionInstanceLifecycle(
+        instance.id,
+        job.tenantId,
+        'ready',
+      );
+      if (!instance) {
+        logger.warn({ jobId: job.id, instanceId: job.agentInstanceId }, 'Failed to wake scheduled agent instance');
+        return;
+      }
+    }
+
+    // Duplicate-delivery guard: this occurrence was already recorded for this
+    // instance (e.g. a redelivered tick, or a crash-replay after the claim).
+    // Skip the side-effecting gateway call entirely.
+    const alreadyRecorded = db.prepare(
+      'SELECT id FROM agent_executions WHERE tenant_id = ? AND agent_instance_id = ? AND occurrence_key = ?',
+    ).get(job.tenantId, instance.id, occurrenceKey) as any;
+    if (alreadyRecorded) {
+      logger.info(
+        { jobId: job.id, instanceId: instance.id, occurrenceKey },
+        'Scheduled occurrence already recorded, skipping duplicate delivery',
+      );
       return;
     }
 
@@ -385,6 +480,10 @@ export class AgentScheduler {
 
     const headers: Record<string, string> = {
       'content-type': 'application/json',
+      // Deterministic idempotency key so a downstream consumer can collapse a
+      // redelivered occurrence. At-least-once delivery; exactly-once external
+      // side effects are not promised.
+      'x-dmrx-occurrence-key': occurrenceKey,
     };
     if (internalKey) headers['authorization'] = `Bearer ${internalKey}`;
 
@@ -400,6 +499,7 @@ export class AgentScheduler {
           messages: [{ role: 'user', content: prompt }],
           stream: false,
           maxSteps,
+          metadata: { occurrenceKey, jobId: job.id, triggeredBy: 'schedule' },
         }),
       });
 
@@ -421,33 +521,37 @@ export class AgentScheduler {
       output = errorMsg;
       logger.warn(
         { jobId: job.id, instanceId: instance.id, err: errorMsg },
-        'Scheduled agent execution failed; will retry next interval',
+        'Scheduled agent execution failed; occurrence is still recorded so it is not retried',
       );
     }
 
-    await agentRegistryService.recordExecution({
-      agentInstanceId: instance.id,
-      tenantId: job.tenantId,
-      input: prompt,
-      output,
-      toolsUsed: [],
-      modelUsed: definition.preferredModel ?? 'auto',
-      status,
-      error: status === 'error' ? errorMsg : undefined,
-    });
+    // Record the execution tagged with the occurrence key. A duplicate key is
+    // rejected by the DB unique index; swallow that one specific case so a
+    // racing delivery cannot turn a benign dedupe into a crash.
+    try {
+      await agentRegistryService.recordExecution({
+        agentInstanceId: instance.id,
+        tenantId: job.tenantId,
+        input: prompt,
+        output,
+        toolsUsed: [],
+        modelUsed: definition.preferredModel ?? 'auto',
+        status,
+        error: status === 'error' ? errorMsg : undefined,
+        occurrenceKey,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('UNIQUE constraint failed')) throw err;
+      logger.info({ jobId: job.id, occurrenceKey }, 'Scheduled occurrence already recorded (race), deduplicated');
+    }
 
-    // Update next run time
-    const nextRunAt = calculateNextRun(job.triggerConfig.cron, job.triggerConfig.timezone);
-    job.nextRunAt = nextRunAt;
     job.lastRunAt = new Date();
-
-    // Persist updated schedule
-    const db = getDb();
-    db.prepare(`
-      UPDATE agent_scheduled_jobs
-      SET next_run_at = ?, last_run_at = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(nextRunAt.toISOString(), new Date().toISOString(), job.id);
+    // next_run_at was already advanced atomically by executeJob's claim; only
+    // last_run_at remains to be persisted here.
+    db.prepare(
+      'UPDATE agent_scheduled_jobs SET last_run_at = ?, updated_at = datetime(\'now\') WHERE id = ?',
+    ).run(job.lastRunAt.toISOString(), job.id);
   }
 }
 

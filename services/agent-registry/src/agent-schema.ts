@@ -137,12 +137,57 @@ export type AgentDefinitionUpdate = z.infer<typeof AgentDefinitionUpdateSchema>;
 // Agent Instance Schema
 // ---------------------------------------------------------------------------
 
+export const AgentRuntimeModeSchema = z.enum(['persistent', 'ephemeral']);
+export type AgentRuntimeMode = z.infer<typeof AgentRuntimeModeSchema>;
+
+export const AgentAccessScopeSchema = z.enum(['private', 'shared']);
+export type AgentAccessScope = z.infer<typeof AgentAccessScopeSchema>;
+
+export const AgentLifecycleStateSchema = z.enum([
+  'registered',
+  'provisioned',
+  'ready',
+  'running',
+  'paused',
+  'draining',
+  'stopped',
+  'retired',
+]);
+export type AgentLifecycleState = z.infer<typeof AgentLifecycleStateSchema>;
+
+export const AgentLifecyclePolicySchema = z.object({
+  maxTtlMs: z.number().int().nonnegative().max(30 * 24 * 60 * 60 * 1000).nullable().optional(),
+  idleTimeoutMs: z.number().int().nonnegative().max(30 * 24 * 60 * 60 * 1000).nullable().optional(),
+  maxBudgetCents: z.number().int().nonnegative().max(1_000_000_000).nullable().optional(),
+});
+export type AgentLifecyclePolicy = z.infer<typeof AgentLifecyclePolicySchema>;
+
 export const AgentInstanceCreateSchema = z.object({
   agentDefinitionId: z.string().uuid(),
   configOverride: z.record(z.unknown()).optional().default({}),
+  runtimeMode: AgentRuntimeModeSchema.optional().default('persistent'),
+  accessScope: AgentAccessScopeSchema.optional().default('shared'),
+  lifecyclePolicy: AgentLifecyclePolicySchema.optional().default({}),
 });
 
 export type AgentInstanceCreate = z.infer<typeof AgentInstanceCreateSchema>;
+
+/**
+ * Creation-schema INPUT (pre-defaults): what callers pass to
+ * `AgentRegistryService.createInstance`. Defaults for `configOverride`,
+ * `runtimeMode`, `accessScope`, and `lifecyclePolicy` are applied inside
+ * `createInstance`, so call sites pass sparse literals and never duplicate
+ * the default policy.
+ */
+export type AgentInstanceCreateInput = z.input<typeof AgentInstanceCreateSchema>;
+
+export const AgentInstanceRuntimeUpdateSchema = z.object({
+  runtimeMode: AgentRuntimeModeSchema.optional(),
+  accessScope: AgentAccessScopeSchema.optional(),
+  lifecyclePolicy: AgentLifecyclePolicySchema.optional(),
+});
+
+export type AgentInstanceRuntimeUpdate = z.infer<typeof AgentInstanceRuntimeUpdateSchema>;
 
 // ---------------------------------------------------------------------------
 // Agent Chat Schema

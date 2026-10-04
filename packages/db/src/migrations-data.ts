@@ -2866,4 +2866,92 @@ CREATE INDEX IF NOT EXISTS idx_agent_definition_shares_recipient
   ON agent_definition_shares(recipient_tenant_id);
 `,
   },
+  83: {
+    filename: '083_hosted_agent_instances.sql',
+    sql: `-- 083: Hosted agent instances
+-- Give deployed agent instances a durable runtime identity independent of any
+-- one HTTP request. This is the DMR-X equivalent of the durable agent/session
+-- model: the instance survives gateway restarts, while compute wakes only when
+-- a message/event/schedule arrives.
+--
+-- runtime_mode:
+--   persistent = long-lived identity (default)
+--   ephemeral  = bounded worker / subagent
+--
+-- access_scope:
+--   shared = eligible for intent discovery/dispatch
+--   private = addressable by exact instance id only
+--
+-- lifecycle_state is the durable lifecycle, while the legacy status column
+-- remains the coarse active/paused compatibility surface.
+--
+-- Renumbered from PR30's 082: the local 082 (agent_definition_shares) was
+-- already applied in this lane and must not be renumbered.
+
+ALTER TABLE agent_instances
+  ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'persistent';
+
+ALTER TABLE agent_instances
+  ADD COLUMN access_scope TEXT NOT NULL DEFAULT 'shared';
+
+ALTER TABLE agent_instances
+  ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'ready';
+
+ALTER TABLE agent_instances
+  ADD COLUMN lifecycle_policy TEXT NOT NULL DEFAULT '{}';
+
+ALTER TABLE agent_instances
+  ADD COLUMN last_activity_at TEXT;
+
+ALTER TABLE agent_instances
+  ADD COLUMN last_heartbeat_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_instances_runtime
+ON agent_instances(tenant_id, runtime_mode, lifecycle_state);
+
+CREATE INDEX IF NOT EXISTS idx_agent_instances_access_scope
+ON agent_instances(tenant_id, access_scope, status)
+WHERE status = 'active';
+
+-- Scheduled jobs optionally pin to one persistent instance. This prevents a
+-- fresh instance from being created on every cron fire and gives the schedule
+-- a stable agent identity.
+ALTER TABLE agent_scheduled_jobs
+  ADD COLUMN agent_instance_id TEXT REFERENCES agent_instances(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_agent_scheduled_jobs_instance
+ON agent_scheduled_jobs(agent_instance_id);
+`,
+  },
+  84: {
+    filename: '084_schedule_occurrence_keys.sql',
+    sql: `-- 084: Scheduled occurrence identity
+-- Give every scheduled fire a deterministic occurrence key
+-- (\`<jobId>:<claimed next_run_at>\`) so a crash between the gateway call and
+-- schedule bookkeeping cannot refire the same occurrence, and duplicate
+-- deliveries of one occurrence collapse to a single execution row.
+--
+-- The scheduler claims AND advances next_run_at in one atomic UPDATE, stamps
+-- the claimed occurrence on the job row, and passes the key into the gateway
+-- call (x-dmrx-occurrence-key) and the execution record. The partial unique
+-- index keeps pre-084 rows (NULL key) untouched while rejecting a second
+-- execution row for the same (tenant, instance, occurrence).
+--
+-- Delivery contract is at-least-once scheduling with at-most-once advancement:
+-- a crash after the claim never refires the occurrence, but a gateway call
+-- that was accepted before the crash may still have executed downstream.
+-- Downstream consumers must treat the occurrence key as an idempotency key.
+-- Exactly-once external side effects are NOT promised.
+
+ALTER TABLE agent_scheduled_jobs
+  ADD COLUMN last_occurrence_key TEXT;
+
+ALTER TABLE agent_executions
+  ADD COLUMN occurrence_key TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_executions_occurrence
+ON agent_executions(tenant_id, agent_instance_id, occurrence_key)
+WHERE occurrence_key IS NOT NULL;
+`,
+  },
 };

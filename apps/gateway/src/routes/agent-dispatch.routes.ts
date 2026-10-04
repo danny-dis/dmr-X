@@ -152,7 +152,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
     // status in SQL also means a paused instance is never a dispatch target.
     let active: any[];
     try {
-      const result = await agentRegistryService.listInstances(tenant.id, { status: 'active' });
+      const result = await agentRegistryService.listInstances(tenant.id, { status: 'active', accessScope: 'shared' });
       active = result.items;
     } catch (err) {
       logger.error({ err }, 'agent-dispatch: failed to list instances');

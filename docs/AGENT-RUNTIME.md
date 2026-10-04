@@ -269,3 +269,16 @@ If the caller has explicitly prohibited the action, DMR-X Runtime must not be us
 - predictive resource scheduling;
 - reusable execution pools;
 - stronger artifact/content-addressed storage.
+
+
+## Hosted Agent Platform v1 (2026-10-03)
+
+DMR-X now treats an agent instance as a durable hosted identity rather than a disposable HTTP task. Each instance has a persisted runtime mode (`persistent` or `ephemeral`), an access scope (`shared` or `private`), a durable lifecycle state, and a lifecycle policy. Persistent instances default to no TTL or idle expiry; they park between turns and wake when a message or other trigger arrives.
+
+Conversation state remains a separate durable object attached to the instance. This keeps identity, conversation, and compute lifetimes independent: a gateway restart does not delete the agent or its sessions, and an idle persistent agent consumes no model/CPU resources merely by existing.
+
+Discovery surfaces such as intent dispatch and MCP agent listing only expose `shared` instances. A `private` instance can still be invoked when its exact id is already known. This is intentionally tenant-scoped for v1; user-to-user ACLs are a follow-up layer.
+
+Scheduled jobs pin to a persistent private instance. The scheduler therefore reuses one durable identity across fires instead of creating a new instance for every cron tick.
+
+This follows the durable-agent pattern documented by Vercel eve and the current Agents + Workflows guidance from Cloudflare: long-lived identity and communication are separated from durable, retryable background execution. See `docs/plans/2026-10-03-hosted-agent-platform.md` for the implementation map and references.
