@@ -40,8 +40,9 @@ export interface AgentCardConfig {
   documentationUrl?: string;
   /** Named security schemes, OpenAPI 3 style (spec 0.3.0) */
   securitySchemes?: Record<string, unknown>;
-  /** Security requirements referencing `securitySchemes` (spec 0.3.0) */
+  /** Security requirements referencing securitySchemes (v1.0 protobuf JSON shape). */
   security?: Array<Record<string, string[]>>;
+  securityRequirements?: Array<{ schemes: Record<string, { list: string[] }> }>;
   /** Extra interfaces to advertise beyond the derived primary one (spec v1.0). */
   additionalInterfaces?: AgentInterface[];
   /** Protocol binding for the primary interface. Default `JSONRPC`. */
@@ -93,6 +94,7 @@ export interface AgentCapabilities {
   pushNotifications?: boolean;
   /** Supports state transition history */
   stateTransitionHistory?: boolean;
+  extendedAgentCard?: boolean;
 }
 
 export interface AgentAuthentication {
@@ -145,8 +147,10 @@ export interface AgentCard {
   documentationUrl?: string;
   /** Named security schemes, OpenAPI 3 style (spec 0.3.0) */
   securitySchemes?: Record<string, unknown>;
-  /** Security requirements referencing `securitySchemes` (spec 0.3.0) */
+  /** Security requirements referencing `securitySchemes` (legacy compatibility). */
   security?: Array<Record<string, string[]>>;
+  /** Native v1.0 security requirements. */
+  securityRequirements?: Array<{ schemes: Record<string, { list: string[] }> }>;
   /** Whether an authenticated extended card is available (spec 0.3.0) */
   supportsAuthenticatedExtendedCard: boolean;
   /** Default input media types */
@@ -298,6 +302,7 @@ export function buildAgentCard(
       streaming: true,
       pushNotifications: true,
       stateTransitionHistory: true,
+      extendedAgentCard: false,
     },
     supportsAuthenticatedExtendedCard: false,
     defaultInputModes: config.defaultInputModes || union((s) => s.inputModes, [TEXT]),
@@ -306,6 +311,20 @@ export function buildAgentCard(
     supportedInterfaces: [primaryInterface, ...(config.additionalInterfaces ?? [])],
   };
 
+  // v1.0 security declaration. Credentials are never embedded in the public card.
+  if (process.env.DMRX_A2A_REQUIRE_AUTH !== 'false' && (process.env.NODE_ENV === 'production' || process.env.DMRX_A2A_API_KEY || process.env.DMRX_MCP_API_KEY)) {
+    card.securitySchemes = {
+      httpBearer: {
+        httpAuthSecurityScheme: {
+          scheme: 'bearer',
+          bearerFormat: 'API key',
+          description: 'Bearer credential obtained out-of-band',
+        },
+      },
+      ...(card.securitySchemes || {}),
+    };
+    card.securityRequirements = [{ schemes: { httpBearer: { list: [] } } }];
+  }
   // Optional fields are omitted rather than emitted as `undefined`, so the
   // serialized card never carries keys a consumer must special-case.
   if (config.authentication) card.authentication = config.authentication;
@@ -313,6 +332,7 @@ export function buildAgentCard(
   if (config.documentationUrl) card.documentationUrl = config.documentationUrl;
   if (config.securitySchemes) card.securitySchemes = config.securitySchemes;
   if (config.security) card.security = config.security;
+  if (config.securityRequirements) card.securityRequirements = config.securityRequirements;
   if (config.iconUrl) card.iconUrl = config.iconUrl;
 
   return card;

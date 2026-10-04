@@ -141,12 +141,11 @@ export class MCPClient {
     toolName: string,
     args: Record<string, unknown>
   ): Promise<unknown> {
-    const server = this.registry.findServerForTool(toolName);
-    if (!server) {
+    const resolved = this.registry.resolveTool(toolName);
+    if (!resolved) {
       throw new Error(`No MCP server found hosting tool: ${toolName}`);
     }
-
-    return this.registry.callTool(server.config.id, toolName, args);
+    return this.registry.callTool(resolved.server.config.id, resolved.toolName, args);
   }
 
   /**

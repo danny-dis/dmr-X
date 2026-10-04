@@ -21,7 +21,7 @@ import { DemandVector } from '../../services/quota/src/quota-dimensions.js';
 describe('CapacityStore interface — oversubscription prevention', () => {
   it('never admits more reservations than capacity allows (concurrency)', async () => {
     const store = new InMemoryCapacityStore([
-      { unit: 'concurrency', scopeId: 'key-1', remaining: 3 },
+      { unit: 'concurrency', scopeId: 'groq::key::key-1', remaining: 3 },
     ]);
     const manager = new CapacityManager({ store });
 
@@ -64,12 +64,12 @@ describe('CapacityStore interface — oversubscription prevention', () => {
     expect(failed).toBe(27);
 
     // After all attempts, exactly 3 capacity should remain reserved
-    expect(store.getRemaining('concurrency', 'key-1')).toBe(0);
+    expect(store.getRemaining('concurrency', 'groq::key::key-1')).toBe(0);
   });
 
   it('never admits more reservations than capacity allows (requests)', async () => {
     const store = new InMemoryCapacityStore([
-      { unit: 'requests', scopeId: 'key-1', remaining: 5 },
+      { unit: 'requests', scopeId: 'groq::key::key-1', remaining: 5 },
     ]);
     const manager = new CapacityManager({ store });
 
@@ -106,12 +106,12 @@ describe('CapacityStore interface — oversubscription prevention', () => {
 
     const succeeded = attempts.filter((r) => r.success).length;
     expect(succeeded).toBe(5);
-    expect(store.getRemaining('requests', 'key-1')).toBe(0);
+    expect(store.getRemaining('requests', 'groq::key::key-1')).toBe(0);
   });
 
   it('released capacity becomes available for re-reservation', async () => {
     const store = new InMemoryCapacityStore([
-      { unit: 'concurrency', scopeId: 'key-1', remaining: 1 },
+      { unit: 'concurrency', scopeId: 'groq::key::key-1', remaining: 1 },
     ]);
     const manager = new CapacityManager({ store });
 
@@ -158,7 +158,7 @@ describe('CapacityStore interface — oversubscription prevention', () => {
 
   it('commit does not double-deduct when actual usage is lower than reserved', async () => {
     const store = new InMemoryCapacityStore([
-      { unit: 'requests', scopeId: 'key-1', remaining: 10 },
+      { unit: 'requests', scopeId: 'groq::key::key-1', remaining: 10 },
     ]);
     const manager = new CapacityManager({ store });
 
@@ -192,7 +192,7 @@ describe('CapacityStore interface — oversubscription prevention', () => {
     expect(result.success).toBe(true);
 
     // Remaining should be 9 after reservation
-    expect(store.getRemaining('requests', 'key-1')).toBe(9);
+    expect(store.getRemaining('requests', 'groq::key::key-1')).toBe(9);
 
     // Commit with actual usage matching reservation (1 request)
     await manager.commit(result.reservation!.id, {
@@ -203,12 +203,12 @@ describe('CapacityStore interface — oversubscription prevention', () => {
     });
 
     // After commit, remaining should still be 9 (reservation was the deduction)
-    expect(store.getRemaining('requests', 'key-1')).toBe(9);
+    expect(store.getRemaining('requests', 'groq::key::key-1')).toBe(9);
   });
 
   it('reservation is atomic — partial failure leaves no side effects', async () => {
     const store = new InMemoryCapacityStore([
-      { unit: 'requests', scopeId: 'key-1', remaining: 10 },
+      { unit: 'requests', scopeId: 'groq::key::key-1', remaining: 10 },
       // concurrency is deliberately absent — will default to 0 in store
     ]);
     const manager = new CapacityManager({ store });
@@ -250,6 +250,6 @@ describe('CapacityStore interface — oversubscription prevention', () => {
     expect(result.success).toBe(false);
 
     // Requests should NOT have been partially reserved
-    expect(store.getRemaining('requests', 'key-1')).toBe(10);
+    expect(store.getRemaining('requests', 'groq::key::key-1')).toBe(10);
   });
 });

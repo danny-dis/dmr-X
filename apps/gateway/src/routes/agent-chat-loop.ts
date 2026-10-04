@@ -1,5 +1,6 @@
 import { ProviderUnavailableError } from '@dmr-x/core';
 import type { ToolCall, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
+import { isMetaModel } from '@dmr-x/router';
 import type { Router } from '@dmr-x/router';
 import {
   updateState,
@@ -199,6 +200,10 @@ export interface AgentChatLoopBody {
 export interface AgentChatLoopResult {
   lastResponseText: string;
   totalTokensUsed: number;
+  /** Measured prompt-token sum across every model call in this run. */
+  totalPromptTokens: number;
+  /** Measured completion-token sum across every model call in this run. */
+  totalCompletionTokens: number;
   totalCost: number;
   stepsCompleted: number;
   budgetExceeded: boolean;
@@ -254,6 +259,12 @@ interface RunAgentChatLoopArgs {
   approvalDecisions?: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>;
   /** Router quality target (from the X-Quality-Target header). Defaults to 'balanced'. */
   qualityTarget?: ReturnType<typeof parseQualityTarget>;
+  /**
+   * True when admission was authorized only by zero-cost pricing or a
+   * free-only alias resolution. Every model request in this loop inherits the
+   * hard free-only router constraint when set.
+   */
+  freeOnly?: boolean;
   /** Opt-in: route per-turn model calls through the godmode wrap using the
    *  agent's own resolved model (any family) instead of plain router routing.
    *  Falls back to normal routing when the wrap is unavailable. */
@@ -281,6 +292,7 @@ function toUnifiedRequest(
   },
   requestId: string,
   tenant?: { id: string; name: string },
+  freeOnly = false,
 ): UnifiedRequest {
   return {
     modality: 'llm',
@@ -290,10 +302,45 @@ function toUnifiedRequest(
     temperature: body.temperature,
     max_tokens: body.max_tokens,
     stream: body.stream ?? false,
-    metadata: { requestId, tenant },
+    metadata: {
+      requestId,
+      tenant,
+      ...(freeOnly ? { freeTierStrategy: 'free_only' } : {}),
+    },
   };
 }
 
+function resolveFreeOnlyPolicy(model: string, router: Router, requested: boolean | undefined): boolean {
+  if (requested !== undefined) return requested;
+
+  // A concrete model may prove zero cost from the live candidate catalog. Do
+  // not infer free status from an alias name: aliases can resolve to mixed
+  // paid/free pools unless admission explicitly supplied free-only evidence.
+  if (model.includes('/')) {
+    const slash = model.indexOf('/');
+    const providerId = model.slice(0, slash);
+    const modelId = model.slice(slash + 1);
+    // Minimal/fake routers may not expose the catalog accessor; without proof
+    // the run is treated as not-free rather than throwing.
+    if (typeof (router as any)?.getCandidate !== 'function') return false;
+    const candidate = router.getCandidate(providerId, modelId);
+    if (
+      candidate &&
+      (candidate.costPerInputToken ?? 0) <= 0 &&
+      (candidate.costPerOutputToken ?? 0) <= 0
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  if (typeof (router as any)?.getEffectiveCostFilter !== 'function') return false;
+  if (router.getEffectiveCostFilter(model) === 'free') return true;
+  if (isMetaModel(model)) {
+    throw new Error('free-only admission proof is required for an unresolved alias');
+  }
+  return false;
+}
 function classifyRouteError(
   runtime: AgentRuntimeService,
   error: unknown,
@@ -528,9 +575,16 @@ async function completeAgentTurn(
   target: ReturnType<typeof parseQualityTarget>,
   requestId: string,
   godmodeWrap: boolean,
+  freeOnly: boolean,
 ): Promise<{ response: any }> {
   if (!godmodeWrap) {
-    return routeWithTimeout(router, unifiedRequest, target);
+    return routeWithTimeout(
+      router,
+      freeOnly
+        ? { ...unifiedRequest, metadata: { ...unifiedRequest.metadata, freeTierStrategy: 'free_only' } }
+        : unifiedRequest,
+      target,
+    );
   }
 
   const { wrapViaGodmode, isGodmodeStrict } = await import('../lib/godmode-guard.js');
@@ -540,7 +594,7 @@ async function completeAgentTurn(
     messages: (unifiedRequest.messages ?? []) as any[],
     model: unifiedRequest.model ?? '',
     candidates,
-    costFilter: 'all',
+    costFilter: freeOnly ? 'free' : 'all',
     temperature: unifiedRequest.temperature,
     maxTokens: unifiedRequest.max_tokens,
     tools: unifiedRequest.tools,
@@ -558,7 +612,13 @@ async function completeAgentTurn(
     { requestId, wrapOrder: result.wrapOrder },
     'godmode wrap unavailable for agent turn — falling back to router routing',
   );
-  return routeWithTimeout(router, unifiedRequest, target);
+  return routeWithTimeout(
+    router,
+    freeOnly
+      ? { ...unifiedRequest, metadata: { ...unifiedRequest.metadata, freeTierStrategy: 'free_only' } }
+      : unifiedRequest,
+    target,
+  );
 }
 
 /**
@@ -740,6 +800,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     onCheckpoint,
     qualityTarget,
     godmodeWrap = false,
+    freeOnly: requestedFreeOnly,
   } = args;
 
   // conversationId is optional; fall back to the conversation's own id so
@@ -751,6 +812,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   const approvalDecisions = args.approvalDecisions ?? body.approvalDecisions;
   const stopConditions = args.stopWhen ?? body.stopWhen ?? [];
   const target = qualityTarget ?? parseQualityTarget(undefined);
+  const freeOnly = resolveFreeOnlyPolicy(model, router, requestedFreeOnly);
 
   // Resume path: process human approval decisions for a previously paused run
   // BEFORE the loop so the model sees the injected tool-result messages.
@@ -789,6 +851,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   }
   let lastResponseText = '';
   let totalTokensUsed = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
   let totalCost = 0;
   let budgetExceeded = false;
   let awaitingApproval = false;
@@ -865,12 +929,13 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       },
       requestId,
       tenant,
+      freeOnly,
     );
 
     let response: UnifiedResponse;
 
     try {
-      ({ response } = await completeAgentTurn(router, unifiedRequest, target, requestId, godmodeWrap));
+      ({ response } = await completeAgentTurn(router, unifiedRequest, target, requestId, godmodeWrap, freeOnly));
     } catch (error) {
       // When every provider in the router's pool is rate-limited or down,
       // the router throws ProviderUnavailableError with a retryAfter hint.
@@ -923,9 +988,10 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         },
         requestId,
         tenant,
-      );
+        freeOnly,
+        );
 
-      ({ response } = await completeAgentTurn(router, retryRequest, target, requestId, godmodeWrap));
+      ({ response } = await completeAgentTurn(router, retryRequest, target, requestId, godmodeWrap, freeOnly));
     }
 
     const toolCalls = response.message?.tool_calls ?? [];
@@ -948,6 +1014,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
 
     if (response.usage) {
       totalTokensUsed += response.usage.total_tokens ?? 0;
+      totalPromptTokens += (response.usage as any).prompt_tokens ?? 0;
+      totalCompletionTokens += (response.usage as any).completion_tokens ?? 0;
       const stepCost = (response.usage as any).cost ?? (response.usage as any).total_cost ?? 0;
       totalCost += stepCost;
     }
@@ -1304,13 +1372,15 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         },
         requestId,
         tenant,
-      );
+        freeOnly,
+        );
       const { response: summaryResponse } = await completeAgentTurn(
         router,
         summaryRequest,
         target,
         requestId,
         godmodeWrap,
+        freeOnly,
       );
       let summaryText =
         typeof summaryResponse.message?.content === 'string' ? summaryResponse.message.content : '';
@@ -1327,6 +1397,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         });
         if (summaryResponse.usage) {
           totalTokensUsed += summaryResponse.usage.total_tokens ?? 0;
+          totalPromptTokens += (summaryResponse.usage as any).prompt_tokens ?? 0;
+          totalCompletionTokens += (summaryResponse.usage as any).completion_tokens ?? 0;
           totalCost +=
             (summaryResponse.usage as any).cost ?? (summaryResponse.usage as any).total_cost ?? 0;
           finalUsage = summaryResponse.usage;
@@ -1381,13 +1453,15 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         },
         requestId,
         tenant,
-      );
+        freeOnly,
+        );
       const { response: recoveryResponse } = await completeAgentTurn(
         router,
         recoveryRequest,
         target,
         requestId,
         godmodeWrap,
+        freeOnly,
       );
       let recoveryText =
         typeof recoveryResponse.message?.content === 'string' ? recoveryResponse.message.content : '';
@@ -1402,6 +1476,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       });
       if (recoveryResponse.usage) {
         totalTokensUsed += recoveryResponse.usage.total_tokens ?? 0;
+        totalPromptTokens += (recoveryResponse.usage as any).prompt_tokens ?? 0;
+        totalCompletionTokens += (recoveryResponse.usage as any).completion_tokens ?? 0;
         totalCost +=
           (recoveryResponse.usage as any).cost ?? (recoveryResponse.usage as any).total_cost ?? 0;
         finalUsage = recoveryResponse.usage;
@@ -1541,6 +1617,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   return {
     lastResponseText,
     totalTokensUsed,
+    totalPromptTokens,
+    totalCompletionTokens,
     totalCost,
     stepsCompleted: allSteps.length || maxSteps,
     budgetExceeded,

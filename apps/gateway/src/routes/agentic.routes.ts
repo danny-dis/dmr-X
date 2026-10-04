@@ -1,6 +1,8 @@
 import { ValidationError, type UnifiedRequest, type ToolCall } from '@dmr-x/core';
 import { agenticSessionStore } from '@dmr-x/agent-runtime';
 import type { Router } from '@dmr-x/router';
+import { resolveMetaModel } from '@dmr-x/router';
+import { billingService } from '@dmr-x/billing';
 import {
   generateRequestId,
   stepCountIs,
@@ -16,6 +18,17 @@ import {
 import { writeSSE } from '../lib/sse.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+
+import {
+  clampAgentSteps,
+  clampAgentTokens,
+  estimateAgentRunTokens,
+  aliasFreeEvidence,
+  preflightModelRun,
+  releaseAgentHold,
+  settleAgentRun,
+  type AgentUsageSums,
+} from '../lib/agent-admission.js';
 
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
 import { executeToolCall } from './tools.routes.js';
@@ -85,8 +98,49 @@ const AgenticChatRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const conversationLocks = new Map<string, Promise<void>>();
-const conversationAbortControllers = new Map<string, AbortController>();
+interface AbortEntry { controller: AbortController; tenantId: string }
+const conversationAbortControllers = new Map<string, AbortEntry>();
 const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+function registerAbortController(convId: string, tenantId: string): AbortController {
+  const controller = new AbortController();
+  conversationAbortControllers.set(convId, { controller, tenantId });
+  return controller;
+}
+
+function cleanupAbortController(convId: string, controller: AbortController): void {
+  const entry = conversationAbortControllers.get(convId);
+  if (entry && entry.controller === controller) conversationAbortControllers.delete(convId);
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!err) return false;
+  const name = (err as { name?: unknown }).name;
+  const code = (err as { code?: unknown }).code;
+  const message = err instanceof Error ? err.message : String(err);
+  return name === 'AbortError' || code === 20 || /abort/i.test(message);
+}
+
+function persistCancelled(
+  tenantId: string,
+  conversationId: string,
+  conversation: ConversationState,
+  metadata: Record<string, unknown>,
+  lastTurn?: number,
+): ConversationState {
+  const cancelledState = updateState(conversation, { status: 'cancelled' as unknown as ConversationState['status'] });
+  agenticSessionStore.upsert({
+    tenantId,
+    conversationId,
+    state: cancelledState as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['state'],
+    status: 'cancelled' as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['status'],
+    statusReason: 'cancelled' as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['statusReason'],
+    lastTurn: lastTurn ?? 0,
+    metadata: metadata as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['metadata'],
+    expiresAt: defaultExpiresAt(),
+  });
+  return cancelledState;
+}
 
 // ---------------------------------------------------------------------------
 // Loop tuning (env-overridable)
@@ -139,8 +193,20 @@ async function routeWithTimeout(
   router: Router,
   unifiedRequest: UnifiedRequest,
   qualityTarget: ReturnType<typeof parseQualityTarget>,
+  parentSignal?: AbortSignal,
 ): Promise<{ plan: any; response: any }> {
   const ac = new AbortController();
+  const onParentAbort = (): void => {
+    try {
+      (ac as AbortController).abort((parentSignal as unknown as { reason?: unknown })?.reason as Error);
+    } catch {
+      try { ac.abort(); } catch { /* noop */ }
+    }
+  };
+  if (parentSignal) {
+    if (parentSignal.aborted) onParentAbort();
+    else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
   const timer = setTimeout(() => ac.abort(), TURN_TIMEOUT_MS);
   try {
     return await router.route(
@@ -149,6 +215,7 @@ async function routeWithTimeout(
     );
   } finally {
     clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onParentAbort);
   }
 }
 
@@ -171,6 +238,7 @@ function toUnifiedRequest(
   },
   requestId: string,
   tenant?: { id: string; name: string },
+  freeOnly = false,
 ): UnifiedRequest {
   return {
     modality: 'llm',
@@ -184,7 +252,11 @@ function toUnifiedRequest(
     frequency_penalty: body.frequency_penalty,
     presence_penalty: body.presence_penalty,
     stream: body.stream ?? false,
-    metadata: { requestId, tenant },
+    metadata: {
+      requestId,
+      tenant,
+      ...(freeOnly ? { freeTierStrategy: 'free_only' as const } : {}),
+    },
   };
 }
 
@@ -273,8 +345,73 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     const router = (server as any).router as Router;
     const tenant = (request as any).tenant;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
-    const maxSteps = body.max_steps;
+    // Finite server-side run budget: client input can only narrow, never widen.
+    // The whole run is bounded (steps x per-turn token cap) BEFORE any provider
+    // call so admission can price/hold the maximum this request can spend.
+    const maxSteps = clampAgentSteps(body.max_steps);
+    const perTurnTokenCap = clampAgentTokens(body.max_tokens);
     const stopConditions = body.stopWhen ?? [];
+
+    // Whole-run bounded admission (SEC-001/SEC-002), identical discipline to
+    // POST /agents/:instanceId/chat and POST /agentic/dispatch:
+    //   - unknown pricing fails closed (402) before any quota boundary is hit;
+    //   - a bare alias admits only with router evidence of a free-only
+    //     resolution;
+    //   - one ATOMIC reserveAgentRun hold covering the whole multi-turn budget
+    //     (per-turn cap x maxSteps), never an estimate + checkQuota double count;
+    //   - settled with measured actuals on a completed run and RELEASED in
+    //     `finally` on every cancellation/error path (below) so no hold is left
+    //     pinned until TTL expiry.
+    // /agentic/chat has no agent definition, so there is no policy model to
+    // authorize against (resolveAgentModel needs one); the model is the
+    // caller's explicit choice and is instead fail-closed on unknown pricing.
+    let holdId: string | undefined;
+    let admissionFreeOnly = false;
+    let admissionReconciled = false;
+    let runSums: AgentUsageSums | null = null;
+    const quotaBoundary = (): any => (server as any).quotaService;
+    const settleAdmission = async (): Promise<void> => {
+      if (!holdId || admissionReconciled) return;
+      admissionReconciled = true;
+      await settleAgentRun({
+        tenantId: tenant.id,
+        model: body.model,
+        allSteps: [],
+        requestId,
+        holdId,
+        sums: runSums ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 },
+        quotaService: quotaBoundary(),
+        billingService,
+      });
+    };
+    const releaseAdmission = async (): Promise<void> => {
+      if (!holdId || admissionReconciled) return;
+      admissionReconciled = true;
+      await releaseAgentHold(quotaBoundary(), holdId);
+    };
+    {
+      const estimatedTokens = estimateAgentRunTokens(perTurnTokenCap, maxSteps);
+      const preflight = await preflightModelRun({
+        model: body.model,
+        estimatedTokens,
+        maxSteps,
+        tenantId: tenant.id,
+        requestId,
+        getPricing: (providerId, modelId) => billingService.getModelPricing(providerId, modelId),
+        resolveAliasFree: aliasFreeEvidence(body.model, () => router.getCandidates(), (alias, cands) =>
+          resolveMetaModel(alias, cands as any, 'free'),
+        ),
+        quotaService: quotaBoundary(),
+      });
+      if (!preflight.admitted) {
+        const status = preflight.status === 402 ? 402 : 429;
+        return reply.code(status).send({ error: { message: preflight.reason } });
+      }
+      holdId = preflight.admitted ? preflight.holdId : undefined;
+      // Bind the admission proof to EVERY router request in this run: a
+      // zero-cost alias admission must never be routed to a paid candidate.
+      admissionFreeOnly = preflight.freeOnly === true;
+    }
 
     // Acquire conversation lock to prevent concurrent mutation.
     // Uses a loop to avoid TOCTOU: after awaiting the existing lock,
@@ -289,6 +426,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     const lockPromise = new Promise<void>((resolve) => { lockResolver = resolve; });
     conversationLocks.set(convId, lockPromise);
     const releaseLock = () => { lockResolver?.(); if (conversationLocks.get(convId) === lockPromise) conversationLocks.delete(convId); };
+    let inFlightAbortRef: AbortController | undefined;
 
     try {
 
@@ -405,15 +543,21 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
       tool_results: any[];
     }> = [];
 
+    // In-flight abort controller for both streaming and non-streaming runs.
+    // Tenant-bound: the cancel endpoint only aborts when the tenant matches.
+    const inFlightAbort = registerAbortController(convId, tenant.id);
+    inFlightAbortRef = inFlightAbort;
+    const isCancelled = (): boolean => inFlightAbort.signal.aborted;
+
     if (body.stream) {
       // Register abort controller for this conversation
-      const abortController = new AbortController();
-      conversationAbortControllers.set(convId, abortController);
+      const abortController = inFlightAbort;
       let consecutiveErrors = 0;
       let lastPlan: any;
       let lastResponse: any;
       let totalPromptTokens = 0;
       let totalCompletionTokens = 0;
+      let wasCancelled = false;
 
       // Streaming response
       reply.raw.writeHead(200, {
@@ -426,7 +570,15 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         for (let turn = 0; turn < maxSteps; turn++) {
           // Check if conversation was aborted
           if (abortController.signal.aborted) {
-            writeSSE(reply, 'error', { error: { message: 'Conversation aborted' } });
+            wasCancelled = true;
+            conversation = persistCancelled(
+              tenant.id,
+              conversation.id,
+              conversation,
+              { model: body.model, requestId },
+              turn,
+            );
+            writeSSE(reply, 'done', { status: 'cancelled', conversationId: conversation.id });
             break;
           }
 
@@ -437,7 +589,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
               tools: resolveTools(convId, body.tools, lastUserText(messages)),
               tool_choice: body.tool_choice,
               temperature: body.temperature,
-              max_tokens: body.max_tokens,
+              max_tokens: perTurnTokenCap,
               top_p: body.top_p,
               frequency_penalty: body.frequency_penalty,
               presence_penalty: body.presence_penalty,
@@ -445,6 +597,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             },
             requestId,
             tenant,
+            admissionFreeOnly,
           );
 
           const queryText = lastUserText(messages);
@@ -459,10 +612,38 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           let response: any;
           let plan: any;
           try {
-            ({ plan, response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
+            ({ plan, response } = await routeWithTimeout(router, unifiedRequest, qualityTarget, abortController.signal));
           } catch (err) {
+            if (abortController.signal.aborted || isAbortError(err)) {
+              // If another tenant's cancel raced here without ownership it would
+              // not have aborted our signal; only our own cancel reaches this.
+              if (abortController.signal.aborted) {
+                wasCancelled = true;
+                conversation = persistCancelled(
+                  tenant.id,
+                  conversation.id,
+                  conversation,
+                  { model: body.model, requestId },
+                  turn,
+                );
+                writeSSE(reply, 'done', { status: 'cancelled', conversationId: conversation.id });
+                break;
+              }
+            }
             consecutiveErrors++;
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              if (isCancelled()) {
+                wasCancelled = true;
+                conversation = persistCancelled(
+                  tenant.id,
+                  conversation.id,
+                  conversation,
+                  { model: body.model, requestId },
+                  turn,
+                );
+                writeSSE(reply, 'done', { status: 'cancelled', conversationId: conversation.id });
+                break;
+              }
               agenticSessionStore.upsert({
                 tenantId: tenant.id,
                 conversationId: conversation.id,
@@ -647,6 +828,18 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             });
           }
 
+          if (abortController.signal.aborted) {
+            wasCancelled = true;
+            conversation = persistCancelled(
+              tenant.id,
+              conversation.id,
+              conversation,
+              { model: body.model, requestId },
+              turn,
+            );
+            writeSSE(reply, 'done', { status: 'cancelled', conversationId: conversation.id });
+            break;
+          }
           // Persist the running transcript after each successful turn so an
           // interruption or restart can resume from here.
           conversation = updateState(conversation, { messages });
@@ -661,19 +854,32 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           });
         }
       } catch (error) {
-        logger.error({ err: error, requestId }, 'Agentic streaming error');
-        (server as any).recordTelemetryEvent?.({
-          level: 'error',
-          service: 'gateway',
-          message: error instanceof Error ? error.message : 'Agentic streaming error',
-          trace_id: requestId,
-          metadata: {
-            path: request.url,
-            model: body.model,
-            requestId,
-          },
-        });
-        writeSSE(reply, 'error', { error: { message: 'Request failed' } });
+        if (abortController.signal.aborted || isAbortError(error)) {
+          wasCancelled = true;
+          try {
+            conversation = persistCancelled(
+              tenant.id,
+              conversation.id,
+              conversation,
+              { model: body.model, requestId },
+            );
+          } catch { /* store mock never throws */ }
+          writeSSE(reply, 'done', { status: 'cancelled', conversationId: conversation.id });
+        } else {
+          logger.error({ err: error, requestId }, 'Agentic streaming error');
+          (server as any).recordTelemetryEvent?.({
+            level: 'error',
+            service: 'gateway',
+            message: error instanceof Error ? error.message : 'Agentic streaming error',
+            trace_id: requestId,
+            metadata: {
+              path: request.url,
+              model: body.model,
+              requestId,
+            },
+          });
+          writeSSE(reply, 'error', { error: { message: 'Request failed' } });
+        }
       }
 
       // Telemetry: surface the completed agentic request on the Requests page
@@ -715,7 +921,37 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         logger.debug({ err: metricsErr }, 'agentic telemetry emission failed');
       }
 
-      writeSSE(reply, 'done', { status: 'completed', conversationId: conversation.id });
+      // A completed streaming run records the measured actuals so the whole-run
+      // admission hold is SETTLED with real prompt/completion numbers. The
+      // cancelled and error paths leave runSums null, so `finally` RELEASES the
+      // hold instead (records nothing, never pins quota until TTL expiry).
+      if (!wasCancelled) {
+        runSums = {
+          promptTokens: totalPromptTokens,
+          completionTokens: totalCompletionTokens,
+          totalTokens: totalTokensUsed,
+          cost: totalCost,
+        };
+      }
+
+      if (!wasCancelled) {
+        writeSSE(reply, 'done', { status: 'completed', conversationId: conversation.id });
+      } else {
+        // Cancel path already emitted `done` with status cancelled; ensure the
+        // durable record stays cancelled and is not overwritten by telemetry.
+        try {
+          const persisted = agenticSessionStore.get(tenant.id, conversation.id);
+          if (!persisted || (persisted.status as unknown as string) !== 'cancelled') {
+            conversation = persistCancelled(
+              tenant.id,
+              conversation.id,
+              conversation,
+              { model: body.model, requestId },
+            );
+          }
+        } catch { /* noop */ }
+      }
+      try { cleanupAbortController(convId, abortController); } catch { /* noop */ }
       reply.raw.end();
       return reply;
     }
@@ -731,6 +967,17 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     let nonStreamingPromptTokens = 0;
     let nonStreamingCompletionTokens = 0;
     const emitAgenticTelemetry = (status: string, stepsCompleted: number): void => {
+      // Same settle-vs-release contract as the streaming path: every terminal
+      // status that actually consumed a completed turn settles the admission
+      // hold with measured actuals; 'cancelled' releases it instead.
+      if (status !== 'cancelled') {
+        runSums = {
+          promptTokens: nonStreamingPromptTokens,
+          completionTokens: nonStreamingCompletionTokens,
+          totalTokens: nonStreamingTotalTokens,
+          cost: nonStreamingTotalCost,
+        };
+      }
       try {
         const servedProviderId = nonStreamingPlan?.primary?.providerId;
         const servedModelId = nonStreamingResponse?.modelId;
@@ -777,6 +1024,34 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
     );
 
     for (let turn = 0; turn < maxSteps; turn++) {
+        if (inFlightAbort.signal.aborted) {
+          conversation = persistCancelled(
+            tenant.id,
+            conversation.id,
+            conversation,
+            { model: body.model, requestId },
+            turn,
+          );
+          emitAgenticTelemetry('cancelled', turn);
+          try { cleanupAbortController(convId, inFlightAbort); } catch { /* noop */ }
+          return {
+            id: requestId,
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Conversation cancelled.' },
+                finish_reason: 'stop',
+              },
+            ],
+            conversationId: conversation.id,
+            steps_completed: turn,
+            all_steps: allSteps,
+            status: 'cancelled',
+          };
+        }
         const queryText = lastUserText(messages);
         if (body.tools && body.tools.length > 8 && !toolNarrowCache.has(convId)) {
           const narrowed = await needlePreFilter(body.tools, queryText);
@@ -793,7 +1068,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             tools: resolveTools(convId, body.tools, queryText),
             tool_choice: body.tool_choice,
             temperature: body.temperature,
-            max_tokens: body.max_tokens,
+            max_tokens: perTurnTokenCap,
             top_p: body.top_p,
             frequency_penalty: body.frequency_penalty,
             presence_penalty: body.presence_penalty,
@@ -801,15 +1076,74 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           },
           requestId,
           tenant,
+          admissionFreeOnly,
         );
 
         let response: any;
         let plan: any;
         try {
-          ({ plan, response } = await routeWithTimeout(router, unifiedRequest, qualityTarget));
+          ({ plan, response } = await routeWithTimeout(router, unifiedRequest, qualityTarget, inFlightAbort.signal));
         } catch (err) {
+          if (inFlightAbort.signal.aborted || isAbortError(err)) {
+            if (inFlightAbort.signal.aborted) {
+              conversation = persistCancelled(
+                tenant.id,
+                conversation.id,
+                conversation,
+                { model: body.model, requestId },
+                turn,
+              );
+              emitAgenticTelemetry('cancelled', turn);
+              try { cleanupAbortController(convId, inFlightAbort); } catch { /* noop */ }
+              return {
+                id: requestId,
+                object: 'chat.completion',
+                created: Math.floor(Date.now() / 1000),
+                model: body.model,
+                choices: [
+                  {
+                    index: 0,
+                    message: { role: 'assistant', content: 'Conversation cancelled.' },
+                    finish_reason: 'stop',
+                  },
+                ],
+                conversationId: conversation.id,
+                steps_completed: turn,
+                all_steps: allSteps,
+                status: 'cancelled',
+              };
+            }
+          }
           nonStreamingConsecutiveErrors++;
           if (nonStreamingConsecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            if (isCancelled()) {
+              conversation = persistCancelled(
+                tenant.id,
+                conversation.id,
+                conversation,
+                { model: body.model, requestId },
+                turn,
+              );
+              emitAgenticTelemetry('cancelled', turn);
+              try { cleanupAbortController(convId, inFlightAbort); } catch { /* noop */ }
+              return {
+                id: requestId,
+                object: 'chat.completion',
+                created: Math.floor(Date.now() / 1000),
+                model: body.model,
+                choices: [
+                  {
+                    index: 0,
+                    message: { role: 'assistant', content: 'Conversation cancelled.' },
+                    finish_reason: 'stop',
+                  },
+                ],
+                conversationId: conversation.id,
+                steps_completed: turn,
+                all_steps: allSteps,
+                status: 'cancelled',
+              };
+            }
             agenticSessionStore.upsert({
               tenantId: tenant.id,
               conversationId: conversation.id,
@@ -879,6 +1213,34 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           overCostBudget ||
           await isStopConditionMet({ stopConditions: nonStreamingStopConditions, steps: nonStreamingStepResults })
         ) {
+          if (isCancelled()) {
+            conversation = persistCancelled(
+              tenant.id,
+              conversation.id,
+              conversation,
+              { model: body.model, requestId },
+              turn,
+            );
+            emitAgenticTelemetry('cancelled', turn + 1);
+            try { cleanupAbortController(convId, inFlightAbort); } catch { /* noop */ }
+            return {
+              id: requestId,
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: body.model,
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: 'Conversation cancelled.' },
+                  finish_reason: 'stop',
+                },
+              ],
+              conversationId: conversation.id,
+              steps_completed: turn + 1,
+              all_steps: allSteps,
+              status: 'cancelled',
+            };
+          }
           if (response.message) messages.push(response.message);
           conversation = updateState(conversation, {
             messages,
@@ -1000,6 +1362,34 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           });
         }
 
+        if (isCancelled()) {
+          conversation = persistCancelled(
+            tenant.id,
+            conversation.id,
+            conversation,
+            { model: body.model, requestId },
+            turn,
+          );
+          emitAgenticTelemetry('cancelled', turn + 1);
+          try { cleanupAbortController(convId, inFlightAbort); } catch { /* noop */ }
+          return {
+            id: requestId,
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Conversation cancelled.' },
+                finish_reason: 'stop',
+              },
+            ],
+            conversationId: conversation.id,
+            steps_completed: turn + 1,
+            all_steps: allSteps,
+            status: 'cancelled',
+          };
+        }
         // Persist the running transcript after each successful turn.
         conversation = updateState(conversation, { messages });
         agenticSessionStore.upsert({
@@ -1013,7 +1403,35 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
         });
     }
 
-      // Exhausted all steps
+      // Exhausted all steps — a concurrent cancel wins over completion.
+      if (isCancelled()) {
+        conversation = persistCancelled(
+          tenant.id,
+          conversation.id,
+          conversation,
+          { model: body.model, requestId },
+          maxSteps,
+        );
+        emitAgenticTelemetry('cancelled', maxSteps);
+        try { cleanupAbortController(convId, inFlightAbort); } catch { /* noop */ }
+        return {
+          id: requestId,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: 'Conversation cancelled.' },
+              finish_reason: 'stop',
+            },
+          ],
+          conversationId: conversation.id,
+          steps_completed: maxSteps,
+          all_steps: allSteps,
+          status: 'cancelled',
+        };
+      }
       conversation = updateState(conversation, { messages, status: 'completed' });
 
       agenticSessionStore.upsert({
@@ -1046,42 +1464,66 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
 
     } finally {
       releaseLock();
-      conversationAbortControllers.delete(convId);
+      try { if (inFlightAbortRef) cleanupAbortController(convId, inFlightAbortRef); } catch { /* noop */ }
+      // Belt-and-braces: every acquired hold is either settled with the
+      // measured actuals or released — on cancellation, on error, and on every
+      // early return inside the loop (no hold is left to expire).
+      try {
+        if (runSums) await settleAdmission();
+        else await releaseAdmission();
+      } catch (admissionErr) {
+        logger.debug({ err: admissionErr }, 'agentic admission reconciliation failed');
+      }
     }
   });
 
   /**
    * POST /agentic/chat/:conversationId/cancel
    *
-   * Cancel a running conversation by aborting its execution.
+   * Cancel a running conversation by aborting its execution. Tenant-bound:
+   * only the owning tenant observes and aborts the in-flight provider request.
    */
   server.post('/agentic/chat/:conversationId/cancel', async (request, reply) => {
     const { conversationId } = request.params as { conversationId: string };
-    const abortController = conversationAbortControllers.get(conversationId);
+    const tenant = (request as any).tenant;
+    const entry = conversationAbortControllers.get(conversationId);
 
-    if (!abortController) {
+    if (!entry || !tenant?.id || entry.tenantId !== tenant.id) {
       return reply.status(404).send({ error: 'Conversation not found or already completed' });
     }
 
-    abortController.abort();
-    conversationAbortControllers.delete(conversationId);
+    entry.controller.abort();
+    // Keep the entry until the chat loop cleans it up via identity-checked
+    // cleanup so a concurrent duplicate conversationId cannot be affected.
+    // Remove here only if the loop already finished (entry still ours).
+    // The loop's finally also attempts identity-checked cleanup.
 
-    // Persist the cancellation: load the current state if available and mark
-    // it completed so the durable record matches the cancel contract.
-    const tenant = (request as any).tenant;
+    // Persist the cancellation when durable state already exists. When the
+    // chat loop is still awaiting the provider (no turns persisted yet) the
+    // loop itself persists `cancelled` on abort; this best-effort write covers
+    // the case where the loop already persisted prior turns.
     if (tenant?.id) {
-      const persisted = agenticSessionStore.get(tenant.id, conversationId);
-      if (persisted) {
-        agenticSessionStore.upsert({
-          tenantId: tenant.id,
-          conversationId,
-          state: updateState(persisted.state, { status: 'completed' }),
-          status: 'completed',
-          lastTurn: persisted.lastTurn,
-          metadata: persisted.metadata,
-          expiresAt: defaultExpiresAt(),
-        });
-      }
+      try {
+        const persisted = agenticSessionStore.get(tenant.id, conversationId);
+        // Never clobber a terminal completed run with a stale abort entry: the
+        // completion path may have persisted `completed` after this abort was
+        // registered. Only non-terminal states may transition to cancelled.
+        if (persisted && (persisted.status as unknown as string) !== 'completed') {
+          const cancelledState = updateState(persisted.state, {
+            status: 'cancelled' as unknown as typeof persisted.state.status,
+          });
+          agenticSessionStore.upsert({
+            tenantId: tenant.id,
+            conversationId,
+            state: cancelledState as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['state'],
+            status: 'cancelled' as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['status'],
+            statusReason: 'cancelled' as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['statusReason'],
+            lastTurn: persisted.lastTurn,
+            metadata: persisted.metadata as unknown as Parameters<typeof agenticSessionStore.upsert>[0]['metadata'],
+            expiresAt: defaultExpiresAt(),
+          });
+        }
+      } catch { /* best-effort */ }
     }
 
     return { status: 'cancelled', conversationId };

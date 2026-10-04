@@ -1,0 +1,564 @@
+{
+  "started_at": "2026-09-28T19:41:05.139088+00:00",
+  "base_url": "http://127.0.0.1:47113",
+  "request_headers": {
+    "x-cost-filter": "free"
+  },
+  "expected_cases": 18,
+  "results": [
+    {
+      "meta_model": "auto-smart",
+      "task": "strict_json",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 1310.2,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "exact JSON object",
+      "served_model": "ministral-14b-latest",
+      "finish_reason": "stop",
+      "content_chars": 35,
+      "content_preview": "{\n  \"status\": \"ok\",\n  \"value\": 17\n}",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 19,
+        "completion_tokens": 18,
+        "total_tokens": 37
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-smart",
+      "task": "exact_math",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 1124.4,
+      "passed": false,
+      "failure_kind": "functional",
+      "check_detail": "expected 80, got '13.33'",
+      "served_model": "command-r7b-12-2024",
+      "finish_reason": "stop",
+      "content_chars": 5,
+      "content_preview": "13.33",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-smart",
+      "task": "code_bug_fix",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": false,
+      "http_status": 503,
+      "latency_ms": 30063.0,
+      "error": "{\"error\":{\"message\":\"All providers currently unavailable\",\"type\":\"PROVIDER_UNAVAILABLE\",\"code\":\"provider_unavailable\",\"request_id\":\"eaed1cd0-f6fc-4fdc-b4c0-b6cb39d1d8aa\",\"dev_message\":\"All providers currently unavailable\",\"dev_stack\":\"ProviderUnavailableError: All providers currently unavailable\\n    at deadlineError (C:\\\\Users\\\\pc\\\\Documents\\\\projects\\\\DMR-X\\\\services\\\\router\\\\dist\\\\fallback\\\\fallback-executor.js:967:37)\\n    at <anonymous> (C:\\\\Users\\\\pc\\\\Documents\\\\projects\\\\DMR-X\\\\services\\\\router\\\\dist\\\\fallback\\\\fallback-executor.js:977:53)\"}}",
+      "passed": false,
+      "failure_kind": "transport"
+    },
+    {
+      "meta_model": "auto-smart",
+      "task": "multi_turn_context",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 4617.9,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "preserved prior turn value",
+      "served_model": "command-a-03-2025",
+      "finish_reason": "stop",
+      "content_chars": 2,
+      "content_preview": "12",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": {
+        "fromProviderId": "7596bf44-6786-4d58-9cab-f4a1b63d085b",
+        "fromModelId": "mistral-vibe-cli-fast",
+        "attempts": 4,
+        "reason": "insufficient_quota",
+        "errors": [
+          {
+            "provider": "7596bf44-6786-4d58-9cab-f4a1b63d085b",
+            "status": 402,
+            "message": "mistral chat: Payment Required: Insufficient credits or quota"
+          }
+        ]
+      }
+    },
+    {
+      "meta_model": "auto-smart",
+      "task": "tool_call",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 1908.3,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "correct add tool call",
+      "served_model": "gemini-3.6-flash",
+      "finish_reason": "tool_calls",
+      "content_chars": 0,
+      "content_preview": "",
+      "tool_calls": [
+        {
+          "extra_content": {
+            "google": {
+              "thought_signature": "Eq8CCqwCAWkUfROLI/v6/N4NbNDqFnJndxVA6LWk0OfNibKGOKd2kJVDXCaNTQg/U5pRAEzV8PuTtbHX52sjUCfxhKcsYg5AmocZWHB09SU+m+5SBHiC1th6sls0K1BhfRIl5MzuIUv2IKgnGpS1pj8WB1hb7mRRIoGzQeK/crP6njLKhMt64b27/GoaJR5up2pWP4nkJB3mqwtiSUkTnvy4Iz9H8agTBhuoMYm8CVhYoqEwq2cLxuNVpnoMzOI9o1OzYABVQOvZ62v2u9704irmfDO0zXrStPMMLhA9vEyn9obL6gp35XFis3GbsVQmMa5h8Q5rtdtE7IPnG9r4YCyYnwuxbvettX3KRi3gJcbr5pKiZtGmGbvFgq4/QrWz5Ev/h7MehvXTo1c06/Z0uQst"
+            }
+          },
+          "function": {
+            "arguments": "{\"b\":23,\"a\":19}",
+            "name": "add"
+          },
+          "id": "call_105189",
+          "type": "function"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 72,
+        "completion_tokens": 92,
+        "total_tokens": 164
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-agentic",
+      "task": "strict_json",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 766.1,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "exact JSON object",
+      "served_model": "ministral-3b-latest",
+      "finish_reason": "stop",
+      "content_chars": 29,
+      "content_preview": "{\"status\": \"ok\", \"value\": 17}",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 19,
+        "completion_tokens": 14,
+        "total_tokens": 33
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-agentic",
+      "task": "exact_math",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 9856.8,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "exact answer",
+      "served_model": "gpt-oss-120b",
+      "finish_reason": "stop",
+      "content_chars": 2,
+      "content_preview": "80",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 92,
+        "completion_tokens": 56,
+        "total_tokens": 148
+      },
+      "fallback": {
+        "fromProviderId": "84c75d30-ca06-4d84-8375-fe33eea13af5",
+        "fromModelId": "gemini-3.5-flash",
+        "attempts": 4,
+        "reason": "error",
+        "errors": [
+          {
+            "provider": "84c75d30-ca06-4d84-8375-fe33eea13af5",
+            "status": 503,
+            "message": "google_native chat: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."
+          },
+          {
+            "provider": "f9de0ec6-dd29-407c-b2cd-5b3785eeb8f2",
+            "status": 403,
+            "message": "opencode-zen chat: OpenCode's free tier can only be used from within OpenCode"
+          }
+        ]
+      }
+    },
+    {
+      "meta_model": "auto-agentic",
+      "task": "code_bug_fix",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 17145.1,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "handles all-negative input",
+      "served_model": "command-a-03-2025",
+      "finish_reason": "stop",
+      "content_chars": 174,
+      "content_preview": "```python\ndef find_max(arr):\n    if not arr:\n        return None\n    max_val = arr[0]\n    for x in arr:\n        if x > max_val:\n            max_val = x\n    return max_val\n```",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": {
+        "fromProviderId": "84c75d30-ca06-4d84-8375-fe33eea13af5",
+        "fromModelId": "gemini-3-flash-preview",
+        "attempts": 4,
+        "reason": "error",
+        "errors": [
+          {
+            "provider": "84c75d30-ca06-4d84-8375-fe33eea13af5",
+            "status": 503,
+            "message": "google_native chat: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."
+          },
+          {
+            "provider": "f9de0ec6-dd29-407c-b2cd-5b3785eeb8f2",
+            "status": 403,
+            "message": "opencode-zen chat: OpenCode's free tier can only be used from within OpenCode"
+          }
+        ]
+      }
+    },
+    {
+      "meta_model": "auto-agentic",
+      "task": "multi_turn_context",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 1646.0,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "preserved prior turn value",
+      "served_model": "codestral-latest",
+      "finish_reason": "stop",
+      "content_chars": 2,
+      "content_preview": "12",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 34,
+        "completion_tokens": 3,
+        "total_tokens": 37
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-agentic",
+      "task": "tool_call",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 1032.3,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "correct add tool call",
+      "served_model": "command-a-03-2025",
+      "finish_reason": "tool_calls",
+      "content_chars": 0,
+      "content_preview": "",
+      "tool_calls": [
+        {
+          "id": "add_b1f1wqz8ba96",
+          "type": "function",
+          "function": {
+            "name": "add",
+            "arguments": "{\"a\":19,\"b\":23}"
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-coding",
+      "task": "strict_json",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 505.5,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "exact JSON object",
+      "served_model": "ministral-3b-latest",
+      "finish_reason": "stop",
+      "content_chars": 29,
+      "content_preview": "{\"status\": \"ok\", \"value\": 17}",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 19,
+        "completion_tokens": 14,
+        "total_tokens": 33
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-coding",
+      "task": "exact_math",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 529.4,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "exact answer",
+      "served_model": "command-a-03-2025",
+      "finish_reason": "stop",
+      "content_chars": 2,
+      "content_preview": "80",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-coding",
+      "task": "code_bug_fix",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 4589.2,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "handles all-negative input",
+      "served_model": "command-a-03-2025",
+      "finish_reason": "stop",
+      "content_chars": 174,
+      "content_preview": "```python\ndef find_max(arr):\n    if not arr:\n        return None\n    max_val = arr[0]\n    for x in arr:\n        if x > max_val:\n            max_val = x\n    return max_val\n```",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-coding",
+      "task": "multi_turn_context",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 528.8,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "preserved prior turn value",
+      "served_model": "command-a-03-2025",
+      "finish_reason": "stop",
+      "content_chars": 2,
+      "content_preview": "12",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": null
+    },
+    {
+      "meta_model": "auto-coding",
+      "task": "tool_call",
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false,
+      "ok": true,
+      "http_status": 200,
+      "latency_ms": 1648.6,
+      "passed": true,
+      "failure_kind": null,
+      "check_detail": "correct add tool call",
+      "served_model": "command-r7b-12-2024",
+      "finish_reason": "tool_calls",
+      "content_chars": 0,
+      "content_preview": "",
+      "tool_calls": [
+        {
+          "id": "add_xmjxpa3bxgce",
+          "type": "function",
+          "function": {
+            "name": "add",
+            "arguments": "{\"a\":19,\"b\":23}"
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "fallback": {
+        "fromProviderId": "7596bf44-6786-4d58-9cab-f4a1b63d085b",
+        "fromModelId": "mistral-medium-latest",
+        "attempts": 4,
+        "reason": "insufficient_quota",
+        "errors": [
+          {
+            "provider": "7596bf44-6786-4d58-9cab-f4a1b63d085b",
+            "status": 402,
+            "message": "mistral chat: Payment Required: Insufficient credits or quota"
+          },
+          {
+            "provider": "84c75d30-ca06-4d84-8375-fe33eea13af5",
+            "status": 400,
+            "message": "google_native chat: Invalid JSON payload received. Unknown name \"additionalProperties\" at 'tools[0].function_declarations[0].parameters': Cannot find field."
+          }
+        ]
+      }
+    },
+    {
+      "meta_model": "auto-smart",
+      "task": "streaming",
+      "http_status": 200,
+      "latency_ms": 2420.2,
+      "ttft_ms": 1649.9,
+      "chunks": 4,
+      "content_preview": "1, 2, 3, 4, 5",
+      "passed": true,
+      "failure_kind": null,
+      "error": null,
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false
+    },
+    {
+      "meta_model": "auto-agentic",
+      "task": "streaming",
+      "http_status": 200,
+      "latency_ms": 650.0,
+      "ttft_ms": 537.3,
+      "chunks": 10,
+      "content_preview": "1, 2, 3, 4, 5",
+      "passed": true,
+      "failure_kind": null,
+      "error": null,
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false
+    },
+    {
+      "meta_model": "auto-coding",
+      "task": "streaming",
+      "http_status": 200,
+      "latency_ms": 32471.9,
+      "ttft_ms": 32465.9,
+      "chunks": 3,
+      "content_preview": "1, 2, 3, 4, 5",
+      "passed": true,
+      "failure_kind": null,
+      "error": null,
+      "gateway_pid_before": 7416,
+      "gateway_pid_after": 7416,
+      "gateway_restarted_during_request": false
+    }
+  ],
+  "limitations": [
+    "Single sequential sample, not a load/SLA test",
+    "Uses existing baseline scorers",
+    "Live listener may differ from current checkout"
+  ],
+  "summary": {
+    "passed": 16,
+    "total": 18,
+    "pass_rate": 0.889,
+    "by_meta_model": {
+      "auto-smart": {
+        "passed": 4,
+        "total": 6,
+        "pass_rate": 0.667,
+        "latency_ms": {
+          "p50": 1908.3,
+          "p95": 30063.0,
+          "mean": 6907.3
+        },
+        "served_models": {
+          "ministral-14b-latest": 1,
+          "command-r7b-12-2024": 1,
+          "command-a-03-2025": 1,
+          "gemini-3.6-flash": 1
+        },
+        "failure_kinds": {
+          "functional": 1,
+          "transport": 1
+        }
+      },
+      "auto-agentic": {
+        "passed": 6,
+        "total": 6,
+        "pass_rate": 1.0,
+        "latency_ms": {
+          "p50": 1032.3,
+          "p95": 17145.1,
+          "mean": 5182.7
+        },
+        "served_models": {
+          "ministral-3b-latest": 1,
+          "gpt-oss-120b": 1,
+          "command-a-03-2025": 2,
+          "codestral-latest": 1
+        },
+        "failure_kinds": {}
+      },
+      "auto-coding": {
+        "passed": 6,
+        "total": 6,
+        "pass_rate": 1.0,
+        "latency_ms": {
+          "p50": 529.4,
+          "p95": 32471.9,
+          "mean": 6712.2
+        },
+        "served_models": {
+          "ministral-3b-latest": 1,
+          "command-a-03-2025": 3,
+          "command-r7b-12-2024": 1
+        },
+        "failure_kinds": {}
+      }
+    }
+  }
+}

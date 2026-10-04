@@ -262,7 +262,7 @@ export class RegistryService {
     if (row.supports_streaming) caps.push('streaming');
     if (row.supports_vision) caps.push('vision');
     if (row.supports_tool_use) caps.push('tool_use');
-    if (row.supports_json_mode) caps.push('json_mode');
+    if (row.supports_json_mode || (row.providerName === 'google_native' && /^gemini[-/]/i.test(row.modelId))) caps.push('json_mode');
     if (row.supports_function_call) caps.push('function_call');
     if (row.supports_reasoning) caps.push('reasoning');
     return caps;

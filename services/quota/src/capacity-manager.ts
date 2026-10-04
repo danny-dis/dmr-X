@@ -22,6 +22,7 @@ import {
   buildVector,
   evaluateVector,
 } from './quota-vector.js';
+import { buildQuotaPoolId } from './quota-dimensions.js';
 
 // ---------------------------------------------------------------------------
 // Reservation
@@ -68,6 +69,8 @@ export interface CapacityStore {
    */
   tryReserve(
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
+    reservationId?: string,
+    leaseMs?: number,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null>;
 
   /**
@@ -165,6 +168,14 @@ function actualForUnit(actual: DemandVector, unit: QuotaUnit): number {
     case 'total_tokens': return actual.inputTokens + actual.outputTokens;
     case 'concurrency': return actual.concurrency;
     case 'credits': return actual.credits ?? 0;
+    case 'neurons': return actual.neurons ?? 0;
+    case 'seconds': return actual.seconds ?? 0;
+    case 'minutes': return actual.minutes ?? 0;
+    case 'characters': return actual.characters ?? 0;
+    case 'jobs': return actual.jobs ?? 0;
+    case 'gpu_seconds': return actual.gpuSeconds ?? 0;
+    case 'gpu_hours': return actual.gpuHours ?? 0;
+    case 'ip_requests': return actual.ipRequests ?? 0;
     default: return 0;
   }
 }
@@ -201,7 +212,7 @@ export class CapacityManager {
    */
   registerVector(vector: QuotaVector): void {
     const key = this.candidateKey(vector.providerId, vector.modelId, vector.keyId);
-    this.vectors.set(key, vector);
+    this.vectors.set(key, { ...vector, ...buildVector(vector) });
   }
 
   /**
@@ -237,15 +248,18 @@ export class CapacityManager {
       return { success: false, reason: 'No dimensions to reserve' };
     }
 
+    // Generate the durable id before the store call so every backend records the
+    // exact same reservation identifier used later by commit/release.
+    const reservationId = `res-${crypto.randomUUID()}`;
     // Attempt atomic reservation
-    const reserved = await this.store.tryReserve(reservationDims);
+    const reserved = await this.store.tryReserve(reservationDims, reservationId, this.leaseMs);
     if (!reserved) {
       return { success: false, reason: 'Atomic reservation failed (race condition or stale data)' };
     }
 
     // Create reservation record
     const reservation: CapacityReservation = {
-      id: `res-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      id: reservationId,
       candidateId,
       dimensions: reservationDims.map((d, i) => ({
         unit: d.unit,
@@ -340,9 +354,13 @@ export class CapacityManager {
     for (const dim of vector.dimensions) {
       const amount = estimateForUnit(demand, dim.unit);
       if (amount > 0) {
+        // Use the authoritative poolId as the scopeId when available, so
+        // credentials sharing a pool actually share capacity. The per-dimension
+        // scopeId is a fallback for vectors without a pool.
+        const scopeId = vector.poolId ?? buildQuotaPoolId(vector.providerId, dim.scope, dim.scopeId);
         dims.push({
           unit: dim.unit,
-          scopeId: dim.scopeId,
+          scopeId,
           amount,
           currentRemaining: dim.remaining,
         });
@@ -390,6 +408,14 @@ function estimateForUnit(demand: DemandVector, unit: QuotaUnit): number {
     case 'total_tokens': return demand.inputTokens + demand.outputTokens;
     case 'concurrency': return demand.concurrency;
     case 'credits': return demand.credits ?? 0;
+    case 'neurons': return demand.neurons ?? 0;
+    case 'seconds': return demand.seconds ?? 0;
+    case 'minutes': return demand.minutes ?? 0;
+    case 'characters': return demand.characters ?? 0;
+    case 'jobs': return demand.jobs ?? 0;
+    case 'gpu_seconds': return demand.gpuSeconds ?? 0;
+    case 'gpu_hours': return demand.gpuHours ?? 0;
+    case 'ip_requests': return demand.ipRequests ?? 0;
     default: return 0;
   }
 }

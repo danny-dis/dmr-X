@@ -49,6 +49,15 @@ export interface AgenticUpsertInput {
   expiresAt?: string | null;
 }
 
+export interface AgenticUpsertResult {
+  updated: boolean;
+}
+
+export type AgenticClaimResult =
+  | { outcome: 'claimed'; tenantId: string }
+  | { outcome: 'owned'; tenantId: string }
+  | { outcome: 'conflict'; tenantId: string };
+
 export class AgenticSessionStore {
   /** In-process per-conversation mutex (not persisted). */
   readonly locks = new Map<string, Promise<void>>();
@@ -57,7 +66,7 @@ export class AgenticSessionStore {
    * Persist a conversation (insert or update). `state` is serialized whole;
    * bookkeeping columns are projected from it / the provided metadata.
    */
-  upsert(input: AgenticUpsertInput): void {
+  upsert(input: AgenticUpsertInput): AgenticUpsertResult {
     const db = getDb();
     const now = new Date().toISOString();
 
@@ -65,21 +74,25 @@ export class AgenticSessionStore {
       .prepare('SELECT created_at FROM agentic_sessions WHERE id = ?')
       .get(input.conversationId) as { created_at: string } | undefined;
 
-    db.prepare(
+    const result = db.prepare(
       `INSERT INTO agentic_sessions (
          id, tenant_id, state, metadata, status, status_reason,
          last_turn, created_at, updated_at, expires_at
        )
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
-         tenant_id = excluded.tenant_id,
          state = excluded.state,
          metadata = excluded.metadata,
          status = excluded.status,
          status_reason = excluded.status_reason,
          last_turn = excluded.last_turn,
          updated_at = excluded.updated_at,
-         expires_at = excluded.expires_at`,
+         expires_at = excluded.expires_at
+       WHERE agentic_sessions.tenant_id = excluded.tenant_id
+         AND (
+           agentic_sessions.status NOT IN ('completed', 'cancelled')
+           OR excluded.status = agentic_sessions.status
+         )`,
     ).run(
       input.conversationId,
       input.tenantId,
@@ -92,6 +105,69 @@ export class AgenticSessionStore {
       now,
       input.expiresAt ?? null,
     );
+    return { updated: result.changes > 0 };
+  }
+
+  /** Atomically claim a conversation id before admission/provider work. */
+  claim(input: { tenantId: string; conversationId: string }): AgenticClaimResult {
+    const db = getDb();
+    return db.transaction(() => {
+      const row = db
+        .prepare('SELECT tenant_id FROM agentic_sessions WHERE id = ?')
+        .get(input.conversationId) as { tenant_id: string } | undefined;
+      if (row) {
+        return {
+          outcome: row.tenant_id === input.tenantId ? 'owned' : 'conflict',
+          tenantId: row.tenant_id,
+        };
+      }
+      const now = new Date().toISOString();
+      const placeholder = JSON.stringify({
+        id: input.conversationId,
+        messages: [],
+        status: 'in_progress',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      db.prepare(
+        `INSERT INTO agentic_sessions (
+           id, tenant_id, state, metadata, status, status_reason,
+           last_turn, created_at, updated_at
+         ) VALUES (?, ?, ?, NULL, 'in_progress', 'claim_reserved', 0, ?, ?)`,
+      ).run(input.conversationId, input.tenantId, placeholder, now, now);
+      return { outcome: 'claimed', tenantId: input.tenantId };
+    });
+  }
+
+  /**
+   * Durable compare-and-set cancellation. Completed rows are immutable;
+   * active rows transition to cancelled and stale completion writes cannot
+   * move them back because upsert has the matching terminal-state guard.
+   */
+  cancel(input: {
+    tenantId: string;
+    conversationId: string;
+    state: ConversationState;
+    metadata?: Record<string, unknown>;
+    lastTurn?: number;
+  }): { updated: boolean } {
+    const db = getDb();
+    const state = JSON.stringify(input.state);
+    const result = db.prepare(
+      `UPDATE agentic_sessions
+       SET state = ?, status = 'cancelled', status_reason = 'cancelled',
+           last_turn = ?, metadata = ?, updated_at = ?, expires_at = ?
+       WHERE id = ? AND tenant_id = ? AND status <> 'completed'`,
+    ).run(
+      state,
+      input.lastTurn ?? 0,
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      new Date().toISOString(),
+      new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      input.conversationId,
+      input.tenantId,
+    );
+    return { updated: result.changes > 0 };
   }
 
   /** Load a conversation by conversationId + tenant. null if absent/expired. */

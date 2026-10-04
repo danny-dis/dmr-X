@@ -7,30 +7,31 @@
  */
 
 import {
-  QuotaVector,
-  QuotaDimension,
-  QuotaSnapshot,
-  QuotaUnit,
-  QuotaState,
-  DemandVector,
-  QuotaScope,
-  ReplenishmentModel,
+  type QuotaVector,
+  type QuotaDimension,
+  type QuotaSnapshot,
+  type QuotaUnit,
+  type QuotaState,
+  type DemandVector,
+  type QuotaScope,
+  type ReplenishmentModel,
   evaluateState,
   hasHeadroom,
   isStale,
   computeTokenBucketRemaining,
   defaultStaleAfterMs,
+  buildQuotaPoolId,
 } from './quota-dimensions.js';
 
 export {
-  QuotaVector,
-  QuotaDimension,
-  QuotaSnapshot,
-  QuotaUnit,
-  QuotaState,
-  DemandVector,
-  QuotaScope,
-  ReplenishmentModel,
+  type QuotaVector,
+  type QuotaDimension,
+  type QuotaSnapshot,
+  type QuotaUnit,
+  type QuotaState,
+  type DemandVector,
+  type QuotaScope,
+  type ReplenishmentModel,
   isStale,
   hasHeadroom,
   evaluateState,
@@ -76,6 +77,7 @@ interface BuildVectorParams {
   providerId: string;
   modelId: string;
   keyId: string;
+  poolId?: string;
   dimensions: QuotaDimension[];
 }
 
@@ -87,10 +89,16 @@ export function buildVector(params: BuildVectorParams): QuotaVector {
     (max, d) => Math.max(max, d.observedAtMs),
     0,
   );
+  const first = params.dimensions[0];
+  // A vector-wide pool applies only when every dimension has the same scope.
+  // Mixed account/key constraints retain their separate per-dimension identities.
+  const homogeneous = first && params.dimensions.every(dim => dim.scope === first.scope && dim.scopeId === first.scopeId);
+  const poolId = params.poolId ?? (homogeneous ? buildQuotaPoolId(params.providerId, first.scope, first.scopeId) : undefined);
   return {
     providerId: params.providerId,
     modelId: params.modelId,
     keyId: params.keyId,
+    ...(poolId ? { poolId } : {}),
     dimensions: params.dimensions,
     lastObservedAtMs: lastObs,
   };
@@ -103,7 +111,7 @@ export function buildVector(params: BuildVectorParams): QuotaVector {
  * failover, or reject. The evaluation is conservative:
  * - any required dimension that is not 'available' blocks routing
  * - for 'free_only', unknown/stale dimensions count as blocking
- * - retryAtMs is derived from the earliest reset/cool-down expiry
+ * - retryAtMs is derived from the latest blocking reset/cool-down expiry
  */
 export function evaluateVector(
   vector: QuotaVector,
@@ -113,6 +121,7 @@ export function evaluateVector(
   const blocking: QuotaDimension[] = [];
   let estimatedRemaining: number | null = null;
   let retryAtMs: number | null = null;
+  let hasUnknownRetry = false;
 
   const requiredDimensions = selectDimensionsForDemand(vector, demand);
 
@@ -129,9 +138,8 @@ export function evaluateVector(
 
       // Derive retry time from reset or stale threshold
       const dimRetry = deriveRetryTime(dim, nowMs);
-      if (dimRetry !== null && (retryAtMs === null || dimRetry < retryAtMs)) {
-        retryAtMs = dimRetry;
-      }
+      if (dimRetry === null) hasUnknownRetry = true;
+      else if (retryAtMs === null || dimRetry > retryAtMs) retryAtMs = dimRetry;
       continue;
     }
 
@@ -140,9 +148,8 @@ export function evaluateVector(
       if (headroom < 0) {
         blocking.push(dim);
         const dimRetry = deriveRetryTime(dim, nowMs);
-        if (dimRetry !== null && (retryAtMs === null || dimRetry < retryAtMs)) {
-          retryAtMs = null;
-        }
+        if (dimRetry === null) hasUnknownRetry = true;
+        else if (retryAtMs === null || dimRetry > retryAtMs) retryAtMs = dimRetry;
         continue;
       }
       if (estimatedRemaining === null || headroom < estimatedRemaining) {
@@ -151,6 +158,7 @@ export function evaluateVector(
     }
   }
 
+  if (hasUnknownRetry) retryAtMs = null;
   const admissible = requiredDimensions.length > 0 && blocking.length === 0;
   const reason = requiredDimensions.length === 0
     ? 'No capacity dimensions available for admission'
@@ -196,6 +204,13 @@ function selectDimensionsForDemand(
   if (demand.outputTokens > 0) units.push('output_tokens');
   if (demand.inputTokens > 0 || demand.outputTokens > 0) units.push('total_tokens');
   if (demand.credits && demand.credits > 0) units.push('credits');
+  if (demand.seconds && demand.seconds > 0) units.push('seconds');
+  if (demand.minutes && demand.minutes > 0) units.push('minutes');
+  if (demand.characters && demand.characters > 0) units.push('characters');
+  if (demand.jobs && demand.jobs > 0) units.push('jobs');
+  if (demand.gpuSeconds && demand.gpuSeconds > 0) units.push('gpu_seconds');
+  if (demand.gpuHours && demand.gpuHours > 0) units.push('gpu_hours');
+  if (demand.ipRequests && demand.ipRequests > 0) units.push('ip_requests');
   return vector.dimensions.filter(d => units.includes(d.unit));
 }
 

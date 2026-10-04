@@ -480,14 +480,17 @@ export abstract class BaseAdapter implements ProviderAdapter {
     // the trace going (and so the trace UI shows provider-side spans
     // nested under our gateway span).
     const parsedUrl = (() => { try { return new URL(url); } catch { return null; } })();
+    // Provider URLs can carry credentials in the query (e.g. Gemini ?key=).
+    // Never put the raw URL in trace attributes or exception messages.
+    const safeUrl = parsedUrl ? `${parsedUrl.origin}${parsedUrl.pathname}` : '[invalid URL]';
     return tracer.startActiveSpan(
       'adapter.fetch',
       {
         kind: SpanKind.CLIENT,
         attributes: {
           'http.method': (fetchOptions.method || 'GET').toUpperCase(),
-          'http.url': url,
-          'url.full': url,
+          'http.url': safeUrl,
+          'url.full': safeUrl,
           'url.scheme': parsedUrl?.protocol.replace(':', '') ?? 'unknown',
           'url.host': parsedUrl?.host ?? 'unknown',
           'server.address': parsedUrl?.host ?? 'unknown',
@@ -580,13 +583,13 @@ export abstract class BaseAdapter implements ProviderAdapter {
           // Wrap transport-level errors in typed client errors
           if (error instanceof DOMException && error.name === 'AbortError') {
             throw new ClientTimeoutError(
-              `Request to ${url} timed out after ${timeoutMs}ms`,
+              `Request to ${safeUrl} timed out after ${timeoutMs}ms`,
               { cause: error },
             );
           }
           if (error instanceof TypeError) {
             throw new ConnectionError(
-              `Failed to connect to ${url}: ${error.message}`,
+              `Failed to connect to ${safeUrl}: ${error.message}`,
               { cause: error },
             );
           }
@@ -647,7 +650,7 @@ export abstract class BaseAdapter implements ProviderAdapter {
 
           if (attempt > 1) {
             logger.info(
-              { providerId: this.providerId, attempt, url },
+              { providerId: this.providerId, attempt },
               'Retrying HTTP request after transient failure',
             );
           }

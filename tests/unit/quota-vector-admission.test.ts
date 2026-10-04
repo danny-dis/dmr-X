@@ -30,4 +30,53 @@ describe('quota-vector admission', () => {
     expect(snapshot.admissible).toBe(false);
     expect(snapshot.blockingDimensions.map((dimension) => dimension.unit)).toContain('total_tokens');
   });
+
+  it('reports a known reset when available state lacks headroom', () => {
+    const resetAtMs = nowMs + 2_000;
+    const vector = buildVector({
+      providerId: 'provider', modelId: 'model', keyId: 'key', dimensions: [
+        buildDimension({ unit: 'requests', scope: 'key', scopeId: 'key',
+          limit: 1, remaining: 0, state: 'available', resetAtMs,
+          observedAtMs: nowMs, staleAfterMs: 100_000 }),
+      ],
+    });
+    const snapshot = evaluateVector(vector, demand, nowMs);
+    expect(snapshot.admissible).toBe(false);
+    expect(snapshot.retryAtMs).toBe(resetAtMs);
+    expect(snapshot.recommendation).toBe('wait');
+  });
+
+  it('waits for the last known reset when multiple dimensions block', () => {
+    const resetAtMs = nowMs + 5_000;
+    const vector = buildVector({
+      providerId: 'provider', modelId: 'model', keyId: 'key', dimensions: [
+        buildDimension({ unit: 'requests', scope: 'key', scopeId: 'key',
+          limit: 1, remaining: 0, state: 'available', resetAtMs: nowMs + 1_000,
+          observedAtMs: nowMs, staleAfterMs: 100_000 }),
+        buildDimension({ unit: 'total_tokens', scope: 'key', scopeId: 'key',
+          limit: 100, remaining: 0, state: 'available', resetAtMs,
+          observedAtMs: nowMs, staleAfterMs: 100_000 }),
+      ],
+    });
+    const snapshot = evaluateVector(vector, demand, nowMs);
+    expect(snapshot.retryAtMs).toBe(resetAtMs);
+    expect(snapshot.recommendation).toBe('wait');
+  });
+
+  it('does not claim a retry time when another blocking limit has no reset', () => {
+    const vector = buildVector({
+      providerId: 'provider', modelId: 'model', keyId: 'key', dimensions: [
+        buildDimension({ unit: 'requests', scope: 'key', scopeId: 'key',
+          limit: 1, remaining: 0, state: 'available', resetAtMs: nowMs + 1_000,
+          observedAtMs: nowMs, staleAfterMs: 100_000 }),
+        buildDimension({ unit: 'total_tokens', scope: 'key', scopeId: 'key',
+          limit: 100, remaining: 0, state: 'exhausted',
+          observedAtMs: nowMs, staleAfterMs: 100_000 }),
+      ],
+    });
+    const snapshot = evaluateVector(vector, demand, nowMs);
+    expect(snapshot.admissible).toBe(false);
+    expect(snapshot.retryAtMs).toBeNull();
+    expect(snapshot.recommendation).toBe('failover');
+  });
 });

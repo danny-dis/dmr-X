@@ -50,9 +50,12 @@ describe('CapacityManager', () => {
   beforeEach(() => {
     const vector = makeVector();
     const store = new InMemoryCapacityStore([
-      { unit: 'requests', scopeId: 'key-1', remaining: 50 },
-      { unit: 'concurrency', scopeId: 'key-1', remaining: 5 },
-      { unit: 'input_tokens', scopeId: 'llama-3.1-70b', remaining: 50_000 },
+      // Canonical pool identity: provider::scope::scopeId (see
+      // buildQuotaPoolId / buildReservationDimensions). Raw 'key-1' never
+      // matches the manager's canonical key, so the seeded value was ignored.
+      { unit: 'requests', scopeId: 'groq::key::key-1', remaining: 50 },
+      { unit: 'concurrency', scopeId: 'groq::key::key-1', remaining: 5 },
+      { unit: 'input_tokens', scopeId: 'groq::model::llama-3.1-70b', remaining: 50_000 },
     ]);
     manager = new CapacityManager({ store });
     manager.registerVector(vector);
@@ -74,11 +77,11 @@ describe('CapacityManager', () => {
     });
 
     it('fails to reserve when concurrency is exhausted', async () => {
-      // Exhaust concurrency
+      // Exhaust concurrency (canonical pool identity so the manager consults it)
       const store = new InMemoryCapacityStore([
-        { unit: 'requests', scopeId: 'key-1', remaining: 50 },
-        { unit: 'concurrency', scopeId: 'key-1', remaining: 0 },
-        { unit: 'input_tokens', scopeId: 'llama-3.1-70b', remaining: 50_000 },
+        { unit: 'requests', scopeId: 'groq::key::key-1', remaining: 50 },
+        { unit: 'concurrency', scopeId: 'groq::key::key-1', remaining: 0 },
+        { unit: 'input_tokens', scopeId: 'groq::model::llama-3.1-70b', remaining: 50_000 },
       ]);
       const localManager = new CapacityManager({ store });
       localManager.registerVector(makeVector());
@@ -150,7 +153,7 @@ describe('CapacityManager', () => {
     it('does not oversubscribe concurrency under parallel load', async () => {
       const concurrencyLimit = 5;
       const store = new InMemoryCapacityStore([
-        { unit: 'concurrency', scopeId: 'key-1', remaining: concurrencyLimit },
+        { unit: 'concurrency', scopeId: 'groq::key::key-1', remaining: concurrencyLimit },
       ]);
       const localManager = new CapacityManager({ store });
 
@@ -196,7 +199,7 @@ describe('CapacityManager', () => {
     it('does not oversubscribe requests under parallel load', async () => {
       const requestLimit = 10;
       const store = new InMemoryCapacityStore([
-        { unit: 'requests', scopeId: 'key-1', remaining: requestLimit },
+        { unit: 'requests', scopeId: 'groq::key::key-1', remaining: requestLimit },
       ]);
       const localManager = new CapacityManager({ store });
 
@@ -243,7 +246,7 @@ describe('CapacityManager', () => {
       // Create a manager with a very short lease
       const shortManager = new CapacityManager({
         store: new InMemoryCapacityStore([
-          { unit: 'requests', scopeId: 'key-1', remaining: 50 },
+          { unit: 'requests', scopeId: 'groq::key::key-1', remaining: 50 },
         ]),
         leaseMs: 50, // 50ms lease
       });

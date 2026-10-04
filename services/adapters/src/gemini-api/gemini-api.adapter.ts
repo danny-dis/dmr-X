@@ -1,3 +1,4 @@
+import { ProviderError } from '@dmr-x/core';
 import type {
   Modality,
   UnifiedRequest,
@@ -98,6 +99,20 @@ export class GeminiAPIAdapter extends BaseAdapter {
       .map((p: any) => p.text)
       .join('') || '';
     const functionCalls = candidate?.content?.parts?.filter((p: any) => p.functionCall) || [];
+    if (!text.trim() && functionCalls.length === 0) {
+      throw new ProviderError(
+        'Gemini chat: upstream returned HTTP 200 with empty content and no tool calls',
+        this.providerId,
+        502,
+      );
+    }
+    if (request.response_format?.type === 'json_object' && functionCalls.length === 0) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new ProviderError('Gemini chat: upstream returned invalid JSON object', this.providerId, 502);
+      }
+    }
 
     return {
       modality: 'llm',

@@ -1,3 +1,4 @@
+export { buildQuotaPoolId, normalizeQuotaPoolId } from './quota-dimensions.js';
 export { QuotaService, quotaService, type QuotaAllocation, type QuotaUsage } from './quota.service.js';
 export { RateLimitService, getRateLimitService } from './rate-limit.service.js';
 export { KeyRotationService, keyRotationService } from './key-rotation.service.js';

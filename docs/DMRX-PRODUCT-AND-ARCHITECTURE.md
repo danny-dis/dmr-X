@@ -467,3 +467,10 @@ It can provide primitives those systems consume.
 ## 20. Definition of success
 
 DMR-X is successful when a developer can install it, point existing AI clients at it, configure providers and policies, and immediately obtain better **cost, reliability, privacy, latency or quality** than manually choosing a single provider — while optionally using the same platform to run isolated agents, connect external agents/tools, and consume specialized non-LLM modalities such as neural/EEG processing through a single capability-routing layer.
+
+
+## Universal Inference Resource Fleet
+
+DMR-X treats cloud providers, specialist APIs, local runtimes, browser WebGPU and future neural/BCI resources as ResourceCells. A provider credential is not assumed to own the quota: QuotaPool identity is separate and can be account, organization, project, model, endpoint, IP or device scoped. Economics are represented as multiple units rather than a boolean free/paid flag. This enables the gateway to preserve scarce free capacity, route media jobs and local compute, and honor temporary trials and credit pools without confusing them with recurring free inference.
+
+The canonical implementation is described in docs/DMRX-UNIVERSAL-INFERENCE-RESOURCE-FLEET-2026-10.md.

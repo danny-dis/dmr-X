@@ -23,6 +23,42 @@ async function load() {
 }
 
 describe('resolveGatewayKey()', () => {
+  it('restores the outer context when the HTTP request scope returns', async () => {
+    const mod = await load();
+    expect(typeof mod.runWithRequestHeaders).toBe('function');
+    const value = await mod.runWithRequestHeaders({ 'x-dmr-tenant-key': 'scoped-company' }, async () => {
+      await Promise.resolve();
+      return mod.resolveGatewayKey();
+    });
+    expect(value).toBe('scoped-company');
+    expect(mod.resolveGatewayKey()).toBeUndefined();
+  });
+  it('does not borrow another concurrent request\'s tenant key after an await', async () => {
+    const { setLastRequestHeaders, resolveGatewayKey } = await load();
+    let releaseFirst!: () => void;
+    const firstPaused = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const first = new Promise<string | undefined>((resolve) => {
+      setImmediate(async () => {
+        setLastRequestHeaders({ 'x-dmr-tenant-key': 'company-a' });
+        firstStarted();
+        await firstPaused;
+        resolve(resolveGatewayKey());
+      });
+    });
+    await started;
+    const second = await new Promise<string | undefined>((resolve) => {
+      setImmediate(() => {
+        setLastRequestHeaders({ 'x-dmr-tenant-key': 'company-b' });
+        resolve(resolveGatewayKey());
+        releaseFirst();
+      });
+    });
+    expect(await first).toBe('company-a');
+    expect(second).toBe('company-b');
+    expect(resolveGatewayKey()).toBeUndefined();
+  });
   it('prefers an X-DMR-Tenant-Key header when present', async () => {
     const { resolveGatewayKey, DMR_TENANT_KEY_HEADER } = await load();
     const headers = { [DMR_TENANT_KEY_HEADER]: 'tenant-abc' };

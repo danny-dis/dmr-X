@@ -32,6 +32,9 @@ coverage/
 !apps/ui/postcss.config.js
 !apps/ui/tailwind.config.js
 !eslint.config.js
+# Vendored JavaScript is source, not TypeScript build output.
+!vendored/braces-safe/**/*.js
+!vendored/braces-safe/*.js
 
 # ─── Turbo cache ────────────────────────────────────────────────────────────
 .turbo/
@@ -151,5 +154,6 @@ test_v3.txt
 # ─── Damaged-file recovery snapshots (local triage only) ──────────────────
 .recovery/
 # Vendored upstream source (fork of modelcontextprotocol/servers) - clone on demand for catalog generation
-vendored/
+vendored/*
+!vendored/braces-safe/
 release-binaries/

@@ -2733,7 +2733,10 @@ WHERE trim(skills) LIKE '[%]'
 -- After this migration NULL means "unpriced / unknown" and 0 means "verified
 -- free". The router's isFree() and the registry's verifyModelFree() treat NULL
 -- as NOT free.
-PRAGMA foreign_keys=OFF;
+-- legacy_alter_table disables FK enforcement during the table rebuild so the
+-- RENAME/CREATE/DROP dance doesn't trip "foreign key constraint failed" from
+-- tables that reference model_profiles (e.g. playground_feedback).
+PRAGMA legacy_alter_table=ON;
 PRAGMA defer_foreign_keys=ON;
 BEGIN TRANSACTION;
 
@@ -2843,8 +2846,179 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_agentic_level ON model_profiles(ag
 CREATE INDEX IF NOT EXISTS idx_model_profiles_architecture ON model_profiles(architecture);
 
 COMMIT;
+PRAGMA legacy_alter_table=OFF;
 PRAGMA defer_foreign_keys=OFF;
-PRAGMA foreign_keys=ON;
+`,
+  },
+  82: {
+    filename: '082_agent_definition_shares.sql',
+    sql: `-- Explicit workspace-to-workspace grants. Sharing does not transfer instance,
+-- session, memory, credentials, usage, edit or administration ownership.
+CREATE TABLE IF NOT EXISTS agent_definition_shares (
+  agent_definition_id TEXT NOT NULL REFERENCES agent_definitions(id) ON DELETE CASCADE,
+  recipient_tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL CHECK (permission IN ('read', 'run')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_definition_id, recipient_tenant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_definition_shares_recipient
+  ON agent_definition_shares(recipient_tenant_id);
+`,
+  },
+  83: {
+    filename: '083_hosted_agent_instances.sql',
+    sql: `-- 083: Hosted agent instances
+-- Give deployed agent instances a durable runtime identity independent of any
+-- one HTTP request. This is the DMR-X equivalent of the durable agent/session
+-- model: the instance survives gateway restarts, while compute wakes only when
+-- a message/event/schedule arrives.
+--
+-- runtime_mode:
+--   persistent = long-lived identity (default)
+--   ephemeral  = bounded worker / subagent
+--
+-- access_scope:
+--   shared = eligible for intent discovery/dispatch
+--   private = addressable by exact instance id only
+--
+-- lifecycle_state is the durable lifecycle, while the legacy status column
+-- remains the coarse active/paused compatibility surface.
+--
+-- Renumbered from PR30's 082: the local 082 (agent_definition_shares) was
+-- already applied in this lane and must not be renumbered.
+
+ALTER TABLE agent_instances
+  ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'persistent';
+
+ALTER TABLE agent_instances
+  ADD COLUMN access_scope TEXT NOT NULL DEFAULT 'shared';
+
+ALTER TABLE agent_instances
+  ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'ready';
+
+ALTER TABLE agent_instances
+  ADD COLUMN lifecycle_policy TEXT NOT NULL DEFAULT '{}';
+
+ALTER TABLE agent_instances
+  ADD COLUMN last_activity_at TEXT;
+
+ALTER TABLE agent_instances
+  ADD COLUMN last_heartbeat_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_instances_runtime
+ON agent_instances(tenant_id, runtime_mode, lifecycle_state);
+
+CREATE INDEX IF NOT EXISTS idx_agent_instances_access_scope
+ON agent_instances(tenant_id, access_scope, status)
+WHERE status = 'active';
+
+-- Scheduled jobs optionally pin to one persistent instance. This prevents a
+-- fresh instance from being created on every cron fire and gives the schedule
+-- a stable agent identity.
+ALTER TABLE agent_scheduled_jobs
+  ADD COLUMN agent_instance_id TEXT REFERENCES agent_instances(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_agent_scheduled_jobs_instance
+ON agent_scheduled_jobs(agent_instance_id);
+`,
+  },
+  84: {
+    filename: '084_schedule_occurrence_keys.sql',
+    sql: `-- 084: Scheduled occurrence identity
+-- Give every scheduled fire a deterministic occurrence key
+-- (\`<jobId>:<claimed next_run_at>\`) so a crash between the gateway call and
+-- schedule bookkeeping cannot refire the same occurrence, and duplicate
+-- deliveries of one occurrence collapse to a single execution row.
+--
+-- The scheduler claims AND advances next_run_at in one atomic UPDATE, stamps
+-- the claimed occurrence on the job row, and passes the key into the gateway
+-- call (x-dmrx-occurrence-key) and the execution record. The partial unique
+-- index keeps pre-084 rows (NULL key) untouched while rejecting a second
+-- execution row for the same (tenant, instance, occurrence).
+--
+-- Delivery contract is at-least-once scheduling with at-most-once advancement:
+-- a crash after the claim never refires the occurrence, but a gateway call
+-- that was accepted before the crash may still have executed downstream.
+-- Downstream consumers must treat the occurrence key as an idempotency key.
+-- Exactly-once external side effects are NOT promised.
+
+ALTER TABLE agent_scheduled_jobs
+  ADD COLUMN last_occurrence_key TEXT;
+
+ALTER TABLE agent_executions
+  ADD COLUMN occurrence_key TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_executions_occurrence
+ON agent_executions(tenant_id, agent_instance_id, occurrence_key)
+WHERE occurrence_key IS NOT NULL;
+`,
+  },
+  85: {
+    filename: '085_agent_quota_holds.sql',
+    sql: `-- 085: Durable tenant-budget holds for agent admission (SEC-002)
+-- \`checkQuota\` is read-only: concurrent agent runs each pass preflight before
+-- any usage is recorded and overshoot the company quota. These holds are the
+-- atomic reserve-before-run side of admission (see QuotaService.reserveAgentRun
+-- / releaseAgentHold / settleAgentHold):
+-- - reserve inserts a hold row inside ONE synchronous transaction that also
+--   sums outstanding holds, so N gateways cannot oversubscribe;
+-- - the hold itself records NO usage; settle records measured actuals once,
+--   release records nothing (no double accounting);
+-- - holds are tenant-bound (tenant_id) with a bounded expiry (expires_at);
+--   crashed gateways stop pinning quota as soon as their holds expire, and
+--   reserve purges expired rows on every attempt.
+CREATE TABLE IF NOT EXISTS agent_quota_holds (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  provider_key TEXT NOT NULL DEFAULT 'agent',
+  estimated_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_cents INTEGER NOT NULL DEFAULT 0,
+  request_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_quota_holds_tenant
+ON agent_quota_holds(tenant_id, expires_at);
+`,
+  },
+  86: {
+    filename: '086_agent_quota_settlements.sql',
+    sql: `-- 086: Durable idempotency ledger for agent quota settlement.
+-- A hold may be missing when its TTL cleanup ran before the successful response
+-- was settled. The authenticated fallback context still records the measured
+-- usage, and hold_id makes retries exact-once across gateway instances.
+CREATE TABLE IF NOT EXISTS agent_quota_settlements (
+  hold_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  provider_key TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  actual_tokens INTEGER NOT NULL DEFAULT 0,
+  actual_cost_dollars REAL NOT NULL DEFAULT 0,
+  settled_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_quota_settlements_tenant
+ON agent_quota_settlements(tenant_id, settled_at);
+`,
+  },
+  87: {
+    filename: '087_credit_usage_claims.sql',
+    sql: `-- 087: Durable claims for request-id keyed credit debits.
+-- Keep historical credit_transactions untouched; this table is the idempotency
+-- boundary for new request-keyed usage charges.
+CREATE TABLE IF NOT EXISTS credit_usage_claims (
+  tenant_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  credit_transaction_id TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (tenant_id, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_credit_usage_claims_transaction
+ON credit_usage_claims(credit_transaction_id);
 `,
   },
 };

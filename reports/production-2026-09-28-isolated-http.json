@@ -1,0 +1,16 @@
+[
+  {
+    "transport": "http",
+    "checks": [],
+    "passed": false,
+    "error": "listener unavailable; exit=1; log=C:\\Users\\pc\\AppData\\Local\\Temp\\dmrx-production-http-ypagge8a\\listener.log",
+    "log": "C:\\Users\\pc\\AppData\\Local\\Temp\\dmrx-production-http-ypagge8a\\listener.log"
+  },
+  {
+    "transport": "sse",
+    "checks": [],
+    "passed": false,
+    "error": "listener unavailable; exit=1; log=C:\\Users\\pc\\AppData\\Local\\Temp\\dmrx-production-http-kfh4j1yo\\listener.log",
+    "log": "C:\\Users\\pc\\AppData\\Local\\Temp\\dmrx-production-http-kfh4j1yo\\listener.log"
+  }
+]

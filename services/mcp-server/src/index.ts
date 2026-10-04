@@ -25,7 +25,6 @@
  *   STABILITY_API_KEY, ELEVENLABS_API_KEY, DEEPGRAM_API_KEY,
  *   COHERE_API_KEY, JINA_API_KEY
  */
-import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { watchFile, readFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,7 +34,21 @@ import { initDb, closeDb } from '@dmr-x/db';
 import { registryService, autoRegisterProviders } from '@dmr-x/registry';
 import { getTelemetryService, type TelemetryConfig } from '@dmr-x/telemetry';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
-import { setLastRequestHeaders } from './tenant-key.js';
+import { runWithRequestHeaders } from './tenant-key.js';
+import { guardHttpRequest } from './http-security.js';
+import { buildA2ABearerPolicy } from './a2a/security.js';
+import {
+  createHttpBearerAuth,
+  authenticateHttpRequest,
+  sessionBindingForRequest,
+  isSameSessionBinding,
+  closeHttpSessionResources,
+  evictOldestHttpSession,
+  checkMcpProtocolVersion,
+  checkMcpInitializeBody,
+  buildHttpBearerPolicy,
+} from './http-auth-session.js';
+import type { SessionBinding } from './session-runtime.js';
 
 import {
   loadConfigFile,
@@ -142,92 +155,47 @@ function parseExternalMcpServers(): MCPServerConfig[] {
 // Authentication
 // ---------------------------------------------------------------------------
 
-/**
- * Parses DMRX_MCP_API_KEY into an array of valid keys.
- * Supports comma-separated keys or a single key.
- * Empty string returns an empty array (auth disabled).
- */
-function parseApiKeys(config: McpConfigFile | null): string[] {
-  const raw = process.env.DMRX_MCP_API_KEY || config?.apiKey || '';
-  if (!raw.trim()) return [];
-  return raw.split(',').map((k) => k.trim()).filter(Boolean);
+const configFileForAuth = loadConfigFile();
+
+/** True when any bearer source (simple, file, or env) configures auth. */
+function hasConfiguredBearerAuth(): boolean {
+  return buildHttpBearerPolicy(configFileForAuth).configured;
 }
 
-const configFileForAuth = loadConfigFile();
-const MCP_API_KEYS = parseApiKeys(configFileForAuth);
+/**
+ * Bearer policy for the A2A boundary + owner resolver.
+ *
+ * The A2A HTTP boundary authenticates against `DMRX_A2A_API_KEY || DMRX_MCP_API_KEY`
+ * (a2a/security.ts), so the installed owner resolver must be built from the SAME
+ * set or the two layers disagree: with only DMRX_A2A_API_KEY set, an MCP-only
+ * policy reports `configured: false` and ownership falls back to a
+ * header-asserted identity. This policy therefore includes the A2A key and then
+ * DELEGATES to the MCP policy (DMRX_MCP_API_KEY / apiKeysConfig /
+ * DMRX_MCP_API_KEYS_CONFIG), so MCP tool restrictions are preserved and an
+ * A2A-only credential is never folded back into the MCP policy.
+ */
+function buildA2AHttpBearerPolicy() {
+  return buildA2ABearerPolicy(configFileForAuth);
+}
+
+// The shared Origin guard authenticates only A2A paths. Use the A2A policy
+// here too, not the MCP-only policy which cannot accept an A2A-only key.
+const checkA2AAuthAndGetAllowedTools = createHttpBearerAuth({
+  policy: buildA2AHttpBearerPolicy,
+});
 
 /**
  * Checks the Authorization header against the configured API keys.
- * Returns an object with authorized: boolean and allowedTools: string[] if the key is authorized.
- * Sends a 401 response and returns authorized: false if unauthorized.
+ * Delegates to the shared bearer policy so config-only and env-only key
+ * records are enforced (not just simple keys) and malformed configuration
+ * fails closed. Returns the validated principal id alongside the scope.
+ * Sends the failure response and returns authorized: false if unauthorized.
  */
 function checkAuthAndGetAllowedTools(
   req: { headers: Record<string, string | string[] | undefined> },
   res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body: string) => void }
-): { authorized: boolean; allowedTools?: string[] } {
-  if (MCP_API_KEYS.length === 0) return { authorized: true };
-
-  const authHeader = req.headers['authorization'];
-  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized — missing Bearer token' }));
-    return { authorized: false };
-  }
-
-  const token = authHeader.slice(7); // strip "Bearer "
-  const tokenBuf = Buffer.from(token, 'utf8');
-
-  // 1. Check detailed keyRestrictions/apiKeysConfig in configuration file
-  const keyConfigs = configFileForAuth?.apiKeysConfig || [];
-  for (const kc of keyConfigs) {
-    if (typeof kc.key !== 'string') continue;
-    const keyBuf = Buffer.from(kc.key, 'utf8');
-    if (tokenBuf.length === keyBuf.length && timingSafeEqual(tokenBuf, keyBuf)) {
-      return { authorized: true, allowedTools: kc.allowedTools };
-    }
-  }
-
-  // 2. Check JSON env var DMRX_MCP_API_KEYS_CONFIG
-  const envConfigRaw = process.env.DMRX_MCP_API_KEYS_CONFIG;
-  if (envConfigRaw) {
-    try {
-      const parsed = JSON.parse(envConfigRaw);
-      if (Array.isArray(parsed)) {
-        for (const entry of parsed) {
-          if (entry && typeof entry === 'object' && typeof entry.key === 'string') {
-            const keyBuf = Buffer.from(entry.key, 'utf8');
-            if (tokenBuf.length === keyBuf.length && timingSafeEqual(tokenBuf, keyBuf)) {
-              return { authorized: true, allowedTools: entry.allowedTools };
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Failed to parse DMRX_MCP_API_KEYS_CONFIG env var:', e);
-    }
-  }
-
-  // 3. Fallback to simple comma-separated check
-  for (const validKey of MCP_API_KEYS) {
-    const keyBuf = Buffer.from(validKey, 'utf8');
-    if (tokenBuf.length === keyBuf.length && timingSafeEqual(tokenBuf, keyBuf)) {
-      return { authorized: true };
-    }
-  }
-
-  res.writeHead(401, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Unauthorized — invalid Bearer token' }));
-  return { authorized: false };
-}
-
-/**
- * Checks the Authorization header against the configured API keys using
- * timing-safe comparison to prevent timing attacks.
- * Returns true if the request is authorized (or no keys are configured).
- * Sends a 401 response and returns false if unauthorized.
- */
-function checkAuth(req: { headers: Record<string, string | string[] | undefined> }, res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body: string) => void }): boolean {
-  return checkAuthAndGetAllowedTools(req, res).authorized;
+): { authorized: boolean; allowedTools?: string[]; principalId: string } {
+  return authenticateHttpRequest(req, res, configFileForAuth);
 }
 
 // ---------------------------------------------------------------------------
@@ -270,24 +238,10 @@ function readBodyWithLimit(
 // CORS configuration
 // ---------------------------------------------------------------------------
 
-const CORS_ORIGIN = resolveConfig(configFileForAuth, 'corsOrigin', 'DMRX_MCP_CORS_ORIGIN', '*');
+// Empty allowlist is deliberate: browser clients must configure exact Origins.
+const CORS_ORIGIN = resolveConfig(configFileForAuth, 'corsOrigin', 'DMRX_MCP_CORS_ORIGIN', '');
 
-function setCorsHeaders(res: import('node:http').ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN);
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, Last-Event-ID');
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
-
-function handlePreflight(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): boolean {
-  if (req.method === 'OPTIONS') {
-    setCorsHeaders(res);
-    res.writeHead(204);
-    res.end();
-    return true;
-  }
-  return false;
-}
+// Both HTTP transports use the same Origin and A2A authentication boundary.
 
 // ---------------------------------------------------------------------------
 // Session idle timeout and cleanup
@@ -423,16 +377,7 @@ async function drainSessions(timeoutMs: number = 5000): Promise<void> {
   for (const [id, session] of activeSessions) {
     try {
       const closer = async () => {
-        try {
-          if (session.transport.close) {
-            await session.transport.close();
-          }
-        } catch { /* best-effort */ }
-        try {
-          if (session.server.close) {
-            await session.server.close();
-          }
-        } catch { /* best-effort */ }
+        await closeHttpSessionResources(session);
         activeSessions.delete(id);
       };
       closers.push(closer());
@@ -699,6 +644,11 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof SSEServerTransport> }>();
+  // Principal + downstream-tenant binding per session. A request that presents
+  // a different principal or tenant than the session was created with is
+  // rejected — session ids are not authorization.
+  const sessionBindings = new Map<string, SessionBinding>();
+  const MAX_SSE_SESSIONS = 50;
 
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
@@ -713,13 +663,8 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
       description: t.description,
     }));
 
-  const httpServer = http.createServer(async (req, res) => {
-    // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
-    // can be resolved at request time inside tool handlers.
-    setLastRequestHeaders(req.headers);
-    // CORS preflight
-    setCorsHeaders(res);
-    if (handlePreflight(req, res)) return;
+  const httpServer = http.createServer((req, res) => runWithRequestHeaders(req.headers, async () => {
+    if (!guardHttpRequest(req, res, CORS_ORIGIN, checkA2AAuthAndGetAllowedTools)) return;
 
     // Handle A2A routes
     if (config.a2a?.enabled) {
@@ -738,6 +683,12 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     if (url.pathname === '/sse' && req.method === 'GET') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
+      const binding = sessionBindingForRequest(req, authResult.principalId, res);
+      if (!binding) return;
+      if (sessions.size >= MAX_SSE_SESSIONS) {
+        const evicted = await evictOldestHttpSession(sessions, removeSession, unregisterActiveSession);
+        if (evicted) sessionBindings.delete(evicted);
+      }
       // Create a new SSE session
       const { server, ready } = createDMRXMcpServer({
         ...config,
@@ -749,28 +700,32 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
       const sessionId = transport.sessionId;
 
       sessions.set(sessionId, { server, transport });
+      sessionBindings.set(sessionId, binding);
       touchSession(sessionId, () => {
-        // CRITICAL: close the server on cleanup to free memory.
+        // Close transport AND server on cleanup to free memory and sockets.
         const s = sessions.get(sessionId);
-        if (s?.server?.close) s.server.close().catch(() => { /* best-effort */ });
+        if (s) void closeHttpSessionResources(s);
         sessions.delete(sessionId);
+        sessionBindings.delete(sessionId);
         unregisterActiveSession(sessionId);
       });
 
       transport.onclose = () => {
         removeSession(sessionId);
+        const s = sessions.get(sessionId);
+        if (s) void closeHttpSessionResources(s);
         sessions.delete(sessionId);
+        sessionBindings.delete(sessionId);
         unregisterActiveSession(sessionId);
-        // CRITICAL: close the server to free memory.
-        server.close().catch(() => { /* best-effort */ });
       };
 
       res.on('close', () => {
         removeSession(sessionId);
+        const s = sessions.get(sessionId);
+        if (s) void closeHttpSessionResources(s);
         sessions.delete(sessionId);
+        sessionBindings.delete(sessionId);
         unregisterActiveSession(sessionId);
-        // CRITICAL: close the server to free memory.
-        server.close().catch(() => { /* best-effort */ });
       });
 
       registerActiveSession(sessionId, { id: sessionId, server, transport: transport as unknown as ActiveSession['transport'] });
@@ -780,11 +735,20 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
     }
 
     if (url.pathname === '/messages' && req.method === 'POST') {
-      if (!checkAuth(req, res)) return;
+      const messageAuth = checkAuthAndGetAllowedTools(req, res);
+      if (!messageAuth.authorized) return;
       const sessionId = url.searchParams.get('sessionId');
       if (!sessionId || !sessions.has(sessionId)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing or invalid sessionId' }));
+        return;
+      }
+      const messageBinding = sessionBindingForRequest(req, messageAuth.principalId, res);
+      if (!messageBinding) return;
+      const stored = sessionBindings.get(sessionId);
+      if (!stored || !isSameSessionBinding(stored, messageBinding)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session binding mismatch' }));
         return;
       }
 
@@ -836,7 +800,7 @@ async function startSSE(config: DMRXMcpServerConfig): Promise<void> {
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
-  });
+  }));
 
   httpServer.listen(port, host, () => {
     console.log(`DMR-X MCP server (SSE) listening on http://${host}:${port}`);
@@ -877,6 +841,8 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
   const host = resolveConfig(configFile, 'host', 'DMRX_MCP_HOST', '127.0.0.1');
 
   const sessions = new Map<string, { server: ReturnType<typeof createDMRXMcpServer>['server']; transport: InstanceType<typeof NodeStreamableHTTPServerTransport> }>();
+  // Principal + downstream-tenant binding per session (see SSE listener).
+  const sessionBindings = new Map<string, SessionBinding>();
 
   // Start periodic session sweep
   const sweepInterval = startSessionSweep(() => sessions as unknown as Map<string, unknown>);
@@ -891,13 +857,8 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
       description: t.description,
     }));
 
-  const httpServer = http.createServer(async (req, res) => {
-    // Capture headers so per-client tenant key (X-DMR-Tenant-Key) isolation
-    // can be resolved at request time inside tool handlers.
-    setLastRequestHeaders(req.headers);
-    // CORS preflight
-    setCorsHeaders(res);
-    if (handlePreflight(req, res)) return;
+  const httpServer = http.createServer((req, res) => runWithRequestHeaders(req.headers, async () => {
+    if (!guardHttpRequest(req, res, CORS_ORIGIN, checkA2AAuthAndGetAllowedTools)) return;
 
     // Handle A2A routes
     if (config.a2a?.enabled) {
@@ -916,10 +877,21 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
     if (url.pathname === '/mcp') {
       const authResult = checkAuthAndGetAllowedTools(req, res);
       if (!authResult.authorized) return;
+      const requestBinding = sessionBindingForRequest(req, authResult.principalId, res);
+      if (!requestBinding) return;
       // Check for existing session
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
       if (sessionId && sessions.has(sessionId)) {
+        const stored = sessionBindings.get(sessionId);
+        if (!stored || !isSameSessionBinding(stored, requestBinding)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Session binding mismatch' }));
+          return;
+        }
+        // GET streams inherit the negotiated session version (fetch-based SDK
+        // clients send the header; EventSource-style streams cannot add one).
+        if (req.method !== 'GET' && !checkMcpProtocolVersion(req, res, true)) return;
         // Touch session to reset idle timer
         touchSession(sessionId);
         const session = sessions.get(sessionId)!;
@@ -931,15 +903,28 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
       // to prevent memory exhaustion. The original crash was caused by unbounded
       // server creation; we cap concurrent sessions and clean up closed ones.
       if (req.method === 'POST') {
+        if (!checkMcpProtocolVersion(req, res, false)) return;
+        // Buffer session-less POSTs so an `initialize` carrying an
+        // unsupported version (or disagreeing with the header) fails here
+        // with the supported list. The SDK would otherwise silently upgrade
+        // the version and mint a session for a version we do not support.
+        const rawBody = await readBodyWithLimit(req, res);
+        if (rawBody === null) return;
+        let parsedBody: unknown;
+        try {
+          parsedBody = JSON.parse(rawBody.toString('utf8'));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+          return;
+        }
+        const headerVersion = req.headers['mcp-protocol-version'];
+        if (!checkMcpInitializeBody(res, parsedBody, Array.isArray(headerVersion) ? undefined : headerVersion)) return;
         // Enforce max concurrent sessions to prevent memory exhaustion
         const MAX_CONCURRENT_SESSIONS = 50;
         if (sessions.size >= MAX_CONCURRENT_SESSIONS) {
-          // Remove the oldest idle session
-          const oldestKey = sessions.keys().next().value;
-          if (oldestKey) {
-            removeSession(oldestKey);
-            sessions.delete(oldestKey);
-          }
+          const evicted = await evictOldestHttpSession(sessions, removeSession, unregisterActiveSession);
+          if (evicted) sessionBindings.delete(evicted);
         }
 
         const { server, ready } = createDMRXMcpServer({
@@ -953,11 +938,13 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid: string) => {
             sessions.set(sid, { server, transport });
+            sessionBindings.set(sid, requestBinding);
             touchSession(sid, () => {
-              // CRITICAL: close the server on cleanup to free memory.
+              // Close transport AND server on cleanup to free memory and sockets.
               const s = sessions.get(sid);
-              if (s?.server?.close) s.server.close().catch(() => { /* best-effort */ });
+              if (s) void closeHttpSessionResources(s);
               sessions.delete(sid);
+              sessionBindings.delete(sid);
               unregisterActiveSession(sid);
             });
             registerActiveSession(sid, { id: sid, server, transport: transport as unknown as ActiveSession['transport'] });
@@ -967,17 +954,38 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
         transport.onclose = () => {
           if (transport.sessionId) {
             removeSession(transport.sessionId);
+            const s = sessions.get(transport.sessionId);
+            if (s) void closeHttpSessionResources(s);
             sessions.delete(transport.sessionId);
+            sessionBindings.delete(transport.sessionId);
             unregisterActiveSession(transport.sessionId);
+          } else {
+            // Never initialized: no session was stored, but the per-attempt
+            // server must still be released.
+            void closeHttpSessionResources({ server, transport: transport as unknown as ActiveSession['transport'] });
           }
-          // CRITICAL: close the server to free memory. Each session creates a
-          // full McpServer + ServerState (adapters, search engine, etc.) that
-          // is ~0.4MB; without this, RSS grows unbounded under sustained load.
-          server.close().catch(() => { /* best-effort */ });
         };
 
-        await server.connect(transport);
-        await transport.handleRequest(req, res);
+        try {
+          await server.connect(transport);
+          await transport.handleRequest(req, res, parsedBody);
+        } catch (err) {
+          // Initialization failure: release both resources exactly once so a
+          // half-connected session never leaks.
+          if (transport.sessionId) {
+            const sid = transport.sessionId;
+            removeSession(sid);
+            const s = sessions.get(sid);
+            if (s) await closeHttpSessionResources(s);
+            else await closeHttpSessionResources({ server, transport: transport as unknown as ActiveSession['transport'] });
+            sessions.delete(sid);
+            sessionBindings.delete(sid);
+            unregisterActiveSession(sid);
+          } else {
+            await closeHttpSessionResources({ server, transport: transport as unknown as ActiveSession['transport'] });
+          }
+          throw err;
+        }
         return;
       }
 
@@ -1024,7 +1032,7 @@ async function startStreamableHTTP(config: DMRXMcpServerConfig): Promise<void> {
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
-  });
+  }));
 
   httpServer.listen(port, host, () => {
     console.log(`DMR-X MCP server (Streamable HTTP) listening on http://${host}:${port}`);
@@ -1083,6 +1091,18 @@ async function main(): Promise<void> {
   // No-op (in-memory) if DMRX_A2A_DB_PATH is unset.
   if (mcpConfig.a2a?.enabled) {
     const { initPersistence } = await import('./a2a/persistence.js');
+    // Ownership must follow the principal THIS listener authenticated, not the
+    // raw Authorization header: the identity seam was documented but never
+    // installed, so every A2A owner id was a digest of a caller-chosen string
+    // and only survived review because guardHttpRequest authenticates first.
+    const { installAuthenticatedOwnerResolver } = await import('./a2a/owner.js');
+    // Same credential set the A2A boundary authenticates against (see
+    // buildA2AHttpBearerPolicy), so the validated principal and the owner digest
+    // come from one source of truth.
+    const a2aPolicy = buildA2AHttpBearerPolicy();
+    const { setA2ABearerPolicy } = await import('./a2a/security.js');
+    setA2ABearerPolicy(a2aPolicy);
+    installAuthenticatedOwnerResolver(a2aPolicy);
     const dbPath = process.env.DMRX_A2A_DB_PATH || '';
     initPersistence({ dbPath: dbPath || undefined });
   }
@@ -1124,9 +1144,9 @@ async function main(): Promise<void> {
     console.error('Failed to initialize database (DB-backed tools unavailable):', err);
   }
 
-  if (transport !== 'stdio' && MCP_API_KEYS.length === 0) {
+  if (transport !== 'stdio' && !hasConfiguredBearerAuth()) {
     if (process.env.NODE_ENV === 'production') {
-      console.error('FATAL: DMRX_MCP_API_KEY must be set in production. Refusing to start without authentication.');
+      console.error('FATAL: MCP bearer auth must be configured in production (DMRX_MCP_API_KEY, apiKeysConfig, or DMRX_MCP_API_KEYS_CONFIG). Refusing to start without authentication.');
       await disposeAndExit(externalMcpClient, 1);
       return;
     }
