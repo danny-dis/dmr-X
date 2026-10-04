@@ -429,12 +429,27 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       // Augment the planned chain only for unconstrained all-cost meta-models.
       // Global candidates may include paid or excluded providers.
+      // Never augment when free_only is active — paid candidates must not enter
+      // the streaming fallback chain. The strategy MUST be resolved through the
+      // router (request override, else the configured default): reading only
+      // request metadata misses a deployment-wide `freeTierStrategy: 'free_only'`
+      // default, which sends no per-request override, and would then append paid
+      // candidates to the chain after the free primary failed.
       const streamPrefs = unifiedRequest.metadata?.providerPreferences;
-      const unconstrainedMetaModel = getMetaModel(body.model)?.costFilter === 'all' &&
-        router.getEffectiveCostFilter(body.model, unifiedRequest.metadata?.costFilter as 'free' | 'all' | undefined) === 'all' &&
+      const costFilter = unifiedRequest.metadata?.costFilter as 'free' | 'all' | undefined;
+      const routerAny = router as unknown as {
+        getEffectiveFreeTierStrategy?: (override?: string) => string | undefined;
+        getCandidates?: () => Array<{ providerId: string; modelId: string; score: number; isHealthy?: boolean; providerName?: string }>;
+      };
+      const freeTierStrategy = routerAny.getEffectiveFreeTierStrategy
+        ? routerAny.getEffectiveFreeTierStrategy(typeof unifiedRequest.metadata?.freeTierStrategy === 'string' ? unifiedRequest.metadata.freeTierStrategy : undefined)
+        : unifiedRequest.metadata?.freeTierStrategy;
+      const isFreeOnly = freeTierStrategy === 'free_only' || costFilter === 'free';
+      const unconstrainedMetaModel = !isFreeOnly &&
+        getMetaModel(body.model)?.costFilter === 'all' &&
+        router.getEffectiveCostFilter(body.model, costFilter) === 'all' &&
         !streamPrefs?.zdr && !streamPrefs?.only?.length && !streamPrefs?.ignore?.length;
       if (unconstrainedMetaModel) try {
-        const routerAny = router as unknown as { getCandidates?: () => Array<{ providerId: string; modelId: string; score: number; isHealthy?: boolean; providerName?: string }> };
         const allCandidates = routerAny.getCandidates?.();
         if (allCandidates && allCandidates.length) {
           const seen = new Set(streamCandidates.map((c) => `${c.providerId}:${c.modelId}`));

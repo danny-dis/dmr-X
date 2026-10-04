@@ -229,6 +229,7 @@ dmr-X/
 | [`DMRX-RESEARCH-2026-09.md`](docs/DMRX-RESEARCH-2026-09.md) | Current research and decisions |
 | [`DMRX-ROADMAP-2026-09.md`](docs/DMRX-ROADMAP-2026-09.md) | Current implementation roadmap |
 | [`MCP-2026.md`](docs/MCP-2026.md) | MCP architecture/conformance target |
+| [`DMRX-MCP-FABRIC-2026.md`](docs/DMRX-MCP-FABRIC-2026.md) | 2026 MCP gateway/fabric architecture and implementation plan |
 | [`A2A.md`](docs/A2A.md) | A2A architecture/conformance target |
 | [`AGENT-RUNTIME.md`](docs/AGENT-RUNTIME.md) | Agent Runtime specification |
 | [`DMRX-DOCS-INDEX.md`](docs/DMRX-DOCS-INDEX.md) | Documentation source-of-truth map |

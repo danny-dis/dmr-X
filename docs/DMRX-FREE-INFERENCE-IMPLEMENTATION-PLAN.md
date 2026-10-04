@@ -576,3 +576,8 @@ DMR-X is ready to claim production-grade free inference only when:
 The provider-rate baseline and primary source list are maintained in `DMRX-FREE-PROVIDER-RATE-CATALOG.md`. Current provider documentation confirms that free capacity is heterogeneous and dynamic; for example, Groq exposes multiple request/token dimensions and live rate-limit headers, while Cloudflare explicitly changes model-level free eligibility and provides a 10,000-Neuron daily free allocation. Hugging Face's free allocation is an economic monthly credit rather than a conventional RPM bucket. citeturn0search3turn0search2turn0search6turn0search0
 
 The implementation therefore treats provider documentation as a versioned policy seed and live observations as the operational truth.
+
+
+## October 2026 extension — Universal Resource Fleet
+
+The implementation is no longer limited to token-priced LLMs. Add ResourceCell identity, QuotaPool identity, and economic units for requests, tokens, credits, neurons, seconds, minutes, characters, jobs, GPU time and IP-scoped limits. Free-only must be an invariant at admission, direct selection, fallback and composite execution. The verified offer registry records recurring free tiers, trials, one-time credits and specialist resource pools with source URLs and freshness. See docs/DMRX-UNIVERSAL-INFERENCE-RESOURCE-FLEET-2026-10.md.

@@ -29,6 +29,15 @@ interface ScheduledJob {
   enabled: boolean;
   prompt?: string;
   maxSteps?: number;
+  /** Stable hosted instance reused across schedule fires. */
+  agentInstanceId?: string;
+  /**
+   * Deterministic key (`<jobId>:<claimed next_run_at>`) for the most recently
+   * claimed fire. Persisted so a restart cannot refire an already-claimed
+   * occurrence, and passed into the gateway call + execution record as an
+   * idempotency key.
+   */
+  lastOccurrenceKey?: string;
   running: boolean;
 }
 
@@ -72,11 +81,65 @@ function parseCronField(
   return values;
 }
 
-/** Day-of-week mapping: both 0 and 7 represent Sunday in standard cron. */
-const DOW_MAP: Record<number, number> = { 0: 7, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 0 };
+/**
+ * Day-of-week canonicalization: both 0 and 7 mean Sunday in standard cron.
+ * Canonical form is 0..6 (Sunday=0) so a Sunday match works whether the
+ * expression used `0` or `7`.
+ */
+function canonicalDow(dow: number): number {
+  return dow === 7 ? 0 : dow;
+}
 
-function normalizeDow(dow: number): number {
-  return DOW_MAP[dow] ?? dow;
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/**
+ * SECURITY: fail closed when the internal API key would cross the network in
+ * cleartext. Loopback http is allowed (local dev); every other host must be
+ * https, so a misconfigured remote DMRX_GATEWAY_URL can never leak the bearer.
+ */
+function assertSecureInternalGateway(rawUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid DMRX_GATEWAY_URL: ${rawUrl}`);
+  }
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== 'https:' && !LOOPBACK_HOSTS.has(host)) {
+    throw new Error(
+      `Refusing to send DMRX_INTERNAL_API_KEY over non-HTTPS gateway URL to non-loopback host "${host}"`,
+    );
+  }
+}
+
+/**
+ * Wall-clock date parts of an absolute instant in a target IANA timezone.
+ *
+ * Cron fields match WALL time ("9am in Nairobi"), not server-local time, so
+ * every candidate UTC instant is projected through Intl into the schedule's
+ * timezone before comparison. A single formatter per calculateNextRun call
+ * keeps the minute-by-minute scan cheap.
+ */
+function getZonedParts(date: Date, formatter: Intl.DateTimeFormat): {
+  minute: number;
+  hour: number;
+  dom: number;
+  month: number;
+  dow: number;
+} {
+  const parts = formatter.formatToParts(date);
+  const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? '';
+  // hourCycle h23 avoids the midnight "24" rendering of hour12:false.
+  let hour = Number(get('hour'));
+  if (hour === 24) hour = 0;
+  const year = Number(get('year'));
+  const month = Number(get('month'));
+  const dom = Number(get('day'));
+  const minute = Number(get('minute'));
+  // Weekday in the TARGET zone derived from the zone wall date (avoids
+  // locale-string parsing): Sunday=0..Saturday=6 like Date.getDay().
+  const dow = new Date(Date.UTC(year, month - 1, dom)).getUTCDay();
+  return { minute, hour, dom, month, dow };
 }
 
 /** Get the next fire time for a cron expression. */
@@ -93,34 +156,77 @@ function calculateNextRun(cron: string, timezone = 'UTC'): Date {
   const doms = parseCronField(domF, 1, 31);
   const months = parseCronField(monthF, 1, 12);
   const dows = parseCronField(dowF, 0, 7);
+  // Canonical DOW set (0..6, Sunday=0) so both `0` and `7` match Sunday.
+  const dowsCanon = new Set<number>();
+  for (const d of dows) dowsCanon.add(canonicalDow(d));
+  // Standard cron day semantics: when BOTH day-of-month and day-of-week are
+  // restricted (neither is `*`), they combine with OR; otherwise the single
+  // restricted field governs and the unrestricted field always matches.
+  const domRestricted = domF.trim() !== '*';
+  const dowRestricted = dowF.trim() !== '*';
+  const domDowOr = domRestricted && dowRestricted;
+
+  // Validate the IANA timezone once; an unknown zone falls back to UTC
+  // rather than throwing inside the scan loop.
+  let zone = timezone || 'UTC';
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hourCycle: 'h23',
+    });
+    // Force zone validation now (construction alone is lazy in some ICU builds).
+    formatter.format(new Date(0));
+  } catch {
+    logger.warn({ cron, timezone: zone }, 'Unknown schedule timezone, falling back to UTC');
+    zone = 'UTC';
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hourCycle: 'h23',
+    });
+  }
 
   const now = new Date();
   // Search forward up to 4 years (handles dow + dom combos that are rare)
   const maxSearch = now.getTime() + 4 * 365 * 24 * 60 * 60 * 1000;
 
-  // Start from the next minute boundary
-  const cursor = new Date(now);
+  // Start from the next minute boundary (absolute UTC stepping — wall
+  // minutes advance 1:1 with UTC minutes outside DST transitions, and the
+  // zoned projection below keeps matching exact across them).
+  let cursor = new Date(now);
   cursor.setSeconds(0, 0);
-  cursor.setMinutes(cursor.getMinutes() + 1);
+  // Absolute UTC stepping (+60s) — `setMinutes` would step server-local wall
+  // time and could skip/repeat minutes across a server DST transition.
+  cursor = new Date(cursor.getTime() + 60_000);
 
   while (cursor.getTime() < maxSearch) {
-    const month = cursor.getMonth() + 1;
-    const dom = cursor.getDate();
-    const dow = normalizeDow(cursor.getDay());
-    const hour = cursor.getHours();
-    const minute = cursor.getMinutes();
+    const zoned = getZonedParts(cursor, formatter);
+
+    const domMatch = doms.has(zoned.dom);
+    const dowMatch = dowsCanon.has(zoned.dow);
+    const dayMatch = domDowOr ? domMatch || dowMatch : domMatch && dowMatch;
 
     if (
-      months.has(month) &&
-      doms.has(dom) &&
-      dows.has(dow) &&
-      hours.has(hour) &&
-      minutes.has(minute)
+      months.has(zoned.month) &&
+      dayMatch &&
+      hours.has(zoned.hour) &&
+      minutes.has(zoned.minute)
     ) {
       return cursor;
     }
 
-    cursor.setMinutes(cursor.getMinutes() + 1);
+    // Absolute UTC stepping (see above).
+    cursor = new Date(cursor.getTime() + 60_000);
   }
 
   // Fallback: 1 hour from now
@@ -164,7 +270,7 @@ export class AgentScheduler {
     agentDefinitionId: string,
     tenantId: string,
     cron: string,
-    options?: { prompt?: string; maxSteps?: number; timezone?: string },
+    options?: { prompt?: string; maxSteps?: number; timezone?: string; agentInstanceId?: string },
   ): void {
     const jobId = crypto.randomUUID();
     const nextRunAt = calculateNextRun(cron, options?.timezone);
@@ -173,8 +279,11 @@ export class AgentScheduler {
     // Persist to SQLite
     const db = getDb();
     db.prepare(`
-      INSERT INTO agent_scheduled_jobs (id, agent_definition_id, tenant_id, trigger_type, trigger_config, next_run_at, enabled, prompt, max_steps, created_at, updated_at)
-      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?, ?, ?)
+      INSERT INTO agent_scheduled_jobs (
+        id, agent_definition_id, tenant_id, trigger_type, trigger_config,
+        next_run_at, enabled, prompt, max_steps, agent_instance_id, created_at, updated_at
+      )
+      VALUES (?, ?, ?, 'schedule', ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       jobId,
       agentDefinitionId,
@@ -183,6 +292,7 @@ export class AgentScheduler {
       nextRunAt.toISOString(),
       options?.prompt ?? null,
       options?.maxSteps ?? 5,
+      options?.agentInstanceId ?? null,
       now,
       now,
     );
@@ -198,6 +308,7 @@ export class AgentScheduler {
       enabled: true,
       prompt: options?.prompt,
       maxSteps: options?.maxSteps ?? 5,
+      agentInstanceId: options?.agentInstanceId,
       running: false,
     });
 
@@ -229,6 +340,8 @@ export class AgentScheduler {
     nextRunAt: string;
     lastRunAt?: string;
     enabled: boolean;
+    agentInstanceId?: string;
+    lastOccurrenceKey?: string;
   }> {
     return Array.from(this.jobs.values()).map((job) => ({
       id: job.id,
@@ -238,6 +351,8 @@ export class AgentScheduler {
       nextRunAt: job.nextRunAt.toISOString(),
       lastRunAt: job.lastRunAt?.toISOString(),
       enabled: job.enabled,
+      agentInstanceId: job.agentInstanceId,
+      lastOccurrenceKey: job.lastOccurrenceKey,
     }));
   }
 
@@ -266,6 +381,8 @@ export class AgentScheduler {
           enabled: row.enabled === 1,
           prompt: row.prompt ?? undefined,
           maxSteps: row.max_steps != null ? Number(row.max_steps) : undefined,
+          agentInstanceId: row.agent_instance_id ?? undefined,
+          lastOccurrenceKey: row.last_occurrence_key ?? undefined,
           running: row.running === 1,
         });
       }
@@ -319,62 +436,149 @@ export class AgentScheduler {
   }
 
   /**
-   * Execute a single scheduled job. Uses atomic compare-and-swap to ensure
-   * at-most-once delivery across multiple scheduler instances.
+   * Execute a single scheduled job. Claims the occurrence AND advances
+   * `next_run_at` in one atomic compare-and-swap, then runs the job tagged with
+   * the claimed occurrence key.
+   *
+   * Advancing at claim time (rather than after the external gateway call) is
+   * what makes a crash between the call and schedule bookkeeping unable to
+   * refire the same occurrence. The `running` guard still serialises
+   * concurrent in-process claims; the CAS on `next_run_at` serialises across
+   * processes. Delivery contract: at-most-once ADVANCEMENT per occurrence,
+   * at-least-once downstream execution (a call accepted before a crash may
+   * still have run) — downstream consumers must treat the occurrence key as an
+   * idempotency key. Exactly-once external side effects are NOT promised.
    */
   private async executeJob(job: ScheduledJob): Promise<void> {
     const db = getDb();
-    const now = new Date();
+    const claimedNextRun = job.nextRunAt.toISOString();
+    const occurrenceKey = `${job.id}:${claimedNextRun}`;
+    // Compute the advanced fire ONCE and share it with runJob so the persisted
+    // row and the in-memory job cannot drift apart.
+    const nextRunAt = calculateNextRun(job.triggerConfig.cron, job.triggerConfig.timezone);
 
-    // At-most-once: atomic compare-and-swap on next_run_at + running
-    // Only the instance that successfully sets running = 1 proceeds to run
+    // Claim AND advance in ONE atomic UPDATE.
     const casResult = db.prepare(`
       UPDATE agent_scheduled_jobs
-      SET running = 1
+      SET running = 1,
+          next_run_at = ?,
+          last_occurrence_key = ?,
+          updated_at = datetime('now')
       WHERE id = ? AND next_run_at = ? AND enabled = 1 AND running = 0
-    `).run(job.id, job.nextRunAt.toISOString());
+    `).run(nextRunAt.toISOString(), occurrenceKey, job.id, claimedNextRun);
 
     if (casResult.changes === 0) {
-      // Another instance already claimed this job
-      logger.debug({ jobId: job.id }, 'Scheduler CAS lost, skipping job');
+      // Another instance (or an earlier tick) already claimed this occurrence.
+      // Refresh the durable cursor and stable identity so this process can
+      // compete for later occurrences instead of retrying its stale cursor.
+      const latest = db.prepare('SELECT * FROM agent_scheduled_jobs WHERE id = ?').get(job.id) as any;
+      if (latest) {
+        job.nextRunAt = new Date(latest.next_run_at);
+        job.lastRunAt = latest.last_run_at ? new Date(latest.last_run_at) : undefined;
+        job.agentInstanceId = latest.agent_instance_id ?? undefined;
+        job.lastOccurrenceKey = latest.last_occurrence_key ?? undefined;
+        job.enabled = latest.enabled === 1;
+      } else {
+        job.enabled = false;
+      }
+      logger.debug({ jobId: job.id }, 'Scheduler CAS lost, refreshed job');
       return;
     }
 
     job.running = true;
+    job.nextRunAt = nextRunAt;
+    job.lastOccurrenceKey = occurrenceKey;
     try {
-      await this.runJob(job);
+      await this.runJob(job, occurrenceKey);
     } finally {
       job.running = false;
-      // Reset running flag in DB
+      // Reset the running flag in DB. next_run_at is NOT touched here — it was
+      // already advanced by the claim above.
       db.prepare('UPDATE agent_scheduled_jobs SET running = 0 WHERE id = ?').run(job.id);
     }
   }
 
   /**
    * Run the actual job: create an instance, call the gateway, record result.
+   *
+   * `occurrenceKey` was claimed and stamped on the job row by `executeJob`
+   * before this runs. If a prior delivery of the SAME occurrence already
+   * recorded an execution (duplicate delivery, or a crash-replay after the
+   * claim), the gateway call is skipped — the unique index on
+   * (tenant, instance, occurrence_key) is the backstop.
    */
-  private async runJob(job: ScheduledJob): Promise<void> {
-    logger.info({ jobId: job.id, agentDefinitionId: job.agentDefinitionId }, 'Running scheduled agent job');
+  private async runJob(job: ScheduledJob, occurrenceKey: string): Promise<void> {
+    const db = getDb();
+    logger.info({ jobId: job.id, agentDefinitionId: job.agentDefinitionId, occurrenceKey }, 'Running scheduled agent job');
 
     const definition = await agentRegistryService.getDefinition(job.agentDefinitionId);
     if (!definition) {
       logger.warn({ jobId: job.id }, 'Agent definition not found, disabling job');
       job.enabled = false;
 
-      const db = getDb();
       db.prepare('UPDATE agent_scheduled_jobs SET enabled = 0, updated_at = datetime(\'now\') WHERE id = ?')
         .run(job.id);
       return;
     }
 
     // Create an execution record
-    const instance = await agentRegistryService.createInstance(job.tenantId, {
-      agentDefinitionId: job.agentDefinitionId,
-      configOverride: { triggeredBy: 'schedule', jobId: job.id },
-    });
+    // A schedule owns a stable persistent identity. Create it once on first
+    // fire, then wake/reuse the same instance on every later fire.
+    let instance = job.agentInstanceId
+      ? await agentRegistryService.getInstance(job.agentInstanceId)
+      : null;
 
-    if (!instance) {
-      logger.warn({ jobId: job.id }, 'Failed to create agent instance for scheduled job');
+    // A corrupted/stale pin must never cross tenant or definition boundaries.
+    // Treat it as missing and create a fresh owned instance.
+    if (
+      instance &&
+      (instance.tenantId !== job.tenantId ||
+        instance.agentDefinitionId !== job.agentDefinitionId)
+    ) {
+      instance = null;
+      job.agentInstanceId = undefined;
+    }
+
+    if (!instance || instance.lifecycleState === 'retired') {
+      instance = await agentRegistryService.createInstance(job.tenantId, {
+        agentDefinitionId: job.agentDefinitionId,
+        configOverride: { triggeredBy: 'schedule', jobId: job.id },
+        runtimeMode: 'persistent',
+        accessScope: 'private',
+      });
+
+      if (!instance) {
+        logger.warn({ jobId: job.id }, 'Failed to create agent instance for scheduled job');
+        return;
+      }
+
+      job.agentInstanceId = instance.id;
+      db.prepare(
+        'UPDATE agent_scheduled_jobs SET agent_instance_id = ?, updated_at = datetime(\'now\') WHERE id = ?',
+      ).run(instance.id, job.id);
+    } else if (['paused', 'stopped'].includes(instance.lifecycleState)) {
+      instance = await agentRegistryService.transitionInstanceLifecycle(
+        instance.id,
+        job.tenantId,
+        'ready',
+      );
+      if (!instance) {
+        logger.warn({ jobId: job.id, instanceId: job.agentInstanceId }, 'Failed to wake scheduled agent instance');
+        return;
+      }
+    }
+
+    // Duplicate-delivery guard: this occurrence was already recorded for this
+    // instance (e.g. a redelivered tick, or a crash-replay after the claim).
+    // Skip the side-effecting gateway call entirely.
+    const alreadyRecorded = db.prepare(
+      'SELECT id FROM agent_executions WHERE tenant_id = ? AND agent_instance_id = ? AND occurrence_key = ?',
+    ).get(job.tenantId, instance.id, occurrenceKey) as any;
+    if (alreadyRecorded) {
+      logger.info(
+        { jobId: job.id, instanceId: instance.id, occurrenceKey },
+        'Scheduled occurrence already recorded, skipping duplicate delivery',
+      );
       return;
     }
 
@@ -383,8 +587,18 @@ export class AgentScheduler {
     const gatewayUrl = process.env.DMRX_GATEWAY_URL || 'http://localhost:3000';
     const internalKey = process.env.DMRX_INTERNAL_API_KEY;
 
+    // SECURITY: never transmit the internal bearer key in cleartext to a
+    // non-loopback host (fails closed before the fetch).
+    if (internalKey) {
+      assertSecureInternalGateway(gatewayUrl);
+    }
+
     const headers: Record<string, string> = {
       'content-type': 'application/json',
+      // Deterministic idempotency key so a downstream consumer can collapse a
+      // redelivered occurrence. At-least-once delivery; exactly-once external
+      // side effects are not promised.
+      'x-dmrx-occurrence-key': occurrenceKey,
     };
     if (internalKey) headers['authorization'] = `Bearer ${internalKey}`;
 
@@ -400,6 +614,7 @@ export class AgentScheduler {
           messages: [{ role: 'user', content: prompt }],
           stream: false,
           maxSteps,
+          metadata: { occurrenceKey, jobId: job.id, triggeredBy: 'schedule' },
         }),
       });
 
@@ -421,33 +636,37 @@ export class AgentScheduler {
       output = errorMsg;
       logger.warn(
         { jobId: job.id, instanceId: instance.id, err: errorMsg },
-        'Scheduled agent execution failed; will retry next interval',
+        'Scheduled agent execution failed; occurrence is still recorded so it is not retried',
       );
     }
 
-    await agentRegistryService.recordExecution({
-      agentInstanceId: instance.id,
-      tenantId: job.tenantId,
-      input: prompt,
-      output,
-      toolsUsed: [],
-      modelUsed: definition.preferredModel ?? 'auto',
-      status,
-      error: status === 'error' ? errorMsg : undefined,
-    });
+    // Record the execution tagged with the occurrence key. A duplicate key is
+    // rejected by the DB unique index; swallow that one specific case so a
+    // racing delivery cannot turn a benign dedupe into a crash.
+    try {
+      await agentRegistryService.recordExecution({
+        agentInstanceId: instance.id,
+        tenantId: job.tenantId,
+        input: prompt,
+        output,
+        toolsUsed: [],
+        modelUsed: definition.preferredModel ?? 'auto',
+        status,
+        error: status === 'error' ? errorMsg : undefined,
+        occurrenceKey,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('UNIQUE constraint failed')) throw err;
+      logger.info({ jobId: job.id, occurrenceKey }, 'Scheduled occurrence already recorded (race), deduplicated');
+    }
 
-    // Update next run time
-    const nextRunAt = calculateNextRun(job.triggerConfig.cron, job.triggerConfig.timezone);
-    job.nextRunAt = nextRunAt;
     job.lastRunAt = new Date();
-
-    // Persist updated schedule
-    const db = getDb();
-    db.prepare(`
-      UPDATE agent_scheduled_jobs
-      SET next_run_at = ?, last_run_at = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(nextRunAt.toISOString(), new Date().toISOString(), job.id);
+    // next_run_at was already advanced atomically by executeJob's claim; only
+    // last_run_at remains to be persisted here.
+    db.prepare(
+      'UPDATE agent_scheduled_jobs SET last_run_at = ?, updated_at = datetime(\'now\') WHERE id = ?',
+    ).run(job.lastRunAt.toISOString(), job.id);
   }
 }
 

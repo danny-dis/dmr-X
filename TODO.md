@@ -122,6 +122,8 @@ When you find a bug but don't fix it:
 
 ## 🔨 Active Work
 
+- 🔨 Completion pass — **Hermes ghost + free OpenCode workers, Luna architecture review**, 2026-10-03. Isolated branch `integration/completion-20261003`; original checkout and stashes preserved. Work lanes: runtime deadlines/cancellation, MCP auth/session/versioned transport, A2A ownership/webhooks/contracts, hosted-agent PR #30 and migration compatibility, dependency security, feature-preserving reuse, staging/operations, and full regression/review. No daily service restart. Individual worker results are not release acceptance; final integration, installed dependency verification, full tests/builds and staging remain required. Worker reports: `reports/completion-*-20261003.md`. Runtime deadline regressions are green in its worker; dependency lock audit has one remaining unpatched upstream braces advisory. Resource-limited coding workers are serialized.
+
 - ✅ Audit / initial YAGNI fixes — **Jack/Astra + Sol workers**, 2026-09-28: company gateway plan and staging guide saved; conversation-instance binding, MCP async credential isolation, HTTP Origin/A2A auth boundary, and real Bun-compatible pinned peer probe verified. 1737 unit tests, 18 isolated HTTP checks passed; free-only live sample 16/18. Daily listener not restarted. **Production HOLD**: task/session ownership, safe A2A webhooks, current protocol conformance, runtime cancellation/deadlines/scheduler crash semantics, budget admission and operations remain gated. See `docs/plans/2026-09-28-production-gateway.md` and `reports/production-2026-09-28-gate.md`.
 
 | # | Item | Agent | Started | ETA | Notes |

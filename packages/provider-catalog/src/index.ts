@@ -1,11 +1,12 @@
 /**
  * Comprehensive AI Provider Catalog
  *
- * 35+ providers with API details, modalities, and adapter configurations.
+ * 120+ provider templates with API details, modalities, and adapter configurations.
  * Users can add any of these via: dmrx add-provider <provider-id>
  */
 
 import { MODEL_BENCHMARKS } from './benchmarks.generated.js';
+import { VERIFIED_FREE_PROVIDERS, VERIFIED_FREE_OFFERS, getVerifiedFreeOffers } from './verified-free-labs.js';
 
 export interface OAuthProviderConfig {
   flow: 'authorization_code' | 'client_credentials' | 'device_code';
@@ -122,6 +123,17 @@ export interface FreeTierInfo {
   monthlyTokenBudget: number;  // 0 = unlimited within rate limits
   intelligenceRank: number;    // 1-10 scale
   speedRank: number;           // 1-10 scale
+
+  /** General economic shape of the free offer. */
+  offerKind?: 'recurring_free' | 'free_with_limits' | 'trial' | 'promo_credits' | 'startup_credits' | 'device_local' | 'keyless_public' | 'subscription_entitlement';
+  /** Daily free-token allowance for providers that are not monthly-token based. */
+  dailyTokenBudget?: number;
+  /** The actual quota owner; do not assume one API key == one quota pool. */
+  scope?: 'account' | 'organization' | 'project' | 'credential' | 'model' | 'endpoint' | 'ip' | 'device';
+  /** Trial duration, when the offer is temporary. */
+  trialDays?: number;
+  /** Whether enrollment requires a payment method. */
+  requiresPaymentMethod?: boolean;
 }
 
 /**
@@ -2886,23 +2898,43 @@ export const PROVIDER_CATALOG: ProviderTemplate[] = [
   },
 ];
 
+// Provider identities that have their own execution surface are appended here.
+// Free offers for existing providers are kept in VERIFIED_FREE_OFFERS so quota
+// semantics can evolve without duplicating provider identities.
+for (const provider of VERIFIED_FREE_PROVIDERS) {
+  if (!PROVIDER_CATALOG.some((existing) => existing.id === provider.id)) {
+    PROVIDER_CATALOG.push(provider);
+  }
+}
+
+export { VERIFIED_FREE_OFFERS, getVerifiedFreeOffers } from './verified-free-labs.js';
+
 // ---------------------------------------------------------------------------
 // Auto-populate pricingTier for every model.
+// ---------------------------------------------------------------------------
+
+/** Infer economic state conservatively: missing pricing is unknown, never free. */
+export function inferPricingTier(model: ModelTemplate): PricingTier {
+  if (model.subscriptionOnly) return 'subscription_only';
+  if (model.freeTier) {
+    // Trial offers are time-limited, not unconditional free — classify as
+    // free_with_limits so free-only routing treats them as restricted.
+    if (model.freeTier.offerKind === 'trial' || model.freeTier.trialDays != null) {
+      return model.freeTier.requiresPaymentMethod ? 'paid' : 'free_with_limits';
+    }
+    return model.freeTier.monthlyTokenBudget > 0 || model.freeTier.dailyTokenBudget != null
+      ? 'free'
+      : 'free_with_limits';
+  }
+  const inputCost = model.inputCostPer1M ?? 0;
+  const outputCost = model.outputCostPer1M ?? 0;
+  return (inputCost > 0 || outputCost > 0) ? 'paid' : 'unknown';
+}
 // Uses explicit catalog metadata rather than runtime heuristics.
 // ---------------------------------------------------------------------------
 for (const provider of PROVIDER_CATALOG) {
   for (const model of provider.models) {
-    if (model.subscriptionOnly) {
-      model.pricingTier = 'subscription_only';
-    } else if (model.freeTier) {
-      // Has a monthly token budget → truly free (generous).
-      // No monthly budget → free but strictly rate-limited.
-      model.pricingTier = model.freeTier.monthlyTokenBudget > 0 ? 'free' : 'free_with_limits';
-    } else {
-      const inputCost = model.inputCostPer1M ?? 0;
-      const outputCost = model.outputCostPer1M ?? 0;
-      model.pricingTier = (inputCost > 0 || outputCost > 0) ? 'paid' : 'free';
-    }
+    model.pricingTier = inferPricingTier(model);
   }
 }
 
@@ -2973,3 +3005,8 @@ export function searchProviders(query: string): ProviderTemplate[] {
       p.id.includes(lower)
   );
 }
+
+export { VERIFIED_FREE_PROVIDERS } from './verified-free-labs.js';
+
+export { PROVIDER_BEHAVIORS, getProviderBehavior } from './provider-behaviors.js';
+export { DISCOVERED_FREE_RESOURCES, getDiscoveredFreeResources } from './free-resource-discovery.js';

@@ -1,0 +1,121 @@
+[
+  {
+    "pattern": "{a,b}",
+    "expand": [
+      "a",
+      "b"
+    ],
+    "compile": "(a|b)",
+    "main": [
+      "(a|b)"
+    ]
+  },
+  {
+    "pattern": "a/{b,c}/d",
+    "expand": [
+      "a/b/d",
+      "a/c/d"
+    ],
+    "compile": "a/(b|c)/d",
+    "main": [
+      "a/(b|c)/d"
+    ]
+  },
+  {
+    "pattern": "{1..5}",
+    "expand": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5"
+    ],
+    "compile": "([1-5])",
+    "main": [
+      "([1-5])"
+    ]
+  },
+  {
+    "pattern": "{01..05}",
+    "expand": [
+      "01",
+      "02",
+      "03",
+      "04",
+      "05"
+    ],
+    "compile": "(0[1-5])",
+    "main": [
+      "(0[1-5])"
+    ]
+  },
+  {
+    "pattern": "{a..e}",
+    "expand": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "compile": "([a-e])",
+    "main": [
+      "([a-e])"
+    ]
+  },
+  {
+    "pattern": "{a,{b,c}}",
+    "expand": [
+      "a",
+      "b",
+      "c"
+    ],
+    "compile": "(a|(b|c))",
+    "main": [
+      "(a|(b|c))"
+    ]
+  },
+  {
+    "pattern": "[{a,b}]",
+    "expand": [
+      "[{a,b}]"
+    ],
+    "compile": "[{a,b}]",
+    "main": [
+      "[{a,b}]"
+    ]
+  },
+  {
+    "pattern": "{literal}",
+    "expand": [
+      "{literal}"
+    ],
+    "compile": "{literal}",
+    "main": [
+      "{literal}"
+    ]
+  },
+  {
+    "pattern": "plain",
+    "expand": [
+      "plain"
+    ],
+    "compile": "plain",
+    "main": [
+      "plain"
+    ]
+  },
+  {
+    "pattern": "{a,b}{c,d}",
+    "expand": [
+      "ac",
+      "ad",
+      "bc",
+      "bd"
+    ],
+    "compile": "(a|b)(c|d)",
+    "main": [
+      "(a|b)(c|d)"
+    ]
+  }
+]

@@ -5151,6 +5151,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
 
       try {
         const query = new URLSearchParams();
+        // Private instances are never exposed through the discovery surface;
+        // callers can still invoke one when they already possess its exact id.
+        query.set('accessScope', 'shared');
         if (params.status) query.set('status', String(params.status));
         const qs = query.toString();
 
@@ -5174,6 +5177,9 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
             name: i.definitionName ?? i.definitionHumanName ?? null,
             description: i.definitionDescription ?? null,
             category: i.definitionCategory ?? null,
+            runtimeMode: i.runtimeMode ?? 'persistent',
+            accessScope: i.accessScope ?? 'shared',
+            lifecycleState: i.lifecycleState ?? null,
           })),
         };
 
@@ -5343,7 +5349,7 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         return toolError('Gateway URL is not configured', 'GATEWAY_URL_MISSING', requestId);
       }
       try {
-        const res = await dmrxGet('/v1/agents/instances');
+        const res = await dmrxGet('/v1/agents/instances?accessScope=shared');
         if (!res.ok) {
           return toolError('Failed to list agents', 'GATEWAY_LIST_FAILED', requestId);
         }

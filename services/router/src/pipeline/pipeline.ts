@@ -73,6 +73,25 @@ export interface PipelineOutput {
   scoredCandidates: CandidateSet;
 }
 
+/**
+ * Strict economic predicate used at every route boundary.
+ * Unknown pricing is deliberately NOT considered free. A free-only request
+ * must have explicit free catalog metadata before it can reach execution.
+ */
+export function isStrictlyFreeCandidate(candidate: ProviderModel): boolean {
+  // Mixed aggregators (tokenrouter, opencode-zen) may carry a provider-level
+  // free_with_limits tier while serving unmarked paid models. For these
+  // providers, the model itself must be explicitly marked free.
+  if (candidate.providerName === 'tokenrouter' || candidate.providerName === 'opencode-zen') {
+    return /:free$|-free$/i.test(candidate.modelId) &&
+      (candidate.costPerInputToken ?? 0) === 0 && (candidate.costPerOutputToken ?? 0) === 0;
+  }
+  if (candidate.pricingTier === 'free' || candidate.pricingTier === 'free_with_limits') return true;
+  // Legacy mixed-aggregator discoveries carry explicit free model names, not a tier.
+  return candidate.pricingTier == null && /:free$|-free$/i.test(candidate.modelId) &&
+    (candidate.costPerInputToken ?? 0) === 0 && (candidate.costPerOutputToken ?? 0) === 0;
+}
+
 export async function runPipeline(input: PipelineInput): Promise<PipelineOutput> {
   const { taskProfile, candidates, epsilon = 0.05, rateLimitService, quotaService, eligibilityEngine, policyService, tenantId, estimatedTokens = 0, freeTierStrategy = 'none', providerPreferences, metaModelFilteredFree, thompsonSampler, routingStrategy = 'thompson' } = input;
 
@@ -259,6 +278,15 @@ export async function runPipelineFromFiltered(input: {
   }
 
   // Stage 5.5: Eligibility Filter (free_only enforcement)
+  // free_only is a hard economic constraint, not just a scoring preference.
+  // Enforce it even when the optional catalog-backed EligibilityEngine is not
+  // injected, so direct/fallback/composite callers cannot leak paid/unknown
+  // candidates into the execution path.
+  const strictFree = freeTierStrategy === 'free_only';
+  if (strictFree) {
+    filtered = filtered.filter(isStrictlyFreeCandidate);
+  }
+
   if (eligibilityEngine) {
     const beforeCount = filtered.length;
     const eligibilityResult = eligibilityEngine.filter(filtered);
@@ -279,8 +307,6 @@ export async function runPipelineFromFiltered(input: {
   if (filtered.length === 0 && retryWithWait !== false && rateLimitResult && rateLimitResult.earliestResetMs > 0) {
     // Default 8s (free-tier windows are often 5-10s); override via DMRX_RATE_LIMIT_MAX_WAIT_MS
     const maxWait = inputMaxWaitMs ?? (Number(process.env.DMRX_RATE_LIMIT_MAX_WAIT_MS) || 8000);
-    // Waiting for only part of a known reset window cannot make a blocked
-    // candidate usable; return its actual retry hint instead of rechecking.
     const waitMs = rateLimitResult.earliestResetMs <= maxWait ? rateLimitResult.earliestResetMs : 0;
     if (waitMs > 0) {
       logger.info({ waitMs, rateLimitedCount: rateLimitResult.rateLimited.length }, 'All providers rate-limited, waiting for reset');
@@ -292,6 +318,9 @@ export async function runPipelineFromFiltered(input: {
       // Retry starts from the pre-eligibility set, so enforce hard constraints again.
       if (eligibilityEngine) {
         filtered = eligibilityEngine.filter(filtered).eligible;
+      }
+      if (freeTierStrategy === 'free_only') {
+        filtered = filtered.filter(isStrictlyFreeCandidate);
       }
       // Re-apply policy filter (tenant-scoped, doesn't change in a 3s window —
       // but re-applying is cheap and avoids staleness if the caller's policy
@@ -308,14 +337,11 @@ export async function runPipelineFromFiltered(input: {
 
   if (filtered.length === 0) {
     const tried = preRateLimitCandidates.map(c => `${c.providerId}/${c.modelId}`);
-    // Only advertise a reset when every pre-rate-limit candidate was blocked
-    // by that limiter. No candidates (or policy/eligibility rejection) is not
-    // evidence of an upstream quota window.
+    // Convert earliestResetMs to seconds for ProviderUnavailableError
     const allRateLimited = preRateLimitCandidates.length > 0 &&
       rateLimitResult?.rateLimited.length === preRateLimitCandidates.length;
     const retryAfterSeconds = allRateLimited && rateLimitResult!.earliestResetMs > 0
-      ? Math.ceil(rateLimitResult!.earliestResetMs / 1000)
-      : 0;
+      ? Math.ceil(rateLimitResult!.earliestResetMs / 1000) : 0;
     throw new ProviderUnavailableError(tried, retryAfterSeconds);
   }
 
@@ -525,9 +551,9 @@ function buildFallbackChain(
   // "200 with empty content") burned all fallbacks and surfaced
   // AllProvidersFailedError — the whole point of a fallback chain is to
   // survive exactly that. Take the best model per DISTINCT provider first,
-  // then backfill with eligible models from any provider if the chain is still
-  // short. A JSON-only pool may contain several models on one provider;
-  // excluding the primary provider entirely would leave it with no fallback.
+  // then backfill with the next-best remaining models if the chain is still
+  // short. Same chain length, same latency budget, but the steps can no
+  // longer be defeated by one bad upstream.
   const seenProviders = new Set<string>([primary.providerId]);
   const diversified: ProviderModel[] = [];
   for (const model of crossProvider) {

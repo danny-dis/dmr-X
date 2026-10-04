@@ -1,4 +1,5 @@
 import type { Router } from '@dmr-x/router';
+import { resolveMetaModel } from '@dmr-x/router';
 import { agentRegistryService, AgentChatRequestSchema } from '@dmr-x/agent-registry';
 import { agentRuntimeService, agentSessionStore } from '@dmr-x/agent-runtime';
 import {
@@ -12,7 +13,19 @@ import type { FastifyInstance } from 'fastify';
 
 import crypto from 'crypto';
 
+import { billingService } from '@dmr-x/billing';
 import { writeSSE } from '../lib/sse.js';
+import {
+  resolveAgentModel,
+  clampAgentSteps,
+  clampAgentTokens,
+  estimateAgentRunTokens,
+  aliasFreeEvidence,
+  resolveAgentToolCatalog,
+  preflightModelRun,
+  releaseAgentHold,
+  settleAgentRun,
+} from '../lib/agent-admission.js';
 import { getRegisteredToolDefinitions, normalizeAllowedTools, cleanupSandboxDir } from './tools.routes.js';
 import { runAgentChatLoop } from './agent-chat-loop.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
@@ -43,56 +56,55 @@ interface AgentChatBody {
 
 // ---------------------------------------------------------------------------
 /**
- * Build the OpenAI-format `tools` array for a subagent, derived from the
- * gateway's registered tool definitions and narrowed to the agent's
- * `allowedTools`. When the agent lists no tools, the FULL registered standard
- * set is used ("tools always on"): an absent/empty allowedTools means "give the
- * agent everything", not "tool-less". An explicit non-empty list narrows.
+ * Resolve the effective tool catalog for an agent definition.
  *
- * Unresolvable names are SKIPPED by getRegisteredToolDefinitions() and were
- * previously dropped in complete silence, which hid a real capability gap:
- * 16 of the 17 agents that restrict their tools ask for `WebFetch`/`WebSearch`,
- * and NEITHER exists in the registry (nor does any equivalent — the only
- * web-ish entries are MCP agent wrappers and `search_files`, which searches the
- * local filesystem). Those agents therefore ran with file tools only. A
- * "Trend Researcher" with no way to reach the web still answers confidently
- * from model priors, so nothing looked broken.
- *
- * We cannot invent the capability here, so the next best thing is to make the
- * gap LOUD: log exactly which requested tools did not resolve, and surface the
- * count so the caller can act. Callers keep the resolvable subset — narrowing
- * behaviour is unchanged, so this is observability, not a behaviour change.
+ * An absent/empty allowedTools still means "everything registered"
+ * ("tools always on"). An explicit non-empty list is REQUIRED by default:
+ * names that do not resolve fail the invocation closed (400) with the
+ * resolved/missing catalog, instead of running with a silently narrowed
+ * subset. The `optional:` prefix (or trailing `?`) marks a best-effort
+ * capability whose absence only warns.
  */
-function buildAgentTools(
+function resolveAgentToolsOrReject(
   allowedTools: unknown,
   agentName?: string,
-): { defs: any[] | undefined; missing: string[] } {
+):
+  | { ok: true; defs: any[] | undefined; agentTools: string[]; missing: string[] }
+  | { ok: false; missing: string[]; requiredMissing: string[]; resolved: string[] } {
   const names = normalizeAllowedTools(allowedTools);
-  const defs =
-    names.length === 0
-      ? getRegisteredToolDefinitions()
-      : getRegisteredToolDefinitions(names);
-
-  // Only an EXPLICIT list can go unresolved; the empty case asks for whatever
-  // is registered, so by definition nothing is missing there.
-  let missing: string[] = [];
-  if (names.length > 0) {
-    const resolved = new Set(defs.map((d) => d?.function?.name).filter(Boolean));
-    missing = names.filter((n) => !resolved.has(n));
-    if (missing.length > 0) {
-      logger.warn(
-        {
-          agent: agentName,
-          requested: names.length,
-          resolved: resolved.size,
-          missing,
-        },
-        'agent requested tools that are not registered — it will run WITHOUT them',
-      );
-    }
+  const catalog = resolveAgentToolCatalog(names, (wanted) =>
+    wanted && wanted.length > 0 ? getRegisteredToolDefinitions(wanted) : getRegisteredToolDefinitions(),
+  );
+  if (catalog.requiredMissing.length > 0) {
+    logger.warn(
+      {
+        agent: agentName,
+        requested: names.length,
+        resolved: catalog.resolved.length,
+        missing: catalog.missing,
+        requiredMissing: catalog.requiredMissing,
+      },
+      'agent requested required tools that are not registered — failing closed',
+    );
+    return {
+      ok: false,
+      missing: catalog.missing,
+      requiredMissing: catalog.requiredMissing,
+      resolved: catalog.resolved,
+    };
   }
-
-  return { defs: defs.length > 0 ? defs : undefined, missing };
+  if (catalog.missing.length > 0) {
+    logger.warn(
+      {
+        agent: agentName,
+        requested: names.length,
+        resolved: catalog.resolved.length,
+        missing: catalog.missing,
+      },
+      'agent requested optional tools that are not registered — continuing with the resolvable subset',
+    );
+  }
+  return { ok: true, defs: catalog.defs.length > 0 ? catalog.defs : undefined, agentTools: catalog.resolved, missing: catalog.missing };
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +136,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data as AgentChatBody;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
-    const maxSteps = body.maxSteps ?? 10;
+    // Finite server-side turn cap: client input can only narrow, never widen.
+    const maxSteps = clampAgentSteps(body.maxSteps);
+    const clampedMaxTokens = clampAgentTokens(body.maxTokens);
 
     // Load agent context
     const context = await agentRuntimeService.loadContext(instanceId, tenant.id);
@@ -133,18 +147,82 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const definition = context.definition;
-    const model = body.model ?? agentRuntimeService.resolveModel(definition);
-    const agentTools = normalizeAllowedTools(definition.allowedTools);
-    const { defs: agentToolDefs } = buildAgentTools(agentTools, definition.name);
+    const requestedConversationId =
+      body.conversationId && body.conversationId.length > 0 ? body.conversationId : undefined;
+    const convId = requestedConversationId ?? `${instanceId}:${requestId}`;
+    const claim = agentSessionStore.claim({
+      tenantId: tenant.id,
+      conversationId: convId,
+      instanceId: context.instanceId,
+      agentDefinitionId: definition.id,
+    });
+    if (claim.outcome === 'conflict') {
+      return reply.code(404).send({ error: { message: 'Conversation not found' } });
+    }
+    const isNewClaim = claim.outcome === 'claimed';
+    void isNewClaim;
+
+    // Policy-authorized model overrides only: a caller-supplied model outside
+    // the agent policy fails closed instead of routing unapproved spend.
+    const modelDecision = resolveAgentModel(body.model, definition, () =>
+      agentRuntimeService.resolveModel(definition),
+    );
+    if (modelDecision.error) {
+      return reply.code(modelDecision.status ?? 403).send({ error: { message: modelDecision.error } });
+    }
+    const model = modelDecision.model;
+    const toolDecision = resolveAgentToolsOrReject(definition.allowedTools, definition.name);
+    if (!toolDecision.ok) {
+      return reply.code(400).send({
+        error: {
+          message: `Agent requires tools that are not registered: ${toolDecision.requiredMissing.join(', ')}`,
+          missing: toolDecision.missing,
+          requiredMissing: toolDecision.requiredMissing,
+          resolved: toolDecision.resolved,
+        },
+      });
+    }
+    const agentTools = toolDecision.agentTools;
+    const agentToolDefs = toolDecision.defs;
+
+    // Preflight admission with an ATOMIC whole-run reserve (SEC-002):
+    // the estimate covers the full multi-turn budget (per-turn cap x
+    // maxSteps), unknown pricing fails closed (402) before any quota touch,
+    // and bare aliases admit only with router evidence of a free-only
+    // resolution (SEC-001). The hold is released on failure paths below and
+    // reconciled with measured actuals after the loop.
+    let holdId: string | undefined;
+    let admissionFreeOnly = false;
+    {
+      const estimatedTokens = estimateAgentRunTokens(clampedMaxTokens, maxSteps);
+      const preflight = await preflightModelRun({
+        model,
+        estimatedTokens,
+        maxSteps,
+        tenantId: tenant.id,
+        requestId,
+        getPricing: (providerId, modelId) => billingService.getModelPricing(providerId, modelId),
+        resolveAliasFree: aliasFreeEvidence(model, () => router.getCandidates(), (alias, cands) =>
+          resolveMetaModel(alias, cands as any, 'free'),
+        ),
+        quotaService: (server as any).quotaService,
+      });
+      if (!preflight.admitted) {
+        const status = preflight.status === 402 ? 402 : 429;
+        return reply.code(status).send({ error: { message: preflight.reason } });
+      }
+      holdId = preflight.admitted ? preflight.holdId : undefined;
+      // Bind the admission proof to every turn: a zero-cost alias admission
+      // must never be routed to a paid candidate.
+      admissionFreeOnly = preflight.freeOnly === true;
+    }
 
     // Acquire conversation lock. Key per-conversation (not per-instance) so
     // concurrent external agents can run the same subagent in parallel without
     // sharing one transcript. Callers may pass their own conversationId; if not,
     // a fresh per-request conversation is used (guaranteed unique via requestId).
-    const convId =
-      body.conversationId && body.conversationId.length > 0
-        ? body.conversationId
-        : `${instanceId}:${requestId}`;
+    // Reuses the pre-admission requestedConversationId so the id admitted and
+    // the id locked/loaded cannot drift apart.
     const locks = agentSessionStore.locks;
     while (locks.has(convId)) {
       await locks.get(convId)!;
@@ -171,6 +249,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           persisted.agentInstanceId !== context.instanceId ||
           persisted.agentDefinitionId !== definition.id
         ) {
+          await releaseAgentHold((server as any).quotaService, holdId);
           return reply.code(404).send({ error: { message: 'Conversation not found' } });
         }
         conversation = persisted.state as ConversationState;
@@ -179,7 +258,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           messages: [...conversation.messages, ...body.messages],
         });
       } else {
-        const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0, []);
+        const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0, [], tenant.id);
         conversation = createInitialState(convId);
         conversation.messages = [
           { role: 'system', content: systemPrompt },
@@ -194,7 +273,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         model,
         agentTools,
         agentToolDefs,
-        body,
+        body: { ...body, maxTokens: clampedMaxTokens },
         requestId,
         tenant,
         router,
@@ -202,7 +281,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         stream: body.stream === true,
         onStreamEvent: (event, data) => writeSSE(reply, event, data),
         buildSystemPrompt: (turn) =>
-          agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds),
+          agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds, tenant.id),
         agentDefinition: {
           id: definition.id,
           name: definition.name,
@@ -210,6 +289,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           allowedTools: agentTools,
         },
         godmodeWrap: definition.godmodeWrap === true,
+        freeOnly: admissionFreeOnly,
         loadedSkillIds,
         runtime: agentRuntimeService,
         conversationId: convId,
@@ -263,14 +343,33 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         costDelta: (step.message as any)?.usage?.cost ?? (step.message as any)?.usage?.total_cost ?? 0,
       })));
 
+      // Settle ACTUAL measured prompt/completion usage against the preflight
+      // hold (reconciled once — never estimate + actual double count), then
+      // persist the same split in the execution record — never (total, 0).
+      const settled = await settleAgentRun({
+        tenantId: tenant.id,
+        model,
+        allSteps: result.allSteps as any,
+        requestId,
+        sums: {
+          promptTokens: result.totalPromptTokens,
+          completionTokens: result.totalCompletionTokens,
+          totalTokens: result.totalTokensUsed,
+          cost: result.totalCost,
+        },
+        holdId,
+        quotaService: (server as any).quotaService,
+        billingService,
+      });
+      holdId = undefined;
       const executionRecord = await agentRuntimeService.createExecution(
         context,
         JSON.stringify(body.messages),
         result.lastResponseText,
         result.allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
         model,
-        result.totalTokensUsed,
-        0,
+        settled.promptTokens,
+        settled.completionTokens,
         Date.now() - startTime,
       );
       // Persist an evaluation record linked to this execution so the
@@ -292,8 +391,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
               id: evalId,
               output: result.lastResponseText,
               toolsUsed: result.allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
-              inputTokens: result.totalTokensUsed,
-              outputTokens: 0,
+              inputTokens: settled.promptTokens,
+              outputTokens: settled.completionTokens,
               durationMs: Date.now() - startTime,
               status: result.budgetExceeded ? 'error' : 'success',
               error: result.budgetExceeded ? 'budget_exceeded' : null,
@@ -350,6 +449,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       logger.error({ requestId, instanceId, error: message }, 'Agent chat failed');
+      // Failed runs record nothing: release the hold (no usage recorded).
+      await releaseAgentHold((server as any).quotaService, holdId);
+      holdId = undefined;
 
       await agentRuntimeService.recordExecution(
         context,
@@ -371,6 +473,14 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         return reply.code(500).send({ error: { message } });
       }
     } finally {
+      // Belt-and-braces: the hold is already settled-or-released above; this
+      // is a no-op in that case and plugs any early-return leak otherwise.
+      await releaseAgentHold((server as any).quotaService, holdId);
+      // Persistent instances park after a turn; their durable definition,
+      // runtime state and conversation remain available for the next wake-up.
+      await agentRuntimeService.markInstanceReady(context.instanceId, tenant.id).catch((err) => {
+        logger.warn({ instanceId, err }, 'Failed to park hosted agent instance after chat');
+      });
       releaseLock();
     }
   });
@@ -394,7 +504,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
     const body = parsedResumeBody(request.body);
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
-    const maxSteps = body.maxSteps ?? 10;
+    const maxSteps = clampAgentSteps(body.maxSteps);
+    const clampedMaxTokens = clampAgentTokens(body.maxTokens);
     const startTime = Date.now();
 
     // Serialize against any other request (a concurrent /chat call or another
@@ -418,11 +529,15 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       if (locks.get(conversationId) === lockPromise) locks.delete(conversationId);
     };
 
+    let resolvedInstanceId = instanceId;
+    let resumeHoldId: string | undefined;
+    let resumeFreeOnly = false;
     try {
       const context = await agentRuntimeService.loadContext(instanceId, tenant.id);
       if (!context) {
         return reply.code(404).send({ error: { message: 'Agent instance not found or inactive' } });
       }
+      resolvedInstanceId = context.instanceId;
       const persisted = agentSessionStore.get(tenant.id, conversationId);
       if (!persisted) {
         return reply.code(404).send({ error: { message: 'No durable session to resume' } });
@@ -451,9 +566,48 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       });
 
       const definition = context.definition;
-      const model = body.model ?? agentRuntimeService.resolveModel(definition);
-      const agentTools = normalizeAllowedTools(definition.allowedTools);
-      const { defs: agentToolDefs } = buildAgentTools(agentTools, definition.name);
+      const modelDecision = resolveAgentModel(body.model, definition, () =>
+        agentRuntimeService.resolveModel(definition),
+      );
+      if (modelDecision.error) {
+        return reply.code(modelDecision.status ?? 403).send({ error: { message: modelDecision.error } });
+      }
+      const model = modelDecision.model;
+      const toolDecision = resolveAgentToolsOrReject(definition.allowedTools, definition.name);
+      if (!toolDecision.ok) {
+        return reply.code(400).send({
+          error: {
+            message: `Agent requires tools that are not registered: ${toolDecision.requiredMissing.join(', ')}`,
+            missing: toolDecision.missing,
+            requiredMissing: toolDecision.requiredMissing,
+            resolved: toolDecision.resolved,
+          },
+        });
+      }
+      const agentTools = toolDecision.agentTools;
+      const agentToolDefs = toolDecision.defs;
+
+      {
+        const estimatedTokens = estimateAgentRunTokens(clampedMaxTokens, maxSteps);
+        const preflight = await preflightModelRun({
+          model,
+          estimatedTokens,
+          maxSteps,
+          tenantId: tenant.id,
+          requestId,
+          getPricing: (providerId, modelId) => billingService.getModelPricing(providerId, modelId),
+          resolveAliasFree: aliasFreeEvidence(model, () => router.getCandidates(), (alias, cands) =>
+            resolveMetaModel(alias, cands as any, 'free'),
+          ),
+          quotaService: (server as any).quotaService,
+        });
+        if (!preflight.admitted) {
+          const status = preflight.status === 402 ? 402 : 429;
+          return reply.code(status).send({ error: { message: preflight.reason } });
+        }
+        resumeHoldId = preflight.admitted ? preflight.holdId : undefined;
+        resumeFreeOnly = preflight.freeOnly === true;
+      }
 
       const result = await runAgentChatLoop({
         conversation,
@@ -461,7 +615,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         model,
         agentTools,
         agentToolDefs,
-        body,
+        body: { ...body, maxTokens: clampedMaxTokens },
         requestId,
         tenant,
         router,
@@ -469,7 +623,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         stream: false,
         onStreamEvent: () => {},
         buildSystemPrompt: (turn) =>
-          agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds),
+          agentRuntimeService.buildSystemPrompt(definition, turn, loadedSkillIds, tenant.id),
         agentDefinition: {
           id: definition.id,
           name: definition.name,
@@ -477,6 +631,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           allowedTools: agentTools,
         },
         godmodeWrap: definition.godmodeWrap === true,
+        freeOnly: resumeFreeOnly,
         loadedSkillIds,
         runtime: agentRuntimeService,
         conversationId,
@@ -519,6 +674,97 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         },
       });
 
+      agentSessionStore.persistRunSteps(tenant.id, conversationId, result.allSteps.map((step) => ({
+        turn: step.turn,
+        status: 'ok',
+        budgetStatus: result.budgetExceeded ? 'exceeded' : 'within',
+        allowedToolCallNames: step.tool_calls.map((tc) => tc.function?.name ?? tc.name),
+        blockedToolCallNames: [],
+        toolResults: step.tool_results,
+        tokenDelta: (step.message as any)?.usage?.total_tokens ?? 0,
+        costDelta: (step.message as any)?.usage?.cost ?? (step.message as any)?.usage?.total_cost ?? 0,
+      })));
+
+      // SEC-003: resumed runs execute real provider calls, so they settle
+      // measured usage exactly like the chat path (hold reconciled once),
+      // then persist a run execution row for the resumed segment.
+      let resumeSettled: { promptTokens: number; completionTokens: number; totalTokens: number; cost: number };
+      try {
+        resumeSettled = await settleAgentRun({
+          tenantId: tenant.id,
+          model,
+          allSteps: result.allSteps as any,
+          requestId,
+          sums: {
+            promptTokens: result.totalPromptTokens,
+            completionTokens: result.totalCompletionTokens,
+            totalTokens: result.totalTokensUsed,
+            cost: result.totalCost,
+          },
+          holdId: resumeHoldId,
+          quotaService: (server as any).quotaService,
+          billingService,
+        });
+        resumeHoldId = undefined;
+      } catch (settleError) {
+        await releaseAgentHold((server as any).quotaService, resumeHoldId);
+        resumeHoldId = undefined;
+        logger.warn({ conversationId, error: settleError }, 'agent resume settlement failed');
+        resumeSettled = {
+          promptTokens: result.totalPromptTokens,
+          completionTokens: result.totalCompletionTokens,
+          totalTokens: result.totalTokensUsed,
+          cost: result.totalCost,
+        };
+      }
+      try {
+        const resumeContext = {
+          instanceId: context.instanceId,
+          definition,
+          instance: context.instance,
+          tenantId: tenant.id,
+          requestId,
+        } as any;
+        const executionRecord = await agentRuntimeService.createExecution(
+          resumeContext,
+          JSON.stringify(body.messages),
+          result.lastResponseText,
+          result.allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
+          model,
+          resumeSettled.promptTokens,
+          resumeSettled.completionTokens,
+          Date.now() - startTime,
+        );
+        const resumeEvalId =
+          executionRecord?.id ??
+          (await agentRegistryService.listExecutions(context.instanceId, context.tenantId, 1))[0]?.id;
+        if (resumeEvalId) {
+          try {
+            await agentRuntimeService.evaluateExecution(
+              resumeContext,
+              {
+                id: resumeEvalId,
+                output: result.lastResponseText,
+                toolsUsed: result.allSteps.flatMap((s) =>
+                  s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name),
+                ),
+                inputTokens: resumeSettled.promptTokens,
+                outputTokens: resumeSettled.completionTokens,
+                durationMs: Date.now() - startTime,
+                status: result.budgetExceeded ? 'error' : 'success',
+                error: result.budgetExceeded ? 'budget_exceeded' : null,
+              },
+              result.allSteps,
+              maxSteps,
+            );
+          } catch (evaluationError) {
+            logger.warn({ executionId: resumeEvalId, error: evaluationError }, 'failed_to_evaluate_resumed_execution');
+          }
+        }
+      } catch (recordError) {
+        logger.warn({ conversationId, error: recordError }, 'agent resume: failed to record execution');
+      }
+
       return reply.send({
         id: requestId,
         agentInstanceId: instanceId,
@@ -538,6 +784,10 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           : {}),
       });
     } finally {
+      await releaseAgentHold((server as any).quotaService, resumeHoldId);
+      await agentRuntimeService.markInstanceReady(resolvedInstanceId, tenant.id).catch((err) => {
+        logger.warn({ instanceId, err }, 'Failed to park hosted agent instance after resume');
+      });
       releaseLock();
     }
   });
@@ -564,11 +814,42 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
    * conversationId), since deletion is the one point where we know for
    * certain the workspace will never be read again — unlike a plain
    * cancel/timeout, which may still be resumed later.
+   *
+   * SECURITY (session boundary): agentSessionStore.delete() is keyed on
+   * conversationId ALONE, so calling it straight from the route let any
+   * authenticated tenant delete another tenant's durable session by id and
+   * then reclaim that session's sandbox workspace. Authorization is now the
+   * same seam the resume path already used: load the session with a
+   * tenant.id-scoped get and require it to be bound to the :instanceId being
+   * addressed (and to that instance's definition) before deleting. A foreign
+   * tenant, a foreign instance, or an absent session are all reported
+   * identically so the response cannot be used to probe for session ids.
    */
   server.delete('/agents/:instanceId/chat/:conversationId', async (request, reply) => {
     const tenant = (request as any).tenant;
     if (!tenant) return reply.code(401).send({ error: { message: 'Unauthorized' } });
-    const { conversationId } = request.params as { conversationId: string };
+
+    const { instanceId, conversationId } = request.params as {
+      instanceId: string;
+      conversationId: string;
+    };
+
+    const context = await agentRuntimeService.loadContext(instanceId, tenant.id);
+    if (!context) {
+      return reply.code(404).send({ error: { message: 'No durable session to delete' } });
+    }
+
+    const persisted = agentSessionStore.get(tenant.id, conversationId);
+    if (!persisted) {
+      return reply.code(404).send({ error: { message: 'No durable session to delete' } });
+    }
+    if (
+      persisted.agentInstanceId !== context.instanceId ||
+      persisted.agentDefinitionId !== context.definition.id
+    ) {
+      return reply.code(404).send({ error: { message: 'No durable session to delete' } });
+    }
+
     agentSessionStore.delete(conversationId);
     cleanupSandboxDir(tenant.id, conversationId);
     return reply.send({ status: 'deleted', conversationId });
@@ -576,18 +857,39 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
   /**
    * POST /agents/:instanceId/chat/:conversationId/cancel
+   *
+   * Same session boundary as resume/delete: the tenant-scoped get alone let
+   * any instance of the tenant cancel a sibling instance's conversation, so
+   * the persisted binding is verified against the addressed instance here too.
    */
   server.post('/agents/:instanceId/chat/:conversationId/cancel', async (request, reply) => {
-    const { conversationId } = request.params as { conversationId: string };
-    const persisted = agentSessionStore.get((request as any).tenant?.id, conversationId);
+    const tenant = (request as any).tenant;
+    if (!tenant) return reply.code(401).send({ error: { message: 'Unauthorized' } });
+
+    const { instanceId, conversationId } = request.params as {
+      instanceId: string;
+      conversationId: string;
+    };
+
+    const context = await agentRuntimeService.loadContext(instanceId, tenant.id);
+    if (!context) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
+    const persisted = agentSessionStore.get(tenant.id, conversationId);
     if (!persisted) {
       return reply.code(404).send({ error: 'Conversation not found' });
     }
+    if (
+      persisted.agentInstanceId !== context.instanceId ||
+      persisted.agentDefinitionId !== context.definition.id
+    ) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
     agentSessionStore.upsert({
-      tenantId: (request as any).tenant.id,
+      tenantId: tenant.id,
       conversationId,
-      instanceId: (persisted as any).agentInstanceId,
-      agentDefinitionId: (persisted as any).agentDefinitionId,
+      instanceId: context.instanceId,
+      agentDefinitionId: context.definition.id,
       state: updateState(persisted.state as ConversationState, { status: 'completed' }),
       status: 'completed',
       metadata: (persisted as any).metadata ?? {},
@@ -666,5 +968,10 @@ function parsedResumeBody(body: unknown): AgentChatBody {
     maxTokens: (b.maxTokens as number) ?? undefined,
     stream: (b.stream as boolean) ?? undefined,
     conversationId: (b.conversationId as string) ?? undefined,
+    // The model override must survive parsing: dropping it here made the
+    // resume-time resolveAgentModel() policy gate unreachable (body.model was
+    // always undefined), so an unauthorized override was silently ignored
+    // instead of failing closed with 403 like the chat path.
+    model: (b.model as string) ?? undefined,
   } as AgentChatBody;
 }

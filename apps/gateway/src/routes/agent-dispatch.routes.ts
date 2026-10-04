@@ -5,9 +5,23 @@ import {
   isSystemAgentName,
 } from '@dmr-x/agent-registry';
 import { agentRuntimeService } from '@dmr-x/agent-runtime';
-import { generateRequestId, logger } from '@dmr-x/utils';
-import { executeToolCall, getRegisteredToolDefinitions, normalizeAllowedTools } from './tools.routes.js';
+import { createInitialState, generateRequestId, logger } from '@dmr-x/utils';
+import { getRegisteredToolDefinitions, normalizeAllowedTools } from './tools.routes.js';
 import type { Router } from '@dmr-x/router';
+import { resolveMetaModel } from '@dmr-x/router';
+import { billingService } from '@dmr-x/billing';
+import { runAgentChatLoop } from './agent-chat-loop.js';
+import {
+  resolveAgentModel,
+  clampAgentTokens,
+  estimateAgentRunTokens,
+  aliasFreeEvidence,
+  resolveAgentToolCatalog,
+  buildDispatchLoopInput,
+  preflightModelRun,
+  releaseAgentHold,
+  settleAgentRun,
+} from '../lib/agent-admission.js';
 
 // ---------------------------------------------------------------------------
 // Meta-agent dispatcher
@@ -152,7 +166,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
     // status in SQL also means a paused instance is never a dispatch target.
     let active: any[];
     try {
-      const result = await agentRegistryService.listInstances(tenant.id, { status: 'active' });
+      const result = await agentRegistryService.listInstances(tenant.id, { status: 'active', accessScope: 'shared' });
       active = result.items;
     } catch (err) {
       logger.error({ err }, 'agent-dispatch: failed to list instances');
@@ -254,127 +268,171 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       });
     }
 
-    // run:true → forward to the chosen subagent, with a tool-use loop.
+    // run:true → resolve the instance/context and run the SHARED agent turn
+    // engine (runAgentChatLoop) instead of a route-local reimplementation, so
+    // chat and dispatch share identical tool-call transcript, error, budget
+    // and response behavior.
     const router = (server as any).router as Router;
-    const model = body.model ?? agentRuntimeService.resolveModel(definition);
-    const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0);
+    const modelDecision = resolveAgentModel(body.model, definition, () =>
+      agentRuntimeService.resolveModel(definition),
+    );
+    if (modelDecision.error) {
+      return reply.code(modelDecision.status ?? 403).send({ error: { message: modelDecision.error } });
+    }
+    const model = modelDecision.model;
+    const systemPrompt = await agentRuntimeService.buildSystemPrompt(definition, 0, [], tenant.id);
     const reqId = generateRequestId();
-    const userMessages =
-      body.messages && body.messages.length > 0
-        ? body.messages
-        : [{ role: 'user' as const, content: body.task }];
-    let messages: Array<{ role: string; content: string; tool_calls?: any[]; tool_call_id?: string }> = [
-      { role: 'system', content: systemPrompt },
-      ...userMessages,
-    ];
 
-    const agentToolDefs = (() => {
-      const names = normalizeAllowedTools(definition.allowedTools);
-      const allDefs = names.length > 0 ? getRegisteredToolDefinitions(names) : getRegisteredToolDefinitions();
-      // Google and other providers reject requests with too many tool defs
-      // (HTTP 400 "Invalid request parameters"). Cap at 30 to stay under
-      // every provider's tool limit — the agent can load more on demand.
-      return allDefs.slice(0, 30);
-    })();
-
-    // Tool-use loop: up to 5 rounds of model call → tool execution → repeat.
-    // Without this, a model that responds with tool_calls (e.g. dmrx_bash,
-    // dmrx_read_file) would have its calls silently dropped, and the final
-    // response would be empty — the caller sees a blank completion.
-    let lastContent = '';
-    const MAX_TOOL_ROUNDS = 5;
-    for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-      const unifiedRequest = {
-        modality: 'llm' as const,
-        model,
-        messages: messages as any,
-        temperature: body.temperature,
-        max_tokens: body.maxTokens,
-        stream: false,
-        tools: agentToolDefs,
-        metadata: { requestId: reqId, tenant },
-      };
-
-      let response: any;
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const routed = await router.route(unifiedRequest, { path: '/v1/agentic/dispatch' });
-          response = routed.response;
-          lastErr = undefined;
-          break;
-        } catch (err) {
-          lastErr = err;
-          // Retry transient errors (rate limits, provider unavailable) after a short wait
-          const isTransient = /rate.?limit|503|502|overloaded|unavailable/i.test(err instanceof Error ? err.message : '');
-          if (isTransient && attempt === 0) {
-            await new Promise(r => setTimeout(r, 1500));
-            continue;
-          }
-          const errMsg = err instanceof Error ? err.message : 'Routing failed';
-          logger.error({ err, round, model, attempt }, 'agent-dispatch: route failed');
-          return reply.code(502).send({
-            error: { message: `Subagent execution failed: ${errMsg}`, instanceId: instance.id },
-          });
-        }
-      }
-      if (!response && lastErr) {
-        const errMsg = lastErr instanceof Error ? lastErr.message : 'Routing failed';
-        return reply.code(502).send({
-          error: { message: `Subagent execution failed: ${errMsg}`, instanceId: instance.id },
-        });
-      }
-
-      const toolCalls = response?.message?.tool_calls ?? [];
-      lastContent = typeof response?.message?.content === 'string' ? response.message.content : '';
-
-      // No tool calls → final response. Strip any leaked thought blocks.
-      if (!toolCalls.length) {
-        lastContent = lastContent.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
-        break;
-      }
-
-      // Max rounds reached with still tool calls — return what we have
-      if (round === MAX_TOOL_ROUNDS) {
-        logger.warn({ round }, 'agent-dispatch: max tool rounds reached');
-        break;
-      }
-
-      // Execute tool calls and append results to messages
-      const assistantMsg = { ...response.message };
-      messages.push(assistantMsg as any);
-
-      for (const tc of toolCalls) {
-        let toolResult: { result?: unknown; error?: { message: string } };
-        try {
-          toolResult = await executeToolCall(tc, {
-            requestId: reqId,
-            tenant,
-            agentDefinition: { id: definition.id, name: definition.name, tenantId: tenant.id, allowedTools: normalizeAllowedTools(definition.allowedTools) },
-            router,
-          });
-        } catch (err) {
-          toolResult = { error: { message: 'Tool execution failed' } };
-        }
-        messages.push({
-          role: 'tool',
-          tool_call_id: tc.id,
-          content: toolResult.error
-            ? JSON.stringify({ error: toolResult.error.message })
-            : JSON.stringify(toolResult.result ?? null),
-        } as any);
-      }
+    const requestedTools = normalizeAllowedTools(definition.allowedTools);
+    const catalog = resolveAgentToolCatalog(requestedTools, (names) =>
+      names && names.length > 0 ? getRegisteredToolDefinitions(names) : getRegisteredToolDefinitions(),
+    );
+    if (catalog.requiredMissing.length > 0) {
+      return reply.code(400).send({
+        error: {
+          message: `Agent requires tools that are not registered: ${catalog.requiredMissing.join(', ')}`,
+          missing: catalog.missing,
+          requiredMissing: catalog.requiredMissing,
+          resolved: catalog.resolved,
+          instanceId: instance.id,
+        },
+      });
     }
 
-    return reply.send({
-      instanceId: instance.id,
-      name: definition.name,
-      category: definition.category,
-      tags: definition.tags,
-      confidence: lowConfidence ? 'low' : 'high',
-      content: lastContent,
-      model: lastContent ? 'multi-step' : undefined,
-      usage: undefined,
+    const dispatchInput = buildDispatchLoopInput({
+      task: body.task,
+      messages: body.messages,
+      systemPrompt,
+      agentToolDefs: catalog.defs as any,
     });
+
+    // Same preflight admission as the chat path: an ATOMIC whole-run hold
+    // (dispatch turn budget x finite per-turn cap — the dispatch loop also
+    // receives that finite cap below), unknown paid pricing fails closed
+    // before any provider call, bare aliases need free-only router evidence.
+    let dispatchHoldId: string | undefined;
+    let dispatchFreeOnly = false;
+    {
+      const perTurnCap = clampAgentTokens(body.maxTokens);
+      const estimatedTokens = estimateAgentRunTokens(perTurnCap, dispatchInput.maxSteps);
+      const preflight = await preflightModelRun({
+        model,
+        estimatedTokens,
+        maxSteps: dispatchInput.maxSteps,
+        tenantId: tenant.id,
+        requestId: reqId,
+        getPricing: (providerId, modelId) => billingService.getModelPricing(providerId, modelId),
+        resolveAliasFree: aliasFreeEvidence(model, () => router.getCandidates(), (alias, cands) =>
+          resolveMetaModel(alias, cands as any, 'free'),
+        ),
+        quotaService: (server as any).quotaService,
+      });
+      if (!preflight.admitted) {
+        const status = preflight.status === 402 ? 402 : 429;
+        return reply.code(status).send({ error: { message: preflight.reason, instanceId: instance.id } });
+      }
+      dispatchHoldId = preflight.admitted ? preflight.holdId : undefined;
+      // Bind the admission proof to the dispatch loop's model requests.
+      dispatchFreeOnly = preflight.freeOnly === true;
+    }
+
+    try {
+      const conversation = createInitialState(`dispatch:${reqId}`);
+      conversation.messages = dispatchInput.messages as any;
+      const loopContext = {
+        instanceId: instance.id,
+        definition,
+        instance,
+        tenantId: tenant.id,
+        requestId: reqId,
+      } as any;
+
+      const loopResult = await runAgentChatLoop({
+        conversation: conversation as any,
+        maxSteps: dispatchInput.maxSteps,
+        model,
+        agentTools: requestedTools,
+        agentToolDefs: dispatchInput.agentToolDefs as any,
+        body: {
+          messages: dispatchInput.messages as any,
+          temperature: body.temperature,
+          maxTokens: clampAgentTokens(body.maxTokens),
+        },
+        requestId: reqId,
+        tenant,
+        router,
+        context: loopContext,
+        stream: false,
+        onStreamEvent: () => {},
+        buildSystemPrompt: async () => systemPrompt,
+        agentDefinition: {
+          id: definition.id,
+          name: definition.name,
+          tenantId: tenant.id,
+          allowedTools: requestedTools,
+        },
+        godmodeWrap: definition.godmodeWrap === true,
+        freeOnly: dispatchFreeOnly,
+        loadedSkillIds: [],
+        runtime: agentRuntimeService,
+        conversationId: `dispatch:${reqId}`,
+      });
+
+      // Settle actual measured usage against the preflight hold (reconciled
+      // once) and record the execution with the real prompt/completion split.
+      const settled = await settleAgentRun({
+        tenantId: tenant.id,
+        model,
+        allSteps: loopResult.allSteps as any,
+        requestId: reqId,
+        sums: {
+          promptTokens: loopResult.totalPromptTokens,
+          completionTokens: loopResult.totalCompletionTokens,
+          totalTokens: loopResult.totalTokensUsed,
+          cost: loopResult.totalCost,
+        },
+        holdId: dispatchHoldId,
+        quotaService: (server as any).quotaService,
+        billingService,
+      });
+      dispatchHoldId = undefined;
+
+      try {
+        await agentRuntimeService.createExecution(
+          loopContext,
+          body.task,
+          loopResult.lastResponseText,
+          loopResult.allSteps.flatMap((s) => s.tool_calls.map((tc: any) => tc.function?.name ?? tc.name)),
+          model,
+          settled.promptTokens,
+          settled.completionTokens,
+          0,
+        );
+      } catch (recordError) {
+        logger.warn({ instanceId: instance.id, error: recordError }, 'agent-dispatch: failed to record execution');
+      }
+
+      return reply.send({
+        instanceId: instance.id,
+        name: definition.name,
+        category: definition.category,
+        tags: definition.tags,
+        confidence: lowConfidence ? 'low' : 'high',
+        content: loopResult.lastResponseText,
+        model,
+        usage: loopResult.finalUsage,
+        totalTokens: loopResult.totalTokensUsed,
+        steps_completed: loopResult.stepsCompleted,
+        ...(loopResult.budgetExceeded ? { budget_exceeded: true, totalCost: loopResult.totalCost } : {}),
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Routing failed';
+      logger.error({ err, model }, 'agent-dispatch: route failed');
+      return reply.code(502).send({
+        error: { message: `Subagent execution failed: ${errMsg}`, instanceId: instance.id },
+      });
+    } finally {
+      await releaseAgentHold((server as any).quotaService, dispatchHoldId);
+    }
   });
 }

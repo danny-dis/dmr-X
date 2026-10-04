@@ -42,6 +42,15 @@ export interface QuotaUsage {
   cost: number;
 }
 
+type AllocationPeriod = 'hourly' | 'daily' | 'monthly';
+
+function finiteNonNegative(value: number, label: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must be finite and non-negative`);
+  }
+  return value;
+}
+
 export class QuotaService {
   private capacityStore: CapacityStore = new InMemoryCapacityStore();
   private capacityManager: CapacityManager = new CapacityManager({
@@ -134,6 +143,287 @@ export class QuotaService {
   }
 
   /**
+   * Durable tenant-budget hold for agent runs (admission SEC-002).
+   *
+   * `dispatchWithReservation` above guards PROVIDER capacity, not the
+   * tenant/company budget. These holds guard the tenant budget instead:
+   * `reserveAgentRun` atomically checks allocations + outstanding holds and
+   * inserts a hold row in ONE synchronous SQLite transaction (BEGIN IMMEDIATE),
+   * so N concurrent gateways cannot all observe the same remaining quota and
+   * oversubscribe it. The reservation itself records NO usage — `settle`
+   * records the measured actuals exactly once, `release` records nothing.
+   * Holds are tenant-bound and expire (bounded TTL) so a crashed gateway can
+   * never pin quota forever.
+   */
+  async reserveAgentRun(
+    tenantId: string,
+    providerKey: string,
+    estimatedTokens: number,
+    estimatedCostCents: number,
+    opts?: { requestId?: string; ttlMs?: number; modelId?: string },
+  ): Promise<{ ok: boolean; holdId?: string; reason?: string; status?: number }> {
+    const db = getDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS agent_quota_holds (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      provider_key TEXT NOT NULL DEFAULT 'agent',
+      estimated_tokens INTEGER NOT NULL DEFAULT 0,
+      estimated_cost_cents INTEGER NOT NULL DEFAULT 0,
+      request_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_quota_holds_tenant
+      ON agent_quota_holds(tenant_id, expires_at)`);
+
+    // Bounded TTL: default 10 min, clamped to [30s, 30min].
+    const ttlMs = Math.min(Math.max(opts?.ttlMs ?? 10 * 60 * 1000, 30_000), 30 * 60 * 1000);
+    const expiresIso = new Date(Date.now() + ttlMs).toISOString();
+    const holdId = crypto.randomUUID();
+    const key = providerKey && providerKey.length > 0 ? providerKey : 'agent';
+    const wantTokens = Math.max(0, Math.floor(finiteNonNegative(estimatedTokens, 'estimated tokens')));
+    const wantCents = Math.max(0, Math.round(finiteNonNegative(estimatedCostCents, 'estimated cost')));
+    const wantDollars = wantCents / 100;
+
+    // ONE synchronous transaction (better-sqlite3): no awaits between BEGIN
+    // and COMMIT, so concurrent gateways serialize on the DB write lock and
+    // cannot all observe the same remaining quota. Everything read here
+    // (holds, allocations, cache usage, credits) is synchronous.
+    try {
+      // NOTE: DatabaseWrapper.transaction(fn) executes immediately (it is
+      // NOT the better-sqlite3 curried form) — everything inside stays
+      // synchronous between BEGIN and COMMIT.
+      db.transaction(() => {
+        const nowIso = new Date().toISOString();
+        db.prepare(`DELETE FROM agent_quota_holds WHERE expires_at <= ?`).run(nowIso);
+        const held = db.prepare(
+          `SELECT COUNT(*) AS requests,
+                  COALESCE(SUM(estimated_tokens), 0) AS tokens,
+                  COALESCE(SUM(estimated_cost_cents), 0) AS cents
+           FROM agent_quota_holds WHERE tenant_id = ? AND expires_at > ?`,
+        ).get(tenantId, nowIso) as { requests: number; tokens: number; cents: number };
+        const heldForScope = (providerScope: string | null) => {
+          const params: unknown[] = [tenantId, nowIso];
+          const providerClause = providerScope && providerScope !== 'agent'
+            ? ' AND provider_key = ?'
+            : '';
+          if (providerClause) params.push(providerScope);
+          return db.prepare(
+            `SELECT COUNT(*) AS requests,
+                    COALESCE(SUM(estimated_tokens), 0) AS tokens,
+                    COALESCE(SUM(estimated_cost_cents), 0) AS cents
+             FROM agent_quota_holds
+             WHERE tenant_id = ? AND expires_at > ?${providerClause}`,
+          ).get(...params) as { requests: number; tokens: number; cents: number };
+        };
+
+        // Credit balance is a hard spending limit: outstanding + estimate.
+        if (wantCents > 0) {
+          const creditCheck = creditService.checkSufficientCredits(tenantId, held.cents + wantCents);
+          if (!creditCheck.sufficient) {
+            throw new QuotaExhaustedError();
+          }
+        }
+
+        const rows = db.prepare(
+          `SELECT id, tenant_id, provider_id, max_requests, max_tokens, max_cost, period
+           FROM quota_allocations WHERE tenant_id = ?`,
+        ).all(tenantId) as any[];
+        for (const row of rows) {
+          const pid: string | null = row.provider_id ?? null;
+          if (pid && pid !== key && pid !== 'agent') continue;
+          const providerScope = pid && pid !== 'agent' ? pid : null;
+          const period: AllocationPeriod = row.period === 'hourly' || row.period === 'daily'
+            ? row.period
+            : 'monthly';
+          const usage = this.readDurableUsage(
+            db,
+            tenantId,
+            providerScope,
+            this.getPeriodStart(period),
+            this.getPeriodEnd(period),
+          );
+          const heldInScope = heldForScope(providerScope);
+          const requests = usage.requests;
+          const tokens = usage.tokens;
+          const cost = usage.costDollars;
+          if (row.max_requests != null && requests + heldInScope.requests + 1 > row.max_requests) {
+            throw new QuotaExhaustedError();
+          }
+          if (row.max_tokens != null && tokens + heldInScope.tokens + wantTokens > row.max_tokens) {
+            throw new QuotaExhaustedError();
+          }
+          const maxCost = row.max_cost != null ? parseFloat(row.max_cost) : undefined;
+          if (maxCost != null && cost + heldInScope.cents / 100 + wantDollars > maxCost) {
+            throw new QuotaExhaustedError();
+          }
+        }
+
+        // Free-tier model budgets are part of admission, not only candidate
+        // filtering. Read durable usage so another gateway process cannot spend
+        // the same daily/monthly allowance after this process loses its cache.
+        if (wantCents === 0 && opts?.modelId) {
+          const freeTier = PROVIDER_CATALOG
+            .find((provider) => provider.id === key)
+            ?.models.find((model) => model.id === opts.modelId)
+            ?.freeTier;
+          if (freeTier) {
+            const providerHeld = heldForScope(key);
+            const monthly = this.readDurableUsage(db, tenantId, key, this.getPeriodStart('monthly'), this.getPeriodEnd('monthly'));
+            const daily = this.readDurableUsage(db, tenantId, key, this.getPeriodStart('daily'), this.getPeriodEnd('daily'));
+            const monthlyLimit = freeTier.monthlyTokenBudget ?? 0;
+            const dailyLimit = freeTier.dailyTokenBudget ?? 0;
+            const dailyTokenLimit = freeTier.rateLimits.tpd ?? 0;
+            const dailyRequestLimit = freeTier.rateLimits.rpd ?? 0;
+            if (monthlyLimit > 0 && monthly.tokens + wantTokens + providerHeld.tokens > monthlyLimit) {
+              throw new QuotaExhaustedError();
+            }
+            if (dailyLimit > 0 && daily.tokens + wantTokens + providerHeld.tokens > dailyLimit) {
+              throw new QuotaExhaustedError();
+            }
+            if (dailyTokenLimit > 0 && daily.tokens + wantTokens + providerHeld.tokens > dailyTokenLimit) {
+              throw new QuotaExhaustedError();
+            }
+            if (dailyRequestLimit > 0 && daily.requests + providerHeld.requests + 1 > dailyRequestLimit) {
+              throw new QuotaExhaustedError();
+            }
+          }
+        }
+
+        db.prepare(
+          `INSERT INTO agent_quota_holds
+             (id, tenant_id, provider_key, estimated_tokens, estimated_cost_cents, request_id, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(holdId, tenantId, key, wantTokens, wantCents, opts?.requestId ?? null, expiresIso);
+      });
+      return { ok: true, holdId };
+    } catch (err) {
+      if (err instanceof QuotaExhaustedError) {
+        logger.warn({ tenantId, wantTokens, wantCents }, 'Agent quota hold rejected');
+        return { ok: false, reason: 'quota/budget admission rejected: quota exceeded', status: 429 };
+      }
+      logger.warn({ tenantId, err }, 'Agent quota hold unavailable — failing closed');
+      return { ok: false, reason: 'quota/budget admission rejected: quota service unavailable', status: 429 };
+    }
+  }
+
+  /**
+   * Release a hold WITHOUT recording usage (failure path). Never throws for
+   * a missing/expired hold — expiry cleanup is idempotent by design.
+   */
+  async releaseAgentHold(holdId: string): Promise<void> {
+    try {
+      getDb().prepare(`DELETE FROM agent_quota_holds WHERE id = ?`).run(holdId);
+    } catch {
+      /* release is best-effort; expiry bounds the damage */
+    }
+  }
+
+  /**
+   * Settle a hold with MEASURED actuals (success path, incl. resume).
+   * The settlement ledger and paid credit debit share one synchronous SQLite
+   * transaction on the first attempt. If an older process already committed a
+   * settlement before its debit failed, retrying debits the canonical amount
+   * stored in that settlement row.
+   */
+  async settleAgentHold(
+    holdId: string,
+    actual: { tokens: number; costDollars: number },
+    context?: { tenantId: string; providerKey: string; modelId?: string; promptTokens?: number; completionTokens?: number },
+  ): Promise<void> {
+    const db = getDb();
+    const tokens = Math.floor(finiteNonNegative(actual.tokens, 'actual usage'));
+    const costDollars = finiteNonNegative(actual.costDollars, 'actual usage');
+    let settled: {
+      tenantId: string;
+      providerKey: string;
+      modelId: string;
+      tokens: number;
+      costDollars: number;
+    } | undefined;
+    let isNewSettlement = false;
+
+    try {
+      const existing = db.prepare(
+        `SELECT tenant_id, provider_key, model_id, actual_tokens, actual_cost_dollars
+         FROM agent_quota_settlements WHERE hold_id = ?`,
+      ).get(holdId) as {
+        tenant_id: string;
+        provider_key: string;
+        model_id: string;
+        actual_tokens: number;
+        actual_cost_dollars: number;
+      } | undefined;
+
+      if (existing) {
+        // Retries must use the durable ledger values, not changed response
+        // arguments that could waive or duplicate the original spend.
+        settled = {
+          tenantId: existing.tenant_id,
+          providerKey: existing.provider_key,
+          modelId: existing.model_id,
+          tokens: Number(existing.actual_tokens),
+          costDollars: Number(existing.actual_cost_dollars),
+        };
+      } else {
+        const row = db.prepare(
+          `SELECT tenant_id, provider_key FROM agent_quota_holds WHERE id = ?`,
+        ).get(holdId) as { tenant_id: string; provider_key: string } | undefined;
+        const tenantId = row?.tenant_id ?? context?.tenantId;
+        if (!tenantId) throw new Error('agent quota settlement requires tenant context');
+        const providerKey = row?.provider_key || context?.providerKey || 'agent';
+        const modelId = context?.modelId || providerKey;
+        const persist = (): void => {
+          db.prepare(
+            `INSERT INTO agent_quota_settlements
+               (hold_id, tenant_id, provider_key, model_id, actual_tokens, actual_cost_dollars)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          ).run(holdId, tenantId, providerKey, modelId, tokens, costDollars);
+          db.prepare(`DELETE FROM agent_quota_holds WHERE id = ?`).run(holdId);
+          this.insertDurableUsage(db, tenantId, providerKey, modelId, tokens, costDollars, holdId, context?.promptTokens);
+          settled = { tenantId, providerKey, modelId, tokens, costDollars };
+        };
+
+        // CreditService invokes persist inside its own transaction. This keeps
+        // the debit, claim, settlement, hold deletion, and usage rows atomic.
+        if (costDollars > 0) {
+          const debited = creditService.deductUsage(
+            tenantId,
+            Math.round(costDollars * 100),
+            holdId,
+            persist,
+          );
+          if (!debited) throw new Error('agent credit debit rejected');
+        } else {
+          db.transaction(persist);
+        }
+        isNewSettlement = true;
+      }
+    } catch (err) {
+      logger.warn({ holdId, err }, 'Agent quota settlement unavailable');
+      throw err;
+    }
+
+    if (!settled) throw new Error('agent quota settlement did not produce a ledger row');
+
+    // Recover debits committed by the pre-transaction implementation. The
+    // durable settlement row is authoritative for every retry.
+    if (!isNewSettlement && settled.costDollars > 0) {
+      const debited = creditService.deductUsage(
+        settled.tenantId,
+        Math.round(settled.costDollars * 100),
+        holdId,
+      );
+      if (!debited) throw new Error('agent credit debit rejected');
+    }
+
+    if (isNewSettlement) {
+      this.incrementQuotaCache(settled.tenantId, settled.providerKey, settled.tokens, settled.costDollars);
+      await this.recordProviderBudgetUsage(settled.tenantId, settled.providerKey, settled.tokens);
+    }
+  }
+
+  /**
    * Filter candidates based on tenant quota
    */
   async filterByQuota(
@@ -189,23 +479,123 @@ export class QuotaService {
     return model?.freeTier?.monthlyTokenBudget || 0;
   }
 
+  private getPeriodStart(period: AllocationPeriod): string {
+    const now = new Date();
+    if (period === 'hourly') {
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()).toISOString();
+    }
+    if (period === 'daily') {
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    }
+    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  }
+
+  private getPeriodEnd(period: AllocationPeriod): string {
+    const now = new Date();
+    if (period === 'hourly') {
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1).toISOString();
+    }
+    if (period === 'daily') {
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+    }
+    return new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
+  }
+
+  private readDurableUsage(
+    db: ReturnType<typeof getDb>,
+    tenantId: string,
+    providerId: string | null,
+    from: string,
+    to: string | null,
+  ): { requests: number; tokens: number; costDollars: number } {
+    const conditions = ['tenant_id = ?', 'created_at >= ?'];
+    const params: unknown[] = [tenantId, from];
+    if (providerId) {
+      conditions.push('provider_id = ?');
+      params.push(providerId);
+    }
+    if (to) {
+      conditions.push('created_at < ?');
+      params.push(to);
+    }
+    const row = db.prepare(
+      `SELECT COUNT(*) AS requests,
+              COALESCE(SUM(total_tokens), 0) AS tokens,
+              COALESCE(SUM(cost_cents), 0) AS cost_cents
+       FROM usage_records WHERE ${conditions.join(' AND ')}`,
+    ).get(...params) as { requests: number; tokens: number; cost_cents: number };
+    return {
+      requests: Number(row?.requests ?? 0),
+      tokens: Number(row?.tokens ?? 0),
+      costDollars: Number(row?.cost_cents ?? 0) / 100,
+    };
+  }
+
+  private insertDurableUsage(
+    db: ReturnType<typeof getDb>,
+    tenantId: string,
+    providerId: string,
+    modelId: string,
+    tokens: number,
+    costDollars: number,
+    requestId: string | null,
+    promptTokens?: number,
+  ): void {
+    const inputTokens = promptTokens === undefined ? 0 : Math.min(tokens, Math.floor(finiteNonNegative(promptTokens, 'prompt usage')));
+    db.prepare(
+      `INSERT INTO usage_records
+         (id, tenant_id, provider_id, model_id, input_tokens, output_tokens, total_tokens, cost_cents, request_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      crypto.randomUUID(),
+      tenantId,
+      providerId,
+      modelId,
+      inputTokens,
+      tokens - inputTokens,
+      tokens,
+      Math.round(costDollars * 100),
+      requestId,
+      new Date().toISOString(),
+    );
+    db.prepare(
+      `INSERT INTO billing_records (id, tenant_id, request_id, amount, description)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      crypto.randomUUID(),
+      tenantId,
+      requestId,
+      costDollars,
+      `Usage: ${tokens} tokens via ${providerId}`,
+    );
+  }
+
+  private incrementQuotaCache(tenantId: string, providerId: string, tokens: number, costDollars: number): void {
+    const key = `${tenantId}:${providerId}`;
+    quotaCache.hIncrBy(key, 'requests', 1);
+    quotaCache.hIncrBy(key, 'tokens', tokens);
+    quotaCache.hIncrBy(key, 'cost', Math.round(costDollars));
+    quotaCache.expire(key, 30 * 24 * 60 * 60);
+  }
+
   /**
    * Get accumulated token usage for a provider's free-tier budget (current month).
    *
-   * When `keyId` is provided, reads the per-key bucket. Provider free tiers are
-   * granted per credential, so when a tenant rotates several keys the buckets
-   * must stay separate — otherwise one shared pool over-restricts traffic (it
-   * caps at a single key's budget even though every key has budget left) or,
-   * worse, keeps routing to an exhausted key because the shared pool still has
-   * headroom from the other keys.
+   * The cache remains the fast path for explicit budget adjustments. Normal
+   * request usage falls back to SQLite, so another gateway instance or a cache
+   * eviction cannot make an exhausted budget look unused.
    */
   async getProviderBudgetUsage(tenantId: string, providerId: string, keyId?: string): Promise<number> {
     const periodKey = this.getCurrentMonthKey();
     const key = keyId
       ? `${tenantId}:${providerId}:${keyId}:${periodKey}`
       : `${tenantId}:${providerId}:${periodKey}`;
-    const usage = budgetCache.get(key);
-    return parseInt(usage || '0');
+    const cached = budgetCache.get(key);
+    const cachedTokens = Math.max(0, Number.parseInt(cached || '0', 10) || 0);
+    // Credential-specific adjustments lack a durable per-key attribution column.
+    if (keyId) return cachedTokens;
+    const durableTokens = this.readDurableUsage(getDb(), tenantId, providerId, this.getPeriodStart('monthly'), this.getPeriodEnd('monthly')).tokens;
+    return Math.max(cachedTokens, durableTokens);
   }
 
   /**
@@ -277,26 +667,25 @@ export class QuotaService {
     tokens: number,
     cost: number
   ): Promise<void> {
-    // Increment counters in cache (fast path)
-    const key = `${tenantId}:${providerId}`;
-    quotaCache.hIncrBy(key, 'requests', 1);
-    quotaCache.hIncrBy(key, 'tokens', tokens);
-    quotaCache.hIncrBy(key, 'cost', Math.round(cost));
-
-    // Set expiry based on period (default: 30 days)
-    quotaCache.expire(key, 30 * 24 * 60 * 60);
-
-    // Also record in database for persistence
     const db = getDb();
-    const id = crypto.randomUUID();
-    db.prepare(
-      `INSERT INTO billing_records (id, tenant_id, request_id, amount, description)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(id, tenantId, null, cost, `Usage: ${tokens} tokens via ${providerId}`);
+    const normalizedTokens = Math.max(0, Math.floor(tokens));
+    const normalizedCost = Math.max(0, cost);
+    this.incrementQuotaCache(tenantId, providerId, normalizedTokens, normalizedCost);
+    db.transaction(() => {
+      this.insertDurableUsage(
+        db,
+        tenantId,
+        providerId,
+        providerId,
+        normalizedTokens,
+        normalizedCost,
+        null,
+      );
+    });
 
     // Deduct from credit balance if cost > 0
-    if (cost > 0) {
-      creditService.deductUsage(tenantId, Math.round(cost * 100));
+    if (normalizedCost > 0) {
+      creditService.deductUsage(tenantId, Math.round(normalizedCost * 100));
     }
 
     // Check budget alerts asynchronously (fire-and-forget)

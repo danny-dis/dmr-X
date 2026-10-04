@@ -73,7 +73,23 @@ describe('sqlite-client', () => {
       // 077 adds per-agent compaction thresholds.
       // 080 attaches research skills to web agents.
       // 081 makes model_profiles cost columns nullable (unpriced != free).
-      expect(row.v).toBe(81);
+      // 082 sharing; 083 hosted instance fields; 084 durable scheduled occurrences.
+      // 085 agent quota holds. Derive the expected maximum from the
+      // migration sources on disk (tolerates Luna's optional 086) instead
+      // of hardcoding 84.
+      const migrationsDir = path.join(process.cwd(), 'packages/db/src/migrations');
+      const migrationFiles = fs.existsSync(migrationsDir)
+        ? fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql'))
+        : [];
+      const fileVersions = migrationFiles
+        .map((f) => /^(\d+)_/.exec(f)?.[1])
+        .filter((v): v is string => v !== undefined)
+        .map((v) => parseInt(v, 10))
+        .filter((v) => Number.isFinite(v));
+      // Fallback keeps the assertion meaningful if the directory is absent
+      // in a packaged layout (client backfills from embedded MIGRATIONS).
+      const expectedMax = fileVersions.length > 0 ? Math.max(...fileVersions) : 85;
+      expect(row.v).toBe(expectedMax);
     });
 
     it('should expose prepare / get / run / all / close on the wrapper', async () => {

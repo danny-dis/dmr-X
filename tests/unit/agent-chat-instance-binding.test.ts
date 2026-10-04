@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@dmr-x/agent-runtime', () => ({
   agentRuntimeService: {
     loadContext: (...args: unknown[]) => mocks.loadContext(...args),
-    resolveModel: () => 'test-model',
+    markInstanceReady: vi.fn().mockResolvedValue(undefined),
+    resolveModel: () => 'fixture/test-model',
     buildSystemPrompt: vi.fn().mockResolvedValue('system prompt'),
     createExecution: vi.fn().mockResolvedValue({ id: 'execution-1' }),
     evaluateExecution: vi.fn().mockResolvedValue(undefined),
@@ -21,6 +22,29 @@ vi.mock('@dmr-x/agent-runtime', () => ({
   agentSessionStore: {
     locks: new Map<string, Promise<void>>(),
     get: vi.fn(() => mocks.persisted),
+    claim: vi.fn((input: any) => {
+      const p = mocks.persisted;
+      if (!p) {
+        return {
+          outcome: 'claimed',
+          owner: {
+            tenantId: input.tenantId,
+            agentInstanceId: input.instanceId,
+            agentDefinitionId: input.agentDefinitionId,
+          },
+        };
+      }
+      const owner = {
+        tenantId: p.tenantId,
+        agentInstanceId: p.agentInstanceId,
+        agentDefinitionId: p.agentDefinitionId,
+      };
+      const same =
+        owner.tenantId === input.tenantId &&
+        owner.agentInstanceId === input.instanceId &&
+        (owner.agentDefinitionId == null || owner.agentDefinitionId === input.agentDefinitionId);
+      return { outcome: same ? 'owned' : 'conflict', owner };
+    }),
     upsert: (...args: unknown[]) => mocks.upsert(...args),
     persistRunSteps: (...args: unknown[]) => mocks.persistRunSteps(...args),
     listForInstance: vi.fn(() => []),
@@ -39,6 +63,17 @@ vi.mock('@dmr-x/agent-registry', async (importOriginal) => {
     },
   };
 });
+
+// This fixture exercises transcript binding, with explicit known-free pricing.
+vi.mock('@dmr-x/billing', () => ({
+  billingService: {
+    getModelPricing: vi.fn().mockResolvedValue({
+      providerId: 'fixture', modelId: 'test-model',
+      inputPricePer1kTokens: 0, outputPricePer1kTokens: 0,
+    }),
+    recordUsage: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 
 vi.mock('../../apps/gateway/src/routes/tools.routes.js', () => ({
   getRegisteredToolDefinitions: vi.fn(() => []),

@@ -85,8 +85,18 @@ afterEach(async () => {
 describe('A2A production principal ownership', () => {
   it('isolates get, list, context continuation, cancel and push config by bearer identity', async () => {
     const task = await createOwnedTask();
-    expect(task.metadata).not.toHaveProperty('owner');
+    // Repaired assertion, equivalent intent: the original read
+    // `expect(task.metadata).not.toHaveProperty('owner')`, but `metadata` is
+    // legitimately `undefined` for a task created without caller metadata, and
+    // the matcher rejects undefined before it can assert anything — so the test
+    // failed on the matcher, not on a leaked owner. The security property being
+    // asserted is "no ownership marker is exposed on the outbound task", which
+    // is exactly what the two checks below test, and they hold for both the
+    // `undefined` and the metadata-present case. Nothing is weakened: the raw
+    // credential check below is stricter than the original pair.
+    expect(task.metadata ?? {}).not.toHaveProperty('owner');
     expect(JSON.stringify(task)).not.toContain('production-owner-a');
+    expect(JSON.stringify(task)).not.toContain('fixture-gateway-key-a');
 
     const deniedGet = await rpc('tasks/get', { id: taskId }, ownerB);
     expect(deniedGet.error?.code).toBe(-32001);

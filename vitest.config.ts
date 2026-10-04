@@ -55,6 +55,7 @@ const backendAlias = {
   // gateway-internal workspace packages (needed by routes under test)
   '@dmr-x/sandbox': resolve(__dirname, 'services/sandbox/src'),
   '@dmr-x/router': resolve(__dirname, 'services/router/src'),
+  '@dmr-x/benchmark': resolve(__dirname, 'services/benchmark/src'),
   '@dmr-x/agent-registry': resolve(__dirname, 'services/agent-registry/src'),
   '@dmr-x/agent-runtime': resolve(__dirname, 'services/agent-runtime/src'),
   '@dmr-x/quota': resolve(__dirname, 'services/quota/src'),

@@ -4,6 +4,9 @@ import {
   AgentDefinitionCreateSchema,
   AgentDefinitionUpdateSchema,
   AgentInstanceCreateSchema,
+  AgentInstanceRuntimeUpdateSchema,
+  AgentRuntimeModeSchema,
+  AgentAccessScopeSchema,
   AgentListQuerySchema,
   AgentRatingCreateSchema,
   MarketplaceQuerySchema,
@@ -17,7 +20,7 @@ import {
 } from '@dmr-x/agent-registry';
 import { getDb } from '@dmr-x/db';
 import type { FastifyInstance } from 'fastify';
-import { agentScheduler } from '@dmr-x/agent-runtime';
+import { agentScheduler, agentRuntimeService } from '@dmr-x/agent-runtime';
 
 import { agentPermissions } from '../middleware/agent-rbac.middleware.js';
 
@@ -143,14 +146,22 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
    */
   server.get('/agents/instances', { preHandler: [agentPermissions.read()] }, async (request, reply) => {
     const tenant = (request as any).tenant;
-    const { status, limit, offset } = request.query as {
+    const { status, accessScope, runtimeMode, limit, offset } = request.query as {
       status?: string;
+      accessScope?: string;
+      runtimeMode?: string;
       limit?: string;
       offset?: string;
     };
 
     if (status && status !== 'active' && status !== 'paused') {
       return reply.code(400).send({ error: { message: "status must be 'active' or 'paused'" } });
+    }
+    if (accessScope && !AgentAccessScopeSchema.safeParse(accessScope).success) {
+      return reply.code(400).send({ error: { message: "accessScope must be 'private' or 'shared'" } });
+    }
+    if (runtimeMode && !AgentRuntimeModeSchema.safeParse(runtimeMode).success) {
+      return reply.code(400).send({ error: { message: "runtimeMode must be 'persistent' or 'ephemeral'" } });
     }
 
     // Query params arrive as strings; passing one straight through as a number
@@ -175,6 +186,8 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
 
     const result = await agentRegistryService.listInstances(tenant.id, {
       status,
+      accessScope: accessScope as 'private' | 'shared' | undefined,
+      runtimeMode: runtimeMode as 'persistent' | 'ephemeral' | undefined,
       limit: parsedLimit,
       offset: parsedOffset,
     });
@@ -247,6 +260,68 @@ export async function agentRoutes(server: FastifyInstance): Promise<void> {
     return reply.send(instance);
   });
 
+  server.get('/instances/:id/runtime', { preHandler: [agentPermissions.read()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const instance = await agentRegistryService.getInstanceRuntime(id, tenant.id);
+    if (!instance) return reply.code(404).send({ error: { message: 'Instance not found' } });
+    return reply.send({
+      instanceId: id,
+      runtimeMode: instance.runtimeMode,
+      accessScope: instance.accessScope,
+      lifecycleState: instance.lifecycleState,
+      lifecyclePolicy: instance.lifecyclePolicy,
+      lastActivityAt: instance.lastActivityAt,
+      lastHeartbeatAt: instance.lastHeartbeatAt,
+    });
+  });
+
+  server.put('/instances/:id/runtime', { preHandler: [agentPermissions.deploy()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const parsed = AgentInstanceRuntimeUpdateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: { message: 'Invalid runtime configuration', details: parsed.error.issues } });
+    }
+    const instance = await agentRegistryService.updateInstanceRuntime(id, tenant.id, parsed.data);
+    if (!instance) return reply.code(404).send({ error: { message: 'Instance not found' } });
+    return reply.send(instance);
+  });
+
+  /** Wake a parked instance without creating a second identity. */
+  server.post('/instances/:id/wake', { preHandler: [agentPermissions.deploy()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    try {
+      const instance = await agentRuntimeService.wakeInstance(id, tenant.id);
+      if (!instance) return reply.code(404).send({ error: { message: 'Instance not found or retired' } });
+      return reply.send(instance);
+    } catch (error) {
+      return reply.code(409).send({ error: { message: error instanceof Error ? error.message : String(error) } });
+    }
+  });
+
+  /** Park an instance while keeping its definition and sessions durable. */
+  server.post('/instances/:id/sleep', { preHandler: [agentPermissions.deploy()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    const instance = await agentRuntimeService.sleepInstance(id, tenant.id);
+    if (!instance) return reply.code(404).send({ error: { message: 'Instance not found' } });
+    return reply.send(instance);
+  });
+
+  /** Retire the identity; history remains available for audit. */
+  server.post('/instances/:id/retire', { preHandler: [agentPermissions.delete()] }, async (request, reply) => {
+    const tenant = (request as any).tenant;
+    const { id } = request.params as { id: string };
+    try {
+      const instance = await agentRuntimeService.retireInstance(id, tenant.id);
+      if (!instance) return reply.code(404).send({ error: { message: 'Instance not found' } });
+      return reply.send(instance);
+    } catch (error) {
+      return reply.code(409).send({ error: { message: error instanceof Error ? error.message : String(error) } });
+    }
+  });
   /**
    * Per-turn step trace for an instance's runs — the "why did this run do
    * that" view. Reads `session_steps`, which was being written on every agent

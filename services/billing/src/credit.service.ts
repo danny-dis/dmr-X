@@ -110,48 +110,98 @@ export class CreditService {
   /**
    * Deduct credits for usage. Returns true if sufficient balance.
    * Returns false if insufficient balance (does not deduct).
+   *
+   * When requestId is present, the claim and audit row are durable and keyed
+   * by tenant + request. `afterDebit` runs inside the same SQLite transaction;
+   * callers that need to persist a dependent ledger row can therefore commit
+   * both records atomically or roll both back.
    */
   deductUsage(
     tenantId: string,
     amountCents: number,
     requestId?: string,
+    afterDebit?: () => void,
   ): boolean {
     if (amountCents <= 0) return true;
 
     const db = getDb();
-    const balance = this.getBalance(tenantId);
-
-    // No credit account = no spending limit (allow)
-    if (!balance) return true;
-
-    // Insufficient balance
-    if (balance.balanceCents < amountCents) {
-      logger.warn(
-        { tenantId, required: amountCents, available: balance.balanceCents },
-        'Insufficient credit balance'
-      );
-      return false;
-    }
-
-    const newBalance = balance.balanceCents - amountCents;
+    let deducted = false;
 
     db.transaction(() => {
-      db.prepare(
+      if (requestId) {
+        const claimed = db.prepare(
+          `SELECT 1 FROM credit_usage_claims WHERE tenant_id = ? AND request_id = ?`,
+        ).get(tenantId, requestId);
+        if (claimed) {
+          deducted = true;
+          afterDebit?.();
+          return;
+        }
+
+        // Preserve and honor historical request-keyed usage rows created
+        // before the separate claims table existed. Never rewrite the audit.
+        const historical = db.prepare(
+          `SELECT 1 FROM credit_transactions
+           WHERE tenant_id = ? AND type = 'usage' AND request_id = ?
+           LIMIT 1`,
+        ).get(tenantId, requestId);
+        if (historical) {
+          deducted = true;
+          afterDebit?.();
+          return;
+        }
+      }
+
+      // No credit account means unlimited spending. Do not create an account
+      // as a side effect of a debit attempt.
+      const account = db.prepare(
+        `SELECT tenant_id FROM credits WHERE tenant_id = ?`,
+      ).get(tenantId);
+      if (!account) {
+        deducted = true;
+        afterDebit?.();
+        return;
+      }
+
+      // The balance check and decrement are one conditional write. No stale
+      // balance read is used to calculate an absolute replacement value.
+      const result = db.prepare(
         `UPDATE credits SET
-          balance_cents = ?,
+          balance_cents = balance_cents - ?,
           total_used_cents = total_used_cents + ?,
           updated_at = datetime('now')
-        WHERE tenant_id = ?`
-      ).run(newBalance, amountCents, tenantId);
+        WHERE tenant_id = ? AND balance_cents >= ?`,
+      ).run(amountCents, amountCents, tenantId, amountCents);
+
+      if (result.changes !== 1) {
+        const current = db.prepare(
+          `SELECT balance_cents FROM credits WHERE tenant_id = ?`,
+        ).get(tenantId) as { balance_cents: number } | undefined;
+        logger.warn(
+          { tenantId, required: amountCents, available: current?.balance_cents ?? 0 },
+          'Insufficient credit balance',
+        );
+        return;
+      }
 
       const txId = crypto.randomUUID();
       db.prepare(
         `INSERT INTO credit_transactions (id, tenant_id, type, amount_cents, balance_after_cents, request_id)
-         VALUES (?, ?, 'usage', ?, ?, ?)`
-      ).run(txId, tenantId, -amountCents, newBalance, requestId || null);
+         SELECT ?, ?, 'usage', ?, balance_cents, ?
+         FROM credits WHERE tenant_id = ?`,
+      ).run(txId, tenantId, -amountCents, requestId || null, tenantId);
+      if (requestId) {
+        db.prepare(
+          `INSERT INTO credit_usage_claims
+             (tenant_id, request_id, credit_transaction_id, amount_cents)
+           VALUES (?, ?, ?, ?)`,
+        ).run(tenantId, requestId, txId, amountCents);
+      }
+      deducted = true;
+      afterDebit?.();
     });
 
-    return true;
+    return deducted;
   }
 
   /**

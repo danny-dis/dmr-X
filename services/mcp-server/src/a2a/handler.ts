@@ -17,6 +17,7 @@ import { createLogger } from '@dmr-x/utils';
 
 import type { RequestHeaders } from '../tenant-key.js';
 import { buildAgentCard, type AgentCardConfig } from './agent-card.js';
+import { resolveOwnerId } from './owner.js';
 import {
   handleRpc,
   handleRpcStream,
@@ -29,6 +30,13 @@ import {
   type StreamSink,
 } from './jsonrpc.js';
 import { getTaskManager } from './task-manager.js';
+import {
+  authenticateA2ARequest,
+  checkA2ARateLimit,
+  negotiatedA2AVersion,
+  sendAuthError,
+  supportedA2AVersion,
+} from './security.js';
 
 const logger = createLogger('mcp-server:a2a:handler');
 
@@ -49,6 +57,42 @@ export async function handleA2ARoutes(
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const path = url.pathname;
+  const isCardPath = path === '/.well-known/agent-card.json' || path === '/.well-known/agent.json';
+  if (path !== '/a2a' && !path.startsWith('/a2a/') && !isCardPath) return false;
+  // Every task-addressing route resolves the caller's authenticated principal
+  // through the same identity seam the JSON-RPC surface uses, so the legacy REST
+  // shims cannot become a way around ownership enforcement.
+  const ownerId = await resolveOwnerId(req.headers as RequestHeaders);
+
+  // Agent Card discovery is intentionally public. Every operation that can
+  // create/read/mutate tasks is authenticated below.
+  const isCardDiscovery =
+    (path === '/.well-known/agent-card.json' || path === '/.well-known/agent.json') &&
+    req.method === 'GET';
+
+  if (!isCardDiscovery) {
+    const auth = authenticateA2ARequest(req.headers);
+    if (!auth.ok) {
+      sendAuthError(res, process.env.NODE_ENV === 'production' && auth.reason?.includes('not configured') ? 503 : 401, auth.reason);
+      return true;
+    }
+    if (!checkA2ARateLimit(auth.principal || 'anonymous')) {
+      res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '60', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'A2A rate limit exceeded' }));
+      return true;
+    }
+
+    const version = req.headers['a2a-version'];
+    if (!supportedA2AVersion(version)) {
+      sendJson(res, 400, {
+        error: 'A2A protocol version not supported',
+        supportedVersions: ['1.0', '0.3'],
+      });
+      return true;
+    }
+    (req as IncomingMessage & { a2aPrincipal?: string; a2aVersion?: string }).a2aPrincipal = auth.principal;
+    (req as IncomingMessage & { a2aPrincipal?: string; a2aVersion?: string }).a2aVersion = negotiatedA2AVersion(version);
+  }
 
   // Keep the RPC-facing card in step with the discovery endpoint — both build
   // from the same config + live tool list.
@@ -59,12 +103,19 @@ export async function handleA2ARoutes(
     (path === '/.well-known/agent-card.json' || path === '/.well-known/agent.json') &&
     req.method === 'GET'
   ) {
-    sendJson(res, 200, buildAgentCard(config?.agentCard || {}, tools || []));
+    res.writeHead(200, { 'Content-Type': 'application/a2a+json', 'Cache-Control': 'public, max-age=300', 'Vary': 'Accept' });
+    res.end(JSON.stringify(buildAgentCard(config?.agentCard || {}, tools || [])));
     return true;
   }
 
   // --- Primary JSON-RPC 2.0 endpoint ---
   if (path === '/a2a' && req.method === 'POST') {
+    const contentType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+    const negotiated = (req as IncomingMessage & { a2aVersion?: string }).a2aVersion;
+    if (negotiated === '1.0' && contentType !== 'application/a2a+json' && contentType !== 'application/json') {
+      sendJson(res, 415, { error: 'A2A v1.0 requests require application/a2a+json' });
+      return true;
+    }
     return handleJsonRpc(req, res);
   }
 
@@ -90,21 +141,25 @@ export async function handleA2ARoutes(
     const limit = limitParam ? parseInt(limitParam, 10) : undefined;
 
     const manager = getTaskManager();
-    const tasks = manager.listTasks({
+    // Owner-scoped: `total` and `retained` both describe THIS principal's tasks
+    // only, so a listing cannot be used to infer another tenant's task count.
+    const tasks = manager.listOwnedTasks(ownerId, {
       state: state as never,
       contextId,
       limit: Number.isFinite(limit) ? limit : undefined,
       includeHistory: url.searchParams.get('includeHistory') === 'true',
     });
 
-    sendJson(res, 200, { tasks, total: tasks.length, retained: manager.taskCount() });
+    sendJson(res, 200, { tasks, total: tasks.length, retained: manager.ownedTaskCount(ownerId) });
     return true;
   }
 
   const taskIdMatch = path.match(/^\/a2a\/tasks\/([^/]+)$/);
   if (taskIdMatch && req.method === 'GET') {
-    const task = getTaskManager().getTask(taskIdMatch[1]);
+    const task = getTaskManager().getOwnedTask(ownerId, taskIdMatch[1]);
     if (!task) {
+      // 404, not 403: a caller must not be able to probe for the existence of
+      // another principal's task by comparing status codes.
       sendJson(res, 404, { error: 'Task not found' });
       return true;
     }
@@ -134,6 +189,8 @@ async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   const headers = req.headers as RequestHeaders;
+  const principal = (req as IncomingMessage & { a2aPrincipal?: string }).a2aPrincipal;
+  const version = (req as IncomingMessage & { a2aVersion?: string }).a2aVersion;
 
   // JSON-RPC 2.0 batch: an array of requests answered with an array of
   // responses. Previously any array was rejected outright as -32600.
@@ -158,7 +215,7 @@ async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise
         continue;
       }
       try {
-        const result = await handleRpc(item, headers);
+        const result = await handleRpc(item, headers, { principal, version });
         // Notifications (no `id`) get no response entry, per JSON-RPC 2.0.
         if (item.id !== undefined && item.id !== null) responses.push(result);
       } catch (err) {
@@ -191,7 +248,7 @@ async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise
   if (isStreamMethod(rpc.method) || accept.includes('text/event-stream')) {
     if (!isStreamMethod(rpc.method)) {
       // Client asked for SSE on a non-streaming method — answer as a single event.
-      const result = await handleRpc(rpc, headers);
+      const result = await handleRpc(rpc, headers, { principal, version });
       openSse(res);
       writeSse(res, result);
       res.end();
@@ -202,13 +259,13 @@ async function handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise
       send: (event: JsonRpcResponse) => writeSse(res, event),
       end: () => res.end(),
     };
-    await handleRpcStream(rpc, headers, sink);
+    await handleRpcStream(rpc, headers, sink, { principal, version });
     return true;
   }
 
   // Blocking methods → single JSON response.
   try {
-    const result = await handleRpc(rpc, headers);
+    const result = await handleRpc(rpc, headers, { principal, version });
     if (isNotification) res.writeHead(204).end();
     else sendJson(res, 200, result);
   } catch (err) {
@@ -239,9 +296,13 @@ async function legacyShim(
     return true;
   }
   const rpc: JsonRpcRequest = { jsonrpc: '2.0', id: 1, method, params: toParams(body) };
-  const result = await handleRpc(rpc, req.headers as RequestHeaders);
+  const result = await handleRpc(rpc, req.headers as RequestHeaders, { principal: (req as IncomingMessage & { a2aPrincipal?: string }).a2aPrincipal });
   if (result.error) {
-    const status = result.error.code === A2A_ERR.TASK_NOT_FOUND ? 404 : 400;
+    // A cross-owner task is reported as 404 (not 403) so the shim does not leak
+    // the existence of another principal's task; a missing principal is 401,
+    // which is the honest answer about our own authentication state.
+    const status =
+      result.error.code === A2A_ERR.AUTH_REQUIRED ? 401 : result.error.code === A2A_ERR.TASK_NOT_FOUND ? 404 : 400;
     sendJson(res, status, { error: result.error.message });
     return true;
   }
@@ -254,7 +315,7 @@ async function legacyShim(
 // ---------------------------------------------------------------------------
 
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.writeHead(status, { 'Content-Type': 'application/a2a+json', 'Cache-Control': status >= 400 ? 'no-store' : 'no-cache' });
   res.end(JSON.stringify(data));
 }
 

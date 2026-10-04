@@ -28,6 +28,20 @@ vi.mock('@dmr-x/agent-runtime', () => ({
   },
 }));
 
+vi.mock('@dmr-x/billing', () => ({
+  billingService: {
+    // Explicit zero pricing for the free-test-model fixture (strict-free).
+    // Qualified model id below ensures preflight actually consults pricing
+    // (bare aliases skip getPricing and require router free-only evidence).
+    getModelPricing: async () => ({
+      providerId: 'free',
+      modelId: 'free-test-model',
+      inputPricePer1kTokens: 0,
+      outputPricePer1kTokens: 0,
+    }),
+  },
+}));
+
 vi.mock('../../apps/gateway/src/routes/tools.routes.js', () => ({
   executeToolCall: vi.fn(),
 }));
@@ -47,6 +61,9 @@ function delayedRouter(): DelayedRoute {
   let announce!: (signal: AbortSignal) => void;
   const started = new Promise<AbortSignal>((resolve) => { announce = resolve; });
   const router = {
+    // getCandidates stub: qualified zero-price fixture never needs alias
+    // free-only evidence, but keeps aliasFreeEvidence safe if ever invoked.
+    getCandidates: vi.fn(() => []),
     route: vi.fn((request: { signal?: AbortSignal }) => {
       const signal = request.signal!;
       announce(signal);
@@ -65,6 +82,14 @@ function delayedRouter(): DelayedRoute {
 async function buildApp(router: DelayedRoute['router']): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   (app as any).router = router;
+  // Zero-price strict-free quota boundary: whole-run hold succeeds, cancel
+  // releases it. Keeps the fixture on the honest admission path (no 402).
+  (app as any).quotaService = {
+    checkQuota: async () => undefined,
+    reserveAgentRun: async () => ({ ok: true, holdId: 'h1' }),
+    releaseAgentHold: async () => undefined,
+    settleAgentHold: async () => undefined,
+  };
   app.addHook('preHandler', async (request) => {
     const tenantId = String(request.headers['x-tenant-id'] ?? 'tenant-a');
     (request as any).tenant = { id: tenantId, name: tenantId };
@@ -76,7 +101,9 @@ async function buildApp(router: DelayedRoute['router']): Promise<FastifyInstance
 
 function chatPayload(conversationId: string, stream: boolean) {
   return {
-    model: 'free-test-model',
+    // Provider-qualified free fixture so preflight consults billing pricing
+    // (zero) instead of failing closed as an unpriced bare alias.
+    model: 'free/free-test-model',
     messages: [{ role: 'user', content: 'wait for cancellation' }],
     conversationId,
     stream,

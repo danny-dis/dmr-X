@@ -52,21 +52,13 @@ export class SQLiteCapacityStore implements CapacityStore {
 
   async tryReserve(
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
-    reservationId: string,
+    reservationId?: string,
+    leaseMs: number = 30_000,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const db = getDb();
     const now = Date.now();
+    const stableReservationId = reservationId ?? `sqlite-${now}-${Math.random().toString(36).slice(2, 10)}`;
 
-    // Check if all dimensions can be satisfied
-    for (const d of dimensions) {
-      const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
-      const current = d.currentRemaining ?? 0;
-      if (current - reserved < d.amount) {
-        return null;
-      }
-    }
-
-    // Apply reservation atomically within a transaction
     const insert = db.prepare(`
       INSERT INTO capacity_reservations (reservation_id, unit, scope_id, amount, expires_at, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'reserved', ?)
@@ -76,8 +68,15 @@ export class SQLiteCapacityStore implements CapacityStore {
 
     try {
       db.transaction(() => {
+        // Keep capacity checks inside the same SQLite write transaction.
+        // This closes the cross-replica stale-read admission race.
         for (const d of dimensions) {
-          insert.run(reservationId, d.unit, d.scopeId, d.amount, now + 30_000, now);
+          const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
+          const current = d.currentRemaining ?? 0;
+          if (current - reserved < d.amount) throw new Error('capacity_exhausted');
+        }
+        for (const d of dimensions) {
+          insert.run(stableReservationId, d.unit, d.scopeId, d.amount, now + leaseMs, now);
           const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
           result.push({ unit: d.unit, scopeId: d.scopeId, newRemaining: (d.currentRemaining ?? 0) - reserved });
         }
@@ -177,7 +176,8 @@ export class RedisCapacityStore implements CapacityStore {
 
   async tryReserve(
     dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
-    reservationId: string,
+    reservationId?: string,
+    leaseMs: number = this.leaseMs,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const redis = await this.getClient();
     const now = Date.now();
@@ -208,14 +208,27 @@ export class RedisCapacityStore implements CapacityStore {
 
     if (result === null) return null;
 
-    // Store reservation record for later release/commit
-    const reservationKey = `${this.keyPrefix}reservation:${reservationId}`;
-    await redis.set(reservationKey, JSON.stringify({
-      id: reservationId,
-      dimensions: dimensions.map(d => ({ unit: d.unit, scopeId: d.scopeId, amount: d.amount })),
-      expiresAt: now + this.leaseMs,
-      status: 'reserved',
-    }), { PX: this.leaseMs });
+    // Persist reservation metadata. If this write fails after the Lua
+    // decrement, compensate the counter so capacity is not leaked.
+    const stableReservationId = reservationId ?? `redis-${now}-${Math.random().toString(36).slice(2, 10)}`;
+    const reservationKey = `${this.keyPrefix}reservation:${stableReservationId}`;
+    try {
+      await redis.set(reservationKey, JSON.stringify({
+        id: stableReservationId,
+        dimensions: dimensions.map(d => ({ unit: d.unit, scopeId: d.scopeId, amount: d.amount })),
+        expiresAt: now + leaseMs,
+        status: 'reserved',
+      }), { PX: leaseMs });
+    } catch (err) {
+      const rollbackScript = `
+        for i, key in ipairs(KEYS) do
+          redis.call('INCRBY', key, tonumber(ARGV[i]))
+        end
+        return 1
+      `;
+      await redis.eval(rollbackScript, { keys, arguments: args.map(String) }).catch(() => {});
+      throw err;
+    }
 
     return dimensions.map((d, i) => ({
       unit: d.unit,
@@ -298,6 +311,14 @@ function actualForUnit(actual: import('./quota-dimensions.js').DemandVector, uni
     case 'total_tokens': return actual.inputTokens + actual.outputTokens;
     case 'concurrency': return actual.concurrency;
     case 'credits': return actual.credits ?? 0;
+    case 'neurons': return actual.neurons ?? 0;
+    case 'seconds': return actual.seconds ?? 0;
+    case 'minutes': return actual.minutes ?? 0;
+    case 'characters': return actual.characters ?? 0;
+    case 'jobs': return actual.jobs ?? 0;
+    case 'gpu_seconds': return actual.gpuSeconds ?? 0;
+    case 'gpu_hours': return actual.gpuHours ?? 0;
+    case 'ip_requests': return actual.ipRequests ?? 0;
     default: return 0;
   }
 }

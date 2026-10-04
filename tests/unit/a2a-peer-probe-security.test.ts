@@ -18,7 +18,7 @@ async function fixture(handler: Parameters<typeof createServer>[0]) {
   // Only the validator is mocked: a previously validated destination is pinned
   // to a local fixture. Production validation still forbids loopback addresses.
   mocks.validate.mockResolvedValue({ url, hostname: 'dmrx-fixture.invalid', ip: '127.0.0.1', family: 4,
-    lookup: (_host: unknown, options: { all?: boolean }, callback: Function) => callback(null, options.all ? [{ address: '127.0.0.1', family: 4 }] : '127.0.0.1', 4),
+    lookup: (_host: unknown, options: { all?: boolean }, callback: (error: Error | null, address: string | Array<{ address: string; family: number }>, family: number) => void) => callback(null, options.all ? [{ address: '127.0.0.1', family: 4 }] : '127.0.0.1', 4),
   });
   return url;
 }

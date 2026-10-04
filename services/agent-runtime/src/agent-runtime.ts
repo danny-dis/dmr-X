@@ -63,6 +63,40 @@ export class AgentRuntimeService {
       return null;
     }
 
+    // A hosted instance is a durable identity, not a resident process. Paused,
+    // stopped, draining, and retired identities reject new work. A ready
+    // identity is woken into running for the duration of this request; it
+    // returns to ready after the request completes.
+    if (instance.runtimeMode === 'ephemeral' && this.isInstanceExpired(instance)) {
+      await agentRegistryService.transitionInstanceLifecycle(instance.id, tenantId, 'stopped').catch(() => undefined);
+      return null;
+    }
+    if (instance.runtimeMode === 'ephemeral' && instance.lifecyclePolicy.maxBudgetCents != null) {
+      const usage = getDb().prepare(
+        'SELECT COALESCE(SUM(cost_cents), 0) AS spent FROM agent_executions WHERE agent_instance_id = ? AND tenant_id = ?',
+      ).get(instance.id, tenantId) as { spent: number };
+      if (Number(usage.spent) >= instance.lifecyclePolicy.maxBudgetCents) {
+        await agentRegistryService.transitionInstanceLifecycle(instance.id, tenantId, 'stopped').catch(() => undefined);
+        return null;
+      }
+    }
+    if (!['ready', 'running'].includes(instance.lifecycleState)) {
+      return null;
+    }
+    if (instance.lifecycleState === 'ready') {
+      const running = await agentRegistryService.transitionInstanceLifecycle(
+        instance.id,
+        tenantId,
+        'running',
+      );
+      if (!running) return null;
+      instance = running;
+    } else {
+      await agentRegistryService.touchInstance(instance.id, tenantId);
+      const refreshed = await agentRegistryService.getInstance(instance.id);
+      if (refreshed) instance = refreshed;
+    }
+
     const definition = await agentRegistryService.getDefinition(instance.agentDefinitionId);
     if (!definition) return null;
     // Re-check on every run/resume, including previously deployed shared agents.
@@ -90,8 +124,15 @@ export class AgentRuntimeService {
     const definition = await agentRegistryService.getDefinitionByName(tenantId, nameRef);
     if (!definition) return null;
 
-    const { items } = await agentRegistryService.listInstances(tenantId, { status: 'active' });
-    const existing = items.find((i) => i.agentDefinitionId === definition.id);
+    const { items } = await agentRegistryService.listInstances(tenantId, {
+      status: 'active',
+      accessScope: 'shared',
+    });
+    const existing = items.find(
+      (i) =>
+        i.agentDefinitionId === definition.id &&
+        !['paused', 'draining', 'stopped', 'retired'].includes(i.lifecycleState),
+    );
     if (existing) return existing;
 
     // ponytail: linear scan of active instances per lookup — fine at hundreds
@@ -100,12 +141,74 @@ export class AgentRuntimeService {
     return agentRegistryService.createInstance(tenantId, {
       agentDefinitionId: definition.id,
       configOverride: {},
+      runtimeMode: 'persistent',
+      accessScope: 'shared',
     });
   }
 
+  /** Check the persisted TTL/idle policy for ephemeral instances. */
+  private isInstanceExpired(instance: AgentInstance): boolean {
+    if (instance.runtimeMode !== 'ephemeral') return false;
+    const now = Date.now();
+    const createdAt = Date.parse(instance.createdAt);
+    const lastActivity = Date.parse(instance.lastActivityAt ?? instance.createdAt);
+    const { maxTtlMs, idleTimeoutMs } = instance.lifecyclePolicy;
+    if (maxTtlMs != null && Number.isFinite(createdAt) && now - createdAt >= maxTtlMs) return true;
+    if (idleTimeoutMs != null && Number.isFinite(lastActivity) && now - lastActivity >= idleTimeoutMs) return true;
+    return false;
+  }
+
+  /** Return a durable instance to ready state after a request finishes. */
+  async markInstanceReady(instanceId: string, tenantId: string): Promise<void> {
+    const instance = await agentRegistryService.getInstance(instanceId);
+    if (!instance || instance.tenantId !== tenantId) return;
+    if (instance.lifecycleState === 'running') {
+      await agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'ready');
+    }
+  }
+
+  /** Wake a paused/stopped hosted instance. */
+  async wakeInstance(instanceId: string, tenantId: string): Promise<AgentInstance | null> {
+    const current = await agentRegistryService.getInstance(instanceId);
+    if (!current || current.tenantId !== tenantId) return null;
+    if (current.lifecycleState === 'retired') return null;
+    if (current.lifecycleState === 'ready' && current.status === 'paused') {
+      return agentRegistryService.setInstanceStatus(instanceId, tenantId, 'active');
+    }
+    if (current.lifecycleState === 'stopped' || current.lifecycleState === 'paused') {
+      return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'ready');
+    }
+    return current;
+  }
+
+  /** Park an instance. Its identity and sessions remain durable in SQLite. */
+  async sleepInstance(instanceId: string, tenantId: string): Promise<AgentInstance | null> {
+    const current = await agentRegistryService.getInstance(instanceId);
+    if (!current || current.tenantId !== tenantId) return null;
+    if (current.lifecycleState === 'running') {
+      return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'paused');
+    }
+    if (current.lifecycleState === 'ready') {
+      return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'paused');
+    }
+    return current;
+  }
+
+  /** Permanently retire an instance while retaining its audit/history rows. */
+  async retireInstance(instanceId: string, tenantId: string): Promise<AgentInstance | null> {
+    const current = await agentRegistryService.getInstance(instanceId);
+    if (!current || current.tenantId !== tenantId) return null;
+    if (current.lifecycleState === 'retired') return current;
+    if (current.lifecycleState === 'running') {
+      await agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'stopped');
+    }
+    const latest = await agentRegistryService.getInstance(instanceId);
+    if (!latest || latest.lifecycleState === 'retired') return latest;
+    return agentRegistryService.transitionInstanceLifecycle(instanceId, tenantId, 'retired');
+  }
+
   /**
-   * Build the system prompt for an agent, incorporating its definition.
-   *
+   * Build the system prompt for an agent, incorporating its definition.   *
    * Skills use PROGRESSIVE DISCLOSURE (borrowed from Vercel EVE): each
    * declared skill's *description* is always advertised as a one-line hint,
    * but only the bodies of skills in `loadedSkillIds` are inlined into the
@@ -117,6 +220,7 @@ export class AgentRuntimeService {
     definition: AgentDefinition,
     turn?: number,
     loadedSkillIds: string[] = [],
+    executionTenantId: string = definition.tenantId,
   ): Promise<string> {
     const parts: string[] = [];
 
@@ -158,7 +262,7 @@ export class AgentRuntimeService {
     // shadowed by the tenant-wide list.
     const declaredNames = new Set(declaredAdverts.map((a) => a.name.toLowerCase()));
     const discovered = skillLoader
-      .discover(definition.tenantId)
+      .discover(executionTenantId)
       .filter((a) => !declaredNames.has(a.name.toLowerCase()));
 
     const allAdverts = [...declaredAdverts, ...discovered];
@@ -179,7 +283,8 @@ export class AgentRuntimeService {
         const skillBlocks = skillLoader.resolveBody
           ? loaded
               .map((id) => {
-                const s = skillLoader.resolveBody(definition.tenantId, id);
+                const declared = skillIds.includes(id) || declaredNames.has(id.toLowerCase());
+                const s = skillLoader.resolveBody(declared ? definition.tenantId : executionTenantId, id);
                 return s ? `## Skill: ${s.name}\n${s.description ? s.description + '\n' : ''}${s.content}` : null;
               })
               .filter(Boolean as unknown as (x: string | null) => x is string)
@@ -220,7 +325,7 @@ export class AgentRuntimeService {
     // 4.75. Relevant memory (non-fatal; fallback to nothing on any failure)
     try {
       const memories = await agentMemoryManager.prefetchForPrompt(
-        definition.tenantId,
+              executionTenantId,
         definition.id ?? definition.name,
       );
       if (memories && memories.trim().length > 0) {

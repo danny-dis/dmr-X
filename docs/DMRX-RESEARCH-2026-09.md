@@ -210,3 +210,8 @@ Standards-first MCP and A2A support, with conformance tests and clean boundaries
 - Portkey Gateway: https://github.com/Portkey-AI/gateway
 - Hermes Agent: https://github.com/NousResearch/hermes-agent
 - Dark Factory experiment: https://github.com/coleam00/dark-factory-experiment
+
+
+## October 2026 research addendum
+
+The deeper FreeLLMAPI study exposed a broader design requirement: DMR-X needs a resource fleet, not merely a free-model list. FreeLLMAPI's strongest ideas—pool-deduped quotas, usage forecasting, live signed catalogs, provider quirks, modality-specific media pools, model retirement and custom endpoints—are now reflected in the DMR-X direction. New current lab observations include Z.ai Coding trials, Fireworks signup credits, AWS account credits, Cloudflare AI Search, and richer multi-unit offers across speech, embeddings and specialist services. The evidence hierarchy is official entitlement first, live observation second, directory discovery third. See docs/DMRX-UNIVERSAL-INFERENCE-RESOURCE-FLEET-2026-10.md.

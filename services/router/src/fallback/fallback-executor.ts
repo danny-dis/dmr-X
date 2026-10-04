@@ -433,6 +433,7 @@ export async function executeWithFallback(
   const globalTimeoutMs = options?.globalTimeoutMs ?? Math.min(plan.timeoutMs ?? 12_000, 30_000);
   const globalDeadline = options?.deadlineAt ?? (globalTimeoutMs > 0 ? Date.now() + globalTimeoutMs : 0);
   const freeOnly = options?.freeOnly || request.metadata?.costFilter === 'free' ||
+    request.metadata?.freeTierStrategy === 'free_only' ||
     getMetaModel(request.model ?? '')?.costFilter === 'free';
 
   async function withinDeadline<T>(operation: () => Promise<T>): Promise<T> {

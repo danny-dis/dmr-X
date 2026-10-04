@@ -7,30 +7,31 @@
  */
 
 import {
-  QuotaVector,
-  QuotaDimension,
-  QuotaSnapshot,
-  QuotaUnit,
-  QuotaState,
-  DemandVector,
-  QuotaScope,
-  ReplenishmentModel,
+  type QuotaVector,
+  type QuotaDimension,
+  type QuotaSnapshot,
+  type QuotaUnit,
+  type QuotaState,
+  type DemandVector,
+  type QuotaScope,
+  type ReplenishmentModel,
   evaluateState,
   hasHeadroom,
   isStale,
   computeTokenBucketRemaining,
   defaultStaleAfterMs,
+  buildQuotaPoolId,
 } from './quota-dimensions.js';
 
 export {
-  QuotaVector,
-  QuotaDimension,
-  QuotaSnapshot,
-  QuotaUnit,
-  QuotaState,
-  DemandVector,
-  QuotaScope,
-  ReplenishmentModel,
+  type QuotaVector,
+  type QuotaDimension,
+  type QuotaSnapshot,
+  type QuotaUnit,
+  type QuotaState,
+  type DemandVector,
+  type QuotaScope,
+  type ReplenishmentModel,
   isStale,
   hasHeadroom,
   evaluateState,
@@ -76,6 +77,7 @@ interface BuildVectorParams {
   providerId: string;
   modelId: string;
   keyId: string;
+  poolId?: string;
   dimensions: QuotaDimension[];
 }
 
@@ -87,10 +89,16 @@ export function buildVector(params: BuildVectorParams): QuotaVector {
     (max, d) => Math.max(max, d.observedAtMs),
     0,
   );
+  const first = params.dimensions[0];
+  // A vector-wide pool applies only when every dimension has the same scope.
+  // Mixed account/key constraints retain their separate per-dimension identities.
+  const homogeneous = first && params.dimensions.every(dim => dim.scope === first.scope && dim.scopeId === first.scopeId);
+  const poolId = params.poolId ?? (homogeneous ? buildQuotaPoolId(params.providerId, first.scope, first.scopeId) : undefined);
   return {
     providerId: params.providerId,
     modelId: params.modelId,
     keyId: params.keyId,
+    ...(poolId ? { poolId } : {}),
     dimensions: params.dimensions,
     lastObservedAtMs: lastObs,
   };
@@ -196,6 +204,13 @@ function selectDimensionsForDemand(
   if (demand.outputTokens > 0) units.push('output_tokens');
   if (demand.inputTokens > 0 || demand.outputTokens > 0) units.push('total_tokens');
   if (demand.credits && demand.credits > 0) units.push('credits');
+  if (demand.seconds && demand.seconds > 0) units.push('seconds');
+  if (demand.minutes && demand.minutes > 0) units.push('minutes');
+  if (demand.characters && demand.characters > 0) units.push('characters');
+  if (demand.jobs && demand.jobs > 0) units.push('jobs');
+  if (demand.gpuSeconds && demand.gpuSeconds > 0) units.push('gpu_seconds');
+  if (demand.gpuHours && demand.gpuHours > 0) units.push('gpu_hours');
+  if (demand.ipRequests && demand.ipRequests > 0) units.push('ip_requests');
   return vector.dimensions.filter(d => units.includes(d.unit));
 }
 

@@ -20,7 +20,7 @@ import { HandoverSummarizer, type SummarizationExecutor } from './handover/hando
 import { getMetaModel, isFree, isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
 
-import { applyProviderPreferences, runPipeline, runDeterministicFilters, runPipelineFromFiltered } from './pipeline/pipeline.js';
+import { applyProviderPreferences, runPipeline, runDeterministicFilters, runPipelineFromFiltered, isStrictlyFreeCandidate } from './pipeline/pipeline.js';
 import { hashConversation, setStickyProvider } from './sticky/sticky-session.js';
 import { handleStickySession } from './sticky-session-handler.js';
 
@@ -146,6 +146,25 @@ export class Router {
     const alias = getMetaModel(this.parseModelTarget(model).modelId);
     if (alias?.costFilter === 'free') return 'free';
     return override ?? this.config.metaModelCostFilter ?? alias?.costFilter ?? 'all';
+  }
+
+  /**
+   * Resolve the free-tier strategy actually in force for a request, using the
+   * same precedence as `route()`: a per-request override wins, otherwise the
+   * router's configured default applies.
+   *
+   * Callers that enforce free-tier policy OUTSIDE of `route()` (e.g. the
+   * gateway's streaming candidate augmentation) must consult this instead of
+   * reading `request.metadata.freeTierStrategy` directly — a strict-free
+   * deployment configured with `freeTierStrategy: 'free_only'` sends no
+   * per-request override, so metadata-only checks read "no strategy" and would
+   * let paid candidates back into an otherwise free-only flow.
+   *
+   * Falsy overrides (undefined, empty string) fall through to the configured
+   * default, matching the `||` precedence used on the routing path.
+   */
+  getEffectiveFreeTierStrategy(requestOverride?: FreeTierStrategy): FreeTierStrategy | undefined {
+    return requestOverride || this.config.freeTierStrategy;
   }
 
   getCandidateCount(): number {
@@ -356,6 +375,8 @@ export class Router {
     const conversationHash = hashConversation(messages, request.model);
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
     const effectiveFreeTierStrategy = freeTierStrategy;
+    const requestCostFilter = (request as any).metadata?.costFilter as 'free' | 'all' | undefined;
+    const hardFreeConstraint = effectiveFreeTierStrategy === 'free_only' || requestCostFilter === 'free';
 
     // Parse an optional `providerName/modelId` prefix out of the requested
     // model. The prefix is only honored when it names a known provider —
@@ -378,7 +399,7 @@ export class Router {
     const stickyPrefs = request.metadata?.providerPreferences;
     const hasHardProviderConstraint = !!(stickyPrefs?.zdr || stickyPrefs?.only?.length || stickyPrefs?.ignore?.length);
     const stickyCostFilter = (request as any).metadata?.costFilter ?? this.config.metaModelCostFilter;
-    const hasHardCostConstraint = stickyCostFilter === 'free' ||
+    const hasHardCostConstraint = hardFreeConstraint || stickyCostFilter === 'free' ||
       getMetaModel(modelTarget.modelId ?? '')?.costFilter === 'free';
 
     // Reusable pipeline result from sticky handler — when the planner decides
@@ -430,14 +451,15 @@ export class Router {
     // because meta-model resolution is a sub-step of "what is this request?".)
     // When the caller pins a provider explicitly, constrain the candidate pool
     // to that provider before any selection or scoring happens.
-    const costFilterOverride = (request as any).metadata?.costFilter as 'free' | 'all' | undefined
-      || this.config.metaModelCostFilter;
-    const requireFreePool = costFilterOverride === 'free' ||
+    const costFilterOverride = requestCostFilter || this.config.metaModelCostFilter;
+    const requireFreePool = hardFreeConstraint || costFilterOverride === 'free' ||
       getMetaModel(modelTarget.modelId ?? '')?.costFilter === 'free';
     const providerScoped = modelTarget.providerName
       ? this.candidates.filter(c => c.providerName === modelTarget.providerName)
       : this.candidates;
-    const scopedCandidates = requireFreePool ? providerScoped.filter(isFree) : providerScoped;
+    const scopedCandidates = requireFreePool
+      ? providerScoped.filter(isStrictlyFreeCandidate)
+      : providerScoped;
     let pipelineCandidates = scopedCandidates;
 
     let metaModelFilteredFree = false;
@@ -491,7 +513,7 @@ export class Router {
           // Direct-model selection must enforce the same hard provider constraints
           // as the scored pipeline, including every fallback serving this model.
           const directMatches = directCandidates.filter(
-            (c) => c.modelId === modelTarget.modelId && c.isHealthy
+            (c) => c.modelId === modelTarget.modelId && c.isHealthy && (!hardFreeConstraint || isStrictlyFreeCandidate(c))
           );
           if (directMatches.length === 0 && requireFreePool) {
             throw new ProviderUnavailableError(
@@ -643,11 +665,7 @@ export class Router {
             thompsonSampler: this.thompsonSampler,
           });
         } catch (error) {
-          // The pipeline has already waited when a reset fit its budget.
-          // Rechecking a depleted free-only pool cannot add paid capacity.
-          if (requireFreePool && error instanceof ProviderUnavailableError && error.retryAfter > 0) {
-            throw error;
-          }
+          if (requireFreePool && error instanceof ProviderUnavailableError && error.retryAfter > 0) throw error;
           const retryable = error instanceof ProviderUnavailableError || isRetryable5xx(error);
           if (retryable) {
             // (a) Transient rate-limit cooldown: brief wait then retry the same pool.
@@ -770,7 +788,7 @@ export class Router {
         span.setAttribute('router.fallback_count', plan.chain.length);
         if (!this.adapterExecutor) throw new Error('No adapter executor configured');
         const res = await executeWithHedging(plan, request, this.adapterExecutor, {
-          freeOnly: this.getEffectiveCostFilter(request.model ?? '', request.metadata?.costFilter as 'free' | 'all' | undefined) === 'free',
+          freeOnly: (request.metadata?.freeTierStrategy ?? this.config.freeTierStrategy) === 'free_only' || this.getEffectiveCostFilter(request.model ?? '', request.metadata?.costFilter as 'free' | 'all' | undefined) === 'free',
           rateLimitService: this.config.rateLimitService,
           quotaService: this.config.quotaService,
           tenantId,
@@ -853,6 +871,7 @@ export class Router {
         span.setAttribute('router.fallback_count', plan.chain.length);
         if (!this.adapterExecutor) throw new Error('No adapter executor configured');
         const res = await executeWithFallback(plan, request, this.adapterExecutor, {
+          freeOnly: (request.metadata?.freeTierStrategy ?? this.config.freeTierStrategy) === 'free_only' || this.getEffectiveCostFilter(request.model ?? '', request.metadata?.costFilter as 'free' | 'all' | undefined) === 'free',
           rateLimitService: this.config.rateLimitService,
           quotaService: this.config.quotaService,
           tenantId,
@@ -959,6 +978,10 @@ export class Router {
 
     // Step 2: Execute via composite executor
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
+    const compositeCostFilter = (request as any).metadata?.costFilter as 'free' | 'all' | undefined || this.config.metaModelCostFilter;
+    if (freeTierStrategy === 'free_only' || compositeCostFilter === 'free') {
+      compositeCandidates = compositeCandidates.filter(isStrictlyFreeCandidate);
+    }
     const result = await this.compositeExecutor!.execute(
       decomposed,
       compositeCandidates,
@@ -999,7 +1022,7 @@ export class Router {
       // prompts). Preserve a free-only request across this fallback; otherwise
       // the agentic tier can append paid providers to an executable chain.
       const fallbackCandidatePools: ProviderModel[][] = [compositeCandidates];
-      const agenticCostFilter = compositeCostFilterOverride === 'free' ||
+      const agenticCostFilter = freeTierStrategy === 'free_only' || compositeCostFilterOverride === 'free' ||
         getMetaModel(compositeModelTarget.modelId ?? '')?.costFilter === 'free'
         ? 'free' : 'all';
       const agenticResolution = resolveMetaModel('auto-agentic', compositeScoped, agenticCostFilter);
@@ -1010,7 +1033,12 @@ export class Router {
       const healthy = fallbackCandidatePools
         .flat()
         .filter((c) => c.isHealthy);
-      const ordered = healthy.length > 0 ? healthy : fallbackCandidatePools.flat();
+      const orderedPool = fallbackCandidatePools.flat().filter((c) =>
+        freeTierStrategy !== 'free_only' || isStrictlyFreeCandidate(c),
+      );
+      const ordered = healthy.length > 0 ? healthy.filter((c) =>
+        freeTierStrategy !== 'free_only' || isStrictlyFreeCandidate(c),
+      ) : orderedPool;
       if (ordered.length === 0) {
         logger.warn(
           { metaModel: compositeModelTarget.modelId },

@@ -7,6 +7,7 @@ import {
 } from '@dmr-x/core';
 
 import type { SubTask } from './task-decomposer.js';
+import { isStrictlyFreeCandidate } from '../pipeline/pipeline.js';
 
 /**
  * Routes a sub-task to the best specialist model
@@ -70,7 +71,11 @@ export class SpecialistRouter {
 
     // Apply free-tier strategy to candidates before routing
     let filteredCandidates = candidates;
-    if (freeTierStrategy === 'prioritize') {
+    if (freeTierStrategy === 'free_only') {
+      // Hard economic constraint: only strictly-free candidates may execute.
+      // Unknown pricing is NOT free — fail closed.
+      filteredCandidates = candidates.filter(isStrictlyFreeCandidate);
+    } else if (freeTierStrategy === 'prioritize') {
       // Prefer free models, but keep paid as fallback
       const freeModels = candidates.filter(c => c.costPerInputToken === 0 && c.costPerOutputToken === 0);
       const paidModels = candidates.filter(c => c.costPerInputToken > 0 || c.costPerOutputToken > 0);

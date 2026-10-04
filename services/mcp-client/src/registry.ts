@@ -63,6 +63,8 @@ export interface ConnectedServer {
     name: string;
     description?: string;
     inputSchema?: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
+    annotations?: Record<string, unknown>;
   }>;
 }
 
@@ -73,7 +75,10 @@ export interface ConnectedServer {
  */
 export class MCPServerRegistry {
   private servers = new Map<string, ConnectedServer>();
-  private toolIndex = new Map<string, ConnectedServer>();
+  /** Exact upstream tool name -> all servers exposing it. Collisions are preserved. */
+  private toolIndex = new Map<string, Set<string>>();
+  /** Canonical references retain every owner, so even namespace collisions fail closed. */
+  private namespacedToolIndex = new Map<string, Set<string>>();
   private circuitBreakers = new CircuitBreakerManager();
   private configOverrides = new Map<string, { timeoutMs: number; maxRetries: number }>();
   private pendingReconnects = new Map<string, MCPServerConfig>();
@@ -154,6 +159,8 @@ export class MCPServerRegistry {
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema as Record<string, unknown> | undefined,
+      outputSchema: (tool as any).outputSchema as Record<string, unknown> | undefined,
+      annotations: (tool as any).annotations as Record<string, unknown> | undefined,
     }));
 
     const connected: ConnectedServer = {
@@ -289,7 +296,17 @@ export class MCPServerRegistry {
    * Find which server hosts a specific tool. O(1) via reverse index.
    */
   findServerForTool(toolName: string): ConnectedServer | undefined {
-    return this.toolIndex.get(toolName);
+    return this.resolveTool(toolName)?.server;
+  }
+
+  /** Resolve routing and the original upstream name together, without splitting identifiers. */
+  resolveTool(toolName: string): { server: ConnectedServer; toolName: string } | undefined {
+    const canonicalIds = this.namespacedToolIndex.get(toolName);
+    const ids = canonicalIds ?? this.toolIndex.get(toolName);
+    if (!ids || ids.size !== 1) return undefined;
+    const server = this.servers.get(ids.values().next().value!);
+    if (!server) return undefined;
+    return { server, toolName: canonicalIds ? toolName.slice(server.config.id.length + 2) : toolName };
   }
 
   /**
@@ -297,17 +314,38 @@ export class MCPServerRegistry {
    */
   private indexServerTools(server: ConnectedServer): void {
     for (const tool of server.tools) {
-      this.toolIndex.set(tool.name, server);
+      const ids = this.toolIndex.get(tool.name) ?? new Set<string>();
+      ids.add(server.config.id);
+      this.toolIndex.set(tool.name, ids);
+      const reference = server.config.id + '__' + tool.name;
+      const canonicalIds = this.namespacedToolIndex.get(reference) ?? new Set<string>();
+      canonicalIds.add(server.config.id);
+      this.namespacedToolIndex.set(reference, canonicalIds);
     }
   }
 
-  /**
-   * Remove a server's tools from the reverse map.
-   */
+  /** Remove a server's tools from both collision-aware indexes. */
   private unindexServerTools(server: ConnectedServer): void {
     for (const tool of server.tools) {
-      this.toolIndex.delete(tool.name);
+      const ids = this.toolIndex.get(tool.name);
+      if (ids) {
+        ids.delete(server.config.id);
+        if (ids.size === 0) this.toolIndex.delete(tool.name);
+      }
+      const reference = server.config.id + '__' + tool.name;
+      const canonicalIds = this.namespacedToolIndex.get(reference);
+      if (canonicalIds) {
+        canonicalIds.delete(server.config.id);
+        if (canonicalIds.size === 0) this.namespacedToolIndex.delete(reference);
+      }
     }
+  }
+
+  /** Return every server exposing an exact tool name. */
+  findServersForTool(toolName: string): ConnectedServer[] {
+    const ids = this.toolIndex.get(toolName);
+    if (!ids) return [];
+    return Array.from(ids).map((id) => this.servers.get(id)).filter((s): s is ConnectedServer => Boolean(s));
   }
 
   /**
@@ -321,6 +359,14 @@ export class MCPServerRegistry {
     const server = this.servers.get(serverId);
     if (!server) {
       throw new Error(`MCP server not found: ${serverId}`);
+    }
+
+    const allowlist = server.config.allowedTools;
+    if (allowlist && !allowlist.some((pattern) => this.matchesToolPattern(toolName, pattern))) {
+      throw new Error(`MCP tool not allowed by server policy: ${serverId}/${toolName}`);
+    }
+    if (!server.tools.some((tool) => tool.name === toolName)) {
+      throw new Error(`MCP tool not found on server: ${serverId}/${toolName}`);
     }
 
     // Check circuit breaker
@@ -367,6 +413,14 @@ export class MCPServerRegistry {
     throw lastError || new Error(`MCP tool call failed after ${config.maxRetries} retries`);
   }
 
+  /** Match exact names or simple leading/trailing * glob patterns. */
+  private matchesToolPattern(value: string, pattern: string): boolean {
+    if (pattern === value) return true;
+    if (pattern.endsWith('*')) return value.startsWith(pattern.slice(0, -1));
+    if (pattern.startsWith('*')) return value.endsWith(pattern.slice(1));
+    return false;
+  }
+
   /**
    * Calls a tool with a timeout using AbortController.
    */
@@ -410,10 +464,13 @@ export class MCPServerRegistry {
     }
 
     const toolsResult = await server.client.listTools();
+    this.unindexServerTools(server);
     server.tools = (toolsResult.tools || []).map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema as Record<string, unknown> | undefined,
+      outputSchema: (tool as any).outputSchema as Record<string, unknown> | undefined,
+      annotations: (tool as any).annotations as Record<string, unknown> | undefined,
     }));
     this.indexServerTools(server);
 
@@ -492,6 +549,7 @@ export class MCPServerRegistry {
     }
     this.servers.clear();
     this.toolIndex.clear();
+    this.namespacedToolIndex.clear();
     this.pendingReconnects.clear();
   }
 }

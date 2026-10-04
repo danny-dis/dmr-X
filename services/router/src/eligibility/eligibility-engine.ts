@@ -105,42 +105,33 @@ export class EligibilityEngine {
       if (!verdict.eligible) {
         return `Free-provider catalog rejects ${candidate.providerId}/${candidate.modelId}: ${verdict.reason}`;
       }
-      // Catalog says free — but paid pricingTier still vetoes (both must agree).
-      if (candidate.pricingTier === 'paid') {
-        return 'Candidate is paid-tier; free_only requires free eligibility';
+      // Catalog says free — but paid/subscription pricingTier still vetoes (both must agree).
+      if (candidate.pricingTier === 'paid' || candidate.pricingTier === 'subscription_only') {
+        return 'Candidate is paid/subscription-tier; free_only requires free API-key eligibility';
       }
       return null;
     }
 
     const tier = candidate.pricingTier;
     const hasFreeMetadata = candidate.freeTierMetadata != null;
-    const hasZeroCost = (candidate.costPerInputToken ?? 0) === 0 &&
-                        (candidate.costPerOutputToken ?? 0) === 0;
-
-    // Explicitly paid
-    if (tier === 'paid') {
-      return 'Candidate is paid-tier; free_only requires free eligibility';
+    // Explicit paid candidates are always rejected.
+    if (tier === 'paid' || tier === 'subscription_only') {
+      return 'Candidate is paid or subscription-only; not a free API entitlement';
     }
 
-    // Explicitly free or has free metadata
-    if (tier === 'free' || tier === 'free_with_limits' || hasFreeMetadata) {
-      // Under strictFree, unknown tier with only metadata is not enough
-      if (this.config.strictFree && !tier) {
-        return 'Candidate free eligibility unknown; strictFree requires explicit free tier';
-      }
+    // Free-only must be explicit. A zero numeric price is not proof of an
+    // entitlement because many catalog entries omit pricing while awaiting
+    // verification.
+    if (tier === 'free' || tier === 'free_with_limits') {
       return null;
     }
 
-    // Zero cost but no explicit tier
-    if (hasZeroCost && !this.config.strictFree) {
+    // Runtime metadata may be enough for non-strict discovery mode, but a
+    // hard free-only route must fail closed.
+    if (hasFreeMetadata && !this.config.strictFree) {
       return null;
     }
 
-    // Unknown eligibility under strictFree
-    if (this.config.strictFree && !tier && !hasFreeMetadata) {
-      return 'Candidate has unknown free eligibility; strictFree requires explicit free tier';
-    }
-
-    return null;
+    return 'Candidate free eligibility is unknown; free_only fails closed';
   }
 }
