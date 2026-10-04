@@ -49,7 +49,7 @@ export type LifecycleTransition = {
 };
 
 export const ALLOWED_TRANSITIONS: LifecycleTransition = {
-  spawned: ['active', 'failed'],
+  spawned: ['active', 'failed', 'terminating'],
   active: ['idle', 'suspended', 'terminating', 'failed'],
   idle: ['active', 'suspended', 'terminating'],
   suspended: ['active', 'terminating'],
@@ -78,6 +78,14 @@ export class AgentLifecycleManager {
     return lifecycle;
   }
 
+  private isTerminalState(state: AgentLifecycleState): boolean {
+    return state === 'terminated' || state === 'failed';
+  }
+
+  private isSettledState(state: AgentLifecycleState): boolean {
+    return state === 'terminated' || state === 'failed' || state === 'terminating';
+  }
+
   transition(sessionId: string, to: AgentLifecycleState): boolean {
     const agent = this.agents.get(sessionId);
     if (!agent) return false;
@@ -92,15 +100,18 @@ export class AgentLifecycleManager {
     if (to === 'active' && agent.config.resumeOnReactivate && agent.checkpoint) {
       // resume path — state restored by caller
     }
-    if (to === 'terminated' || to === 'failed') {
+    if (to === 'terminated' || to === 'failed' || to === 'terminating') {
       this.clearTimer(sessionId);
+      return true;
     }
+    this.scheduleExpiry(sessionId);
     return true;
   }
 
   recordActivity(sessionId: string, costCents = 0): void {
     const agent = this.agents.get(sessionId);
     if (!agent) return;
+    if (this.isSettledState(agent.state)) return;
     agent.lastActivityAt = Date.now();
     agent.budgetConsumedCents += costCents;
 
@@ -119,8 +130,8 @@ export class AgentLifecycleManager {
     const agent = this.agents.get(sessionId);
     if (!agent) return true;
     const now = Date.now();
-    if (now - agent.createdAt > agent.config.maxTtlMs) return true;
-    if (agent.state === 'idle' && now - agent.lastActivityAt > agent.config.idleTimeoutMs) return true;
+    if (now - agent.createdAt >= agent.config.maxTtlMs) return true;
+    if (agent.state === 'idle' && now - agent.lastActivityAt >= agent.config.idleTimeoutMs) return true;
     return false;
   }
 
@@ -154,13 +165,32 @@ export class AgentLifecycleManager {
 
   private scheduleExpiry(sessionId: string): void {
     this.clearTimer(sessionId);
+    const agent = this.agents.get(sessionId);
+    if (!agent) return;
+    if (this.isSettledState(agent.state)) return;
+    const now = Date.now();
+    const ttlDelay = agent.createdAt + agent.config.maxTtlMs - now;
+    let delay = ttlDelay;
+    if (agent.state === 'idle') {
+      const idleDelay = agent.lastActivityAt + agent.config.idleTimeoutMs - now;
+      delay = Math.min(delay, idleDelay);
+    }
+    delay = Math.max(0, delay);
     const timer = setTimeout(() => {
-      const agent = this.agents.get(sessionId);
-      if (!agent) return;
+      this.timers.delete(sessionId);
+      const current = this.agents.get(sessionId);
+      if (!current) return;
+      if (this.isSettledState(current.state)) return;
       if (this.isExpired(sessionId)) {
         this.transition(sessionId, 'terminating');
+      } else {
+        // Not expired yet (clock moved or state changed without reschedule):
+        // reschedule for the remaining earliest deadline.
+        this.scheduleExpiry(sessionId);
       }
-    }, this.agents.get(sessionId)?.config.maxTtlMs ?? DEFAULT_LIFECYCLE_CONFIG.maxTtlMs);
+    }, delay);
+    // Don't keep the process alive for lifecycle expiry alone.
+    (timer as unknown as { unref?: () => void }).unref?.();
     this.timers.set(sessionId, timer);
   }
 
@@ -173,11 +203,16 @@ export class AgentLifecycleManager {
   }
 
   terminate(sessionId: string): boolean {
-    const ok = this.transition(sessionId, 'terminating');
-    if (!ok) return false;
-    this.transition(sessionId, 'terminated');
+    const agent = this.agents.get(sessionId);
+    if (!agent) return false;
+    if (this.isTerminalState(agent.state)) return false;
+    if (agent.state !== 'terminating') {
+      const ok = this.transition(sessionId, 'terminating');
+      if (!ok) return false;
+    }
+    const done = this.transition(sessionId, 'terminated');
     this.clearTimer(sessionId);
-    return true;
+    return done;
   }
 }
 
