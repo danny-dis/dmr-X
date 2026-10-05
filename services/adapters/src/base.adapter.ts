@@ -57,7 +57,7 @@ const tracer = trace.getTracer('dmr-x-gateway', '0.4.0');
  * fallback executor move to the next candidate, which IS the correct retry for
  * a quota error. Free-tier keys make this the common path, not the rare one.
  */
-const RETRYABLE_PROVIDER_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_PROVIDER_STATUSES = new Set([408, 425, 500, 502, 503, 504]);
 
 export abstract class BaseAdapter implements ProviderAdapter {
   abstract readonly providerId: string;
@@ -145,27 +145,39 @@ export abstract class BaseAdapter implements ProviderAdapter {
   private pinnedKeyIndex?: number;
 
   /**
+   * Model id for the in-flight `withKeyRotation` dispatch, so quota-aware
+   * rotation can consult per-model quota even when call sites resolve keys
+   * through the arg-less `apiKey` getter (e.g. Cohere). Saved/restored around
+   * the rotation loop so nested dispatches do not leak it.
+   */
+  private rotationModelId?: string;
+
+  /**
    * The credential to use for the next outbound request.
    *
    * With no pool (or a pool of one) this returns `fallback` unchanged, so
    * single-key adapters behave exactly as before — importantly it does NOT
    * consult the rotation service in that case, which would hand back an
    * unrelated ambient env var and shadow the vault credential.
+   *
+   * `modelId` selects per-model quota when known; when omitted, the model of
+   * the enclosing `withKeyRotation` dispatch (if any) is used.
    */
-  protected nextKey(fallback: string): string {
+  protected nextKey(fallback: string, modelId?: string): string {
     if (this.keyPool.length <= 1) return fallback;
     if (this.pinnedKeyIndex !== undefined) {
       return this.keyPool[this.pinnedKeyIndex % this.keyPool.length];
     }
-    return keyRotationService.getNextKey(this.providerId) ?? fallback;
+    return keyRotationService.getNextKey(this.providerId, modelId ?? this.rotationModelId) ?? fallback;
   }
 
   /**
    * Statuses that describe the CREDENTIAL rather than the request, and so are
-   * worth retrying on a different key: revoked/unscoped (401/403), model not
-   * enabled for that key's project (404), and spent quota (429).
+   * worth retrying on a different key: revoked/unscoped (401/403), exhausted
+   * billing on that key (402), model not enabled for that key's project
+   * (404), and spent quota (429).
    */
-  protected static readonly KEY_SCOPED_STATUSES: ReadonlySet<number> = new Set([401, 403, 404, 429]);
+  protected static readonly KEY_SCOPED_STATUSES: ReadonlySet<number> = new Set([401, 402, 403, 404, 429]);
 
   /**
    * Subset of KEY_SCOPED_STATUSES that indicates a CREDENTIAL problem rather
@@ -192,7 +204,7 @@ export abstract class BaseAdapter implements ProviderAdapter {
    *
    * With no pool this is a single call and adds nothing.
    */
-  protected async withKeyRotation<T>(operation: () => Promise<T>): Promise<T> {
+  protected async withKeyRotation<T>(operation: () => Promise<T>, modelId?: string): Promise<T> {
     const attempts = Math.max(1, this.keyPool.length);
     if (attempts === 1) return operation();
 
@@ -201,6 +213,8 @@ export abstract class BaseAdapter implements ProviderAdapter {
     // failures mean the credential problem is provider-wide, not key-scoped —
     // see the short-circuit below.
     let authFailures = 0;
+    const prevModelId = this.rotationModelId;
+    this.rotationModelId = modelId;
     try {
       for (let i = 0; i < attempts; i++) {
         // First attempt uses normal quota-aware rotation; retries walk the pool.
@@ -252,6 +266,7 @@ export abstract class BaseAdapter implements ProviderAdapter {
       }
     } finally {
       this.pinnedKeyIndex = undefined;
+      this.rotationModelId = prevModelId;
     }
     throw lastError;
   }
@@ -359,6 +374,23 @@ export abstract class BaseAdapter implements ProviderAdapter {
   }
 
   /**
+   * Key id attributed to usage/quota observations for the CURRENT request.
+   *
+   * The rotation loop serves retries from sibling keys, but the hooks below
+   * used to record `config.apiKey` (the init/first key) for every request, so
+   * per-key quota silently accumulated on one credential while others looked
+   * idle. During a pinned retry this resolves to the retry's key; otherwise
+   * to the configured key. Subclasses whose credential lives outside
+   * `config.apiKey` (e.g. GenericOpenAI's own `apiKey` field) override this.
+   */
+  protected getTrackingKeyId(): string {
+    if (this.keyPool.length > 1 && this.pinnedKeyIndex !== undefined) {
+      return this.keyPool[this.pinnedKeyIndex % this.keyPool.length];
+    }
+    return (this.config.apiKey as string) || '';
+  }
+
+  /**
    * Enable automatic rate limit tracking for this adapter.
    * Extracts X-RateLimit-* headers from successful responses and stores
    * them for smart key rotation and quota-aware routing.
@@ -371,11 +403,12 @@ export abstract class BaseAdapter implements ProviderAdapter {
 
     this.hooks.registerAfterSuccess(async (ctx, response) => {
       // Only track for API key requests (not OAuth tokens)
-      if (this.config.apiKey) {
+      const trackingKey = this.getTrackingKeyId();
+      if (trackingKey) {
         try {
           const tracker = getRateLimitTracker();
           tracker.trackResponse({
-            keyId: this.config.apiKey,
+            keyId: trackingKey,
             providerId: this.providerId,
             response,
           });
@@ -395,13 +428,14 @@ export abstract class BaseAdapter implements ProviderAdapter {
     // the error context doesn't carry it — a key-level learned limit applies
     // to every model on the key, which is correct for credential-scoped caps.
     this.hooks.registerAfterError(async (ctx, response, error) => {
-      if (this.config.apiKey) {
+      const trackingKey = this.getTrackingKeyId();
+      if (trackingKey) {
         try {
           const message = String((error as Error | undefined)?.message ?? '');
           const parsed = parseLimitFromError(message);
           if (parsed) {
             getRateLimitTracker().learnLimitFromError({
-              keyId: this.config.apiKey,
+              keyId: trackingKey,
               providerId: this.providerId,
               limit: parsed.limit,
               axis: parsed.axis,

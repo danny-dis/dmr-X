@@ -225,9 +225,17 @@ export class KeyRotationService {
         // Sort by quota (most remaining first)
         availableKeys.sort(compareKeyQuota);
         
-        // Find the corresponding raw key
+        // Find the corresponding raw key.
+        //
+        // Quota rows have been written with BOTH id forms over time: the
+        // rate-limit tracker persists the raw key while older/newer writers
+        // may persist its hash. Match either form so an exhausted-key record
+        // is never silently missed (a miss falls through to quota-ignoring
+        // round-robin and re-picks the spent key ~1/N of the time).
         const bestStatus = availableKeys[0];
-        const keyIndex = keys.findIndex(k => this.hashKey(k) === bestStatus.keyId);
+        const keyIndex = keys.findIndex(
+          k => this.hashKey(k) === bestStatus.keyId || k === bestStatus.keyId,
+        );
         if (keyIndex >= 0) {
           this.updateLastUsed(providerId, keyIndex);
           return keys[keyIndex];

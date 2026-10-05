@@ -97,15 +97,29 @@ export class GenericOpenAIAdapter extends BaseAdapter {
   }
 
   /**
-   * Get the current key for requests — delegates to key rotation service
+   * Usage/quota observations must carry the key that served the request, not
+   * `config.apiKey` (the init credential): this adapter rotates through its
+   * own `apiKeys` pool, and `this.apiKey` always holds the last key handed
+   * out by `getCurrentKey` / the pool loops.
    */
-  private getCurrentKey(): string {
+  protected getTrackingKeyId(): string {
+    return this.apiKey || super.getTrackingKeyId();
+  }
+
+  /**
+   * Get the current key for requests — delegates to key rotation service.
+   *
+   * `modelId` is forwarded so smart rotation can consult per-model quota;
+   * without it every model shares one undifferentiated pick and per-model
+   * exhaustion records are never consulted.
+   */
+  private getCurrentKey(modelId?: string): string {
     // Single credential (the common case) → use it as-is. Consulting the
     // rotation service here would hand back an unrelated ambient env var.
     if (this.apiKeys.length <= 1) return this.apiKey;
 
     // A real pool → prefer quota-aware smart rotation, else round-robin.
-    const rotated = keyRotationService.getNextKey(this.providerId);
+    const rotated = keyRotationService.getNextKey(this.providerId, modelId);
     if (rotated) {
       this.apiKey = rotated;
       return rotated;
@@ -296,7 +310,7 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     // the pool explicitly from there: smart rotation scores by remaining
     // quota and would happily hand back the key that just failed, which
     // would burn every attempt on the same credential.
-    const firstKey = this.getCurrentKey();
+    const firstKey = this.getCurrentKey(request.model);
     const startIndex = Math.max(0, this.apiKeys.indexOf(firstKey));
     // Distinct keys rejected with an auth status (401/403). Two means the
     // credential is bad provider-wide, so rotation is abandoned — see below.
@@ -304,6 +318,9 @@ export class GenericOpenAIAdapter extends BaseAdapter {
 
     for (let i = 0; i < attempts; i++) {
       const key = i === 0 ? firstKey : this.apiKeys[(startIndex + i) % this.apiKeys.length];
+      // Keep `apiKey` (and therefore usage tracking) pointed at the key
+      // actually serving this attempt, not the first key of the dispatch.
+      this.apiKey = key;
       try {
         return await this.executeChatOnce(request, options, key);
       } catch (error) {
@@ -504,12 +521,54 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     return {};
   }
 
+  /**
+   * Embedding across the key pool: same key-scoped retry contract as chat.
+   * Previously a single key served every embedding request, so one spent
+   * credential failed the whole modality while siblings sat idle.
+   */
   private async executeEmbedding(
     request: UnifiedRequest,
     options?: ExecuteOptions
   ): Promise<UnifiedResponse> {
+    const attempts = Math.max(1, this.apiKeys.length);
+    const firstKey = this.getCurrentKey(request.model);
+    const startIndex = Math.max(0, this.apiKeys.indexOf(firstKey));
+    let lastError: unknown;
+    let authFailures = 0;
+
+    for (let i = 0; i < attempts; i++) {
+      const key = i === 0 ? firstKey : this.apiKeys[(startIndex + i) % this.apiKeys.length];
+      this.apiKey = key;
+      try {
+        return await this.executeEmbeddingOnce(request, options, key);
+      } catch (error) {
+        lastError = error;
+        const status = (error as { statusCode?: number })?.statusCode;
+        const isLast = i === attempts - 1;
+        if (status && GenericOpenAIAdapter.AUTH_STATUSES.has(status)) {
+          authFailures++;
+          if (authFailures >= 2) throw error;
+        }
+        if (isLast || !status || !GenericOpenAIAdapter.KEY_SCOPED_STATUSES.has(status)) {
+          throw error;
+        }
+        logger.warn(
+          { providerId: this.providerId, model: request.model, status, attempt: i + 1, of: attempts },
+          'Key-scoped failure — retrying embedding on the next key in the pool',
+        );
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async executeEmbeddingOnce(
+    request: UnifiedRequest,
+    options?: ExecuteOptions,
+    keyOverride?: string,
+  ): Promise<UnifiedResponse> {
     const start = Date.now();
-    const key = this.getCurrentKey();
+    const key = keyOverride ?? this.getCurrentKey(request.model);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -548,10 +607,85 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     };
   }
 
+  /**
+   * Streaming across the key pool with a hard pre-output boundary.
+   *
+   * The pool loop wraps ONLY the initial request: on a key-scoped failure
+   * (401/402/403/404/429) before any chunk is produced, the next unique
+   * configured credential is tried. Once the first token/reasoning/tool-call
+   * chunk has been yielded, failures propagate immediately and are never
+   * retried — replaying a half-delivered stream would duplicate content and
+   * violate the caller's exactly-once expectation.
+   *
+   * Preserved: caller AbortSignal (checked between attempts and forwarded to
+   * every attempt, so cancellation and the cumulative caller deadline still
+   * win), per-attempt Authorization, and upstream error headers (incl.
+   * Retry-After) on the surfaced ProviderError. No synthetic chunks are ever
+   * emitted; usage/metadata flow from the real upstream response.
+   */
   async *executeStream(request: UnifiedRequest, options?: ExecuteOptions): AsyncIterable<StreamChunk> {
     this.assertInitialized();
 
-    const key = this.getCurrentKey();
+    const attempts = Math.max(1, this.apiKeys.length);
+    const firstKey = this.getCurrentKey(request.model);
+    const startIndex = Math.max(0, this.apiKeys.indexOf(firstKey));
+    let lastError: unknown;
+    let authFailures = 0;
+
+    for (let i = 0; i < attempts; i++) {
+      if (options?.signal?.aborted) {
+        throw lastError ?? new Error(`${this.providerId} stream: caller aborted before attempt ${i + 1}`);
+      }
+      const key = i === 0 ? firstKey : this.apiKeys[(startIndex + i) % this.apiKeys.length];
+      this.apiKey = key;
+      let response: Response;
+      try {
+        response = await this.fetchChatStreamResponse(request, options, key);
+      } catch (error) {
+        lastError = error;
+        const status = (error as { statusCode?: number })?.statusCode;
+        const isLast = i === attempts - 1;
+        if (status && GenericOpenAIAdapter.AUTH_STATUSES.has(status)) {
+          authFailures++;
+          if (authFailures >= 2) {
+            logger.warn(
+              { providerId: this.providerId, model: request.model, status, keysTried: i + 1, of: attempts },
+              'Provider-wide auth failure — abandoning stream key rotation so the router can fail over',
+            );
+            throw error;
+          }
+        }
+        if (isLast || !status || !GenericOpenAIAdapter.KEY_SCOPED_STATUSES.has(status)) {
+          throw error;
+        }
+        logger.warn(
+          { providerId: this.providerId, model: request.model, status, attempt: i + 1, of: attempts },
+          'Key-scoped failure — retrying stream on the next key in the pool',
+        );
+        continue;
+      }
+
+      // Pre-output fetch succeeded: from here on the stream is live and any
+      // failure (transport cut, upstream mid-stream error) propagates to the
+      // caller with no further rotation.
+      yield* createOpenAISSEIterator(response, { signal: options?.signal });
+      return;
+    }
+
+    throw lastError;
+  }
+
+  /**
+   * Single-key streaming request: headers + POST, no iteration. Kept separate
+   * so the pool loop above can retry the request phase without ever touching
+   * a live (already-yielding) stream.
+   */
+  private async fetchChatStreamResponse(
+    request: UnifiedRequest,
+    options: ExecuteOptions | undefined,
+    keyOverride?: string,
+  ): Promise<Response> {
+    const key = keyOverride ?? this.getCurrentKey(request.model);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -559,9 +693,8 @@ export class GenericOpenAIAdapter extends BaseAdapter {
       headers['Authorization'] = `Bearer ${key}`;
     }
 
-    let response: Response;
     try {
-      response = await this.fetchWithTimeout(this.getChatCompletionsUrl(), {
+      return await this.fetchWithTimeout(this.getChatCompletionsUrl(), {
         method: 'POST',
         headers,
         body: JSON.stringify(this.buildChatBody(request, true)),
@@ -573,8 +706,6 @@ export class GenericOpenAIAdapter extends BaseAdapter {
     } catch (error) {
       throw this.handleAdapterError(error, 'stream');
     }
-
-    yield* createOpenAISSEIterator(response, { signal: options?.signal });
   }
 
   async listModels(): Promise<ModelInfo[]> {

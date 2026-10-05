@@ -58,7 +58,12 @@ export function upstreamHeaders(callerKey?: string): Record<string, string> {
   const key = upstreamApiKey(callerKey);
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (key) headers['Authorization'] = `Bearer ${key}`;
-  if (!isRelayMode()) {
+  if (isRelayMode()) {
+    // The internal proxy must not re-enter wrapping or escape the free pool.
+    headers['X-DMRX-Godmode-Proxy'] = '1';
+    headers['X-Cost-Filter'] = 'free';
+    headers['X-Free-Tier-Strategy'] = 'free_only';
+  } else {
     headers['HTTP-Referer'] = 'https://godmod3.ai';
     headers['X-Title'] = 'GODMOD3.AI';
   }

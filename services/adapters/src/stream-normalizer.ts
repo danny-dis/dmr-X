@@ -100,10 +100,14 @@ export function createOpenAISSEIterator(
     if (signal.aborted) {
       // Already aborted — cancel synchronously and let the consumer
       // observe a done iterator.
-      void eventStream.cancel(signal.reason);
+      // The consumer may still own the stream's reader. cancel() then
+      // rejects with a locked-stream TypeError; cleanup must not become an
+      // unhandled rejection that shuts down the gateway.
+      void eventStream.cancel(signal.reason).catch(() => {});
     } else {
       const onAbort = () => {
-        void eventStream.cancel(signal.reason);
+        // Cleanup can reject when the consumer still owns the reader.
+        void eventStream.cancel(signal.reason).catch(() => {});
       };
       signal.addEventListener('abort', onAbort, { once: true });
     }

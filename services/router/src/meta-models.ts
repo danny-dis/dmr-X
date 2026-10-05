@@ -1,4 +1,5 @@
 import type { CandidateSet } from '@dmr-x/core';
+import { getBenchmarkAgenticIndex, getBenchmarkCodingIndex } from '@dmr-x/provider-catalog';
 
 /**
  * Helper function to filter free candidates.
@@ -52,6 +53,49 @@ const speedPrior = (c: any): number => {
   if (tier === 'frontier') return 0.2;
   return 0.5;
 };
+
+/**
+ * Ordering-only latency estimate for a candidate with no measurement yet.
+ *
+ * A positive measured `avgLatencyMs` is always used as-is. Otherwise the
+ * candidate falls back to the shared cold speed prior, rescaled to
+ * milliseconds so latency-sorted rankers can consume it. The rescale is an
+ * untrained ordering heuristic, never a measurement — nothing downstream may
+ * present it as observed latency.
+ */
+const coldLatencyMs = (c: any): number => {
+  const measured = c.avgLatencyMs;
+  if (typeof measured === 'number' && measured > 0) return measured;
+  return (1 - speedPrior(c)) * 5000;
+};
+
+/**
+ * Rescale a raw Artificial Analysis index (roughly 0–100) to a 0–1 prior.
+ *
+ * UNtrained heuristic rescale for tiebreak-scale bonuses — NOT a trained
+ * weight and NOT a leaderboard claim. `undefined` (unmeasured) maps to 0 so
+ * an unknown benchmark contributes no bonus and stays explicitly unknown
+ * rather than a guessed percentile.
+ */
+const benchmarkIndex01 = (value: number | undefined): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.max(0, Math.min(1, value / 100));
+};
+
+/**
+ * Task-specific benchmark tiebreak for the coding rankers (+0.10 max).
+ * Deliberately small next to the 0.35–0.40 specialization term so measured
+ * capability tags dominate; unknown indices add nothing.
+ */
+const codingBenchmarkBonus = (c: any): number =>
+  benchmarkIndex01(getBenchmarkCodingIndex(String(c.modelId ?? ''), c.providerName)) * 0.1;
+
+/**
+ * Task-specific benchmark tiebreak for the agentic rankers (+0.10 max).
+ * Same conservative sizing next to the 0.30 tool term; unknown adds nothing.
+ */
+const agenticBenchmarkBonus = (c: any): number =>
+  benchmarkIndex01(getBenchmarkAgenticIndex(String(c.modelId ?? ''), c.providerName)) * 0.1;
 
 export const isFree = (c: any) => {
   if (c.pricingTier === 'paid' || c.pricingTier === 'subscription_only') return false;
@@ -216,7 +260,7 @@ export const META_MODELS: MetaModelDefinition[] = [
           const toolComponent = toolBonus * 0.3;
           const contextComponent = Math.min((c.contextLength ?? 0) / 1_000_000, 1) * 0.2;
           const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.1;
-          return { ...c, agenticScore: qualityComponent + toolComponent + contextComponent + speedComponent };
+          return { ...c, agenticScore: qualityComponent + toolComponent + contextComponent + speedComponent + agenticBenchmarkBonus(c) };
         })
         .sort((a, b) => b.agenticScore - a.agenticScore);
 
@@ -246,7 +290,7 @@ export const META_MODELS: MetaModelDefinition[] = [
           const costComponent = Math.max(0, 1 - Math.min(totalCost * 1000, 1)) * 0.20;
           const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.15;
           const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.05;
-          return { ...c, codingScore: qualityComponent + specComponent + costComponent + contextComponent + speedComponent };
+          return { ...c, codingScore: qualityComponent + specComponent + costComponent + contextComponent + speedComponent + codingBenchmarkBonus(c) };
         })
         .sort((a, b) => b.codingScore - a.codingScore);
 
@@ -424,11 +468,17 @@ export const META_MODELS: MetaModelDefinition[] = [
   },
   {
     alias: 'free-fast',
-    description: 'Fastest free model',
+    description: 'Fastest free model with a quality baseline. Prefers 0.5+ quality (soft floor, degrades instead of 502ing). Unmeasured candidates order by the shared cold speed prior, same as auto-fast.',
     costFilter: 'free',
     ranker: (candidates) => {
+      const MIN_QUALITY = 0.5;
       const pool = candidates.filter(isFree);
-      return pool.sort((a, b) => (a.avgLatencyMs ?? 9999) - (b.avgLatencyMs ?? 9999));
+      // The quality floor is a preference, not a hard gate: without it a
+      // near-zero-quality 50ms model outranked an adequate 300ms model.
+      // Degrade to the full free pool when nothing clears the floor.
+      const aboveFloor = pool.filter(c => (c.qualityScore ?? 0) >= MIN_QUALITY);
+      const usable = aboveFloor.length > 0 ? aboveFloor : pool;
+      return usable.sort((a, b) => coldLatencyMs(a) - coldLatencyMs(b));
     },
   },
   {
@@ -460,7 +510,7 @@ export const META_MODELS: MetaModelDefinition[] = [
           const toolComponent = toolBonus * 0.3;
           const contextComponent = Math.min((c.contextLength ?? 0) / 1_000_000, 1) * 0.2;
           const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.1;
-          return { ...c, agenticScore: qualityComponent + toolComponent + contextComponent + speedComponent };
+          return { ...c, agenticScore: qualityComponent + toolComponent + contextComponent + speedComponent + agenticBenchmarkBonus(c) };
         })
         .sort((a, b) => b.agenticScore - a.agenticScore);
 
@@ -486,7 +536,7 @@ export const META_MODELS: MetaModelDefinition[] = [
           const specComponent = specMatch * 0.4;
           const contextComponent = Math.min((c.contextLength ?? 0) / 256_000, 1) * 0.2;
           const speedComponent = Math.max(0, 1 - (c.avgLatencyMs ?? 5000) / 5000) * 0.1;
-          return { ...c, codingScore: qualityComponent + specComponent + contextComponent + speedComponent };
+          return { ...c, codingScore: qualityComponent + specComponent + contextComponent + speedComponent + codingBenchmarkBonus(c) };
         })
         .sort((a, b) => b.codingScore - a.codingScore);
 

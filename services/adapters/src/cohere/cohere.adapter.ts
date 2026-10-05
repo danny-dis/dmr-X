@@ -62,6 +62,9 @@ export class CohereAdapter extends BaseAdapter {
     // an exhausted key moves to a sibling instead of failing — measured at
     // 24/30 successes before this and 30/30 after, on a pool where two of the
     // five keys were quota-spent.
+    // `request.model` is threaded so quota-aware rotation consults per-model
+    // quota; key resolution still flows through the `apiKey` getter (pinned
+    // during retries), so rotation order is unchanged.
     return this.withKeyRotation(async () => {
       if (request.modality === 'reranking') {
         return this.executeRerank(request, options);
@@ -76,7 +79,7 @@ export class CohereAdapter extends BaseAdapter {
       }
 
       throw new Error(`Unsupported modality: ${request.modality}`);
-    });
+    }, request.model);
   }
 
   private async executeRerank(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {
@@ -173,26 +176,18 @@ export class CohereAdapter extends BaseAdapter {
       return;
     }
 
+    // Safe rotation with a hard pre-output boundary (mirrors the generic
+    // OpenAI streaming contract): the pool loop wraps ONLY the request phase.
+    // A key-scoped failure (401/402/403/404/429) before any chunk moves to
+    // the next unique credential; once iteration starts, failures propagate
+    // with no further rotation. Reuses `withKeyRotation`, so the provider-wide
+    // auth short-circuit, per-model quota threading, and actual-key usage
+    // attribution all behave exactly like non-streaming `execute`.
     const start = Date.now();
-    const body = this.buildCohereChatBody(request, true);
-    const response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      timeoutMs: options?.timeoutMs ?? 120000,
-      signal: options?.signal,
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      const httpMeta: HttpMeta = { response, request: new Request(response.url), body: text };
-      const httpError = createHttpError(response.status, httpMeta);
-      throw new ProviderError(`Cohere chat: ${httpError.message}`, this.providerId, response.status);
-    }
+    const response = await this.withKeyRotation(
+      () => this.fetchCohereStreamResponse(request, options),
+      request.model,
+    );
 
     const reader = response.body?.getReader();
     if (!reader) {
@@ -292,6 +287,40 @@ export class CohereAdapter extends BaseAdapter {
         latencyMs: Date.now() - start,
       },
     } as StreamChunk;
+  }
+
+  /**
+   * Single-key Cohere streaming request: headers + POST, no iteration.
+   * The `apiKey` getter resolves through rotation (pinned to the retry's key
+   * inside `withKeyRotation`), so each pool attempt authenticates distinctly.
+   * The caller's AbortSignal and timeout are forwarded unchanged, preserving
+   * cancellation and the cumulative caller deadline.
+   */
+  private async fetchCohereStreamResponse(
+    request: UnifiedRequest,
+    options?: ExecuteOptions,
+  ): Promise<Response> {
+    const body = this.buildCohereChatBody(request, true);
+    const response = await this.fetchWithTimeout(`${this.config.baseUrl}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      timeoutMs: options?.timeoutMs ?? 120000,
+      signal: options?.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      const httpMeta: HttpMeta = { response, request: new Request(response.url), body: text };
+      const httpError = createHttpError(response.status, httpMeta);
+      throw new ProviderError(`Cohere chat: ${httpError.message}`, this.providerId, response.status);
+    }
+
+    return response;
   }
 
   // --- Cohere v2 chat (non-OpenAI-compatible) ---

@@ -175,6 +175,8 @@ function isInsufficientQuotaError(error: unknown): boolean {
   const msg = error.message.toLowerCase();
   return (
     msg.includes('insufficient_quota') ||
+    msg.includes('insufficient_user_quota') ||
+    msg.includes('insufficient user quota') ||
     msg.includes('insufficient quota') ||
     msg.includes('quota_exhausted') ||
     msg.includes('out of credits') ||
@@ -372,7 +374,7 @@ async function applyFailurePenalties(
     );
   }
   // On 403 (Forbidden), apply 24h cooldown — model is not accessible
-  if (rls && isForbiddenError(error)) {
+  if (rls && isForbiddenError(error) && !isInsufficientQuotaError(error)) {
     rls.setModelForbiddenCooldown(providerId, modelId);
     logger.warn(
       { provider: providerId, modelId: modelId },
@@ -607,7 +609,7 @@ export async function executeWithFallback(
       );
     }
     // On 403 (Forbidden), apply 24h cooldown — model is not accessible
-    if (rls && isForbiddenError(error)) {
+    if (rls && isForbiddenError(error) && !isInsufficientQuotaError(error)) {
       rls.setModelForbiddenCooldown(plan.primary.providerId, plan.primary.modelId);
       logger.warn(
         { provider: plan.primary.providerId, modelId: plan.primary.modelId },
@@ -696,7 +698,7 @@ export async function executeWithFallback(
   // another model on the same provider may still answer.
   if (errorCategory === 'model_not_found' || errorCategory === 'auth_error' ||
       errorCategory === 'provider_overloaded' || errorCategory === 'error' ||
-      errorCategory === 'rate_limit') {
+      errorCategory === 'rate_limit' || errorCategory === 'insufficient_quota') {
     trackModelError(plan.primary.providerId, plan.primary.modelId, errorCategory, retryAfterMs);
   }
 

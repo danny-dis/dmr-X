@@ -24,6 +24,7 @@
     "@dmr-x/core": "*",
     "@dmr-x/db": "*",
     "@dmr-x/policy": "*",
+    "@dmr-x/provider-catalog": "*",
     "@dmr-x/quota": "*",
     "@dmr-x/utils": "*",
     "@dmr-x/workers": "*",

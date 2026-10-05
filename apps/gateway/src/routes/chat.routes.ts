@@ -13,8 +13,63 @@ import { compressionService } from '../services/compression.js';
 import { semanticCacheService } from '@dmr-x/cache';
 import { hashConversation, breakStickySession } from '@dmr-x/router';
 
-const ChatRequestSchema = z.object({
-  model: z.string(),
+/**
+ * Race a promise against a bounded timer. The timer is ALWAYS cleared on
+ * settle (winner or loser), so bounded waits never leak past the request.
+ * Timer bounds are failover triggers, never performance fixes: callers move
+ * to the next candidate / error path instead of waiting longer.
+ */
+function withBoundedWait<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+/** Enforce deadlines even when an adapter ignores AbortSignal while next() hangs. */
+async function* boundedProviderStream<T extends { type: string; data?: any }>(
+  stream: AsyncIterable<T>, ttftMs: number, totalMs: number, fallbackDeadline: number,
+): AsyncGenerator<T> {
+  const iterator = stream[Symbol.asyncIterator]();
+  const started = Date.now();
+  let semanticOutput = false;
+  try {
+    while (true) {
+      const now = Date.now();
+      const bounds = [totalMs > 0 ? started + totalMs - now : Infinity];
+      if (!semanticOutput) {
+        if (ttftMs > 0) bounds.push(started + ttftMs - now);
+        if (fallbackDeadline > 0) bounds.push(fallbackDeadline - now);
+      }
+      const remaining = Math.min(...bounds);
+      if (remaining <= 0) throw new Error('Upstream stream output deadline exceeded');
+      const pending = iterator.next();
+      const next = Number.isFinite(remaining)
+        ? await withBoundedWait(pending, remaining, 'Upstream stream output deadline exceeded')
+        : await pending;
+      if (next.done) {
+        if (!semanticOutput) throw new Error('Upstream stream completed with zero content tokens');
+        return;
+      }
+      const chunk = next.value;
+      if (!chunk || typeof chunk.type !== 'string') continue;
+      if (chunk.type === 'token') {
+        if (!chunk.data?.content && !chunk.data?.tool_calls?.length) continue;
+        semanticOutput = true;
+      }
+      yield chunk;
+      if (chunk.type === 'done') return;
+    }
+  } finally {
+    // Never await return(): an uncooperative upstream may still be stuck in next().
+    void Promise.resolve().then(() => iterator.return?.()).catch(() => {});
+  }
+}
+
+const ChatRequestSchema = z.object({  model: z.string(),
   costFilter: z.enum(['free', 'all']).optional(),
   messages: z.array(ChatMessageSchema).min(1),
   tools: z.array(ToolSchema).optional(),
@@ -69,29 +124,84 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
           if (body.stream) {
             const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
-            const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
+            // Bound the sidecar readiness wait (health probe + serialized
+            // restart + initialize share one budget): a slow spawn must not
+            // stall past the client's patience before headers are even sent.
+            // Conservative default 15s, separately configurable. This bounds
+            // the wait; it does not extend any timeout as a performance fix.
+            const AUTOFREE_PROXY_READY_MS =
+              Number(process.env.DMRX_AUTOFREE_PROXY_READY_MS ?? 15000);
+            const proxyReady = await withBoundedWait(
+              ensureGodmodeProxy(requestId).catch(() => false),
+              AUTOFREE_PROXY_READY_MS,
+              `auto-free godmode proxy not ready within ${AUTOFREE_PROXY_READY_MS}ms`,
+            ).catch(() => false);
             if (proxyReady) {
               const { getGodmodeService } = await import('@dmr-x/godmode');
               const godmode = getGodmodeService();
               if (!godmode.isInitialized()) {
-                await godmode.initialize().catch(() => {});
+                await withBoundedWait(
+                  godmode.initialize().catch(() => {}),
+                  AUTOFREE_PROXY_READY_MS,
+                  `auto-free godmode proxy initialize exceeded ${AUTOFREE_PROXY_READY_MS}ms`,
+                ).catch(() => {});
               }
               if (godmode.isInitialized()) {
                 reply.header('Content-Type', 'text/event-stream');
                 reply.header('Cache-Control', 'no-cache');
                 reply.header('Connection', 'keep-alive');
                 reply.raw.writeHead(200);
-                // Watchdog: the godmode relay occasionally stalls before the
-                // first chunk or mid-stream (proxy restart, dead upstream).
-                // Without this the request hangs silently forever.
+                // Watchdog: total caller budget for the whole godmode relay
+                // (unchanged default 120s). Per-attempt stalls are bounded
+                // below; this only guards the aggregate.
                 const AUTOFREE_STREAM_TIMEOUT_MS =
                   Number(process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS) || 120_000;
+                // Per-model first-SEMANTIC-output deadline (conservative
+                // default 12s TTFT, separately configurable). A wrap attempt
+                // that yields nothing in this budget is aborted and the next
+                // wrapped candidate is tried BEFORE any output. After output
+                // starts, attempts never retry (see catch below).
+                const AUTOFREE_TTFT_MS =
+                  Number(process.env.DMRX_AUTOFREE_TTFT_MS ?? 12000);
+                // SSE keepalive comments while waiting pre-first-chunk so
+                // idle intermediaries don't reap the connection. 0 disables.
+                // Keepalives are transport comments, never semantic output:
+                // they never set `sent`, so a stalled attempt still fails
+                // over even after pings were emitted.
+                const AUTOFREE_KEEPALIVE_MS =
+                  Number(process.env.DMRX_AUTOFREE_KEEPALIVE_MS ?? 15000);
+                let godmodeClientAborted = false;
+                let wrapOutputStarted = false;
+                const onGodmodeClientClose = () => { godmodeClientAborted = true; };
+                request.raw.on('close', onGodmodeClientClose);
                 const drainWrapStream = async (): Promise<void> => {
-                  for (const wrapModel of wrapOrder) {
+                  let keepalive: ReturnType<typeof setInterval> | undefined;
+                  const stopKeepalive = () => {
+                    if (keepalive !== undefined) {
+                      clearInterval(keepalive);
+                      keepalive = undefined;
+                    }
+                  };
                   try {
+                    if (AUTOFREE_KEEPALIVE_MS > 0) {
+                      keepalive = setInterval(() => {
+                        if (!reply.raw.writableEnded) reply.raw.write(': ping\n\n');
+                      }, AUTOFREE_KEEPALIVE_MS);
+                    }
+                  for (const wrapModel of wrapOrder) {
+                    if (godmodeClientAborted) return;
+                    // Declared OUTSIDE the per-attempt try so the catch
+                    // below (failover vs terminal-close decision) always
+                    // observes them.
                     let sent = false;
                     let sawToolCalls = false;
-                    for await (const delta of godmode.chatStreamFull({
+                  try {
+                    // Manual iterator (not for-await) so a hung upstream
+                    // next() can be abandoned on the TTFT bound. The done
+                    // edge is never dereferenced and nullish frames are
+                    // skipped, never thrown — genuine errors still throw and
+                    // take the per-attempt catch path below.
+                    const iterable = godmode.chatStreamFull({
                       messages: body.messages as any,
                       model: wrapModel,
                       temperature: body.temperature,
@@ -99,7 +209,54 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                       top_p: body.top_p,
                       tools: (body as any).tools,
                       tool_choice: (body as any).tool_choice,
-                    })) {
+                    });
+                    const it = (iterable as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+                    // TTFT is measured from attempt start to the first
+                    // SEMANTIC chunk — empty keepalive-style deltas from the
+                    // upstream do not re-arm it. `AUTOFREE_TTFT_MS <= 0`
+                    // disables the per-model bound (total watchdog remains).
+                    const attemptStart = Date.now();
+                    const abortAttempt = () => {
+                      void Promise.resolve()
+                        .then(() => it.return?.() as unknown)
+                        .then(
+                          () => {},
+                          () => {},
+                        );
+                    };
+                    while (true) {
+                      if (godmodeClientAborted) return;
+                      const nextP = it.next();
+                      let next: IteratorResult<unknown>;
+                      if (!sent && AUTOFREE_TTFT_MS > 0) {
+                        const remaining = AUTOFREE_TTFT_MS - (Date.now() - attemptStart);
+                        if (remaining <= 0) {
+                          // Abort the stalled attempt: best-effort iterator
+                          // release (never awaited — the upstream may never
+                          // settle) and fall through to the per-attempt
+                          // catch, which tries the next candidate.
+                          abortAttempt();
+                          throw new Error(`auto-free wrap model ${wrapModel}: no output within ${AUTOFREE_TTFT_MS}ms`);
+                        }
+                        try {
+                          next = await withBoundedWait(
+                            nextP,
+                            remaining,
+                            `auto-free wrap model ${wrapModel}: no output within ${AUTOFREE_TTFT_MS}ms`,
+                          );
+                        } catch (ttftErr) {
+                          abortAttempt();
+                          throw ttftErr;
+                        }
+                      } else {
+                        next = await nextP;
+                      }
+                      // Real done edge: finish the attempt WITHOUT
+                      // dereferencing the iterator's return value.
+                      if (godmodeClientAborted) return;
+                      if (next.done) break;
+                      const delta = next.value as any;
+                      if (!delta || typeof delta !== 'object') continue;
                       const chunkDelta: any = {};
                       if (delta.content) chunkDelta.content = delta.content;
                       if (delta.tool_calls) {
@@ -116,6 +273,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                           })}\n\n`,
                         );
                         sent = true;
+                        wrapOutputStarted = true;
+                        stopKeepalive();
                       }
                     }
                     if (sent) {
@@ -131,42 +290,65 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                       reply.raw.end();
                       return;
                     }
+                    logger.info({ requestId, wrapModel }, 'auto-free godmode stream attempt empty; trying next picked model');
                   } catch (e) {
+                    if (sent) {
+                      // Output already began on this model: never retry or
+                      // mix in another model's chunks — close terminally.
+                      logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream failed after output started; closing without retry');
+                      if (!reply.raw.writableEnded) {
+                        reply.raw.write(`data: ${JSON.stringify({ error: { message: `auto-free stream failed on ${wrapModel}: ${(e as Error).message}` } })}\n\n`);
+                        reply.raw.write('data: [DONE]\n\n');
+                        reply.raw.end();
+                      }
+                      return;
+                    }
                     logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next picked model');
                   }
                   }
+                  // Exhaustion without semantic output is a failure, not a
+                  // completed drain. Throw so the outer catch emits an error
+                  // and closes the socket instead of returning with it open.
+                  throw new Error('all godmode stream attempts failed');
+                  } finally {
+                    stopKeepalive();
+                  }
                 };
+                let watchdog: ReturnType<typeof setTimeout> | undefined;
                 try {
                   await Promise.race([
                     drainWrapStream(),
-                    new Promise((_, reject) =>
-                      setTimeout(() => reject(new Error('auto-free stream watchdog timeout')), AUTOFREE_STREAM_TIMEOUT_MS),
-                    ),
+                    new Promise((_, reject) => {
+                      watchdog = setTimeout(() => reject(new Error('auto-free stream watchdog timeout')), AUTOFREE_STREAM_TIMEOUT_MS);
+                    }),
                   ]);
                   return;
                 } catch (e) {
-                  logger.warn({ requestId, err: e }, 'auto-free godmode stream stalled — emitting SSE error and closing');
-                  if (!reply.raw.writableEnded) {
-                    reply.raw.write(`data: ${JSON.stringify({ error: { message: `auto-free stream failed: ${(e as Error).message}` } })}\n\n`);
-                    reply.raw.write('data: [DONE]\n\n');
-                    reply.raw.end();
+                  // Fail over only before semantic output, and only when the
+                  // operator permits an unwrapped answer. Never mix models.
+                  const mayFallback = !wrapOutputStarted && !godmodeClientAborted && !isGodmodeStrict();
+                  godmodeClientAborted = true; // stop any late watchdog drain
+                  logger.warn({ requestId, err: e, mayFallback }, 'auto-free godmode stream failed');
+                  if (!mayFallback) {
+                    if (!reply.raw.writableEnded) {
+                      reply.raw.write(`data: ${JSON.stringify({ error: { message: `auto-free stream failed: ${(e as Error).message}` } })}\n\n`);
+                      reply.raw.write('data: [DONE]\n\n');
+                      reply.raw.end();
+                    }
+                    return;
                   }
-                  return;
+                } finally {
+                  if (watchdog !== undefined) clearTimeout(watchdog);
+                  request.raw.off('close', onGodmodeClientClose);
                 }
-                if (isGodmodeStrict()) {
-                  reply.raw.write(`data: ${JSON.stringify({ error: { message: 'auto-free godmode proxy unavailable (strict mode)' } })}\n\n`);
-                  reply.raw.end();
-                  return;
-                }
-                reply.raw.write(`data: ${JSON.stringify({ error: { message: 'all godmode stream attempts failed' } })}\n\n`);
-                reply.raw.end();
-                return;
+                // Non-strict, pre-output failure falls through to the same
+                // free-only router path used when the proxy is unavailable.
               }
             }
             if (isGodmodeStrict()) {
               reply.header('Content-Type', 'text/event-stream');
               reply.raw.writeHead(503);
-              reply.raw.write(`data: ${JSON.stringify({ error: { message: 'auto-free godmode proxy unavailable (strict mode)' } })}\n\n`);
+              reply.raw.write(`data: ${JSON.stringify({ error: { message: `auto-free godmode proxy unavailable within ${AUTOFREE_PROXY_READY_MS}ms (strict mode): sidecar not reachable, failing without fallback` } })}\n\n`);
               reply.raw.end();
               return;
             }
@@ -323,7 +505,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       };
-      reply.raw.writeHead(200, streamHeaders);
+      if (!reply.raw.headersSent) reply.raw.writeHead(200, streamHeaders);
 
       let plan;
       try {
@@ -549,8 +731,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           };
           const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
           const streamStart = Date.now();
-          for await (const chunk of stream) {
+          const ttftMs = Number(process.env.DMRX_STREAM_TTFT_MS ?? 8000);
+          for await (const chunk of boundedProviderStream(stream, ttftMs, upstreamTimeoutMs, fallbackDeadline)) {
             if (controller.signal.aborted) break;
+            // ROOT-CAUSE FIX (stream_error chunk.type): a degrading provider
+            // can yield nullish frames; dereferencing chunk.type then threw
+            // (JSC: "undefined is not an object (evaluating 'chunk.type')")
+            // and poisoned an otherwise-good stream after correct content.
+            // Skip such frames. Genuine thrown errors and in-band
+            // `{type:'error'}` chunks still take the catch/fallback path.
+            if (!chunk || typeof (chunk as { type?: unknown }).type !== 'string') continue;
             if (chunk.type === 'token' && firstTokenAt === undefined) {
               firstTokenAt = Date.now();
               (request as any).metrics.firstTokenLatencyMs = firstTokenAt - streamStart;
@@ -570,10 +760,17 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               collectedToolCalls = true;
             }
             let data: string | null = null;
+            // Every streamed frame carries the ACTUAL serving candidate
+            // (model + provider). After a fallback this is the fallback
+            // model — never the failed primary. Additive keys only: `model`
+            // is the standard OpenAI chunk field (previously omitted here),
+            // `dmrx_provider` follows the `dmrx_fallback` namespacing.
             if (chunk.type === 'token') {
               data = `data: ${JSON.stringify({
                 id: requestId,
                 object: 'chat.completion.chunk',
+                model: candidate.modelId,
+                dmrx_provider: candidate.providerId,
                 choices: [{ index: 0, delta: chunk.data, finish_reason: null }],
               })}\n\n`;
             } else if (chunk.type === 'done') {
@@ -591,6 +788,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               data = `data: ${JSON.stringify({
                 id: requestId,
                 object: 'chat.completion.chunk',
+                model: candidate.modelId,
+                dmrx_provider: candidate.providerId,
                 choices: [{ index: 0, delta: {}, finish_reason: collectedToolCalls ? 'tool_calls' : 'stop' }],
                 usage: {
                   prompt_tokens: streamPromptTokens,
@@ -625,6 +824,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             if (chunk.type === 'token' || chunk.type === 'done') {
               streamedAnyOutput = true;
             }
+            // Finite DONE: `done` is terminal. A misbehaving iterator that
+            // yields multiple done frames must not emit duplicate terminal
+            // frames — the first one ends this candidate's stream.
+            if (chunk.type === 'done') break;
           }
           if (controller.signal.aborted) {
             if (deadlineFired) {
@@ -794,6 +997,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         } finally {
           clearTimeout(deadline);
           request.raw.off('close', onClientClose);
+          controller.abort(); // release the abandoned candidate after deciding failover
         }
       }
 

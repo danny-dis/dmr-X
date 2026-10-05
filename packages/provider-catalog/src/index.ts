@@ -5,7 +5,7 @@
  * Users can add any of these via: dmrx add-provider <provider-id>
  */
 
-import { MODEL_BENCHMARKS } from './benchmarks.generated.js';
+import { MODEL_BENCHMARKS, type BenchmarkEntry } from './benchmarks.generated.js';
 import { VERIFIED_FREE_PROVIDERS, VERIFIED_FREE_OFFERS, getVerifiedFreeOffers } from './verified-free-labs.js';
 
 export interface OAuthProviderConfig {
@@ -2965,18 +2965,76 @@ export function benchmarkIndexToRank(intelligenceIndex: number): number {
 }
 
 /**
+ * Conservative benchmark entry lookup with free-variant inheritance.
+ *
+ * Order (all exact dictionary hits, never fuzzy):
+ *   1. the id verbatim (covers OpenRouter-style `provider/model` ids and the
+ *      8 snapshot `:free` twins, which keep their own measured indices);
+ *   2. the id minus ONE trailing `:free` / `-free` suffix (a free variant
+ *      inherits its base model's measured indices);
+ *   3./4. the same two forms prefixed with `${providerName}/` (registry
+ *      candidates carry a catalog-slug provider plus a bare model id).
+ *
+ * Anything else — version drift (`gpt-5.5-turbo`), renamed models, double
+ * suffixes — stays unknown (`undefined`). In particular this NEVER strips a
+ * provider prefix or stems a version number: an approximate match would tout
+ * one model's measured leaderboard as another's.
+ */
+function lookupBenchmarkEntry(modelId: string, providerName?: string): BenchmarkEntry | undefined {
+  const direct = MODEL_BENCHMARKS[modelId];
+  if (direct) return direct;
+  if (modelId.endsWith(':free') || modelId.endsWith('-free')) {
+    const base = MODEL_BENCHMARKS[modelId.slice(0, -':free'.length)];
+    if (base) return base;
+  }
+  if (providerName) {
+    const namespaced = MODEL_BENCHMARKS[`${providerName}/${modelId}`];
+    if (namespaced) return namespaced;
+    if (modelId.endsWith(':free') || modelId.endsWith('-free')) {
+      const namespacedBase = MODEL_BENCHMARKS[`${providerName}/${modelId.slice(0, -':free'.length)}`];
+      if (namespacedBase) return namespacedBase;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Look up a model's benchmark-derived intelligence rank (1-10) by its id.
  * Returns `undefined` when the model id has no Artificial Analysis benchmark.
  *
  * The id must match the key OpenRouter publishes (e.g.
- * `nvidia/nemotron-3-ultra-550b-a55b:free`). The registry's enrichFromCatalog
- * overrides the hand-set catalog rank with this value when it exists.
+ * `nvidia/nemotron-3-ultra-550b-a55b:free`). A free variant whose own key is
+ * absent inherits its exact base id's rank (see lookupBenchmarkEntry). The
+ * registry's enrichFromCatalog overrides the hand-set catalog rank with this
+ * value when it exists.
  */
-export function getBenchmarkIntelligenceRank(modelId: string): number | undefined {
-  const entry = MODEL_BENCHMARKS[modelId];
+export function getBenchmarkIntelligenceRank(modelId: string, providerName?: string): number | undefined {
+  const entry = lookupBenchmarkEntry(modelId, providerName);
   if (!entry) return undefined;
   const rank = benchmarkIndexToRank(entry.intelligenceIndex);
   return rank >= 1 ? rank : undefined;
+}
+
+/**
+ * Look up a model's raw Artificial Analysis coding index by its id.
+ * Returns `undefined` when unmeasured — callers must treat that as unknown
+ * (no bonus, no guessed percentile), never as a zero score.
+ */
+export function getBenchmarkCodingIndex(modelId: string, providerName?: string): number | undefined {
+  const entry = lookupBenchmarkEntry(modelId, providerName);
+  const value = entry?.codingIndex;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Look up a model's raw Artificial Analysis agentic index by its id.
+ * Returns `undefined` when unmeasured — callers must treat that as unknown
+ * (no bonus, no guessed percentile), never as a zero score.
+ */
+export function getBenchmarkAgenticIndex(modelId: string, providerName?: string): number | undefined {
+  const entry = lookupBenchmarkEntry(modelId, providerName);
+  const value = entry?.agenticIndex;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 /**

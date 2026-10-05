@@ -82,6 +82,16 @@ const STEPS: PatchStep[] = [
     patchFile: 'api_routes_research.ts.patch',
     marker: "'/batch/*splat'",
   },
+  {
+    target: path.join('api', 'routes', 'chat.ts'),
+    patchFile: 'api_routes_chat_tools.ts.patch',
+    marker: 'let sawToolCalls = false',
+  },
+  {
+    target: path.join('src', 'lib', 'openrouter.ts'),
+    patchFile: 'src_lib_openrouter_tools.ts.patch',
+    marker: 'export async function sendMessageFull',
+  },
 ];
 
 export interface GodmodePatchResult {

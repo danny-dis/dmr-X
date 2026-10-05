@@ -175,7 +175,7 @@ export class RegistryService {
         }
 
         // Get unified pricing classification
-        const classification = classifyModel(row.providerId, row.modelId);
+        const classification = classifyModel(row.providerName, row.modelId);
 
         return {
           providerId: row.providerId,
@@ -188,7 +188,14 @@ export class RegistryService {
           costPerInputToken,
           costPerOutputToken,
           costPerImage: Math.max(0, parseFloat(row.costPerImage) || 0),
-          avgLatencyMs: row.avgLatencyMs || 1000,
+          // Unknown latency stays unknown: nothing ever measures it into this
+          // column (auto-register omits it; only the benchmark service writes
+          // real measurements), so NULL/0 means "no measurement", not "fast".
+          // The old `|| 1000` fake-measured every unmeasured candidate and
+          // disabled the cold speed priors in the meta rankers.
+          avgLatencyMs: row.avgLatencyMs != null && Number(row.avgLatencyMs) > 0
+            ? Number(row.avgLatencyMs)
+            : undefined,
           qualityScore: this.calculateQualityScore(
             parseFloat(row.qualityScore) || 0.5,
             // Distinguish "unrated" from "rated at baseline". Coercing a missing

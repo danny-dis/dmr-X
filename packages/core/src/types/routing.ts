@@ -46,7 +46,9 @@ export interface ProviderModel {
   costPerSecond?: number;
   /** Maximum supported video duration in seconds */
   maxDuration?: number;
-  avgLatencyMs: number;
+  /** Measured mean latency in ms. Undefined when never measured — rankers fall
+   * back to cold speed priors instead of treating unknown as a measurement. */
+  avgLatencyMs?: number;
   qualityScore: number;
   isHealthy: boolean;
   compositeScore?: number;

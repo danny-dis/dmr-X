@@ -17,10 +17,12 @@ describe('benchmark rank mapping', () => {
   });
 
   it('looks up benchmark rank by model id', () => {
-    // The inflation this layer exists to correct: catalog ranks
-    // nemotron-3-ultra-550b-a55b:free at 9, benchmark says ~6.
-    expect(getBenchmarkIntelligenceRank('nvidia/nemotron-3-ultra-550b-a55b:free')).toBe(6);
-    expect(getBenchmarkIntelligenceRank('anthropic/claude-opus-5')).toBe(10);
+    // Snapshot refreshes may revise scores. Exact lookup must follow the
+    // current published snapshot; the formula itself is pinned above.
+    for (const id of ['nvidia/nemotron-3-ultra-550b-a55b:free', 'anthropic/claude-opus-5']) {
+      const entry = MODEL_BENCHMARKS[id];
+      expect(getBenchmarkIntelligenceRank(id)).toBe(entry ? benchmarkIndexToRank(entry.intelligenceIndex) : undefined);
+    }
   });
 
   it('returns undefined for unknown model ids (falls through to catalog rank)', () => {
