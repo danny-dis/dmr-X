@@ -620,6 +620,9 @@ export interface ApiMcpStatus {
  * `enabled` is the settings-backed runtime toggle; `reachable` is a live
  * probe of its `/health` endpoint; `lastAttempt` is telemetry from the most
  * recent real filter call the gateway made (if any since last restart).
+ * `sidecar` describes what is actually running (version + active depth) and
+ * `bypassed` is true when the last attempt exceeded the latency budget, i.e.
+ * the filter ran but its result was discarded.
  */
 export interface ApiNeedleStatus {
   enabled: boolean;
@@ -627,6 +630,18 @@ export interface ApiNeedleStatus {
   modelLoaded: boolean | null;
   probeLatencyMs: number;
   timeoutBudgetMs: number;
+  /** What the sidecar reports about itself. Nulls when unreachable. */
+  sidecar: {
+    model: string | null;
+    weights: string | null;
+    /** Layer count of the active rung; 20 is the full base model. */
+    depth: number | null;
+    packageVersion: string | null;
+    cachedAgents: number | null;
+  };
+  /** True when the last real attempt was too slow to use. */
+  bypassed: boolean;
+  activeJobs: { id: string; kind: string; label: string; status: string }[];
   lastAttempt: {
     at: string;
     outcome: 'disabled' | 'matched' | 'no_match' | 'timeout' | 'http_error' | 'network_error' | null;
@@ -635,6 +650,65 @@ export interface ApiNeedleStatus {
     matchedCount: number | null;
     toolCount: number | null;
   } | null;
+}
+
+/** A built Needle depth rung (`needle build --layers N`). */
+export interface ApiNeedleRung {
+  file: string;
+  layers: number;
+  bytes: number | null;
+  builtAt: string | null;
+}
+
+export interface ApiNeedleRungs {
+  rungs: ApiNeedleRung[];
+  serviceDir: string;
+}
+
+export interface ApiNeedleVersions {
+  installed: string | null;
+  latest: string | null;
+  available: string[];
+  error: string | null;
+}
+
+export type ApiNeedleJobKind = 'build' | 'benchmark' | 'upgrade';
+export type ApiNeedleJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+
+export interface ApiNeedleJob {
+  id: string;
+  kind: ApiNeedleJobKind;
+  status: ApiNeedleJobStatus;
+  label: string;
+  startedAt: string;
+  finishedAt: string | null;
+  progress: string | null;
+  result: unknown | null;
+  error: string | null;
+  log: string[];
+}
+
+/** One rung's benchmark result, as produced by services/needle-router/bench.py. */
+export interface ApiNeedleBenchmarkRung {
+  rung: string;
+  layers: number | null;
+  error?: string;
+  constructSeconds?: number;
+  meanSeconds?: number;
+  minSeconds?: number;
+  maxSeconds?: number;
+  accuracy?: number;
+  correct?: number;
+  cases?: number;
+  underBudget?: number;
+  budgetMs?: number;
+  misses?: { query: string; expected: string; got: string[]; confidence: number | null }[];
+}
+
+export interface ApiNeedleBenchmarkResult {
+  host: { budgetMs: number; serviceDir: string };
+  rungs: ApiNeedleBenchmarkRung[];
+  recommended?: { rung: string; reason: string; accuracy: number; meanSeconds: number };
 }
 
 export interface ApiDashboardStats {

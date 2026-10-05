@@ -234,5 +234,8 @@ export const keys = {
   needle: {
     all: ['needle'] as const,
     status: () => [...keys.needle.all, 'status'] as const,
+    rungs: () => [...keys.needle.all, 'rungs'] as const,
+    versions: () => [...keys.needle.all, 'versions'] as const,
+    job: (id: string) => [...keys.needle.all, 'job', id] as const,
   },
 } as const;

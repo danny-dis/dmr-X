@@ -31,6 +31,18 @@ import { computeSavings } from '../services/savings.js';
 import { refreshAdminKey } from '../middleware/auth.middleware.js';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 import { isNeedleEnabled, getNeedleTelemetry, needleHealthUrl } from '../lib/needlePreFilter.js';
+import {
+  appendLog,
+  createJob,
+  getJob,
+  hasActiveJob,
+  listJobs,
+  markFailed,
+  markRunning,
+  markSucceeded,
+} from '../lib/needleJobs.js';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const HTML_ESCAPE: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escapeHtml(str: string): string {
@@ -5501,26 +5513,100 @@ COALESCE(
     return { success: true };
   });
 
-  // --- Needle tool pre-filter status -----------------------------------
+  // --- Needle tool pre-filter ------------------------------------------
   //
-  // services/needle-router runs Needle 2 (cactus-needle), a C-engine tool
-  // router that trims the tool list before the real model sees it. The filter
-  // is a settings-backed opt-in (default off) with honest live feedback.
+  // services/needle-router runs Needle 3 (cactus-needle), a sliceable
+  // C-engine tool router that trims the tool list before the real model sees
+  // it. Depth (2..20 layers) is the dominant latency lever on CPU-only hosts.
+  //
+  // The filter is a settings-backed opt-in (default off). These routes give an
+  // operator honest feedback: what version is running, at what depth, how fast
+  // it actually is, and whether the latency budget is being met at all.
+
+  // apps/gateway/src/routes -> repo root. Resolved from the module path rather
+  // than process.cwd(), which is apps/gateway under `bun run start`.
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const needleServiceDir = () => path.join(repoRoot, 'services', 'needle-router');
+  const needleVenvPython = () => path.join(needleServiceDir(), '.venv', 'Scripts', 'python.exe');
+  const needleExe = () => path.join(needleServiceDir(), '.venv', 'Scripts', 'needle.exe');
+  const NEEDLE_RUNG_RE = /^needle3(-\d+L)?\.cact$/;
+  const needleTimeoutBudgetMs = () => {
+    const raw = process.env.DMRX_NEEDLE_TIMEOUT_MS;
+    const parsed = raw === undefined ? 1500 : Number(raw);
+    return Number.isFinite(parsed) ? parsed : 1500;
+  };
+
+  /** Run a child process, streaming stdout/stderr into a job log. */
+  const runJobProcess = (
+    job: ReturnType<typeof createJob>,
+    command: string,
+    args: string[],
+    opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  ) =>
+    new Promise<{ code: number; stdout: string }>((resolve) => {
+      const child = spawn(command, args, {
+        cwd: opts.cwd ?? needleServiceDir(),
+        env: { ...process.env, ...opts.env },
+        windowsHide: true,
+      });
+      let stdout = '';
+      const onChunk = (buf: Buffer) => {
+        const text = buf.toString();
+        stdout += text;
+        // Emit complete lines only, so the log doesn't fill with partial writes.
+        for (const line of text.split('\n')) {
+          if (line.trim()) appendLog(job, line);
+        }
+      };
+      child.stdout?.on('data', onChunk);
+      child.stderr?.on('data', onChunk);
+      child.on('error', (err) => {
+        appendLog(job, `spawn error: ${err.message}`);
+        resolve({ code: -1, stdout });
+      });
+      child.on('close', (code) => resolve({ code: code ?? -1, stdout }));
+    });
+
   server.get('/admin/needle/status', async () => {
     const enabled = isNeedleEnabled();
     const telemetry = getNeedleTelemetry();
+    const budgetMs = needleTimeoutBudgetMs();
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
     const probeStart = Date.now();
     let reachable = false;
     let modelLoaded: boolean | null = null;
+    let sidecar: {
+      model: string | null;
+      weights: string | null;
+      depth: number | null;
+      packageVersion: string | null;
+      cachedAgents: number | null;
+    } = { model: null, weights: null, depth: null, packageVersion: null, cachedAgents: null };
     try {
       const res = await fetch(needleHealthUrl(), { signal: controller.signal });
       if (res.ok) {
         reachable = true;
-        const body = (await res.json().catch(() => null)) as { package_loaded?: boolean; model_loaded?: boolean } | null;
-        modelLoaded = typeof body?.package_loaded === 'boolean' ? body.package_loaded : typeof body?.model_loaded === 'boolean' ? body.model_loaded : null;
+        const body = (await res.json().catch(() => null)) as {
+          package_loaded?: boolean;
+          model_loaded?: boolean;
+          model?: string;
+          weights?: string | null;
+          depth?: number | null;
+          package_version?: string | null;
+          cached_agents?: number;
+        } | null;
+        modelLoaded = typeof body?.package_loaded === 'boolean'
+          ? body.package_loaded
+          : typeof body?.model_loaded === 'boolean' ? body.model_loaded : null;
+        sidecar = {
+          model: body?.model ?? null,
+          weights: body?.weights ?? null,
+          depth: body?.depth ?? null,
+          packageVersion: body?.package_version ?? null,
+          cachedAgents: body?.cached_agents ?? null,
+        };
       }
     } catch {
       reachable = false;
@@ -5529,16 +5615,23 @@ COALESCE(
     }
     const probeLatencyMs = Date.now() - probeStart;
 
+    // Whether the last real attempt was thrown away for being too slow. This is
+    // the honest signal that the filter is not actually doing anything.
+    const lastLatency = telemetry.lastLatencyMs;
+    const bypassed = telemetry.lastOutcome === 'timeout'
+      || (typeof lastLatency === 'number' && lastLatency >= budgetMs);
+
     return {
       enabled,
       reachable,
       modelLoaded,
       probeLatencyMs,
-      timeoutBudgetMs: (() => {
-        const raw = process.env.DMRX_NEEDLE_TIMEOUT_MS;
-        const parsed = raw === undefined ? 1500 : Number(raw);
-        return Number.isFinite(parsed) ? parsed : 1500;
-      })(),
+      timeoutBudgetMs: budgetMs,
+      sidecar,
+      bypassed,
+      activeJobs: listJobs()
+        .filter((j) => j.status === 'queued' || j.status === 'running')
+        .map((j) => ({ id: j.id, kind: j.kind, label: j.label, status: j.status })),
       lastAttempt: telemetry.lastAttemptAt
         ? {
             at: telemetry.lastAttemptAt,
@@ -5550,6 +5643,265 @@ COALESCE(
           }
         : null,
     };
+  });
+
+  // --- Needle: depth rungs ---------------------------------------------
+  //
+  // A "rung" is a `needle build --layers N` export of the base weights. Depth
+  // is the single biggest latency lever on CPU-only hardware, so an operator
+  // needs to see which rungs exist, build more, and switch between them.
+
+  server.get('/admin/needle/rungs', async () => {
+    const dir = needleServiceDir();
+    const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+    const rungs = await Promise.all(
+      names.filter((n) => NEEDLE_RUNG_RE.test(n)).map(async (file) => {
+        const stat = await fs.promises.stat(path.join(dir, file)).catch(() => null);
+        const match = file.match(/-(\d+)L\.cact$/);
+        return {
+          file,
+          layers: match ? Number(match[1]) : 20,
+          bytes: stat?.size ?? null,
+          builtAt: stat?.mtime?.toISOString() ?? null,
+        };
+      }),
+    );
+    rungs.sort((a, b) => a.layers - b.layers);
+    return { rungs, serviceDir: dir };
+  });
+
+  server.post('/admin/needle/rungs/build', async (request, reply) => {
+    const body = z.object({ layers: z.number().int().min(2).max(20) }).safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: 'layers must be an integer between 2 and 20' });
+    }
+    if (hasActiveJob('build')) {
+      return reply.code(409).send({ error: 'a build is already running' });
+    }
+    const layers = body.data.layers;
+    const job = createJob('build', `build ${layers}-layer rung`);
+    markRunning(job, 'starting');
+
+    // Fire and forget: the UI polls /admin/needle/jobs/:id.
+    void (async () => {
+      const { code } = await runJobProcess(job, needleExe(), [
+        'build', '--layers', String(layers), '--out', `needle3-${layers}L.cact`,
+      ], { env: { NEEDLE_TELEMETRY: '0', HF_HUB_DISABLE_SYMLINKS_WARNING: '1' } });
+      const outPath = path.join(needleServiceDir(), `needle3-${layers}L.cact`);
+      const exists = fs.existsSync(outPath);
+      if (code === 0 && exists) {
+        markSucceeded(job, { layers, file: `needle3-${layers}L.cact`, bytes: fs.statSync(outPath).size });
+      } else {
+        markFailed(job, `build exited ${code}${exists ? '' : ' and produced no .cact'}`);
+      }
+    })();
+
+    return reply.code(202).send({ jobId: job.id });
+  });
+
+  server.post('/admin/needle/rungs/apply', async (request, reply) => {
+    const body = z.object({ weights: z.string().nullable() }).safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: 'weights must be a string or null' });
+    }
+    const weights = body.data.weights;
+    if (weights !== null && !NEEDLE_RUNG_RE.test(weights)) {
+      return reply.code(400).send({ error: 'weights must match needle3[-NL].cact' });
+    }
+    try {
+      const res = await fetch(new URL('/admin/reload', needleHealthUrl()), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ weights }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | { error?: { message?: string } }
+        | null;
+      if (!res.ok) {
+        return reply.code(res.status).send({ error: payload?.error?.message ?? `sidecar returned ${res.status}` });
+      }
+      return { success: true, ...(payload ?? {}) };
+    } catch (err) {
+      return reply.code(502).send({ error: `sidecar unreachable: ${(err as Error).message}` });
+    }
+  });
+
+  // --- Needle: package versions + upgrade ------------------------------
+  //
+  // Upgrading runs `pip install` inside the sidecar's venv, which is arbitrary
+  // code execution. The version is therefore restricted to an allowlist read
+  // from PyPI and must be semver-newer than what is installed — never free-form
+  // input from the UI.
+
+  let pypiCache: { at: number; versions: string[] } | null = null;
+  const PYPI_TTL_MS = 10 * 60 * 1000;
+
+  const fetchPypiVersions = async (): Promise<string[] | null> => {
+    if (pypiCache && Date.now() - pypiCache.at < PYPI_TTL_MS) return pypiCache.versions;
+    try {
+      const res = await fetch('https://pypi.org/pypi/cactus-needle/json', {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { releases?: Record<string, unknown> };
+      const versions = Object.keys(data.releases ?? {})
+        .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+        .sort((a, b) => {
+          const pa = a.split('.').map(Number);
+          const pb = b.split('.').map(Number);
+          for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i]! - pb[i]!;
+          return 0;
+        });
+      pypiCache = { at: Date.now(), versions };
+      return versions;
+    } catch {
+      return null;
+    }
+  };
+
+  const semverGt = (a: string, b: string): boolean => {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0);
+    }
+    return false;
+  };
+
+  server.get('/admin/needle/versions', async () => {
+    // Installed version comes from the sidecar so it reflects the venv that
+    // actually serves inference, not the gateway's own node_modules.
+    let installed: string | null = null;
+    try {
+      const res = await fetch(needleHealthUrl(), { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const body = (await res.json().catch(() => null)) as { package_version?: string | null } | null;
+        installed = body?.package_version ?? null;
+      }
+    } catch {
+      installed = null;
+    }
+    const available = await fetchPypiVersions();
+    return {
+      installed,
+      latest: available?.length ? available[available.length - 1] : null,
+      available: available ? available.slice(-30) : [],
+      error: available ? null : 'could not reach PyPI',
+    };
+  });
+
+  server.post('/admin/needle/upgrade', async (request, reply) => {
+    const body = z.object({
+      version: z.string().regex(/^\d+\.\d+\.\d+$/),
+      confirm: z.literal(true),
+    }).safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: 'version (semver) and confirm:true are required' });
+    }
+    if (hasActiveJob('upgrade')) {
+      return reply.code(409).send({ error: 'an upgrade is already running' });
+    }
+
+    const available = await fetchPypiVersions();
+    if (!available) {
+      return reply.code(503).send({ error: 'could not reach PyPI to validate the version' });
+    }
+    if (!available.includes(body.data.version)) {
+      return reply.code(400).send({ error: `${body.data.version} is not a published cactus-needle release` });
+    }
+
+    // Refuse to "upgrade" to something older or identical.
+    let installed: string | null = null;
+    try {
+      const res = await fetch(needleHealthUrl(), { signal: AbortSignal.timeout(3000) });
+      if (res.ok) installed = ((await res.json()) as { package_version?: string }).package_version ?? null;
+    } catch { /* handled below */ }
+    if (installed && !semverGt(body.data.version, installed)) {
+      return reply.code(400).send({ error: `${body.data.version} is not newer than installed ${installed}` });
+    }
+
+    const job = createJob('upgrade', `upgrade cactus-needle to ${body.data.version}`);
+    markRunning(job, 'installing');
+
+    void (async () => {
+      const { code } = await runJobProcess(job, needleVenvPython(), [
+        '-m', 'pip', 'install', '--upgrade', `cactus-needle==${body.data.version}`,
+      ]);
+      if (code !== 0) {
+        markFailed(job, `pip install exited ${code}`);
+        return;
+      }
+      appendLog(job, 'restarting sidecar…');
+      const { code: restartCode } = await runJobProcess(job, 'pm2', ['restart', 'dmrx-needle-router', '--update-env']);
+      if (restartCode !== 0) {
+        markFailed(job, `pm2 restart exited ${restartCode}`);
+        return;
+      }
+      markSucceeded(job, { version: body.data.version, restarted: true });
+    })();
+
+    return reply.code(202).send({ jobId: job.id });
+  });
+
+  // --- Needle: benchmark -------------------------------------------------
+  //
+  // Runs bench.py, which times every requested rung with unique query text
+  // (server.py's 60s response cache would otherwise make repeats look instant).
+  // This is slow — the 20-layer rung alone is minutes on a CPU-only host — so
+  // the UI must poll rather than wait on the request.
+
+  server.post('/admin/needle/benchmark', async (request, reply) => {
+    const body = z.object({
+      rungs: z.array(z.string().regex(NEEDLE_RUNG_RE)).min(1).max(6).optional(),
+    }).safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.code(400).send({ error: 'rungs must be 1-6 valid .cact filenames' });
+    }
+    if (hasActiveJob('benchmark')) {
+      return reply.code(409).send({ error: 'a benchmark is already running' });
+    }
+
+    const dir = needleServiceDir();
+    let rungs = body.data.rungs;
+    if (!rungs || rungs.length === 0) {
+      const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+      rungs = names.filter((n) => NEEDLE_RUNG_RE.test(n)).sort();
+    }
+    if (rungs.length === 0) {
+      return reply.code(400).send({ error: 'no rungs found to benchmark' });
+    }
+
+    const job = createJob('benchmark', `benchmark ${rungs.length} rung(s)`);
+    markRunning(job, 'starting');
+
+    void (async () => {
+      const { code, stdout } = await runJobProcess(job, needleVenvPython(), [
+        'bench.py', '--rungs', rungs!.join(','), '--json',
+      ], { env: { NEEDLE_TELEMETRY: '0', HF_HUB_DISABLE_SYMLINKS_WARNING: '1' } });
+      if (code !== 0) {
+        markFailed(job, `bench.py exited ${code}`);
+        return;
+      }
+      // stdout is JSON; stderr carried the progress lines (already logged).
+      try {
+        const parsed = JSON.parse(stdout.slice(stdout.indexOf('{')));
+        markSucceeded(job, parsed);
+      } catch (err) {
+        markFailed(job, `could not parse bench.py output: ${(err as Error).message}`);
+      }
+    })();
+
+    return reply.code(202).send({ jobId: job.id });
+  });
+
+  server.get('/admin/needle/jobs', async () => ({ jobs: listJobs() }));
+
+  server.get('/admin/needle/jobs/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const job = getJob(id);
+    if (!job) return reply.code(404).send({ error: 'unknown job' });
+    return job;
   });
 
   // Test agent integration connectivity

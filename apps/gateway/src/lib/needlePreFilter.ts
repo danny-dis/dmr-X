@@ -9,16 +9,12 @@
  * Needle 2 is an OPTIMISATION — it trims the tool list before the real model
  * sees it. It is never load-bearing, so it gets a hard latency budget.
  *
- * MEASURED REALITY (old Needle, JAX inference, 2026-08-03 — now replaced):
- *   The old Needle (JAX) had a floor of 52-81s per call on CPU — per-token
- *   dispatch overhead in the decode loop. That's why this filter shipped
- *   off-by-default.
- *
- * Needle 2 (cactus-needle) replaces the JAX serving path with a C engine
- * (ctypes FFI). The first query is instant; subsequent queries are bounded
- * by the C engine's throughput. If that holds, this filter can actually
- * complete inside the latency budget — but it remains opt-in until measured
- * on this machine.
+ * MEASURED REALITY (this host: 2011 Intel i5-2540M, 2C/4T, no AVX2/FMA):
+ *   Depth is the dominant lever. Per uncached call, over a 24-tool catalogue:
+ *   full 20-layer 18-43s, 8-layer 7-12s, 4-layer 1.8-3.8s, 2-layer ~2s but 0%
+ *   accuracy. Every rung currently exceeds the default budget below, so the
+ *   filter is bypassed on this machine regardless of the toggle. Manage rungs
+ *   and re-measure from the UI's Needle Router tab.
  *
  *   - The filter is OFF BY DEFAULT via a settings-backed toggle
  *     (`needleRouterEnabled` in the `settings` table, default false when

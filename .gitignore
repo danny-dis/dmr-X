@@ -124,6 +124,11 @@ __pycache__/
 # needle-router venv + engine cache (large, regenerated locally)
 services/needle-router/.venv/
 services/needle-router/.cache/
+# Locally exported Needle depth-ladder rungs (regenerate with:
+#   needle build --layers 4 --out needle3-4L.cact)
+services/needle-router/*.cact
+# 242MB base checkpoint that `needle build` downloads
+services/needle-router/checkpoints/
 
 # ─── AI-tool / IDE caches (regenerated on demand) ──────────────────────────
 .claude/

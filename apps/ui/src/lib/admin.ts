@@ -25,7 +25,11 @@ import type {
   ApiCatalogEntry,
   ApiHealthResponse,
   ApiMcpStatus,
+  ApiNeedleBenchmarkResult,
+  ApiNeedleJob,
+  ApiNeedleRungs,
   ApiNeedleStatus,
+  ApiNeedleVersions,
   ApiMcpTool,
   ApiMcpToolExecute,
   ApiMcpToolResult,
@@ -495,8 +499,21 @@ export const Admin = {
   updateSettings: (body: Record<string, unknown>) =>
     apiPut<Record<string, unknown>>('/admin/settings', body),
 
-  // Needle tool pre-filter status (reachability + last-run telemetry)
+  // Needle tool pre-filter: status, depth rungs, version, and jobs
   getNeedleStatus: () => apiGet<ApiNeedleStatus>('/admin/needle/status'),
+  getNeedleRungs: () => apiGet<ApiNeedleRungs>('/admin/needle/rungs'),
+  getNeedleVersions: () => apiGet<ApiNeedleVersions>('/admin/needle/versions'),
+  getNeedleJob: (id: string) => apiGet<ApiNeedleJob>(`/admin/needle/jobs/${id}`),
+  buildNeedleRung: (layers: number) =>
+    apiPost<{ jobId: string }>('/admin/needle/rungs/build', { layers }),
+  applyNeedleRung: (weights: string | null) =>
+    apiPost<{ success: boolean; weights: string | null; depth: number | null }>(
+      '/admin/needle/rungs/apply', { weights },
+    ),
+  upgradeNeedle: (version: string) =>
+    apiPost<{ jobId: string }>('/admin/needle/upgrade', { version, confirm: true }),
+  runNeedleBenchmark: (rungs: string[]) =>
+    apiPost<{ jobId: string }>('/admin/needle/benchmark', { rungs }),
 
   // Agent Integrations
   getAgentIntegrationConfig: () =>

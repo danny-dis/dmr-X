@@ -35,7 +35,7 @@ import { Switch } from '@/components/primitives/Switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/Tabs';
 import { toast } from '@/components/primitives/Toast';
 import { Admin } from '@/lib/admin';
-import { useNeedleStatus, useSettings, useUpdateSettings } from '@/lib/queries/settings';
+import { useSettings, useUpdateSettings } from '@/lib/queries/settings';
 
 /* -------------------------------------------------------------------------- */
 /*  Form type + defaults                                                      */
@@ -231,11 +231,6 @@ function toServer(f: SettingsForm): Record<string, unknown> {
 
 export function SettingsPage() {
   const settings = useSettings({ refetchInterval: 60000 });
-  // Live reachability + last-run telemetry for the Needle tool pre-filter —
-  // polled independently of the settings form so the status card stays
-  // fresh (and reflects a toggle flip immediately after Save) without
-  // reloading the whole settings form.
-  const needleStatus = useNeedleStatus({ refetchInterval: 15000 });
   const updateSettings = useUpdateSettings();
   const [form, setForm] = React.useState<SettingsForm>(DEFAULTS);
   const saving = updateSettings.isPending;
@@ -252,7 +247,6 @@ export function SettingsPage() {
     try {
       await updateSettings.mutateAsync(toServer(form));
       toast.success('Settings saved', { description: 'Configuration persisted to the gateway.' });
-      await needleStatus.refetch();
     } catch (e) {
       const interpreted = interpretError(e);
       toast.error(interpreted.title, { description: interpreted.description });
@@ -821,60 +815,10 @@ export function SettingsPage() {
                     <CardHeader className="px-0 pt-0">
                       <CardTitle>Needle tool pre-filter</CardTitle>
                       <p className="text-[10px] text-fg-muted mt-0.5">
-                        Needle 2 (services/needle-router) narrows a large tool list before
-                        it reaches the routed model. Uses a C inference engine (no JAX). Off
-                        by default until measured on this hardware.
+                        The Needle tool pre-filter now has its own tab, with depth selection,
+                        benchmarking and upgrades.
                       </p>
                     </CardHeader>
-                    <CardContent className="px-0 flex flex-col gap-4">
-                      <SettingRow id="needle-enabled" label="Enable Needle pre-filter" description="Applies on the next request — no restart needed">
-                        <Switch
-                          id="needle-enabled"
-                          aria-describedby="needle-enabled-description"
-                          checked={form.needleRouterEnabled}
-                          onCheckedChange={(v) => update('needleRouterEnabled', v)}
-                        />
-                      </SettingRow>
-
-                      <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-2/40 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-medium text-fg">Sidecar status</span>
-                          {needleStatus.isLoading && !needleStatus.data ? (
-                            <Badge tone="neutral" size="sm">Checking…</Badge>
-                          ) : needleStatus.data?.reachable ? (
-                            <Badge tone="success" size="sm">Reachable</Badge>
-                          ) : (
-                            <Badge tone="danger" size="sm">Unreachable</Badge>
-                          )}
-                        </div>
-                        {needleStatus.data && (
-                          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-fg-muted">
-                            <dt>Enabled</dt>
-                            <dd className="text-right text-fg">{needleStatus.data.enabled ? 'Yes' : 'No (default)'}</dd>
-                            <dt>Model loaded</dt>
-                            <dd className="text-right text-fg">
-                              {needleStatus.data.modelLoaded == null ? '—' : needleStatus.data.modelLoaded ? 'Yes' : 'No'}
-                            </dd>
-                            <dt>Health probe latency</dt>
-                            <dd className="text-right text-fg">{needleStatus.data.probeLatencyMs}ms</dd>
-                            <dt>Timeout budget</dt>
-                            <dd className="text-right text-fg">{needleStatus.data.timeoutBudgetMs}ms</dd>
-                            <dt>Last filter attempt</dt>
-                            <dd className="text-right text-fg">
-                              {needleStatus.data.lastAttempt
-                                ? `${needleStatus.data.lastAttempt.outcome} (${needleStatus.data.lastAttempt.latencyMs ?? '—'}ms)`
-                                : 'None yet this session'}
-                            </dd>
-                          </dl>
-                        )}
-                        {needleStatus.data?.lastAttempt?.outcome === 'timeout' && (
-                          <p className="text-[10px] text-warning">
-                            Last attempt exceeded the {needleStatus.data.timeoutBudgetMs}ms budget — the full
-                            tool list was used for that turn.
-                          </p>
-                        )}
-                      </div>
-                    </CardContent>
                   </Card>
                 </TabsContent>
 

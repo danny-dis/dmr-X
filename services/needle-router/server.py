@@ -1,18 +1,24 @@
 """
-Needle 2 Router — a local, OpenAI-compatible tool-calling HTTP service.
+Needle 3 Router — a local, OpenAI-compatible tool-calling HTTP service.
 
-Wraps Needle 2 (cactus-needle), a 45M-param CQ2-bit tool-calling model with a
-C inference engine. Exposes an OpenAI chat/completions-shaped endpoint so DMR-X
+Wraps Needle 3 (cactus-needle), a sliceable tool-calling model with a C
+inference engine. Exposes an OpenAI chat/completions-shaped endpoint so DMR-X
 can register it as a cheap "which tool?" pre-router that runs BEFORE an
 expensive model.
 
+Depth is the main latency lever on CPU-only hardware: set NEEDLE_WEIGHTS to a
+shallower `needle build --layers N` export. See _WEIGHTS below.
+
 Bind: 0.0.0.0:8011
-Concurrency: 2 workers, query cache, batch endpoint.
+Concurrency: 1 worker (each worker spawns its own engine subprocess, so more
+than one just contends on a small CPU), query cache, batch endpoint.
 """
 import asyncio
 import hashlib
 import json
 import logging
+import os
+import re
 import time
 from typing import Any, List, Optional
 
@@ -23,7 +29,7 @@ from fastapi.responses import JSONResponse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("needle-router")
 
-app = FastAPI(title="Needle 2 Router", version="0.3.0")
+app = FastAPI(title="Needle 3 Router", version="0.4.0")
 
 # Lazily-loaded package. The cactus-needle engine fetches once from Hugging Face
 # and caches; if it (or the package) is missing the server still boots.
@@ -33,10 +39,66 @@ _PACKAGE_LOCK = asyncio.Lock()
 # the next real request won't pay the ~14s cold-start.
 _WARMED = False
 
+# Optional path to a shallower "rung" of the Needle 3 depth ladder (e.g. a
+# 4-layer export). Depth is the single biggest latency lever on CPU-only
+# hardware. Measured on a 2011 Intel i5-2540M (no AVX2/FMA), 24-tool
+# catalogue, stateless: full 20-layer = 18-43s per call, 8-layer = 7-12s,
+# 4-layer = 1.8-3.8s. Set NEEDLE_WEIGHTS to the .cact you built with
+# `needle build --layers N`.
+# Directory holding this service, so rung paths resolve regardless of the
+# process working directory (PM2, a shell, or a test harness).
+_SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _weights_path(weights: Optional[str]) -> Optional[str]:
+    """Filesystem path for a rung name. `_WEIGHTS` itself stays a bare
+    filename so /health and the admin API report something UI-friendly."""
+    if not weights:
+        return None
+    return weights if os.path.isabs(weights) else os.path.join(_SERVICE_DIR, weights)
+
+
+_WEIGHTS = os.environ.get("NEEDLE_WEIGHTS") or None
+
 # Simple TTL cache for identical (query, tools) pairs.
 _CACHE: dict[str, tuple[float, Any]] = {}
 _CACHE_TTL_SECONDS = 60
 _CACHE_MAX_ENTRIES = 256
+
+# Cache of constructed Needle agents, keyed by the tool-set hash.
+#
+# This is the single most important performance fix in this file. Building a
+# `Needle(tools=...)` costs 7-48s on CPU-only hardware (engine + grammar
+# compile), while an inference on an already-built agent costs 1.8-3.8s with
+# the 4-layer rung. Constructing per request therefore dominated every call.
+#
+# Safe to share because the agent is built with `stateless=True`, so each
+# complete() is an independent turn and no conversation accumulates.
+_AGENTS: dict[str, Any] = {}
+_AGENT_MAX_ENTRIES = 8
+
+
+# Resolved once on first read: the cactus-needle package version.
+_VERSION_CACHE: dict[str, Any] = {"package": None}
+
+
+def _package_version() -> Optional[str]:
+    """cactus-needle's own version, or None when the package isn't importable."""
+    if _VERSION_CACHE["package"] is None and _PACKAGE is not None:
+        _VERSION_CACHE["package"] = getattr(_PACKAGE, "__version__", "unknown")
+    return _VERSION_CACHE["package"]
+
+
+def _depth_of(weights: Optional[str]) -> Optional[int]:
+    """Layer count of the active rung, parsed from a name like needle3-4L.cact.
+
+    `weights is None` means the full model, which is the 20-layer base. Returns
+    None for a tuned/custom archive whose depth isn't encoded in the filename.
+    """
+    if not weights:
+        return 20
+    match = re.search(r"-(\d+)L\.cact$", os.path.basename(weights))
+    return int(match.group(1)) if match else None
 
 
 def _cache_key(query: str, tools: List[dict]) -> str:
@@ -141,7 +203,7 @@ def _build_response(tool_calls: list, created: int) -> dict:
         "id": f"chatcmpl-needle-{created}",
         "object": "chat.completion",
         "created": created,
-        "model": "needle2",
+        "model": "needle3",
         "choices": [
             {
                 "index": 0,
@@ -159,6 +221,25 @@ def _build_response(tool_calls: list, created: int) -> dict:
             "total_tokens": 0,
         },
     }
+
+
+def _get_agent(needle_tools: list):
+    """Return a cached Needle agent for this tool set, building it on first use.
+
+    Construction is the expensive step (7-48s); inference on a built agent is
+    ~2-4s. The agent is stateless, so it is safe to reuse across requests.
+    """
+    key = _cache_key("", needle_tools)
+    agent = _AGENTS.get(key)
+    if agent is not None:
+        return agent
+    if len(_AGENTS) >= _AGENT_MAX_ENTRIES:
+        _AGENTS.pop(next(iter(_AGENTS)), None)
+    agent = _PACKAGE.Needle(
+        tools=needle_tools, weights=_weights_path(_WEIGHTS), stateless=True
+    )
+    _AGENTS[key] = agent
+    return agent
 
 
 @app.post("/v1/chat/completions")
@@ -189,11 +270,11 @@ async def chat_completions(request: Request):
     needle_tools = _openai_tools_to_needle(tools)
 
     try:
-        # Needle 2's complete() is synchronous C inference; offload to thread pool
-        # so it doesn't block the uvicorn event loop.
+        # Needle's complete() is synchronous C inference; offload to thread pool
+        # so it doesn't block the uvicorn event loop. The agent is cached, so
+        # only the first request for a given tool set pays construction cost.
         def _infer():
-            agent = _PACKAGE.Needle(tools=needle_tools)
-            return agent.complete(query, max_new_tokens=64)
+            return _get_agent(needle_tools).complete(query, max_new_tokens=48)
 
         response_data = await asyncio.to_thread(_infer)
     except Exception as exc:
@@ -255,8 +336,7 @@ async def batch_chat_completions(request: Request):
         try:
 
             def _infer():
-                agent = _PACKAGE.Needle(tools=needle_tools)
-                return agent.complete(query, max_new_tokens=64)
+                return _get_agent(needle_tools).complete(query, max_new_tokens=48)
 
             response_data = await asyncio.to_thread(_infer)
         except Exception as exc:
@@ -266,7 +346,7 @@ async def batch_chat_completions(request: Request):
                     "id": f"chatcmpl-needle-{int(time.time())}",
                     "object": "chat.completion",
                     "created": int(time.time()),
-                    "model": "needle2",
+                    "model": "needle3",
                     "choices": [],
                     "usage": {
                         "prompt_tokens": 0,
@@ -287,13 +367,88 @@ async def batch_chat_completions(request: Request):
     return JSONResponse(content={"results": results})
 
 
+@app.get("/admin/rungs")
+async def list_rungs():
+    """Every .cact rung sitting beside this service, plus which one is active."""
+    base = _SERVICE_DIR
+    try:
+        names = os.listdir(base)
+    except OSError as exc:
+        return JSONResponse(status_code=500,
+                            content={"error": {"message": str(exc)}})
+    rungs = []
+    for name in names:
+        if not re.match(r"^needle3(-\d+L)?\.cact$", name):
+            continue
+        full = os.path.join(base, name)
+        stat = os.stat(full)
+        rungs.append({
+            "file": name,
+            "layers": _depth_of(name),
+            "bytes": stat.st_size,
+            "builtAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+        })
+    rungs.sort(key=lambda r: r["layers"] or 0)
+    return {"rungs": rungs, "active": _WEIGHTS, "depth": _depth_of(_WEIGHTS)}
+
+
+@app.post("/admin/reload")
+async def reload_weights(request: Request):
+    """Swap the active weights rung and drop all caches.
+
+    Deliberately does NOT restart the process: clearing the agent + response
+    caches is enough for the next request to rebuild against the new weights,
+    and it avoids dropping in-flight requests. Re-warms in the background.
+
+    `weights: null` selects the full (20-layer) base model.
+    """
+    global _WEIGHTS, _WARMED
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    weights = body.get("weights") or None
+
+    # Only a bare filename in this service's own directory is acceptable — a
+    # path would let a caller point the engine at an arbitrary archive.
+    if weights:
+        if os.path.basename(weights) != weights:
+            return JSONResponse(status_code=400, content={
+                "error": {"message": "weights must be a bare filename, not a path"}})
+        if not re.match(r"^needle3(-\d+L)?\.cact$", weights):
+            return JSONResponse(status_code=400, content={
+                "error": {"message": "weights must match needle3[-NL].cact"}})
+        if not os.path.exists(os.path.join(_SERVICE_DIR, weights)):
+            return JSONResponse(status_code=404, content={
+                "error": {"message": f"{weights} not found in services/needle-router"}})
+
+    _WEIGHTS = weights
+    _AGENTS.clear()
+    _CACHE.clear()
+    _WARMED = False
+    logger.info("Reloaded needle weights -> %s (depth %s)", _WEIGHTS, _depth_of(_WEIGHTS))
+    asyncio.create_task(_warm_on_startup())
+
+    return {
+        "status": "ok",
+        "weights": _WEIGHTS,
+        "depth": _depth_of(_WEIGHTS),
+        "warmed": False,
+    }
+
+
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "package_loaded": _PACKAGE is not None,
-        "model": "needle2",
+        "model": "needle3" if _WEIGHTS else "needle3-full",
+        "weights": _WEIGHTS,
+        "depth": _depth_of(_WEIGHTS),
+        "package_version": _package_version(),
         "warmed": _WARMED,
+        "cached_agents": len(_AGENTS),
     }
 
 
@@ -327,7 +482,9 @@ async def _warm_on_startup() -> None:
                         "name": "warmup",
                         "description": "Warmup probe.",
                         "parameters": {"q": {"type": "string", "required": False}},
-                    }]
+                    }],
+                    weights=_weights_path(_WEIGHTS),
+                    stateless=True,
                 )
                 return agent.complete("warmup", max_new_tokens=1)
 

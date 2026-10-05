@@ -25,15 +25,7 @@ export function useUpdateSettings() {
   });
 }
 
-/** Live reachability + last-run telemetry for the Needle tool pre-filter —
- * polled independently of the settings form so the status card stays fresh. */
-export function useNeedleStatus(options?: PollOptions) {
-  return useQuery({
-    queryKey: keys.needle.status(),
-    queryFn: () => Admin.getNeedleStatus(),
-    ...options,
-  });
-}
+// Needle hooks live in ./needle.ts — this file stays settings-only.
 
 export function useRotateAdminKey() {
   return useMutation({

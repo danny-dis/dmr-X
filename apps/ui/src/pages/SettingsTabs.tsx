@@ -1,4 +1,4 @@
-import { Settings, Shield, Plug } from 'lucide-react';
+import { Settings, Shield, Plug, Zap } from 'lucide-react';
 import * as React from 'react';
 
 import { PageHeader, PageContainer } from '@/components/layout';
@@ -13,6 +13,7 @@ const CompressionTab = React.lazy(() => import('@/pages/Compression').then(m => 
 const ApiReferenceTab = React.lazy(() => import('@/pages/Connect').then(m => ({ default: m.ConnectPage })));
 const ClaudeCodeTab = React.lazy(() => import('@/pages/ClaudeCode').then(m => ({ default: m.ClaudeCodePage })));
 const IntegrationsTab = React.lazy(() => import('@/pages/Integrations').then(m => ({ default: m.IntegrationsPage })));
+const NeedleRouterTab = React.lazy(() => import('@/pages/NeedleRouter').then(m => ({ default: m.NeedleRouterPage })));
 
 export function SettingsTabsPage() {
   return (
@@ -20,7 +21,7 @@ export function SettingsTabsPage() {
       <BackLink to="/" label="Dashboard" />
       <PageHeader
         title="Settings"
-        description="Gateway configuration, policies, compression, API reference & integrations"
+        description="Gateway configuration, policies, compression, API reference, integrations & the Needle tool router"
         icon={<Settings className="size-5" />}
       />
 
@@ -38,6 +39,10 @@ export function SettingsTabsPage() {
             <TabsTrigger value="integrations">
               <Plug className="size-3" aria-hidden />
               Integrations
+            </TabsTrigger>
+            <TabsTrigger value="needle-router">
+              <Zap className="size-3" aria-hidden />
+              Needle Router
             </TabsTrigger>
           </TabsList>
 
@@ -74,6 +79,12 @@ export function SettingsTabsPage() {
           <TabsContent value="integrations">
             <LazyTab>
               <IntegrationsTab />
+            </LazyTab>
+          </TabsContent>
+
+          <TabsContent value="needle-router">
+            <LazyTab>
+              <NeedleRouterTab />
             </LazyTab>
           </TabsContent>
         </Tabs>

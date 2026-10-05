@@ -81,21 +81,13 @@ module.exports = {
   apps: [
     {
       name: 'dmrx-gateway',
-      // Run bun as the script with the entrypoint as an argument, rather than
-      // `script: main.ts` + `interpreter: bun.exe`.
-      //
-      // With the interpreter form, PM2 on Windows builds the child command
-      // itself and repeatedly lost track of the resulting process: `pm2 list`
-      // showed `pid 0 / waiting restart` with a restart counter climbing into
-      // the dozens while a perfectly healthy gateway was still bound to the
-      // port. Because PM2 believed the app was down it kept launching more,
-      // and two generations then raced each other over the same SQLite file —
-      // which is how admin writes silently vanished on restart.
-      //
-      // Invoking the executable directly keeps the spawned pid the one PM2
-      // tracks, so its bookkeeping stays correct.
+      // Keep Bun itself as PM2's executable (not a TypeScript interpreter).
+      // Use the package start script: the direct main.ts launch repeatedly
+      // exited while companion generations still held inherited sockets.
+      // The root start script delegates to apps/gateway; root cwd also keeps
+      // .env resolution explicit and stable across restart/resurrect.
       script: bunExe,
-      args: ['apps/gateway/src/main.ts'],
+      args: ['--env-file=.env', 'run', 'start'],
       interpreter: 'none',
       cwd: root,
 
@@ -138,10 +130,18 @@ module.exports = {
 
     {
       name: 'dmrx-needle-router',
-      script: 'uvicorn',
-      args: 'server:app --host 0.0.0.0 --port 8011 --workers 2',
+      // Launch the venv's own uvicorn explicitly. `script: 'uvicorn'` made PM2
+      // resolve the shim off PATH, which picked up an unrelated venv and died
+      // with "No module named 'uvicorn'". -m uvicorn also avoids needing the
+      // console-script shim at all.
+      script: path.join(root, 'services', 'needle-router', '.venv', 'Scripts', 'python.exe'),
+      // 1 worker on purpose. Each uvicorn worker spawns its own needle engine
+      // subprocess, so --workers 2 means two engines plus two parent processes
+      // contending for this 2-core CPU, and each worker keeps a separate agent
+      // cache (so the first request per tool set is paid twice). A local
+      // pre-filter with a 1500ms budget does not need the concurrency.
+      args: '-m uvicorn server:app --host 0.0.0.0 --port 8011 --workers 1',
       cwd: path.join(root, 'services', 'needle-router'),
-      interpreter: path.join(root, 'services', 'needle-router', '.venv', 'Scripts', 'python.exe'),
 
       exec_mode: 'fork',
       instances: 1,
@@ -158,6 +158,13 @@ module.exports = {
 
       env: {
         PYTHONUNBUFFERED: '1',
+        // Depth is the dominant latency lever on CPU-only hardware. The 4-layer
+        // rung of Needle 3 measured 1.8-3.8s/call vs 18-43s for the full 20-layer
+        // stack on this machine's i5-2540M (no AVX2/FMA). Rebuild with:
+        //   needle build --layers 4 --out needle3-4L.cact
+        NEEDLE_WEIGHTS: 'needle3-4L.cact',
+        // Anonymous usage counts; off for a local deployment.
+        NEEDLE_TELEMETRY: '0',
       },
 
       out_file: path.join(root, '.dmrx-data', 'logs', 'needle-out.log'),
