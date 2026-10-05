@@ -120,6 +120,52 @@ describe('agent-chat-loop feature ports (remediation #13)', () => {
     await testDb.close();
   });
 
+  // REGRESSION: a conversation resumed from a `claim_reserved` placeholder
+  // arrives with an EMPTY transcript that the route fills with the caller's
+  // messages only — no system prompt at index 0. The loop used to assign
+  // `messages[0] = systemPrompt`, which overwrote the caller's user message and
+  // silently discarded the entire request: every agent on the fleet answered its
+  // persona greeting instead of the task, and a ~1200-token prompt billed the
+  // same token count as a one-word "hi". The user turn must survive.
+  it('preserves the caller user message when the transcript has no system prompt', async () => {
+    const route = vi.fn().mockResolvedValue({ response: textResponse('ok') });
+    const convId = 'conv-no-system';
+    const conversation = createInitialState(convId);
+    // Exactly what the reserved-placeholder branch produces: user message only.
+    conversation.messages = [{ role: 'user', content: 'What is 2+2?' }];
+
+    await runAgentChatLoop(
+      buildLoopArgs({ conversation, router: { route } as any, conversationId: convId }),
+    );
+
+    const sent = route.mock.calls[0][0].messages as Array<{ role: string; content: string }>;
+    const userTurns = sent.filter((m) => m.role === 'user');
+    expect(userTurns.map((m) => m.content)).toContain('What is 2+2?');
+    // The system prompt is still present — prepended, not substituted.
+    expect(sent[0].role).toBe('system');
+    expect(sent[0].content).toContain('system prompt');
+  });
+
+  it('replaces the system prompt in place when one is already at index 0', async () => {
+    const route = vi.fn().mockResolvedValue({ response: textResponse('ok') });
+    const convId = 'conv-with-system';
+    const conversation = createInitialState(convId);
+    conversation.messages = [
+      { role: 'system', content: 'stale' },
+      { role: 'user', content: 'hello' },
+    ];
+
+    await runAgentChatLoop(
+      buildLoopArgs({ conversation, router: { route } as any, conversationId: convId }),
+    );
+
+    const sent = route.mock.calls[0][0].messages as Array<{ role: string; content: string }>;
+    // No duplicated system message, and the user turn is untouched.
+    expect(sent.filter((m) => m.role === 'system')).toHaveLength(1);
+    expect(sent[0].content).toContain('system prompt');
+    expect(sent.filter((m) => m.role === 'user').map((m) => m.content)).toContain('hello');
+  });
+
   it('fires onCheckpoint once per completed turn with growing, persisted state', async () => {
     const route = vi
       .fn()

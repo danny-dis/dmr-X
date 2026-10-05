@@ -916,7 +916,21 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     if (planText) {
       systemPromptText += `\n\nEXECUTION PLAN (follow these steps):\n${planText}`;
     }
-    messages[0] = { role: 'system', content: systemPromptText };
+    // The system prompt belongs at the head of the transcript. It is NOT safe to
+    // assume index 0 already holds one: a conversation resumed from a
+    // `claim_reserved` placeholder (see agent-chat.routes.ts) arrives with an
+    // empty-or-system-less transcript whose first entry is the CALLER'S USER
+    // MESSAGE. A blind `messages[0] = ...` then overwrote that message with the
+    // system prompt, silently discarding the entire request — every agent on the
+    // fleet answered its persona greeting instead of the user's task, and a
+    // ~1200-token prompt billed the identical 5077 tokens as a one-word "hi".
+    // Replace in place only when a system message is actually there; otherwise
+    // prepend, so the user's turn is preserved.
+    if (messages.length > 0 && messages[0]?.role === 'system') {
+      messages[0] = { role: 'system', content: systemPromptText };
+    } else {
+      messages.unshift({ role: 'system', content: systemPromptText });
+    }
 
     const unifiedRequest = toUnifiedRequest(
       {
