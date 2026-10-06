@@ -184,7 +184,7 @@ export class KeyRotationService {
     const keys = this.keys.get(providerId);
     if (!keys || keys.length === 0) return null;
 
-    if (keys.length === 1) {
+    if (keys.length === 1 && this.rotationStrategy !== 'smart') {
       this.recordSelection(providerId, keys[0]);
       return keys[0];
     }
@@ -213,38 +213,54 @@ export class KeyRotationService {
     const keys = this.keys.get(providerId);
     if (!keys || keys.length === 0) return null;
 
-    const tracker = getRateLimitTracker();
-    const quotaStatuses = tracker.getKeysWithQuota(providerId, modelId);
+    const metadata = this.keyMetadata.get(providerId);
+    const eligibleIndexes = keys
+      .map((_, index) => index)
+      .filter(index => metadata?.[index]?.isActive !== false);
+    if (eligibleIndexes.length === 0) return null;
 
-    // If we have quota data, use it
-    if (quotaStatuses.length > 0) {
-      // Filter out exhausted keys
-      const availableKeys = quotaStatuses.filter(s => !s.isExhausted);
-      
-      if (availableKeys.length > 0) {
-        // Sort by quota (most remaining first)
-        availableKeys.sort(compareKeyQuota);
-        
-        // Find the corresponding raw key.
-        //
-        // Quota rows have been written with BOTH id forms over time: the
-        // rate-limit tracker persists the raw key while older/newer writers
-        // may persist its hash. Match either form so an exhausted-key record
-        // is never silently missed (a miss falls through to quota-ignoring
-        // round-robin and re-picks the spent key ~1/N of the time).
-        const bestStatus = availableKeys[0];
-        const keyIndex = keys.findIndex(
-          k => this.hashKey(k) === bestStatus.keyId || k === bestStatus.keyId,
-        );
-        if (keyIndex >= 0) {
-          this.updateLastUsed(providerId, keyIndex);
+    const selectEligibleRoundRobin = (indexes: number[]): string | null => {
+      const currentIndex = this.currentIndex.get(providerId) || 0;
+      for (let offset = 0; offset < keys.length; offset++) {
+        const keyIndex = (currentIndex + offset) % keys.length;
+        if (indexes.includes(keyIndex)) {
+          this.currentIndex.set(providerId, (keyIndex + 1) % keys.length);
           return keys[keyIndex];
         }
       }
+      return null;
+    };
+
+    const tracker = getRateLimitTracker();
+    const quotaStatuses = tracker.getKeysWithQuota(providerId, modelId);
+
+    if (quotaStatuses.length === 0) {
+      return eligibleIndexes.length === keys.length
+        ? this.getRoundRobinKey(providerId)
+        : selectEligibleRoundRobin(eligibleIndexes);
     }
 
-    // Fallback to round-robin if no quota data
-    return this.getRoundRobinKey(providerId);
+    const keyQuotas = eligibleIndexes.map(keyIndex => ({
+      keyIndex,
+      status: quotaStatuses.find(
+        status => status.keyId === keys[keyIndex] || status.keyId === this.hashKey(keys[keyIndex]),
+      ),
+    }));
+    const availableKeys = keyQuotas.filter(
+      (key): key is { keyIndex: number; status: KeyQuotaStatus } =>
+        key.status !== undefined && !key.status.isExhausted,
+    );
+
+    if (availableKeys.length > 0) {
+      availableKeys.sort((a, b) => compareKeyQuota(a.status, b.status));
+      this.updateLastUsed(providerId, availableKeys[0].keyIndex);
+      return keys[availableKeys[0].keyIndex];
+    }
+
+    const unknownIndexes = keyQuotas
+      .filter(key => key.status === undefined)
+      .map(key => key.keyIndex);
+    return unknownIndexes.length > 0 ? selectEligibleRoundRobin(unknownIndexes) : null;
   }
 
   /**
