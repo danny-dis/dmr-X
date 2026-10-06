@@ -1,0 +1,11 @@
+--- a/api/routes/chat.ts
++++ b/api/routes/chat.ts
+@@ -121,6 +121,8 @@
+     content: coerceContent(m.content),
+     // Preserve assistant tool_calls so tool-calling loops survive the relay.
+     ...(Array.isArray(m.tool_calls) ? { tool_calls: m.tool_calls } : {}),
++    // DMR-X preserve tool-result identity through normalization.
++    ...(m.tool_call_id !== undefined ? { tool_call_id: m.tool_call_id } : {}),
+   }))
+ 
+   // Build system prompt

@@ -298,7 +298,7 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
         await validateBaseUrlForSSRF(body.llmBaseUrl);
       }
       const res = await serverManager.install({
-        openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
+        openrouterApiKey: '',
         llmBaseUrl: body.llmBaseUrl,
         llmApiKey: body.llmApiKey
       });
@@ -309,9 +309,9 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       setGodmodeConfig({
         baseUrl: res.url ?? 'http://localhost:47115',
         apiKey: res.api_key ?? undefined,
-        openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
-        llmBaseUrl: relay ?? undefined,
-        llmApiKey: relay ? res.llm_api_key ?? undefined : undefined,
+        openrouterApiKey: '',
+        llmBaseUrl: res.llm_base_url || relay || `${resolveGatewayUrl().replace(/\/+$/, '')}/v1`,
+        llmApiKey: res.llm_api_key ?? undefined,
       });
       await getGodmodeService().initialize();
       return { status: res.status, url: res.url, runtime: res.runtime, id: res.id };
@@ -325,17 +325,16 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
   server.post('/godmode/server/start', async (request) => {
     try {
       const body = (request.body ?? {}) as { openrouterApiKey?: string; llmBaseUrl?: string; llmApiKey?: string };
-      // No OpenRouter key and no explicit relay → default to routing through
-      // DMR-X itself (reuses the host's provider vault, incl. LOCAL MODE).
+      // Godmode is DMR-X's wrapping companion. Provider-vault credentials
+      // never select a direct OpenRouter inference path.
       const gatewayUrl = resolveGatewayUrl();
-      const useRelay = !body.openrouterApiKey && !process.env.OPENROUTER_API_KEY;
       // C4 — SSRF: validate llmBaseUrl before passing to serverManager.start()
       if (body.llmBaseUrl) {
         await validateBaseUrlForSSRF(body.llmBaseUrl);
       }
-      const llmBaseUrl = body.llmBaseUrl ?? (useRelay ? `${gatewayUrl}/v1` : undefined);
+      const llmBaseUrl = body.llmBaseUrl || `${gatewayUrl.replace(/\/+$/, '')}/v1`;
       const res = await serverManager.start({
-        openrouterApiKey: body.openrouterApiKey ?? process.env.OPENROUTER_API_KEY,
+        openrouterApiKey: '',
         llmBaseUrl,
         llmApiKey: body.llmApiKey
       });
@@ -345,9 +344,9 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       setGodmodeConfig({
         baseUrl: res.url ?? 'http://localhost:47115',
         apiKey: res.api_key ?? undefined,
-        openrouterApiKey: relay ? '' : (process.env.OPENROUTER_API_KEY ?? ''),
-        llmBaseUrl: relay ?? undefined,
-        llmApiKey: relay ? res.llm_api_key ?? undefined : undefined,
+        openrouterApiKey: '',
+        llmBaseUrl: res.llm_base_url || relay || `${resolveGatewayUrl().replace(/\/+$/, '')}/v1`,
+        llmApiKey: res.llm_api_key ?? undefined,
       });
       await getGodmodeService().initialize();
       return { status: res.status, url: res.url, runtime: res.runtime, id: res.id };
@@ -422,6 +421,8 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       baseUrl: cfg?.baseUrl,
       hasApiKey: Boolean(cfg?.apiKey),
       openrouterConfigured: Boolean(cfg?.openrouterApiKey),
+      inferenceMode: cfg?.llmBaseUrl ? 'dmrx-relay' : 'unconfigured',
+      llmBaseUrl: cfg?.llmBaseUrl,
       ...getGodmodeRepoInfo(),
     };
   });

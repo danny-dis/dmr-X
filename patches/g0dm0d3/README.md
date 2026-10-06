@@ -119,7 +119,43 @@ relay context). On a fresh clone the working tree is CRLF on Windows — if
 
 Then restart the gateway so the child is respawned.
 
+## Managed inference contract
+
+Managed startup always uses the host DMR-X relay, regardless of an OpenRouter
+provider key in the host vault. Relay credentials are host-configured; caller
+and provider credentials are never used as relay authentication. Missing relay
+configuration, a direct OpenRouter URL mislabeled as the relay, or a required
+patch failure blocks managed inference instead of silently bypassing DMR-X.
+DMR-X may still choose OpenRouter as a provider inside its own pool.
+
+The upgrade patches `src_lib_openrouter_relay_contract.ts.patch` and
+`src_lib_classify_llm_relay.ts.patch` cover ordinary/tool chat, streaming,
+model discovery, Venice helpers, and auxiliary LLM classification.
+`api_routes_chat_stream_errors.ts.patch` propagates upstream SSE errors;
+`api_routes_chat_tool_history.ts.patch` preserves `tool_call_id` on tool results.
+They are registered in `patch-godmode.ts` and apply idempotently to both fresh
+and previously patched clones.
+
+`auto-free` tries its ranked concrete models first, then retries the wider
+DMR-X free pool **through Godmode**. The relay's loop-breaker header prevents
+recursive wrapping and its free-only headers preserve the cost boundary.
+Tool requests deliberately use the clean pipeline so persona rewriting and
+AutoTune do not corrupt schemas, arguments, or tool results.
+
 ## Verifying
+
+Run the isolated vendor/HTTP contract checks (no real provider calls):
+
+```bash
+bun scripts/verify-godmode-relay.ts
+```
+
+Deployment still requires rebuilding Godmode/server-manager/gateway and
+restarting both the gateway and managed companion. For live verification,
+check ordinary text, streaming text, tool-call generation, a tool-result
+round trip, and streaming tool deltas. Assert `gm-` response IDs, meaningful
+answers, no SSE error frames, and `[DONE]`—HTTP 200 alone is not proof.
+The sidecar port is configurable; this host currently uses `47115`.
 
 ```bash
 # relay reaches DMR-X and bypasses the 5-request cap

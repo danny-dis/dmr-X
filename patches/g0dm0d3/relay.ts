@@ -21,7 +21,14 @@ export function isRelayMode(): boolean {
 
 /** Base URL for upstream chat completions, without a trailing slash. */
 export function relayBaseUrl(): string {
-  return (process.env.G0DM0D3_LLM_BASE_URL || '').replace(/\/+$/, '');
+  const base = (process.env.G0DM0D3_LLM_BASE_URL || '').replace(/\/+$/, '');
+  if (base) {
+    const url = new URL(base);
+    if (!['http:', 'https:'].includes(url.protocol) || /(^|\.)openrouter\.ai$/i.test(url.hostname)) {
+      throw new Error('DMR-X relay must use the host gateway, not direct OpenRouter');
+    }
+  }
+  return base;
 }
 
 /** Full chat/completions URL for the active upstream. */
@@ -29,6 +36,9 @@ export function chatCompletionsUrl(): string {
   const base = relayBaseUrl();
   if (base) {
     return /\/chat\/completions$/.test(base) ? base : `${base}/chat/completions`;
+  }
+  if (isRelayMode()) {
+    throw new Error('DMR-X relay base URL is required (G0DM0D3_LLM_BASE_URL)');
   }
   return 'https://openrouter.ai/api/v1/chat/completions';
 }
@@ -39,7 +49,9 @@ export function chatCompletionsUrl(): string {
  */
 export function upstreamApiKey(callerKey?: string): string {
   if (isRelayMode()) {
-    return process.env.G0DM0D3_LLM_API_KEY || callerKey || '';
+    // Empty is intentional in local mode. Provider credentials must never
+    // leak into the host gateway's authentication boundary.
+    return process.env.G0DM0D3_LLM_API_KEY || '';
   }
   return callerKey || process.env.OPENROUTER_API_KEY || '';
 }

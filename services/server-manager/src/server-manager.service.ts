@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { getDb } from '@dmr-x/db';
-import { logger } from '@dmr-x/utils';
+import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 
 import { applyGodmodePatches } from './patch-godmode.js';
 
@@ -528,12 +528,10 @@ class ServerManagerService {
     llmBaseUrl: string;
     llmApiKey: string;
   } {
-    const openrouterKey = opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY ?? '';
-    // Inherit relay settings from process.env when not explicitly passed.
-    // This ensures G0DM0D3 children spawned by the gateway (or via the
-    // scheduled task) automatically pick up relay mode from .env without
-    // requiring every caller to thread the flags through.
-    const llmBaseUrl = opts.llmBaseUrl ?? process.env.G0DM0D3_LLM_BASE_URL ?? '';
+    // Managed Godmode is a wrapping companion, never a second provider
+    // router. An OpenRouter key in the host vault must not bypass DMR-X.
+    const openrouterKey = '';
+    const llmBaseUrl = opts.llmBaseUrl || process.env.G0DM0D3_LLM_BASE_URL || `${resolveGatewayUrl().replace(/\/+$/, '')}/v1`;
     const llmApiKey = opts.llmApiKey ?? process.env.G0DM0D3_LLM_API_KEY ?? '';
     return { openrouterKey, llmBaseUrl, llmApiKey };
   }
@@ -554,7 +552,10 @@ class ServerManagerService {
 
     await this.cloneIfNeeded();
     await this.installDeps();
-    this.applyPatches();
+    const patches = this.applyPatches();
+    if (patches.failed.length > 0) {
+      throw new Error(`Required Godmode relay patches failed: ${patches.failed.join(', ')}`);
+    }
 
     this.upsertRow({
       id,
@@ -763,7 +764,7 @@ export interface BuildGodmodeNativeEnvOptions {
 export function buildGodmodeNativeEnv(opts: BuildGodmodeNativeEnvOptions): Record<string, string> {
   const env: Record<string, string> = {
     ...(opts.baseEnv ?? process.env),
-    OPENROUTER_API_KEY: opts.openrouterKey,
+    OPENROUTER_API_KEY: opts.llmBaseUrl ? '' : opts.openrouterKey,
     PORT: String(opts.port),
   };
   if (opts.godmodeKey) env.GODMODE_API_KEY = opts.godmodeKey;

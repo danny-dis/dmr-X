@@ -142,62 +142,9 @@ export class GodmodeService {
    * Standard chat with streaming
    */
   async *chatStream(request: GodmodeChatRequest): AsyncIterable<string> {
-    this.assertInitialized();
-
-    if (!request.model) {
-      throw new Error(
-        'GodmodeService.chatStream: model is required — resolve it through the DMR-X router (resolveMetaModel / buildGodmodeWrapOrder) before calling',
-      );
-    }
-
-    const body = {
-      ...request,
-      openrouter_api_key: this.config.openrouterApiKey,
-      stream: true,
-    };
-
-    const response = await this.fetchWithTimeout(
-      `${this.config.baseUrl}/v1/chat/completions`,
-      {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(body),
-        timeoutMs: 120000,
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`G0DM0D3 stream failed: ${response.status} ${errorText}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') return;
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield content;
-          } catch {
-            // Skip invalid JSON
-          }
-        }
-      }
+    // One parser owns text and tool streams, including in-band relay errors.
+    for await (const delta of this.chatStreamFull(request)) {
+      if (delta.content) yield delta.content;
     }
   }
 
@@ -254,16 +201,21 @@ export class GodmodeService {
         if (line.startsWith('data: ')) {
           const data = line.slice(6).trim();
           if (data === '[DONE]') return;
+          let parsed: any;
           try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta;
-            const out: { content?: string; tool_calls?: any[] } = {};
-            if (delta?.content) out.content = delta.content;
-            if (delta?.tool_calls) out.tool_calls = delta.tool_calls;
-            if (out.content !== undefined || out.tool_calls) yield out;
+            parsed = JSON.parse(data);
           } catch {
-            // Skip invalid JSON
+            // Ignore malformed transport frames, never upstream error frames.
+            continue;
           }
+          if (parsed.error) {
+            throw new Error(`G0DM0D3 relay stream failed: ${parsed.error.message ?? JSON.stringify(parsed.error)}`);
+          }
+          const delta = parsed.choices?.[0]?.delta;
+          const out: { content?: string; tool_calls?: any[] } = {};
+          if (delta?.content) out.content = delta.content;
+          if (delta?.tool_calls) out.tool_calls = delta.tool_calls;
+          if (out.content !== undefined || out.tool_calls) yield out;
         }
       }
     }

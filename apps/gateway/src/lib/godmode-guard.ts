@@ -92,7 +92,14 @@ export function buildWrapOrderForModel(
     if (order.length >= limit) break;
   }
 
-  if (order.length > 0) return order;
+  if (order.length > 0) {
+    // Keep pick-first behavior, but do not lose the Godmode wrapper merely
+    // because these concrete models fail while the wider free pool is healthy.
+    // The managed relay's X-DMRX-Godmode-Proxy header prevents re-wrapping;
+    // relaying auto-free therefore enters DMR-X's normal free-only fallback.
+    if (model === 'auto-free' && !seen.has(model)) order.push(model);
+    return order;
+  }
 
   // A KNOWN meta-model alias that ranked zero candidates (e.g. an empty
   // vault) must NOT be treated as a concrete model id — wrapping it would

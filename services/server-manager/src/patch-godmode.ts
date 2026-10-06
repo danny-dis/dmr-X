@@ -88,9 +88,34 @@ const STEPS: PatchStep[] = [
     marker: 'let sawToolCalls = false',
   },
   {
+    target: path.join('api', 'routes', 'chat.ts'),
+    patchFile: 'api_routes_chat_stream_errors.ts.patch',
+    marker: 'DMR-X relay SSE errors must not become empty successful streams',
+  },
+  {
+    // Tool-result messages must retain their link to the assistant tool call.
+    target: path.join('api', 'routes', 'chat.ts'),
+    patchFile: 'api_routes_chat_tool_history.ts.patch',
+    marker: 'DMR-X preserve tool-result identity through normalization',
+  },
+  {
     target: path.join('src', 'lib', 'openrouter.ts'),
     patchFile: 'src_lib_openrouter_tools.ts.patch',
     marker: 'export async function sendMessageFull',
+  },
+  {
+    // Upgrade existing tool-patched clones to the same relay headers, auth,
+    // and fail-closed upstream contract used by the race engines.
+    target: path.join('src', 'lib', 'openrouter.ts'),
+    patchFile: 'src_lib_openrouter_relay_contract.ts.patch',
+    marker: 'DMR-X shared relay contract',
+  },
+  {
+    // Optional LLM classification is inference too; it must not silently
+    // send prompts and caller keys to OpenRouter outside the host vault.
+    target: path.join('src', 'lib', 'classify-llm.ts'),
+    patchFile: 'src_lib_classify_llm_relay.ts.patch',
+    marker: 'DMR-X classifier relay contract',
   },
   {
     // ULTRAPLINIAN / CONSORTIUM raced OpenRouter slugs and hard-required an

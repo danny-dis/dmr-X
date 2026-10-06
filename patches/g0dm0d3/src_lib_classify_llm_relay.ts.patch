@@ -1,0 +1,45 @@
+diff --git a/src/lib/classify-llm.ts b/src/lib/classify-llm.ts
+--- a/src/lib/classify-llm.ts
++++ b/src/lib/classify-llm.ts
+@@ -16,10 +16,11 @@
+ 
+ import type { HarmDomain, HarmSubcategory, ClassificationResult, PromptIntent } from './classify'
+ import { classifyPrompt as classifyRegex } from './classify'
++// DMR-X classifier relay contract: auxiliary inference shares the host router.
++import { chatCompletionsUrl, isRelayMode, upstreamHeaders } from '../../api/lib/relay'
+ 
+ // ── Config ──────────────────────────────────────────────────────────
+ 
+-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+ 
+ // Cheap, fast models ideal for classification. Tried in order of preference.
+ // These are very cheap on OpenRouter (<$0.10/M tokens).
+@@ -142,7 +143,7 @@
+   // Regex runs instantly as fallback
+   const regexResult = classifyRegex(prompt)
+ 
+-  if (!apiKey) {
++  if (!apiKey && !isRelayMode()) {
+     return regexResult
+   }
+ 
+@@ -150,16 +151,11 @@
+     const controller = new AbortController()
+     const timeout = setTimeout(() => controller.abort(), CLASSIFY_TIMEOUT_MS)
+ 
+-    const response = await fetch(OPENROUTER_API_URL, {
++    const response = await fetch(chatCompletionsUrl(), {
+       method: 'POST',
+-      headers: {
+-        'Authorization': `Bearer ${apiKey}`,
+-        'Content-Type': 'application/json',
+-        'HTTP-Referer': 'https://godmod3.ai',
+-        'X-Title': 'G0DM0D3-Classifier',
+-      },
++      headers: upstreamHeaders(apiKey),
+       body: JSON.stringify({
+-        model: CLASSIFIER_MODEL,
++        model: isRelayMode() ? (process.env.G0DM0D3_CLASSIFIER_MODEL || 'auto-fast') : CLASSIFIER_MODEL,
+         messages: [
+           { role: 'system', content: CLASSIFIER_SYSTEM_PROMPT },
+           { role: 'user', content: prompt },

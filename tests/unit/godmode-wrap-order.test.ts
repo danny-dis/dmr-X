@@ -19,7 +19,7 @@ function candidate(partial: Partial<ProviderModel> & { modelId: string; provider
 }
 
 describe('buildGodmodeWrapOrder (pick-then-wrap)', () => {
-  it('ranks concrete vault models and does not emit auto-free', () => {
+  it('ranks concrete vault models before one guarded auto-free pool retry', () => {
     const candidates = [
       candidate({ providerId: 'a', modelId: 'slow-free', qualityScore: 0.2, avgLatencyMs: 4000 }),
       candidate({ providerId: 'b', modelId: 'fast-good', qualityScore: 0.9, avgLatencyMs: 200 }),
@@ -27,9 +27,10 @@ describe('buildGodmodeWrapOrder (pick-then-wrap)', () => {
     ];
     const order = buildGodmodeWrapOrder(candidates);
     expect(order[0]).toBe('fast-good');
-    expect(order).not.toContain('auto-free');
+    expect(order.at(-1)).toBe('auto-free');
+    expect(order.filter((model) => model === 'auto-free')).toHaveLength(1);
     expect(order.length).toBeGreaterThanOrEqual(1);
-    expect(order.length).toBeLessThanOrEqual(5);
+    expect(order.length).toBeLessThanOrEqual(6);
   });
 
   it('falls back to emergency list when vault is empty', () => {
@@ -76,6 +77,32 @@ vi.mock('../../services/server-manager/src/index.ts', () => ({
     start: (...args: unknown[]) => startMock(...args),
   },
 }));
+
+describe('auto-free keeps the wrapper when picked models are unavailable', () => {
+  afterEach(() => vi.resetAllMocks());
+
+  it('retries the wider DMR-X free pool through Godmode, not plain routing', async () => {
+    const chat = vi.fn(async ({ model }: { model: string }) => {
+      if (model === 'auto-free') return { choices: [{ message: { content: 'wrapped-pool-answer' } }] };
+      throw new Error('picked concrete model unavailable');
+    });
+    getGodmodeServiceMock.mockReturnValue({
+      isInitialized: () => true,
+      healthCheck: vi.fn().mockResolvedValue(true),
+      chat,
+    });
+    const { wrapViaGodmode } = await import('../../apps/gateway/src/lib/godmode-guard.js');
+    const result = await wrapViaGodmode({
+      requestId: 'test-free-pool-fallback', model: 'auto-free', costFilter: 'free',
+      messages: [{ role: 'user', content: 'test' }],
+      candidates: [candidate({ providerId: 'test', modelId: 'unavailable-picked-model', qualityScore: 0.9 })],
+    });
+    expect(chat.mock.calls.map(([request]) => request.model)).toEqual(['unavailable-picked-model', 'auto-free']);
+    expect(result.status).toBe('wrapped');
+    expect(result.wrapModel).toBe('auto-free');
+    expect(result.completion.choices[0].message.content).toBe('wrapped-pool-answer');
+  });
+});
 
 describe('ensureGodmodeProxy re-wires server api_key (B-006)', () => {
   const svc = () => ({

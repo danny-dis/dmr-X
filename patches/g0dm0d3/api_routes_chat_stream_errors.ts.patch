@@ -1,0 +1,18 @@
+diff --git a/api/routes/chat.ts b/api/routes/chat.ts
+--- a/api/routes/chat.ts
++++ b/api/routes/chat.ts
+@@ -845,6 +845,14 @@
+ 
+             try {
+               const json = JSON.parse(trimmed.slice(6))
++              // DMR-X relay SSE errors must not become empty successful streams.
++              if (json.error) {
++                res.write(`data: ${JSON.stringify({ error: json.error })}\n\n`)
++                res.write('data: [DONE]\n\n')
++                res.end()
++                await reader.cancel().catch(() => {})
++                return
++              }
+               const content = json.choices?.[0]?.delta?.content
+               const toolCalls = json.choices?.[0]?.delta?.tool_calls
+               if (content) fullContent += content
