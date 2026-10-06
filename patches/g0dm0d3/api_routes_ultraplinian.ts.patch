@@ -1,0 +1,31 @@
+diff --git a/api/routes/ultraplinian.ts b/api/routes/ultraplinian.ts
+index 01940d9..8f14013 100644
+--- a/api/routes/ultraplinian.ts
++++ b/api/routes/ultraplinian.ts
+@@ -28,6 +28,9 @@
+ import { Router } from 'express'
+ import { computeAutoTuneParams, type AutoTuneStrategy } from '../../src/lib/autotune'
+ import { applyParseltongue, type ParseltongueConfig } from '../../src/lib/parseltongue'
++// DMR-X relay patch: when this server runs as DMR-X's internal proxy the
++// upstream is the host gateway, not OpenRouter (see api/lib/relay.ts).
++import { isRelayMode, upstreamApiKey, hasUsableUpstream } from '../lib/relay'
+ import { allModules, applySTMs, type STMModule } from '../../src/stm/modules'
+ import { getSharedProfiles } from './autotune'
+ import {
+@@ -91,9 +94,13 @@ ultraplinianRoutes.post('/completions', async (req, res) => {
+       return
+     }
+ 
+-    // Resolve OpenRouter key: caller-provided > server-side env var
+-    const openrouter_api_key = caller_key || process.env.OPENROUTER_API_KEY || ''
+-    if (!openrouter_api_key) {
++    // Resolve upstream credential: caller-provided > server-side env var.
++    // In relay mode the upstream is DMR-X itself, so no OpenRouter key is
++    // required (and none should be sent) — see api/lib/relay.ts.
++    const openrouter_api_key = isRelayMode()
++      ? upstreamApiKey(caller_key)
++      : caller_key || process.env.OPENROUTER_API_KEY || ''
++    if (!hasUsableUpstream(caller_key)) {
+       res.status(400).json({
+         error: 'No OpenRouter API key available. Either pass openrouter_api_key in the request body, or set OPENROUTER_API_KEY on the server. Get a key at https://openrouter.ai/keys',
+       })

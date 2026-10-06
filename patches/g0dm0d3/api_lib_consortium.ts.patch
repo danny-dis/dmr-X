@@ -1,0 +1,30 @@
+diff --git a/api/lib/consortium.ts b/api/lib/consortium.ts
+index a26e49a..ed105ef 100644
+--- a/api/lib/consortium.ts
++++ b/api/lib/consortium.ts
+@@ -17,6 +17,8 @@
+  */
+ 
+ import { queryModel, type ModelResult, type SpeedTier, getModelsForTier, scoreResponse } from './ultraplinian'
++// DMR-X relay patch: orchestrator/synthesis model differs in relay mode.
++import { isRelayMode } from './relay'
+ 
+ // ── Orchestrator Models ─────────────────────────────────────────────
+ 
+@@ -30,6 +32,16 @@ export const ORCHESTRATOR_MODELS = [
+   'deepseek/deepseek-v3.2',
+ ] as const
+ 
++// DMR-X RELAY PATCH — the synthesis model is the strongest single voice in the
++// run, so in relay mode it must be a DMR-X alias the host router can rank
++// (auto-smart scores quality/cost/latency/context against the live vault).
++// Upstream slugs above are unresolvable through DMR-X and would 400.
++export const DMRX_ORCHESTRATOR_MODEL = 'auto-smart'
++
++export function getOrchestratorModel(): string {
++  return isRelayMode() ? DMRX_ORCHESTRATOR_MODEL : ORCHESTRATOR_MODELS[0]
++}
++
+ export type OrchestratorModel = typeof ORCHESTRATOR_MODELS[number] | (string & {})
+ 
+ // ── Consortium Types ────────────────────────────────────────────────

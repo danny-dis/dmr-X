@@ -131,9 +131,38 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-/** Resolve the CWD / repo root that .dmrx-data lives under. */
+/** Resolve the CWD / repo root that .dmrx-data lives under.
+ *
+ * `process.cwd()` alone is not enough: `bun run start` (pm2) launches from the
+ * monorepo root, but `bun src/main.ts` / `bun run dev` launches from
+ * `apps/gateway`. Both are legitimate entry points, and because the data dir is
+ * derived from cwd they each grow their OWN `.dmrx-data/servers/g0dm0d3` clone.
+ * That produced two live clones on this machine, only one of which was
+ * actually running — so install/patch/`installedRef` operated on a clone the
+ * user was not running.
+ *
+ * Walk up from cwd to the first directory that is the workspace root (has
+ * `workspaces` in package.json). Falling back to cwd keeps single-package
+ * checkouts working. The env var wins so an explicit override is still
+ * possible.
+ */
 function repoRoot(): string {
-  // Prefer DMRX repo root if hinted, else process.cwd().
+  const hinted = process.env.DMRX_REPO_ROOT;
+  if (hinted) return hinted;
+
+  let dir = process.cwd();
+  for (let i = 0; i < 8; i++) {
+    const pkg = path.join(dir, 'package.json');
+    try {
+      const parsed = JSON.parse(fs.readFileSync(pkg, 'utf8')) as { workspaces?: unknown };
+      if (parsed.workspaces) return dir;
+    } catch {
+      /* no package.json here, or unreadable — keep walking up */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
   return process.cwd();
 }
 
@@ -190,6 +219,47 @@ export function getGodmodeRepoInfo(): { repo: string; ref: string; upstream: str
 }
 
 /**
+ * Resolve a checkout's HEAD commit by reading `.git` directly.
+ *
+ * Handles both a normal repo (`.git/HEAD` → `ref: refs/heads/main`, then
+ * `.git/refs/heads/main`) and a packed ref (`.git/packed-refs`), which is what
+ * a `git clone --depth 1` produces. Returns null when it cannot be resolved so
+ * the caller can fall back to `git rev-parse`.
+ */
+function readGitHead(dir: string, gitPath: string): string | null {
+  const sha = (s: string | undefined): string | null =>
+    s && /^[0-9a-f]{40}$/i.test(s.trim()) ? s.trim() : null;
+
+  try {
+    const head = fs.readFileSync(path.join(gitPath, 'HEAD'), 'utf8').trim();
+
+    // Detached HEAD: the file already holds the SHA.
+    const direct = sha(head);
+    if (direct) return direct;
+
+    const refMatch = head.match(/^ref:\s*(.+)$/);
+    if (!refMatch) return null;
+    const ref = refMatch[1].trim();
+
+    const loose = path.join(gitPath, ...ref.split('/'));
+    if (fs.existsSync(loose)) return sha(fs.readFileSync(loose, 'utf8'));
+
+    const packed = path.join(gitPath, 'packed-refs');
+    if (fs.existsSync(packed)) {
+      for (const line of fs.readFileSync(packed, 'utf8').split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('^')) continue;
+        const [hash, name] = trimmed.split(/\s+/, 2);
+        if (name === ref) return sha(hash);
+      }
+    }
+  } catch {
+    /* unreadable or not a repo — caller falls back to git */
+  }
+  return null;
+}
+
+/**
  * The commit actually checked out on disk, or null when nothing is installed.
  *
  * This can legitimately differ from the pinned `G0DM0D3_REF`: `cloneIfNeeded()`
@@ -200,7 +270,16 @@ export function getGodmodeRepoInfo(): { repo: string; ref: string; upstream: str
  */
 export function getInstalledGodmodeRef(): string | null {
   const dir = g0dm0d3Dir();
-  if (!fs.existsSync(path.join(dir, '.git'))) return null;
+  const gitPath = path.join(dir, '.git');
+  if (!fs.existsSync(gitPath)) return null;
+
+  // Read HEAD straight off disk instead of shelling out to `git rev-parse`.
+  // Under pm2 the gateway inherits a stripped PATH with no git on it, so the
+  // spawn fails and this reported `null` ("nothing installed") for a clone
+  // that is present and running — which is what the UI's freshness card shows.
+  const direct = readGitHead(dir, gitPath);
+  if (direct) return direct;
+
   const res = spawnSync('git', ['rev-parse', 'HEAD'], {
     cwd: dir,
     encoding: 'utf-8',
@@ -695,6 +774,15 @@ export function buildGodmodeNativeEnv(opts: BuildGodmodeNativeEnvOptions): Recor
     // The rate-limit middleware skips limiting in this mode (single-tenant,
     // no external API key to protect).
     env.GODMODE_RELAY = '1';
+    // The sidecar's own plan gate maps a bearer key to a tier via
+    // GODMODE_TIER_KEYS, and an unmapped key defaults to `free` — which only
+    // allows the `fast` ULTRAPLINIAN tier, so `standard` and above 403 with
+    // "Upgrade required". DMR-X generates this key itself and runs the sidecar
+    // as its own single-tenant companion, so it registers that key as
+    // enterprise. An operator-supplied GODMODE_TIER_KEYS is respected as-is.
+    if (opts.godmodeKey && !env.GODMODE_TIER_KEYS) {
+      env.GODMODE_TIER_KEYS = `enterprise:${opts.godmodeKey}`;
+    }
   }
   return env;
 }

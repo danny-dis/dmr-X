@@ -73,6 +73,19 @@ recreated by the server-manager — so re-apply after any re-clone.
 | `api_routes_research.ts.patch` | **Not relay-related.** On the pinned commit, `researchRoutes.get('/batch/*', ...)` uses an Express-4-style bare wildcard that `path-to-regexp` v6+ (Express 5.2.1, which G0DM0D3's own `package.json` pins) rejects at import time — the whole process crashes before it can bind to a port, independent of anything DMR-X sends it. Renames it to the named-wildcard form (`/batch/*splat`) and adjusts the param read accordingly. Filed as a real upstream bug; patched here so godmode isn't blocked waiting on it. |
 | `api_routes_chat_tools.ts.patch` | Tool-calling passthrough in the chat route: `tools`/`tool_choice` forwarded upstream, `tool_calls` re-emitted in stream + non-stream responses, pipeline defaults (persona/AutoTune/Parseltongue/STM) turn OFF when `tools` is present, and STM is never applied to `tool_calls` payloads. |
 | `src_lib_openrouter_tools.ts.patch` | New `sendMessageFull` (returns content + `tool_calls`); `tools`/`tool_choice` forwarded in `sendMessage`/`streamMessage`; Message type accepts `role: 'tool'` and `tool_calls`. |
+| `api_lib_ultraplinian.ts.patch` | **ULTRAPLINIAN / CONSORTIUM race engine.** Upstream hardcoded `PROVIDER_ENDPOINTS.openrouter` and raced OpenRouter *slugs*, so every relayed race failed — and the slugs are unresolvable through DMR-X's router even with a key. `queryModel` now routes through `chatCompletionsUrl()`/`upstreamHeaders()` in relay mode (loop-breaker included), and `getModelsForTier()` returns `DMRX_RACE_ALIASES` (meta-model aliases) instead of the slug tables. Upstream slug tables are left byte-identical so this patch keeps applying. |
+| `api_routes_ultraplinian.ts.patch` | The standalone `POST /v1/ultraplinian/completions` route had its own `caller_key \|\| process.env.OPENROUTER_API_KEY` gate that 400'd before the race ran; now uses `isRelayMode()`/`hasUsableUpstream()`. |
+| `api_lib_consortium.ts.patch` | CONSORTIUM's synthesis model defaulted to `ORCHESTRATOR_MODELS[0]` (`anthropic/claude-sonnet-4.6`), an unresolvable slug in relay mode. Adds `getOrchestratorModel()` → `auto-smart` under relay. |
+| `api_routes_consortium.ts.patch` | Same relay key gate as the ultraplinian route, **plus a genuine upstream bug**: `computeAutoTuneParams(userContent, conversationHistory, strategy, profiles)` still used a positional signature the function no longer accepts, so `context` arrived `undefined` and the first `context.toUpperCase()` threw `Cannot read properties of undefined (reading 'toUpperCase')` — CONSORTIUM could never reach synthesis. Rewritten to the object form used by the working `api/routes/ultraplinian.ts` call. |
+
+## Relay-mode tier gate (not a patch)
+
+G0DM0D3 maps a bearer key to a plan tier via `GODMODE_TIER_KEYS`; an unmapped
+key defaults to `free`, which allows **only** the `fast` ULTRAPLINIAN tier — so
+`standard` and above returned `403 Upgrade required` even once the relay worked.
+DMR-X generates the sidecar key itself and runs it single-tenant, so
+`buildGodmodeNativeEnv()` registers that key as `enterprise`. An operator-set
+`GODMODE_TIER_KEYS` is respected as-is.
 
 ## Applying manually (rarely needed)
 

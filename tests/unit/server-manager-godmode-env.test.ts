@@ -57,4 +57,35 @@ describe('buildGodmodeNativeEnv', () => {
     expect(env.G0DM0D3_LLM_API_KEY).toBeUndefined();
     expect(env.GODMODE_RELAY).toBeUndefined();
   });
+
+  it('registers the generated key as enterprise so every ULTRAPLINIAN tier is allowed', () => {
+    // Without this the sidecar maps an unknown key to `free`, whose
+    // ultraplinianTiers is ['fast'] — so `standard` and above 403 with
+    // "Upgrade required" even once the relay itself works.
+    const env = buildGodmodeNativeEnv({
+      baseEnv: baseEnv(),
+      ...OPTS,
+      llmBaseUrl: 'http://localhost:47113/v1',
+    });
+    expect(env.GODMODE_TIER_KEYS).toBe('enterprise:generated-godmode-key');
+  });
+
+  it('respects an operator-supplied GODMODE_TIER_KEYS', () => {
+    const env = buildGodmodeNativeEnv({
+      baseEnv: { ...baseEnv(), GODMODE_TIER_KEYS: 'pro:sk-other' },
+      ...OPTS,
+      llmBaseUrl: 'http://localhost:47113/v1',
+    });
+    expect(env.GODMODE_TIER_KEYS).toBe('pro:sk-other');
+  });
+
+  it('does not invent a tier entry when no key was generated', () => {
+    const env = buildGodmodeNativeEnv({
+      baseEnv: baseEnv(),
+      ...OPTS,
+      godmodeKey: '',
+      llmBaseUrl: 'http://localhost:47113/v1',
+    });
+    expect(env.GODMODE_TIER_KEYS).toBeUndefined();
+  });
 });

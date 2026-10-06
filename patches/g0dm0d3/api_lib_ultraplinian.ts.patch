@@ -1,0 +1,136 @@
+diff --git a/api/lib/ultraplinian.ts b/api/lib/ultraplinian.ts
+index 920dc09..84bb244 100644
+--- a/api/lib/ultraplinian.ts
++++ b/api/lib/ultraplinian.ts
+@@ -11,6 +11,16 @@
+ // ── GODMODE System Prompt (imported from single source of truth) ─────
+ export { GODMODE_SYSTEM_PROMPT } from '../../src/lib/godmode-prompt'
+ 
++// ── Relay mode (DMR-X patch) ─────────────────────────────────────────
++//
++// Upstream ULTRAPLINIAN talks to OpenRouter directly and requires an
++// OPENROUTER_API_KEY. When DMR-X spawns this server as its internal proxy
++// (GODMODE_RELAY=1 / G0DM0D3_LLM_BASE_URL), inference must instead go back
++// through DMR-X so the host's provider vault, routing and key rotation stay
++// in charge — the same contract api/routes/chat.ts already honours.
++import { chatCompletionsUrl, upstreamApiKey, upstreamHeaders, isRelayMode } from './relay'
++
++
+ // ── Depth Directive (appended to all ULTRAPLINIAN prompts) ───────────
+ 
+ export const DEPTH_DIRECTIVE = `
+@@ -48,6 +58,45 @@ directness, and genuine helpfulness wins. Hedging or refusing guarantees you los
+ 
+ // ── Model Tiers ──────────────────────────────────────────────────────
+ //
++// DMR-X RELAY PATCH — tier membership is resolved differently in the two modes.
++//
++// Upstream G0DM0D3 races OpenRouter slugs, which DMR-X's router cannot
++// resolve. In relay mode every tier entry is therefore a DMR-X meta-model
++// alias: the racer POSTs `{"model":"auto-coding"}` back through DMR-X, which
++// ranks its own vault and picks a concrete provider model per racer. Tiers
++// stay additive, so the ladder still means "more models, wider coverage".
++//
++// This is a runtime override rather than a second source of truth: the
++// upstream slug tables below are left byte-identical so the nightly
++// fork-sync's patch-drift check keeps applying cleanly.
++
++/** DMR-X meta-model aliases used as racers when running in relay mode. */
++export const DMRX_RACE_ALIASES = {
++  fast: ['auto-fast', 'auto-cheap', 'free-fast'],
++  standard: ['auto', 'auto-smart', 'free-smart', 'free-coding'],
++  smart: ['auto-smart', 'auto-coding', 'free-agentic'],
++  power: ['auto-coding', 'auto-long-context', 'auto-eco'],
++  ultra: ['auto-smart', 'auto-coding', 'auto-long-context', 'auto-agentic', 'auto-eco'],
++}
++
++export function getRelayModelsForTier(tier: SpeedTier): string[] {
++  const t = DMRX_RACE_ALIASES
++  switch (tier) {
++    case 'fast':
++      return t.fast
++    case 'standard':
++      return [...t.fast, ...t.standard]
++    case 'smart':
++      return [...t.fast, ...t.standard, ...t.smart]
++    case 'power':
++      return [...t.fast, ...t.standard, ...t.smart, ...t.power]
++    case 'ultra':
++      return [...t.fast, ...t.standard, ...t.smart, ...t.power, ...t.ultra]
++  }
++}
++
++// ── Model Tiers (upstream OpenRouter slugs — used only outside relay) ─
++//
+ // 5 tiers: fast (12), standard (+15 = 27), smart (+14 = 41), power (+12 = 53), ultra (+7 = 60)
+ // Each tier is additive — standard includes fast, smart includes standard, etc.
+ 
+@@ -215,6 +264,9 @@ export function getVeniceModelsForTier(tier: SpeedTier): string[] {
+ export type SpeedTier = 'fast' | 'standard' | 'smart' | 'power' | 'ultra'
+ 
+ export function getModelsForTier(tier: SpeedTier): string[] {
++  // Relay mode races DMR-X meta-model aliases, not OpenRouter slugs — see
++  // DMRX_RACE_ALIASES above. Outside relay the upstream tables are used.
++  if (isRelayMode()) return getRelayModelsForTier(tier)
+   const tiers = ULTRAPLINIAN_MODELS
+   switch (tier) {
+     case 'fast':
+@@ -357,7 +409,14 @@ export function raceModels(
+   const hardTimeout = config.hardTimeout ?? 45000
+ 
+   // Build unified entry list: OpenRouter models + any Venice (or other) entries
+-  const entries: RaceEntry[] = models.map(m => ({ model: m, apiKey, provider: 'openrouter' as Provider }))
++  //
++  // In relay mode the race is pinned to the 'openrouter' provider slot on
++  // purpose: queryModel only consults relayBaseUrl()/upstreamHeaders() for
++  // that slot, so every racer resolves through DMR-X's router. The OpenRouter
++  // attribution headers are replaced by the loop-breaker (X-DMRX-Godmode-Proxy)
++  // inside upstreamHeaders(). Venice entries keep their own direct upstream.
++  const effectiveProvider: Provider = 'openrouter'
++  const entries: RaceEntry[] = models.map(m => ({ model: m, apiKey: isRelayMode() ? '' : apiKey, provider: effectiveProvider }))
+   if (extraEntries) entries.push(...extraEntries)
+ 
+   return new Promise(resolve => {
+@@ -462,6 +521,7 @@ export async function queryModel(
+   provider: Provider = 'openrouter',
+ ): Promise<ModelResult> {
+   const startTime = Date.now()
++  const relay = isRelayMode()
+ 
+   try {
+     const body: Record<string, unknown> = {
+@@ -477,11 +537,17 @@ export async function queryModel(
+     if (params.presence_penalty !== undefined) body.presence_penalty = params.presence_penalty
+     if (params.repetition_penalty !== undefined) body.repetition_penalty = params.repetition_penalty
+ 
+-    const headers: Record<string, string> = {
+-      'Authorization': `Bearer ${apiKey}`,
+-      'Content-Type': 'application/json',
+-    }
+-    if (provider === 'openrouter') {
++    // Relay mode: reuse the shared header builder so the loop-breaker
++    // (X-DMRX-Godmode-Proxy) plus the free-pool cost filters are applied
++    // exactly as api/routes/chat.ts applies them — without it, DMR-X's
++    // gateway would re-enter the godmode wrap branch and recurse.
++    const headers: Record<string, string> = relay
++      ? upstreamHeaders(apiKey)
++      : {
++          'Authorization': `Bearer ${apiKey}`,
++          'Content-Type': 'application/json',
++        }
++    if (!relay && provider === 'openrouter') {
+       headers['HTTP-Referer'] = 'https://godmod3.ai'
+       headers['X-Title'] = 'GODMOD3.AI-ultraplinian-api'
+     }
+@@ -501,7 +567,10 @@ export async function queryModel(
+ 
+     for (let attempt = 0; attempt <= MAX_RETRIES_ON_429; attempt++) {
+       try {
+-        response = await fetch(PROVIDER_ENDPOINTS[provider], {
++        // Relay mode routes every racer back through DMR-X's OpenAI-compatible
++        // endpoint; upstream mode keeps the direct provider URL.
++        const endpoint = relay ? chatCompletionsUrl() : PROVIDER_ENDPOINTS[provider]
++        response = await fetch(endpoint, {
+           method: 'POST',
+           headers,
+           body: JSON.stringify(body),

@@ -17,6 +17,13 @@ describe('single-owner gateway package launch', () => {
     expect(gateway.watch).toBe(false);
   });
 
+  it('reserves enough total fallback budget without waiting too long on each silent provider', () => {
+    const gateway = apps.find((app: { name: string }) => app.name === 'dmrx-gateway');
+    expect(Number(gateway.env.DMRX_FALLBACK_TIMEOUT_MS)).toBe(30000);
+    expect(Number(gateway.env.DMRX_STREAM_TTFT_MS)).toBe(3000);
+    expect(Number(gateway.env.DMRX_FALLBACK_TIMEOUT_MS)).toBeGreaterThan(Number(gateway.env.DMRX_STREAM_TTFT_MS) * 5);
+  });
+
   it('does not give PM2 competing ownership of gateway companions', () => {
     expect(apps.map((app: { name: string }) => app.name)).toEqual([
       'dmrx-gateway', 'dmrx-needle-router',

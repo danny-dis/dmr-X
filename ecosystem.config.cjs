@@ -119,6 +119,8 @@ module.exports = {
       env: {
         ...readDotEnv(path.join(root, '.env')),
         DMRX_GODMODE_STRICT: 'false',
+        DMRX_FALLBACK_TIMEOUT_MS: '30000',
+        DMRX_STREAM_TTFT_MS: '3000',
         NODE_ENV: process.env.NODE_ENV || 'development',
       },
 

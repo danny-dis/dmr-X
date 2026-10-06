@@ -92,6 +92,38 @@ const STEPS: PatchStep[] = [
     patchFile: 'src_lib_openrouter_tools.ts.patch',
     marker: 'export async function sendMessageFull',
   },
+  {
+    // ULTRAPLINIAN / CONSORTIUM raced OpenRouter slugs and hard-required an
+    // OPENROUTER_API_KEY, so every relayed race 400'd. This patch routes the
+    // race engine through the host gateway (queryModel → chatCompletionsUrl)
+    // and swaps the tier lists for DMR-X meta-model aliases in relay mode.
+    target: path.join('api', 'lib', 'ultraplinian.ts'),
+    patchFile: 'api_lib_ultraplinian.ts.patch',
+    marker: 'DMRX_RACE_ALIASES',
+  },
+  {
+    // Same relay-mode credential/upstream fix for the standalone
+    // /v1/ultraplinian/completions route (it had its own key gate).
+    target: path.join('api', 'routes', 'ultraplinian.ts'),
+    patchFile: 'api_routes_ultraplinian.ts.patch',
+    marker: "from '../lib/relay'",
+  },
+  {
+    // CONSORTIUM: relay-aware orchestrator model (auto-smart) instead of an
+    // unresolvable OpenRouter slug.
+    target: path.join('api', 'lib', 'consortium.ts'),
+    patchFile: 'api_lib_consortium.ts.patch',
+    marker: 'DMRX_ORCHESTRATOR_MODEL',
+  },
+  {
+    // CONSORTIUM route: relay-mode key gate + fixes an upstream call to
+    // computeAutoTuneParams that still used the old positional signature
+    // (threw "Cannot read properties of undefined (reading 'toUpperCase')"
+    // before synthesis could run).
+    target: path.join('api', 'routes', 'consortium.ts'),
+    patchFile: 'api_routes_consortium.ts.patch',
+    marker: 'DMR-X patch: upstream called this with a stale positional signature',
+  },
 ];
 
 export interface GodmodePatchResult {

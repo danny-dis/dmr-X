@@ -1,0 +1,70 @@
+diff --git a/api/routes/consortium.ts b/api/routes/consortium.ts
+index 5c8afd7..2c3ef1c 100644
+--- a/api/routes/consortium.ts
++++ b/api/routes/consortium.ts
+@@ -27,6 +27,9 @@
+ import { Router } from 'express'
+ import { computeAutoTuneParams, type AutoTuneStrategy } from '../../src/lib/autotune'
+ import { applyParseltongue, type ParseltongueConfig } from '../../src/lib/parseltongue'
++// DMR-X relay patch: when this server runs as DMR-X's internal proxy the
++// upstream is the host gateway, not OpenRouter (see api/lib/relay.ts).
++import { isRelayMode, upstreamApiKey, hasUsableUpstream } from '../lib/relay'
+ import { allModules, applySTMs, type STMModule } from '../../src/stm/modules'
+ import { getSharedProfiles } from './autotune'
+ import {
+@@ -43,6 +46,7 @@ import {
+   collectAllResponses,
+   synthesize,
+   ORCHESTRATOR_MODELS,
++  getOrchestratorModel,
+   CONSORTIUM_SYSTEM_PROMPT,
+   type OrchestratorModel,
+   type ConsortiumResponse,
+@@ -96,8 +100,13 @@ consortiumRoutes.post('/completions', async (req, res) => {
+       return
+     }
+ 
+-    const openrouter_api_key = caller_key || process.env.OPENROUTER_API_KEY || ''
+-    if (!openrouter_api_key) {
++    // Resolve upstream credential: caller-provided > server-side env var.
++    // In relay mode the upstream is DMR-X itself, so no OpenRouter key is
++    // required (and none should be sent) — see api/lib/relay.ts.
++    const openrouter_api_key = isRelayMode()
++      ? upstreamApiKey(caller_key)
++      : caller_key || process.env.OPENROUTER_API_KEY || ''
++    if (!hasUsableUpstream(caller_key)) {
+       res.status(400).json({
+         error: 'No OpenRouter API key available. Either pass openrouter_api_key in the request body, or set OPENROUTER_API_KEY on the server.',
+       })
+@@ -111,7 +120,7 @@ consortiumRoutes.post('/completions', async (req, res) => {
+     }
+ 
+     // Validate orchestrator model if specified
+-    const resolvedOrchestrator: OrchestratorModel = orchestrator_model || ORCHESTRATOR_MODELS[0]
++    const resolvedOrchestrator: OrchestratorModel = orchestrator_model || getOrchestratorModel()
+ 
+     // ── Tier-based access control ─────────────────────────────────────
+     const tierConfig = req.tierConfig
+@@ -162,12 +171,17 @@ consortiumRoutes.post('/completions', async (req, res) => {
+         ? strategy as AutoTuneStrategy
+         : 'adaptive' as AutoTuneStrategy
+ 
+-      autotuneResult = computeAutoTuneParams(
+-        userContent,
++      // DMR-X patch: upstream called this with a stale positional signature
++      // (userContent, conversationHistory, strategy, profiles) — a shape
++      // computeAutoTuneParams no longer accepts, so `context` arrived
++      // undefined and the first `context.toUpperCase()` threw. Matches the
++      // working call in api/routes/ultraplinian.ts.
++      autotuneResult = computeAutoTuneParams({
++        strategy: validStrategy,
++        message: userContent,
+         conversationHistory,
+-        validStrategy,
+-        getSharedProfiles(),
+-      )
++        learnedProfiles: getSharedProfiles(),
++      })
+ 
+       computedParams = {
+         temperature: temperature ?? autotuneResult.params.temperature,
