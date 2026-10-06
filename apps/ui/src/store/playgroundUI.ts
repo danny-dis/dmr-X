@@ -51,6 +51,13 @@ export const createUISlice: StateCreator<PlaygroundState, [], [], UISlice> = (se
       parseltongueTechnique: 'leetspeak',
       parseltongueIntensity: 'medium',
       stmModules: ['hedge_reducer', 'direct_mode'],
+      tier: 'fast',
+    },
+    agentic: {
+      maxSteps: 10,
+      thinkingLevel: 'medium',
+      stopWhen: [],
+      approvalRequired: false,
     },
   },
   costFilter: 'all',

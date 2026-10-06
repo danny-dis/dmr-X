@@ -6,3 +6,4 @@ export { MessageBubble } from './MessageBubble';
 export { StreamingBubble } from './StreamingBubble';
 export { EmptyState } from './EmptyState';
 export { ConversationItem } from './ConversationItem';
+export { GodmodeView } from './GodmodeView';

@@ -6,6 +6,7 @@ import { PlaygroundInput } from './PlaygroundInput';
 import { PlaygroundMain } from './PlaygroundMain';
 import { PlaygroundSidebar } from './PlaygroundSidebar';
 import { PlaygroundTabs } from './PlaygroundTabs';
+import { GodmodeView } from './GodmodeView';
 
 import { Button } from '@/components/primitives/Button';
 import { cn } from '@/lib/utils';
@@ -140,15 +141,21 @@ export function PlaygroundPage() {
 
           {/* Tab content */}
           <div className="flex min-h-0 flex-1 flex-col bg-[radial-gradient(circle_at_top_left,rgba(6,182,212,0.08),transparent_26rem),linear-gradient(180deg,var(--surface),var(--bg))]">
-            {!NON_CHAT_TABS.has(activeTab) && (
+            {mode === 'godmode' && !NON_CHAT_TABS.has(activeTab) ? (
+              <GodmodeView />
+            ) : (
               <>
-                <PlaygroundMain />
-                <PlaygroundInput />
+                {!NON_CHAT_TABS.has(activeTab) && (
+                  <>
+                    <PlaygroundMain />
+                    <PlaygroundInput />
+                  </>
+                )}
+                {activeTab === 'completions' && <CompletionsView />}
+                {activeTab === 'images' && <ImagesView />}
+                {activeTab === 'video' && <VideoView />}
               </>
             )}
-            {activeTab === 'completions' && <CompletionsView />}
-            {activeTab === 'images' && <ImagesView />}
-            {activeTab === 'video' && <VideoView />}
           </div>
         </section>
       </div>

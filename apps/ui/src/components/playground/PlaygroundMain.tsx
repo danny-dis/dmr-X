@@ -3,6 +3,7 @@ import * as React from 'react';
 import { EmptyState } from './EmptyState';
 import { MessageBubble } from './MessageBubble';
 import { StreamingBubble } from './StreamingBubble';
+import { StepTrace } from './StepTrace';
 
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 
@@ -35,16 +36,7 @@ export function PlaygroundMain() {
                 tool_calls, tool_results, error, done, etc.). Chat/image/
                 tts/embed messages leave this array empty. */}
             {message.events && message.events.length > 0 && (
-              <div className="ml-0 mt-1 space-y-1 rounded-lg border border-border bg-surface-1/80 p-2 sm:ml-12">
-                {message.events.map((evt, i) => (
-                  <div key={i} className="break-all font-mono text-[10px] text-fg-muted">
-                    <span className="text-primary">{evt.name}</span>
-                    <span className="opacity-70">
-                      {' '}{JSON.stringify(evt.data).slice(0, 200)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+              <StepTrace events={message.events} />
             )}
           </div>
         ))}

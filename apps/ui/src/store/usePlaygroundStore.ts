@@ -91,6 +91,16 @@ export interface PlaygroundConfig {
     parseltongueIntensity: 'light' | 'medium' | 'heavy';
     stmModules: string[];
     customSystemPrompt?: string;
+    tier?: 'fast' | 'standard' | 'smart' | 'power' | 'ultra';
+  };
+  agentic?: {
+    maxSteps: number;
+    maxTokensBudget?: number;
+    maxCostBudget?: number;
+    thinkingLevel: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+    stopWhen: Array<{ type: 'step_count' | 'tool_call' | 'text_match'; value: string }>;
+    approvalRequired: boolean;
+    toolChoice?: string;
   };
 }
 

@@ -15,8 +15,8 @@ import { useModels } from '@/lib/queries/models';
 import { cn } from '@/lib/utils';
 import { usePlaygroundStore } from '@/store/usePlaygroundStore';
 import type { ApiModel } from '@/types/api';
-import { GodmodePanel } from './GodmodePanel';
 import { PromptLibrary } from './PromptLibrary';
+import { AgentInfoCard } from './AgentInfoCard';
 import { GenerateButtons } from './GenerateButtons';
 import { ImportButton, type ImportedFile } from './ImportButton';
 
@@ -363,6 +363,9 @@ export function PlaygroundInput() {
                     {selectedInstance.status}
                   </Badge>
                 )}
+                {selectedInstance && (
+                  <AgentInfoCard instance={selectedInstance} />
+                )}
               </div>
             )}
 
@@ -707,22 +710,119 @@ export function PlaygroundInput() {
               )}
             </div>
             )}
+
+            {/* Agentic mode settings */}
+            {mode === 'agentic' && (
+              <div className="space-y-3 border-t border-border pt-3">
+                <div className="text-xs font-medium text-fg-muted">Agentic Settings</div>
+
+                {/* Max Steps */}
+                <div>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-fg-muted">Max steps</span>
+                    <span className="font-mono">{config.agentic?.maxSteps ?? 10}</span>
+                  </div>
+                  <Slider
+                    value={[config.agentic?.maxSteps ?? 10]}
+                    onValueChange={(v) => setConfig({ agentic: { ...config.agentic!, maxSteps: v[0] } })}
+                    min={1} max={50} step={1}
+                  />
+                </div>
+
+                {/* Thinking Level */}
+                <div>
+                  <span className="text-xs text-fg-muted">Thinking level</span>
+                  <Select
+                    value={config.agentic?.thinkingLevel ?? 'medium'}
+                    onValueChange={(v) => setConfig({ agentic: { ...config.agentic!, thinkingLevel: v as any } })}
+                  >
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">Off</SelectItem>
+                      <SelectItem value="minimal">Minimal</SelectItem>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="xhigh">XHigh</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Max Cost Budget */}
+                <div>
+                  <span className="text-xs text-fg-muted">Max cost budget</span>
+                  <div className="flex items-center gap-1 rounded-lg border border-border bg-surface-1 px-2 h-7">
+                    <span className="text-xs text-fg-subtle">$</span>
+                    <input
+                      type="number" min={0} step={0.01}
+                      value={config.agentic?.maxCostBudget ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setConfig({ agentic: { ...config.agentic!, maxCostBudget: v === '' ? undefined : Math.max(0, Number(v)) } });
+                      }}
+                      placeholder="No limit"
+                      className="w-full bg-transparent text-xs text-fg outline-none placeholder:text-fg-subtle"
+                    />
+                  </div>
+                </div>
+
+                {/* Approval Required */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-fg-muted">Require approval for tool calls</span>
+                  <Switch
+                    checked={config.agentic?.approvalRequired ?? false}
+                    onCheckedChange={(v) => setConfig({ agentic: { ...config.agentic!, approvalRequired: v } })}
+                  />
+                </div>
+
+                {/* Stop Conditions */}
+                <div className="space-y-2">
+                  <div className="text-xs text-fg-muted">Stop conditions</div>
+                  {(config.agentic?.stopWhen ?? []).map((sc, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <Select value={sc.type} onValueChange={(v) => {
+                        const newStop = [...config.agentic!.stopWhen];
+                        newStop[i] = { ...newStop[i], type: v as any };
+                        setConfig({ agentic: { ...config.agentic!, stopWhen: newStop } });
+                      }}>
+                        <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="step_count">Step count</SelectItem>
+                          <SelectItem value="tool_call">Tool call</SelectItem>
+                          <SelectItem value="text_match">Text match</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <input
+                        value={sc.value}
+                        onChange={(e) => {
+                          const newStop = [...config.agentic!.stopWhen];
+                          newStop[i] = { ...newStop[i], value: e.target.value };
+                          setConfig({ agentic: { ...config.agentic!, stopWhen: newStop } });
+                        }}
+                        className="h-7 flex-1 rounded-md border border-border bg-surface-1 px-2 text-xs"
+                      />
+                      <Button variant="ghost" size="icon-sm" onClick={() => {
+                        const newStop = config.agentic!.stopWhen.filter((_, idx) => idx !== i);
+                        setConfig({ agentic: { ...config.agentic!, stopWhen: newStop } });
+                      }}>
+                        <X className="size-3" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button variant="outline" size="sm" onClick={() => {
+                    setConfig({ agentic: { ...config.agentic!, stopWhen: [...config.agentic!.stopWhen, { type: 'step_count', value: '10' }] } });
+                  }}>
+                    + Add stop condition
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Godmode Settings & Prompt Library — shown when in godmode mode */}
+        {/* Prompt Library — shown when in godmode mode */}
         {mode === 'godmode' && (
           <div className="mb-3 space-y-3">
-            <GodmodePanel
-              config={config.godmode ?? {
-                autotune: true,
-                parseltongue: true,
-                parseltongueTechnique: 'leetspeak',
-                parseltongueIntensity: 'medium',
-                stmModules: ['hedge_reducer', 'direct_mode'],
-              }}
-              onChange={(g) => setConfig({ godmode: { ...config.godmode, ...g } as any })}
-            />
             <PromptLibrary onSelectPrompt={(prompt) => setPrompt(prompt)} />
           </div>
         )}
