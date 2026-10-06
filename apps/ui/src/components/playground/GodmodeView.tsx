@@ -271,53 +271,51 @@ function GodmodeChatTab() {
     }
   };
 
-  if (messages.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center p-6">
-        <div className="mb-4 flex size-16 items-center justify-center rounded-xl border border-border bg-surface-1">
-          <Sparkles className="size-8 text-fg-muted" />
-        </div>
-        <h3 className="mb-2 text-lg font-semibold text-fg">Godmode Chat</h3>
-        <p className="mb-4 max-w-md text-center text-sm text-fg-muted">
-          Chat with the G0DM0D3 pipeline. AutoTune, Parseltongue, and STM modules enhance every message.
-        </p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {[
-            'Explain quantum entanglement',
-            'Write a haiku about satellites',
-            'Debug this TypeScript function',
-            'Create a marketing pitch',
-          ].map((sample) => (
-            <Button
-              key={sample}
-              variant="outline"
-              size="sm"
-              className="h-auto justify-start px-3 py-2 text-left text-xs"
-              onClick={() => setPrompt(sample)}
-            >
-              {sample}
-            </Button>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[720px] px-4 py-6">
-          {messages.map((message) => (
-            <div key={message.id}>
-              {message.isStreaming ? (
-                <StreamingBubble message={message} />
-              ) : (
-                <MessageBubble message={message} />
-              )}
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center p-6">
+            <div className="mb-4 flex size-16 items-center justify-center rounded-xl border border-border bg-surface-1">
+              <Sparkles className="size-8 text-fg-muted" />
             </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
+            <h3 className="mb-2 text-lg font-semibold text-fg">Godmode Chat</h3>
+            <p className="mb-4 max-w-md text-center text-sm text-fg-muted">
+              Chat with the G0DM0D3 pipeline. AutoTune, Parseltongue, and STM modules enhance every message.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {[
+                'Explain quantum entanglement',
+                'Write a haiku about satellites',
+                'Debug this TypeScript function',
+                'Create a marketing pitch',
+              ].map((sample) => (
+                <Button
+                  key={sample}
+                  variant="outline"
+                  size="sm"
+                  className="h-auto justify-start px-3 py-2 text-left text-xs"
+                  onClick={() => setPrompt(sample)}
+                >
+                  {sample}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="mx-auto w-full max-w-[720px] px-4 py-6">
+            {messages.map((message) => (
+              <div key={message.id}>
+                {message.isStreaming ? (
+                  <StreamingBubble message={message} />
+                ) : (
+                  <MessageBubble message={message} />
+                )}
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+        )}
       </div>
       <div className="shrink-0 border-t border-border bg-surface-1/95 p-3">
         <div className="mx-auto w-full max-w-[720px]">

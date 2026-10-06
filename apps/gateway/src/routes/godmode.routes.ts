@@ -171,34 +171,64 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       return proxyUnavailableReply(reply);
     }
 
-    // No model supplied → let DMR-X's own algorithm pick (pick-then-wrap):
-    // rank the live vault candidates with the same picker the `auto-free`
-    // flow uses, then wrap the top concrete model. Never a hardcoded default.
-    if (!body.model) {
-      const { buildGodmodeWrapOrder } = await import('../lib/godmode-guard.js');
-      const router = (server as any).router as { getCandidates?: () => any };
-      const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
-      const wrapOrder = buildGodmodeWrapOrder(router?.getCandidates?.() ?? [], costFilter);
-      body.model = wrapOrder[0] ?? undefined;
-      if (!body.model) {
-        throw new ValidationError(
-          'No model available for godmode wrap — add provider candidates or pass model explicitly',
-          {},
-        );
-      }
-      logger.info({ model: body.model, wrapOrder }, 'godmode chat: resolved model via DMR-X router');
+    // Model resolution + fallback (pick-then-wrap). When no model is supplied,
+    // rank the live vault candidates with the same picker the `auto-free` flow
+    // uses. Either way, build an ORDERED candidate list and try each in turn:
+    // a single pick can 403 (quota) or answer with an empty completion, and
+    // dying on the first attempt is what produced the 500s the UI saw.
+    const { buildGodmodeWrapOrder, buildWrapOrderForModel, isEmptyCompletion } =
+      await import('../lib/godmode-guard.js');
+    const router = (server as any).router as { getCandidates?: () => any };
+    const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
+    const candidates = router?.getCandidates?.() ?? [];
+    const wrapOrder = body.model
+      ? buildWrapOrderForModel(body.model, candidates, costFilter)
+      : buildGodmodeWrapOrder(candidates, costFilter);
+    if (wrapOrder.length === 0) {
+      throw new ValidationError(
+        'No model available for godmode wrap — add provider candidates or pass model explicitly',
+        {},
+      );
     }
+    logger.info({ wrapOrder }, 'godmode chat: resolved model order via DMR-X router');
 
     if (body.stream) {
-      // Streaming response
+      // Streaming response. A picked model can fail before its first delta
+      // (upstream 403/500 surfaces as a throw from chatStream), so retry the
+      // next pick until one actually produces output — nothing is written to
+      // the wire until the first successful chunk.
       reply.header('Content-Type', 'text/event-stream');
       reply.header('Cache-Control', 'no-cache');
       reply.header('Connection', 'keep-alive');
 
-      const stream = service.chatStream(body);
-      for await (const chunk of stream) {
+      let committed = false;
+      let streamErr: unknown;
+      for (const wrapModel of wrapOrder) {
+        try {
+          let yielded = false;
+          for await (const chunk of service.chatStream({ ...body, model: wrapModel })) {
+            yielded = true;
+            committed = true;
+            const data = JSON.stringify({
+              choices: [{ delta: { content: chunk } }],
+            });
+            reply.raw.write(`data: ${data}\n\n`);
+          }
+          if (committed) {
+            streamErr = undefined;
+            break;
+          }
+          streamErr = new Error(`godmode stream for ${wrapModel} produced no content`);
+        } catch (err) {
+          streamErr = err;
+          // Once bytes are on the wire we cannot switch models mid-stream.
+          if (committed) break;
+          logger.warn({ wrapModel, err }, 'godmode chat stream attempt failed; trying next picked model');
+        }
+      }
+      if (!committed && streamErr) {
         const data = JSON.stringify({
-          choices: [{ delta: { content: chunk } }],
+          error: { message: (streamErr as Error).message ?? 'godmode stream failed' },
         });
         reply.raw.write(`data: ${data}\n\n`);
       }
@@ -207,7 +237,24 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    return service.chat(body);
+    let chatErr: unknown;
+    for (const wrapModel of wrapOrder) {
+      try {
+        const attempt = await service.chat({ ...body, model: wrapModel });
+        // A 200 with no content and no tool calls does NOT throw — treat it as
+        // a failed attempt and try the next pick instead of returning it.
+        if (isEmptyCompletion(attempt)) {
+          chatErr = new Error(`godmode chat for ${wrapModel} returned empty content`);
+          logger.warn({ wrapModel }, 'godmode chat attempt returned empty content; trying next picked model');
+          continue;
+        }
+        return attempt;
+      } catch (err) {
+        chatErr = err;
+        logger.warn({ wrapModel, err }, 'godmode chat attempt failed; trying next picked model');
+      }
+    }
+    throw chatErr ?? new Error('godmode chat failed for every picked model');
   });
 
   // ULTRAPLINIAN
