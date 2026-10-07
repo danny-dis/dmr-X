@@ -1,11 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { ProviderError, type RoutingPlan, type UnifiedRequest } from '@dmr-x/core';
-import { executeWithFallback } from '../../services/router/src/fallback/fallback-executor.js';
+import { executeWithFallback, resetModelErrorCache } from '../../services/router/src/fallback/fallback-executor.js';
+
+// Each case starts with fresh readiness; the second case intentionally cools
+// the same binding that the third case must exercise as a new request.
+beforeEach(() => resetModelErrorCache());
 
 const plan: RoutingPlan = {
   primary: { providerId: 'google_native', modelId: 'gemini-3.1-flash-lite', adapterType: 'gemini-api', score: 1 },
   chain: [{ provider: { providerId: 'backup', modelId: 'free-model', adapterType: 'openai', score: 0 }, trigger: 'error', waitMs: 0 }],
-  timeoutMs: 100, maxRetries: 1,
+  // These assertions test retry order, not latency. Leave enough time for
+  // lazy imports and concurrent Windows test workers; deadline bounds have
+  // dedicated suites with controlled timers.
+  timeoutMs: 3000, maxRetries: 1,
 };
 const request: UnifiedRequest = {
   model: 'auto', modality: 'llm', stream: false,
@@ -24,7 +31,7 @@ describe('automatic free-only JSON recovery', () => {
         }
         return { providerId, message: { role: 'assistant', content: '{"answer":7}' } } as any;
       },
-    }, { globalTimeoutMs: 100, freeOnly: true });
+    }, { globalTimeoutMs: 3000, freeOnly: true });
     expect(response.providerId).toBe('google_native');
     expect(calls).toEqual(['google_native', 'google_native']);
   });
@@ -38,7 +45,7 @@ describe('automatic free-only JSON recovery', () => {
         }
         return { providerId } as any;
       },
-    }, { globalTimeoutMs: 100, freeOnly: true });
+    }, { globalTimeoutMs: 3000, freeOnly: true });
     expect(response.providerId).toBe('backup');
     expect(calls).toEqual(['google_native', 'google_native', 'backup']);
   });
@@ -52,7 +59,7 @@ describe('automatic free-only JSON recovery', () => {
         }
         return { providerId } as any;
       },
-    }, { globalTimeoutMs: 100, freeOnly: true });
+    }, { globalTimeoutMs: 3000, freeOnly: true });
     expect(response.providerId).toBe('backup');
     expect(calls).toEqual(['google_native', 'backup']);
   });

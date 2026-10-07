@@ -312,6 +312,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         approvalRequired: body.approvalRequired,
         approvalDecisions: body.approvalDecisions,
         qualityTarget: parseQualityTarget(request.headers['x-quality-target'] as string),
+        holdId,
       });
 
       agentSessionStore.upsert({
@@ -654,6 +655,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         approvalRequired: body.approvalRequired,
         approvalDecisions: body.approvalDecisions,
         qualityTarget: parseQualityTarget(request.headers['x-quality-target'] as string),
+        holdId: resumeHoldId,
       });
 
       agentSessionStore.upsert({

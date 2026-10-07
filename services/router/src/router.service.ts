@@ -16,6 +16,7 @@ import { SpecialistRouter } from './decomposer/specialist-router.js';
 import { TaskDecomposer } from './decomposer/task-decomposer.js';
 import { WorkerPoolFanout } from './decomposer/worker-pool-fanout.js';
 import { executeWithFallback, executeWithHedging, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
+import { supportsInferenceAccounting, wrapAccountedExecutor, isInferenceSettlementError, type InferenceAccountingBoundary } from './inference-accounting.js';
 import { HandoverSummarizer, type SummarizationExecutor } from './handover/handover-summarizer.js';
 import { getMetaModel, isFree, isMetaModel, resolveMetaModel } from './meta-models.js';
 import { getGuardrailEngine, type GuardrailEngine } from './guardrails/guardrail-engine.js';
@@ -266,16 +267,30 @@ export class Router {
   }
 
   setAdapterExecutor(executor: AdapterExecutor): void {
-    this.adapterExecutor = executor;
+    // Wrap ONCE, then hand the SAME accounted executor to every dispatch path
+    // (this.adapterExecutor for fallback/sticky, WorkerPoolFanout, and
+    // CompositeExecutor). The lease therefore covers direct adapter calls from
+    // the decomposer/worker-pool too — none of them can bypass canonical
+    // inference accounting, and the fallback skips its legacy tenant debit for
+    // exactly this executor. Quota boundaries without a real
+    // `beginInferenceAttempt` (fake/legacy classes) wrap to an executor that
+    // stays unregistered, so legacy behaviour is unchanged there.
+    const accounted = wrapAccountedExecutor(executor, {
+      getBoundary: () => this.config.quotaService as unknown as InferenceAccountingBoundary | undefined,
+    });
+    if (supportsInferenceAccounting(this.config.quotaService)) {
+      logger.info({ providerDispatch: 'accounted' }, 'Canonical inference accounting active for adapter executor');
+    }
+    this.adapterExecutor = accounted;
     // Wire the WorkerPoolFanout opt-in: when DMRX_WORKER_POOL_FANOUT=true the
     // gateway registers itself as a worker and tracks every parallel sub-task
     // as a WorkerJob in the SQLite `worker_jobs` table (and the /v1/admin/workers API).
-    this.workerPool = new WorkerPoolFanout(executor, {
+    this.workerPool = new WorkerPoolFanout(accounted, {
       enabled: process.env.DMRX_WORKER_POOL_FANOUT === 'true',
     });
     this.compositeExecutor = new CompositeExecutor(
       this.specialistRouter,
-      executor,
+      accounted,
       this.workerPool,
     );
     if (process.env.DMRX_WORKER_POOL_FANOUT === 'true') {
@@ -960,8 +975,10 @@ export class Router {
       ? this.candidates.filter(c => c.providerName === compositeModelTarget.providerName)
       : this.candidates;
     let compositeCandidates = compositeScoped;
-    const compositeCostFilterOverride = (request as any).metadata?.costFilter as 'free' | 'all' | undefined
-      || this.config.metaModelCostFilter;
+    const compositeCostFilterOverride = this.getEffectiveCostFilter(
+      request.model ?? '',
+      (request as any).metadata?.costFilter as 'free' | 'all' | undefined,
+    );
     if (compositeModelTarget.modelId && isMetaModel(compositeModelTarget.modelId)) {
       const resolution = resolveMetaModel(compositeModelTarget.modelId, compositeScoped, compositeCostFilterOverride);
       if (resolution) {
@@ -978,8 +995,12 @@ export class Router {
 
     // Step 2: Execute via composite executor
     const freeTierStrategy = (request as any).metadata?.freeTierStrategy || this.config.freeTierStrategy;
-    const compositeCostFilter = (request as any).metadata?.costFilter as 'free' | 'all' | undefined || this.config.metaModelCostFilter;
-    if (freeTierStrategy === 'free_only' || compositeCostFilter === 'free') {
+    const compositeCostFilter = this.getEffectiveCostFilter(
+      request.model ?? '',
+      (request as any).metadata?.costFilter as 'free' | 'all' | undefined,
+    );
+    const freeOnly = freeTierStrategy === 'free_only' || compositeCostFilter === 'free';
+    if (freeOnly) {
       compositeCandidates = compositeCandidates.filter(isStrictlyFreeCandidate);
     }
     const result = await this.compositeExecutor!.execute(
@@ -1034,10 +1055,10 @@ export class Router {
         .flat()
         .filter((c) => c.isHealthy);
       const orderedPool = fallbackCandidatePools.flat().filter((c) =>
-        freeTierStrategy !== 'free_only' || isStrictlyFreeCandidate(c),
+        !freeOnly || isStrictlyFreeCandidate(c),
       );
       const ordered = healthy.length > 0 ? healthy.filter((c) =>
-        freeTierStrategy !== 'free_only' || isStrictlyFreeCandidate(c),
+        !freeOnly || isStrictlyFreeCandidate(c),
       ) : orderedPool;
       if (ordered.length === 0) {
         logger.warn(
@@ -1050,11 +1071,11 @@ export class Router {
           primary: {
             providerId: primary.providerId,
             modelId: primary.modelId,
-            adapterType: 'openai',
+            adapterType: primary.providerName,
             score: 1,
           },
           chain: rest.map((c) => ({
-            provider: { providerId: c.providerId, modelId: c.modelId, adapterType: 'openai', score: 0.9 },
+            provider: { providerId: c.providerId, modelId: c.modelId, adapterType: c.providerName, score: 0.9 },
             trigger: 'error' as const,
             waitMs: 0,
           })),
@@ -1075,12 +1096,23 @@ export class Router {
           const singlePassResponse = await executeWithFallback(
             singlePassPlan,
             request,
-            this.adapterExecutor!
+            this.adapterExecutor!,
+            {
+              freeOnly,
+              rateLimitService: this.config.rateLimitService,
+              quotaService: this.config.quotaService,
+              tenantId: (request as any).metadata?.tenant?.id,
+              requestId: options.requestId || (request as any).metadata?.requestId,
+              onSuccess: this.config.onProviderSuccess,
+              onFailure: this.config.onProviderFailure,
+              keyRotationService,
+            },
           );
           if (singlePassResponse?.message?.content) {
             return { plan: singlePassPlan, response: singlePassResponse };
           }
         } catch (fallbackErr) {
+          if (isInferenceSettlementError(fallbackErr)) throw fallbackErr;
           logger.error(
             { err: fallbackErr, metaModel: compositeModelTarget.modelId },
             'Single-pass fallback after empty composite also failed'

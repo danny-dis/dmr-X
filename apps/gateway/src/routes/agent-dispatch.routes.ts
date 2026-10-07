@@ -376,6 +376,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
         loadedSkillIds: [],
         runtime: agentRuntimeService,
         conversationId: `dispatch:${reqId}`,
+        holdId: dispatchHoldId,
       });
 
       // Settle actual measured usage against the preflight hold (reconciled

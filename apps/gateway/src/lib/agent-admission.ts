@@ -23,7 +23,14 @@
  *
  * Pure and dependency-free on purpose: routes inject their live quota/billing
  * boundaries, tests inject fakes.
+ *
+ * Exception: {@link markAdmittedAgentRequest} imports the router's trusted
+ * external-accounting marker (the symbol it writes must be the SAME
+ * module-private symbol the router's inference lease reads — a local copy
+ * would be inert by construction).
  */
+import type { UnifiedRequest } from '@dmr-x/core';
+import { markTrustedExternalAccounting } from '@dmr-x/router';
 
 export interface AgentModelPolicy {
   preferredModel?: string | null;
@@ -230,6 +237,27 @@ export interface AgentQuotaBoundary {
 }
 
 /**
+ * Mark an ADMITTED agent run's outbound request as trusted external accounting.
+ *
+ * A run admitted through `reserveAgentRun` already owns a tenant reservation
+ * (`holdId`) and reconciles it via `settleAgentRun`. The inference lease the
+ * router takes around every dispatch must therefore pass
+ * `options.externalAccounting` so the quota core does not debit the tenant a
+ * second time for the same inference — the capacity/admission half of the
+ * lease still runs normally.
+ *
+ * Requires a real `holdId`: an admission that reserved nothing (legacy
+ * checkQuota-only boundaries) is never granted the marker.
+ */
+export function markAdmittedAgentRequest(
+  request: UnifiedRequest | undefined | null,
+  holdId?: string,
+): boolean {
+  if (!holdId || !request) return false;
+  return markTrustedExternalAccounting(request);
+}
+
+/**
  * One-call preflight for a model run: pricing lookup, strict free/paid
  * decision, then an ATOMIC reserve-before-run through the quota service.
  *
@@ -253,6 +281,12 @@ export async function preflightModelRun(args: {
   /** Router evidence that a bare alias currently resolves free-only. */
   resolveAliasFree?: () => boolean | Promise<boolean>;
   quotaService?: AgentQuotaBoundary;
+  /**
+   * The outbound unified request for this run. When supplied AND the
+   * reservation produced a `holdId`, it is stamped as trusted external
+   * accounting so the router's inference lease does not debit twice.
+   */
+  request?: UnifiedRequest;
 }): Promise<PreflightResult> {
   const { providerId, modelId } = splitModelId(args.model);
   let pricing: AgentPricing | null = null;
@@ -303,6 +337,7 @@ export async function preflightModelRun(args: {
         status: held.status === 402 ? 402 : 429,
       };
     }
+    markAdmittedAgentRequest(args.request, held.holdId);
     return { admitted: true, holdId: held.holdId, estimatedCostCents, isFree, freeOnly: isFree };
   }
   try {

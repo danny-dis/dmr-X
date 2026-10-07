@@ -27,6 +27,7 @@ import {
   preflightModelRun,
   releaseAgentHold,
   settleAgentRun,
+  markAdmittedAgentRequest,
   type AgentUsageSums,
 } from '../lib/agent-admission.js';
 
@@ -239,8 +240,9 @@ function toUnifiedRequest(
   requestId: string,
   tenant?: { id: string; name: string },
   freeOnly = false,
+  holdId?: string,
 ): UnifiedRequest {
-  return {
+  const request: UnifiedRequest = {
     modality: 'llm',
     model: body.model,
     messages: body.messages as any,
@@ -258,6 +260,8 @@ function toUnifiedRequest(
       ...(freeOnly ? { freeTierStrategy: 'free_only' as const } : {}),
     },
   };
+  if (holdId) markAdmittedAgentRequest(request, holdId);
+  return request;
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +602,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
             requestId,
             tenant,
             admissionFreeOnly,
+            holdId,
           );
 
           const queryText = lastUserText(messages);
@@ -1077,6 +1082,7 @@ export async function agenticRoutes(server: FastifyInstance): Promise<void> {
           requestId,
           tenant,
           admissionFreeOnly,
+          holdId,
         );
 
         let response: any;

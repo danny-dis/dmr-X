@@ -4,8 +4,9 @@ import { logger } from '@dmr-x/utils';
 import { trace } from '@opentelemetry/api';
 
 import { getStickyProvider, breakStickySession } from './sticky/sticky-session.js';
+import { isInferenceSettlementError } from './inference-accounting.js';
 import { executeWithFallback, isModelOnErrorCooldown, type AdapterExecutor } from './fallback/fallback-executor.js';
-import { runPipeline, type PipelineOutput } from './pipeline/pipeline.js';
+import { isStrictlyFreeCandidate, runPipeline, type PipelineOutput } from './pipeline/pipeline.js';
 import { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
 import type { TaskProfile } from '@dmr-x/core';
 import { planStayOrSwitch } from './planner/ev-planner.js';
@@ -74,9 +75,11 @@ function buildStickyFallbackChain(
   stickyProviderId: string,
   stickyModelId: string,
   candidates: CandidateSet,
+  freeOnly: boolean,
 ): FallbackStep[] {
   const healthy = candidates.filter(
     (c) => c.isHealthy &&
+      (!freeOnly || isStrictlyFreeCandidate(c)) &&
       !(c.providerId === stickyProviderId && c.modelId === stickyModelId),
   );
 
@@ -123,6 +126,11 @@ export async function handleStickySession(
 
   const freeTierStrategy = (request as any).metadata?.freeTierStrategy || config.freeTierStrategy;
   const effectiveFreeTierStrategy = freeTierStrategy;
+  const requestCostFilter = (request as any).metadata?.costFilter;
+  const effectiveCostFilter = router.getEffectiveCostFilter?.(request.model ?? '', requestCostFilter)
+    ?? requestCostFilter
+    ?? config.metaModelCostFilter;
+  const freeOnly = freeTierStrategy === 'free_only' || effectiveCostFilter === 'free';
   const requestId = options.requestId || (request as any).metadata?.requestId;
   const tenantId = (request as any).metadata?.tenant?.id;
   const enablePlanner = config.enablePlanner !== false;
@@ -140,10 +148,7 @@ export async function handleStickySession(
     (providerId, modelId) => {
       const candidate = candidates.find(c => c.providerId === providerId && c.modelId === modelId);
       if (!candidate) return false;
-      if (candidate.pricingTier) {
-        return candidate.pricingTier === 'free' || candidate.pricingTier === 'free_with_limits';
-      }
-      return candidate.costPerInputToken === 0 && candidate.costPerOutputToken === 0;
+      return isStrictlyFreeCandidate(candidate);
     }
   );
 
@@ -167,6 +172,12 @@ export async function handleStickySession(
   );
 
   if (!stickyCandidate) return { used: false };
+  // The cache getter only enforces `prioritize`; strict cost policies must
+  // also reject an inherited paid pin before either sticky dispatch branch.
+  if (freeOnly && !isStrictlyFreeCandidate(stickyCandidate)) {
+    await breakStickySession(conversationHash, 'Pinned model violates free-only policy');
+    return { used: false };
+  }
 
   // Check rate limits before using sticky provider
   if (config.rateLimitService) {
@@ -288,7 +299,7 @@ export async function handleStickySession(
         primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
         // The pin stays primary; this chain only catches its transient
         // failures (same-model-first affinity — see the builder above).
-        chain: buildStickyFallbackChain(sticky.providerId, sticky.modelId, candidates),
+        chain: buildStickyFallbackChain(sticky.providerId, sticky.modelId, candidates, freeOnly),
         timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
         maxRetries: 1,
       };
@@ -299,6 +310,7 @@ export async function handleStickySession(
 
       try {
         const response = await executeWithFallback(plan, request, adapterExecutor, {
+          freeOnly,
           rateLimitService: config.rateLimitService,
           quotaService: config.quotaService,
           tenantId,
@@ -309,6 +321,7 @@ export async function handleStickySession(
         });
         return { used: true, result: { plan, response } };
       } catch (error) {
+        if (isInferenceSettlementError(error)) throw error;
         // Break sticky session on provider failure and fall through to normal
         // routing. With the fallback chain attached this now only happens when
         // the pin AND every same-model/diverse alternate failed together.
@@ -329,7 +342,7 @@ export async function handleStickySession(
     const plan: RoutingPlan = {
       primary: { providerId: sticky.providerId, modelId: sticky.modelId, adapterType: 'sticky', score: 1 },
       // Same-model-first fallback chain (mirrors the rate-limit branch above).
-      chain: buildStickyFallbackChain(sticky.providerId, sticky.modelId, candidates),
+      chain: buildStickyFallbackChain(sticky.providerId, sticky.modelId, candidates, freeOnly),
       timeoutMs: request.modality === 'diffusion' ? 60000 : 30000,
       maxRetries: 1,
     };
@@ -340,6 +353,7 @@ export async function handleStickySession(
 
     try {
       const response = await executeWithFallback(plan, request, adapterExecutor, {
+        freeOnly,
         rateLimitService: config.rateLimitService,
         quotaService: config.quotaService,
         tenantId,
@@ -350,6 +364,7 @@ export async function handleStickySession(
       });
       return { used: true, result: { plan, response } };
     } catch (error) {
+      if (isInferenceSettlementError(error)) throw error;
       // Break sticky session on provider failure and fall through to normal
       // routing (see the rationale on the equivalent branch above).
       await breakStickySession(conversationHash, `Provider failed: ${error instanceof Error ? error.message : 'unknown'}`);

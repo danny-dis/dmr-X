@@ -51,40 +51,49 @@ export class SQLiteCapacityStore implements CapacityStore {
   }
 
   async tryReserve(
-    dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
+    dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null; observedAtMs?: number }>,
     reservationId?: string,
     leaseMs: number = 30_000,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null> {
     const db = getDb();
     const now = Date.now();
-    const stableReservationId = reservationId ?? `sqlite-${now}-${Math.random().toString(36).slice(2, 10)}`;
-
-    const insert = db.prepare(`
-      INSERT INTO capacity_reservations (reservation_id, unit, scope_id, amount, expires_at, status, created_at)
-      VALUES (?, ?, ?, ?, ?, 'reserved', ?)
-    `);
-
+    const id = reservationId ?? `sqlite-${crypto.randomUUID()}`;
+    if (!Number.isFinite(leaseMs) || leaseMs <= 0 || dimensions.length === 0) return null;
+    const unique = new Set<string>();
+    for (const d of dimensions) {
+      const key = `${d.unit}:${d.scopeId}`;
+      if (unique.has(key) || !Number.isFinite(d.amount) || d.amount < 0 || d.currentRemaining === null || !Number.isFinite(d.currentRemaining)) return null;
+      unique.add(key);
+    }
     const result: Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> = [];
-
     try {
       db.transaction(() => {
-        // Keep capacity checks inside the same SQLite write transaction.
-        // This closes the cross-replica stale-read admission race.
+        // Write first: SQLite serializes contenders before the capacity read.
         for (const d of dimensions) {
-          const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
-          const current = d.currentRemaining ?? 0;
-          if (current - reserved < d.amount) throw new Error('capacity_exhausted');
+          db.prepare(`INSERT INTO capacity_pool_balances (unit, scope_id, remaining, observed_at)
+            VALUES (?, ?, ?, ?) ON CONFLICT(unit, scope_id) DO NOTHING`)
+            .run(d.unit, d.scopeId, d.currentRemaining, d.observedAtMs ?? 0);
+          if (Number.isFinite(d.observedAtMs) && d.observedAtMs! > 0) {
+            db.prepare(`UPDATE capacity_pool_balances SET remaining = ?, observed_at = ?
+              WHERE unit = ? AND scope_id = ? AND observed_at < ?`)
+              .run(d.currentRemaining, d.observedAtMs, d.unit, d.scopeId, d.observedAtMs);
+          }
+          const pool = db.prepare('SELECT remaining FROM capacity_pool_balances WHERE unit = ? AND scope_id = ?')
+            .get(d.unit, d.scopeId) as { remaining: number };
+          const current = Math.min(pool.remaining, d.currentRemaining!);
+          if (current - this.getReservedAmount(d.unit, d.scopeId, now) < d.amount) throw new Error('capacity_exhausted');
+          result.push({ unit: d.unit, scopeId: d.scopeId, newRemaining: current - this.getReservedAmount(d.unit, d.scopeId, now) - d.amount });
         }
         for (const d of dimensions) {
-          insert.run(stableReservationId, d.unit, d.scopeId, d.amount, now + leaseMs, now);
-          const reserved = this.getReservedAmount(d.unit, d.scopeId, now);
-          result.push({ unit: d.unit, scopeId: d.scopeId, newRemaining: (d.currentRemaining ?? 0) - reserved });
+          db.prepare(`INSERT INTO capacity_reservations
+            (reservation_id, unit, scope_id, amount, expires_at, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'reserved', ?)`)
+            .run(id, d.unit, d.scopeId, d.amount, now + leaseMs, now);
         }
       });
-    } catch (err) {
-      return null; // Unique constraint violation or other failure
+    } catch {
+      return null;
     }
-
     return result;
   }
 
@@ -99,20 +108,34 @@ export class SQLiteCapacityStore implements CapacityStore {
 
   async commit(reservation: CapacityReservation, actualUsage: import('./quota-dimensions.js').DemandVector): Promise<void> {
     const db = getDb();
+    for (const d of reservation.dimensions) {
+      const actual = d.unit === 'concurrency' ? 0 : actualForUnit(actualUsage, d.unit);
+      if (!Number.isFinite(actual) || actual < 0) throw new Error('Invalid actual capacity usage');
+    }
+    db.transaction(() => {
+      const rows = db.prepare(`SELECT unit, scope_id FROM capacity_reservations
+        WHERE reservation_id = ? AND status IN ('reserved', 'expired')`)
+        .all(reservation.id) as Array<{ unit: QuotaUnit; scope_id: string }>;
+      if (rows.length === 0) return;
+      for (const row of rows) {
+        // Concurrency is a lease, not a consumable quota; always return it.
+        const actual = row.unit === 'concurrency' ? 0 : actualForUnit(actualUsage, row.unit);
+        if (!Number.isFinite(actual) || actual < 0) throw new Error('Invalid actual capacity usage');
+        db.prepare(`UPDATE capacity_pool_balances SET remaining = remaining - ?
+          WHERE unit = ? AND scope_id = ?`).run(actual, row.unit, row.scope_id);
+      }
+      db.prepare(`UPDATE capacity_reservations SET status = 'committed', committed_at = ?
+        WHERE reservation_id = ? AND status IN ('reserved', 'expired')`).run(Date.now(), reservation.id);
+    });
+  }
 
-    // Update reservation status to committed
-    db.prepare(`
-      UPDATE capacity_reservations
-      SET status = 'committed', committed_at = ?
-      WHERE reservation_id = ? AND status = 'reserved'
-    `).run(Date.now(), reservation.id);
-
-    // For dimensions where actual < reserved, we don't need to do anything special
-    // because the reservation was already deducted. The "refund" is implicit:
-    // we don't re-add the difference because the reservation was a pre-deduction.
-    // The quota vector's remaining count reflects the reservation, and after commit
-    // we simply mark it done. The actual usage will be observed via response headers
-    // and will update the quota vector's remaining on the next observation.
+  async renew(reservationId: string, leaseMs: number): Promise<boolean> {
+    if (!Number.isFinite(leaseMs) || leaseMs <= 0) return false;
+    const now = Date.now();
+    const result = getDb().prepare(`UPDATE capacity_reservations SET expires_at = ?
+      WHERE reservation_id = ? AND status = 'reserved' AND expires_at > ?`)
+      .run(now + leaseMs, reservationId, now);
+    return result.changes > 0;
   }
 
   async expireLeases(nowMs?: number): Promise<number> {

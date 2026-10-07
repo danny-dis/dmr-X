@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 import { QuotaExhaustedError } from '@dmr-x/core';
-import type { CandidateSet } from '@dmr-x/core';
+import type { CandidateSet, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import { getDb, createNamespacedCache } from '@dmr-x/db';
 import { PROVIDER_CATALOG } from '@dmr-x/provider-catalog';
 import { logger } from '@dmr-x/utils';
@@ -15,7 +15,9 @@ import {
   type CapacityStore,
   type ReservationResult,
 } from './capacity-manager.js';
-import type { DemandVector, QuotaVector } from './quota-dimensions.js';
+import { buildQuotaPoolId, type DemandVector, type QuotaVector } from './quota-dimensions.js';
+import { buildDimension, buildVector } from './quota-vector.js';
+import { SQLiteCapacityStore } from './capacity-store-distributed.js';
 import {
   incReservationsAttempted,
   incReservationsSucceeded,
@@ -42,7 +44,47 @@ export interface QuotaUsage {
   cost: number;
 }
 
-type AllocationPeriod = 'hourly' | 'daily' | 'monthly';
+export interface BeginInferenceOptions {
+  requestId?: string;
+  /** Caller has already accounted for tenant budget/debit (trusted agent context). */
+  externalAccounting?: boolean;
+  /** Concurrency limit for the administrative upstream bulkhead (default 4). */
+  concurrencyLimit?: number;
+  keyId?: string;
+}
+
+export interface InferenceAttemptHandle {
+  settle(response: UnifiedResponse): Promise<void>;
+  release(): Promise<void>;
+}
+
+/** Canonical price in DOLLARS per 1000 tokens. */
+export interface InferencePrice {
+  inputPer1k: number;
+  outputPer1k: number;
+  maxOutputTokens: number | null;
+}
+
+export interface InferenceEstimate {
+  promptTokens: number;
+  outputTokens: number;
+  costDollars: number;
+}
+
+type AllocationPeriod =
+  | 'hourly'
+  | 'daily'
+  | 'weekly'
+  | 'monthly'
+  | 'rolling_24h'
+  | 'rolling_7d'
+  | 'rolling_30d';
+
+const ROLLING_PERIOD_MS: Partial<Record<AllocationPeriod, number>> = {
+  rolling_24h: 24 * 60 * 60 * 1000,
+  rolling_7d: 7 * 24 * 60 * 60 * 1000,
+  rolling_30d: 30 * 24 * 60 * 60 * 1000,
+};
 
 function finiteNonNegative(value: number, label: string): number {
   if (!Number.isFinite(value) || value < 0) {
@@ -52,14 +94,15 @@ function finiteNonNegative(value: number, label: string): number {
 }
 
 export class QuotaService {
-  private capacityStore: CapacityStore = new InMemoryCapacityStore();
+  private capacityStore: CapacityStore = new SQLiteCapacityStore();
   private capacityManager: CapacityManager = new CapacityManager({
     store: this.capacityStore,
   });
 
   /**
    * Inject a shared CapacityStore (SQLite/Redis for multi-instance) and
-   * rebind the manager to it. Single-node defaults to InMemory.
+   * rebind the manager to it. SQLite is the production default; tests may
+   * explicitly inject an in-memory store.
    */
   configureCapacityStore(store: CapacityStore, leaseMs?: number): void {
     this.capacityStore = store;
@@ -143,6 +186,354 @@ export class QuotaService {
   }
 
   /**
+   * Admission for one inference attempt, BEFORE the provider is dispatched to.
+   *
+   * Two independent gates must both pass:
+   *  1. provider capacity — a concurrency bulkhead over the upstream pool, and
+   *  2. tenant budget — a durable `agent_quota_holds` row (skipped only when
+   *     `externalAccounting` says the caller has already accounted for it).
+   *
+   * If either fails, the other side is released first and this throws
+   * `QuotaExhaustedError`, so a rejected attempt can never leak a concurrency
+   * slot or pin tenant quota.
+   *
+   * The returned handle is idempotent: repeated `settle` calls share one
+   * promise (one ledger row, one debit), and `release` is safe to call again.
+   */
+  async beginInferenceAttempt(
+    tenantId: string | undefined,
+    providerId: string,
+    modelId: string,
+    request: UnifiedRequest,
+    options?: BeginInferenceOptions,
+  ): Promise<InferenceAttemptHandle> {
+    const externalAccounting = options?.externalAccounting === true;
+    const keyId = options?.keyId ?? 'dispatch';
+
+    // Canonical price (dollars per 1000 tokens) + conservative estimate.
+    // Ordinary tenants FAIL CLOSED on a missing/invalid price: without it the
+    // dispatch cannot be priced, and dispatching anyway would spend unpriced
+    // credit. `externalAccounting` skips only tenant accounting, so it may run
+    // unpriced — provider capacity is still required below.
+    const price = this.readInferencePrice(providerId, modelId);
+    const estimate = this.estimateInferenceAttempt(request, price);
+    if (!externalAccounting && tenantId) {
+      if (!price) {
+        logger.warn({ providerId, modelId }, 'No valid canonical price for model — failing closed');
+        throw new QuotaExhaustedError();
+      }
+    }
+
+    // --- Gate 1: tenant budget hold (durable, retryable) ---------------------
+    let holdId: string | undefined;
+    if (!externalAccounting && tenantId) {
+      const estimatedCostCents = estimate.costDollars * 100;
+      const hold = await this.reserveAgentRun(
+        tenantId,
+        providerId,
+        estimate.promptTokens + estimate.outputTokens,
+        estimatedCostCents,
+        { ...(options?.requestId ? { requestId: options.requestId } : {}), modelId },
+      );
+      if (!hold.ok || !hold.holdId) {
+        throw new QuotaExhaustedError();
+      }
+      holdId = hold.holdId;
+    }
+
+    // --- Gate 2: provider capacity (always required) -------------------------
+    const reservation = await this.reserveProviderCapacity(providerId, modelId, keyId, request, options?.concurrencyLimit);
+    if (!reservation) {
+      // Release the other side before failing: no leaked hold.
+      if (holdId) await this.releaseAgentHold(holdId);
+      throw new QuotaExhaustedError();
+    }
+
+    // Keep the lease (and the agent hold) alive for as long as the stream runs.
+    const startedAtMs = Date.now();
+    const stopKeepalive = this.startAttemptKeepalive(reservation.id, holdId, startedAtMs);
+
+    let settlePromise: Promise<void> | undefined;
+    let releasePromise: Promise<void> | undefined;
+    let settlementStarted = false;
+    let settled = false;
+    let releaseStarted = false;
+    let lastSettlementError: unknown;
+    let actual: ReturnType<QuotaService['actualInferenceUsage']> | undefined;
+
+    const settle = (response: UnifiedResponse): Promise<void> => {
+      if (settlePromise) return settlePromise;
+      if (releaseStarted) return Promise.reject(new Error('Cannot settle a released inference attempt'));
+      if (settled) return Promise.resolve();
+      settlementStarted = true;
+      actual ??= this.actualInferenceUsage(response, estimate, price);
+      const measured = actual;
+      settlePromise = (async () => {
+        let tenantError: unknown;
+        try {
+          if (!externalAccounting && tenantId && holdId) {
+            await this.settleAgentHold(
+              holdId,
+              { tokens: measured.totalTokens, costDollars: measured.costDollars },
+              { tenantId, providerKey: providerId, modelId, promptTokens: measured.promptTokens },
+            );
+          }
+        } catch (err) {
+          // Preserve the tenant liability, but meter real upstream consumption
+          // even when the tenant's debit needs retrying after a top-up.
+          tenantError = err;
+        }
+        await this.commitDispatch(reservation.id, measured.demand);
+        if (tenantError) throw tenantError;
+        settled = true;
+      })().catch((err: unknown) => {
+        lastSettlementError = err;
+        // Concurrent callers share this attempt; later calls can retry a
+        // rejected settlement. The durable ledger makes the retry exactly-once.
+        settlePromise = undefined;
+        throw err;
+      }).finally(stopKeepalive);
+      return settlePromise;
+    };
+
+    const release = (): Promise<void> => {
+      if (settled) return Promise.resolve();
+      if (settlementStarted) {
+        return settlePromise ?? Promise.reject(lastSettlementError ?? new Error('Inference settlement requires retry'));
+      }
+      if (releasePromise) return releasePromise;
+      releaseStarted = true;
+      releasePromise = (async () => {
+        stopKeepalive();
+        await this.releaseDispatch(reservation.id);
+        if (holdId) await this.releaseAgentHold(holdId);
+      })().catch((err: unknown) => {
+        releasePromise = undefined;
+        throw err;
+      });
+      return releasePromise;
+    };
+
+    return { settle, release };
+  }
+
+  /**
+   * Provider capacity gate for one attempt.
+   *
+   * A registered vector is authoritative and is never overwritten. When the
+   * manager exposes no vector for this tuple we register a clearly
+   * ADMINISTRATIVE upstream concurrency-only vector: a local bulkhead that
+   * bounds how many dispatches we put in flight per provider. It deliberately
+   * measures nothing else — it is not a claim of free token or credit
+   * entitlement, and its pool identity is shared across the provider's models.
+   */
+  private async reserveProviderCapacity(
+    providerId: string,
+    modelId: string,
+    keyId: string,
+    request: unknown,
+    concurrencyLimit: number | undefined,
+  ): Promise<CapacityReservation | null> {
+    const manager = this.capacityManager as CapacityManager & {
+      getVector?: (providerId: string, modelId: string, keyId: string) => QuotaVector | undefined;
+    };
+    if (typeof manager.getVector === 'function') {
+      const registered = manager.getVector(providerId, modelId, keyId);
+      if (!registered) {
+        this.registerUpstreamBulkheadVector(providerId, modelId, keyId, concurrencyLimit);
+      }
+    }
+
+    let result = await this.reserveForDispatch(providerId, modelId, keyId, request);
+    if (!result.success && !result.reservation && this.isMissingVectorReason(result.reason)) {
+      // Older CapacityManager (no getVector): the failed reservation itself is
+      // the authoritative "no vector registered" signal. A vector that exists
+      // but is exhausted produces a different reason and is never bypassed.
+      this.registerUpstreamBulkheadVector(providerId, modelId, keyId, concurrencyLimit);
+      result = await this.reserveForDispatch(providerId, modelId, keyId, request);
+    }
+
+    return result.success && result.reservation ? result.reservation : null;
+  }
+
+  private isMissingVectorReason(reason: string | undefined): boolean {
+    return typeof reason === 'string' && reason.includes('No quota vector registered');
+  }
+
+  /**
+   * Register the administrative upstream concurrency bulkhead.
+   * `configuredLimit` defaults to 4 concurrent dispatches per provider pool.
+   */
+  private registerUpstreamBulkheadVector(
+    providerId: string,
+    modelId: string,
+    keyId: string,
+    configuredLimit: number | undefined,
+  ): void {
+    const limit =
+      configuredLimit !== undefined && Number.isFinite(configuredLimit) && configuredLimit > 0
+        ? configuredLimit
+        : 4;
+    const vector = buildVector({
+      providerId,
+      modelId,
+      keyId,
+      // Shared across every model of this provider: one upstream pool.
+      poolId: buildQuotaPoolId(providerId, 'upstream', providerId),
+      dimensions: [
+        buildDimension({
+          unit: 'concurrency',
+          scope: 'upstream',
+          scopeId: providerId,
+          limit,
+          remaining: limit,
+          state: 'available',
+          confidence: 1,
+          replenishment: 'unknown',
+          observedAtMs: Date.now(),
+          staleAfterMs: Number.POSITIVE_INFINITY,
+        }),
+      ],
+    });
+    this.capacityManager.registerVector(vector);
+  }
+
+  /**
+   * Bounded keep-alive for an active attempt: renews the capacity lease so a
+   * long stream cannot lose its 30s lease mid-flight, and refreshes the agent
+   * hold's expiry (never past 30 minutes from admission). Unref'd so it never
+   * keeps the process alive.
+   */
+  private startAttemptKeepalive(reservationId: string, holdId: string | undefined, startedAtMs: number): () => void {
+    const intervalMs = 10_000; // well under the 30s lease
+    const timer = setInterval(() => {
+      try {
+        const manager = this.capacityManager as CapacityManager & { renew?: (id: string) => unknown };
+        if (typeof manager.renew === 'function') manager.renew(reservationId);
+      } catch (err) {
+        logger.warn({ reservationId, err }, 'Capacity lease renew failed');
+      }
+      if (holdId) {
+        try {
+          const bounded = new Date(Math.min(Date.now() + 30 * 60 * 1000, startedAtMs + 30 * 60 * 1000)).toISOString();
+          getDb().prepare('UPDATE agent_quota_holds SET expires_at = ? WHERE id = ?').run(bounded, holdId);
+        } catch (err) {
+          logger.warn({ holdId, err }, 'Agent hold keepalive refresh failed');
+        }
+      }
+    }, intervalMs);
+    const unref = (timer as { unref?: () => void }).unref;
+    if (typeof unref === 'function') unref.call(timer);
+    return () => clearInterval(timer);
+  }
+
+  /** Canonical model price: DOLLARS per 1000 tokens, from `model_profiles`. */
+  private readInferencePrice(providerId: string, modelId: string): InferencePrice | null {
+    try {
+      const row = getDb().prepare(
+        `SELECT input_cost_per_1k, output_cost_per_1k, max_output_tokens
+         FROM model_profiles WHERE provider_id = ? AND model_id = ?`,
+      ).get(providerId, modelId) as {
+        input_cost_per_1k: number | null;
+        output_cost_per_1k: number | null;
+        max_output_tokens: number | null;
+      } | undefined;
+      if (!row) return null;
+      if (row.input_cost_per_1k == null || row.output_cost_per_1k == null) return null;
+      const inputPer1k = Number(row.input_cost_per_1k);
+      const outputPer1k = Number(row.output_cost_per_1k);
+      if (!Number.isFinite(inputPer1k) || inputPer1k < 0) return null;
+      if (!Number.isFinite(outputPer1k) || outputPer1k < 0) return null;
+      const maxOutput = row.max_output_tokens == null ? null : Number(row.max_output_tokens);
+      return {
+        inputPer1k,
+        outputPer1k,
+        maxOutputTokens: maxOutput !== null && Number.isFinite(maxOutput) && maxOutput > 0 ? maxOutput : null,
+      };
+    } catch (err) {
+      logger.warn({ providerId, modelId, err }, 'Canonical price lookup failed — failing closed');
+      return null;
+    }
+  }
+
+  /**
+   * Conservative pre-dispatch estimate.
+   * Prompt covers messages AND tools; a serialized-request chars/4 allowance is
+   * the floor so nothing in the payload escapes the estimate. Output is bounded
+   * by request.max_tokens, then the model's max_output_tokens, then 1000.
+   * A positive estimate stays positive — it is never rounded to zero cents.
+   */
+  private estimateInferenceAttempt(request: UnifiedRequest, price: InferencePrice | null): InferenceEstimate {
+    let serialized = '';
+    let messagesAndTools = '';
+    try {
+      serialized = JSON.stringify(request ?? {}) ?? '';
+      messagesAndTools = JSON.stringify({ messages: request?.messages, tools: request?.tools }) ?? '';
+    } catch {
+      serialized = '';
+    }
+    const promptTokens = Math.max(1, Math.ceil(Math.max(serialized.length, messagesAndTools.length) / 4));
+
+    const bounds: number[] = [];
+    if (typeof request?.max_tokens === 'number' && Number.isFinite(request.max_tokens) && request.max_tokens > 0) {
+      bounds.push(Math.floor(request.max_tokens));
+    }
+    if (price?.maxOutputTokens) bounds.push(price.maxOutputTokens);
+    const outputTokens = bounds.length > 0 ? Math.min(...bounds) : 1000;
+
+    const costDollars = price ? (promptTokens * price.inputPer1k + outputTokens * price.outputPer1k) / 1000 : 0;
+    return { promptTokens, outputTokens, costDollars };
+  }
+
+  /**
+   * Measured actuals for `settle`.
+   *
+   * Real usage is authoritative wherever the response reports it. When output
+   * usage is missing on a completed or partial response we charge the
+   * conservative estimate — an already dispatched generation is never refunded
+   * as free. Prompt-cache note: `model_profiles` has no cache price columns, so
+   * the full prompt (`TokenUsage.prompt_tokens` already includes cached reads
+   * and writes) is billed at the normal input rate: the ceiling for cache
+   * reads, with no invented write premium.
+   */
+  private actualInferenceUsage(
+    response: UnifiedResponse,
+    estimate: InferenceEstimate,
+    price: InferencePrice | null,
+  ): { promptTokens: number; completionTokens: number; totalTokens: number; costDollars: number; demand: DemandVector } {
+    const usage = response?.usage;
+    const promptTokens =
+      usage && Number.isFinite(usage.prompt_tokens) && usage.prompt_tokens >= 0
+        ? Math.floor(usage.prompt_tokens)
+        : estimate.promptTokens;
+    const completionTokens =
+      usage && usage.completion_tokens != null && Number.isFinite(usage.completion_tokens) && usage.completion_tokens >= 0
+        ? Math.floor(usage.completion_tokens)
+        : estimate.outputTokens;
+    const totalTokens =
+      usage && Number.isFinite(usage.total_tokens) && usage.total_tokens > 0
+        ? Math.floor(usage.total_tokens)
+        : promptTokens + completionTokens;
+    const costDollars = price
+      ? (promptTokens * price.inputPer1k + completionTokens * price.outputPer1k) / 1000
+      : 0;
+
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      costDollars,
+      demand: {
+        requests: 1,
+        inputTokens: promptTokens,
+        outputTokens: completionTokens,
+        // The request has finished: hand the concurrency slot back on commit.
+        concurrency: 0,
+      },
+    };
+  }
+
+  /**
    * Durable tenant-budget hold for agent runs (admission SEC-002).
    *
    * `dispatchWithReservation` above guards PROVIDER capacity, not the
@@ -182,7 +573,9 @@ export class QuotaService {
     const holdId = crypto.randomUUID();
     const key = providerKey && providerKey.length > 0 ? providerKey : 'agent';
     const wantTokens = Math.max(0, Math.floor(finiteNonNegative(estimatedTokens, 'estimated tokens')));
-    const wantCents = Math.max(0, Math.round(finiteNonNegative(estimatedCostCents, 'estimated cost')));
+    // Fractional cents are real money: rounding here would turn a 0.07-cent
+    // estimate into 0 and admit a run without holding any budget for it.
+    const wantCents = Math.max(0, finiteNonNegative(estimatedCostCents, 'estimated cost'));
     const wantDollars = wantCents / 100;
 
     // ONE synchronous transaction (better-sqlite3): no awaits between BEGIN
@@ -233,15 +626,20 @@ export class QuotaService {
           const pid: string | null = row.provider_id ?? null;
           if (pid && pid !== key && pid !== 'agent') continue;
           const providerScope = pid && pid !== 'agent' ? pid : null;
-          const period: AllocationPeriod = row.period === 'hourly' || row.period === 'daily'
-            ? row.period
-            : 'monthly';
+          // Same window vocabulary as readDurableUsage: hourly/daily/weekly/
+          // monthly fixed windows plus rolling_24h/7d/30d. Anything unrecognized
+          // keeps the historical monthly reading.
+          const period = this.coerceAllocationPeriod(row.period);
+          // Allocation-bound read: a manual reset cutoff for this allocation
+          // applies here, while outstanding holds (counted separately below)
+          // keep counting.
           const usage = this.readDurableUsage(
             db,
             tenantId,
             providerScope,
             this.getPeriodStart(period),
             this.getPeriodEnd(period),
+            row.id as string,
           );
           const heldInScope = heldForScope(providerScope);
           const requests = usage.requests;
@@ -389,7 +787,7 @@ export class QuotaService {
         if (costDollars > 0) {
           const debited = creditService.deductUsage(
             tenantId,
-            Math.round(costDollars * 100),
+            costDollars * 100,
             holdId,
             persist,
           );
@@ -411,7 +809,7 @@ export class QuotaService {
     if (!isNewSettlement && settled.costDollars > 0) {
       const debited = creditService.deductUsage(
         settled.tenantId,
-        Math.round(settled.costDollars * 100),
+        settled.costDollars * 100,
         holdId,
       );
       if (!debited) throw new Error('agent credit debit rejected');
@@ -435,24 +833,33 @@ export class QuotaService {
     const filtered: CandidateSet = [];
 
     for (const candidate of candidates) {
-      const allocation = allocations.find(
+      // A candidate is governed by EVERY allocation that applies to it: the
+      // provider-scoped ones and the global (provider_id IS NULL) one. Picking
+      // only the first match lets an exhausted provider allocation hide behind
+      // a generous global one.
+      const applicable = allocations.filter(
         (a) => !a.providerId || a.providerId === candidate.providerId
       );
 
-      if (allocation) {
+      let exceeded = false;
+      for (const allocation of applicable) {
         const usage = await this.getUsage(tenantId, allocation);
 
-        // Check if quota is exceeded
-        if (allocation.maxRequests && usage.requests >= allocation.maxRequests) {
-          continue; // Quota exceeded
+        // A zero limit is an explicit "none allowed", not "unlimited".
+        if (allocation.maxRequests != null && usage.requests >= allocation.maxRequests) {
+          exceeded = true;
+          break;
         }
-        if (allocation.maxTokens && usage.tokens >= allocation.maxTokens) {
-          continue; // Quota exceeded
+        if (allocation.maxTokens != null && usage.tokens >= allocation.maxTokens) {
+          exceeded = true;
+          break;
         }
-        if (allocation.maxCost && usage.cost >= allocation.maxCost) {
-          continue; // Quota exceeded
+        if (allocation.maxCost != null && usage.cost >= allocation.maxCost) {
+          exceeded = true;
+          break;
         }
       }
+      if (exceeded) continue;
 
       // Check free-tier monthly budget from provider catalog
       const monthlyBudget = this.getFreeTierBudget(candidate.providerId, candidate.modelId);
@@ -479,26 +886,69 @@ export class QuotaService {
     return model?.freeTier?.monthlyTokenBudget || 0;
   }
 
-  private getPeriodStart(period: AllocationPeriod): string {
-    const now = new Date();
-    if (period === 'hourly') {
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()).toISOString();
+  private normalizeAllocationPeriod(period: string): AllocationPeriod {
+    if (
+      period !== 'hourly' &&
+      period !== 'daily' &&
+      period !== 'weekly' &&
+      period !== 'monthly' &&
+      period !== 'rolling_24h' &&
+      period !== 'rolling_7d' &&
+      period !== 'rolling_30d'
+    ) {
+      throw new Error(`Unsupported quota period: ${period}`);
     }
-    if (period === 'daily') {
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-    }
-    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    return period;
   }
 
-  private getPeriodEnd(period: AllocationPeriod): string {
-    const now = new Date();
+  private getPeriodStart(period: AllocationPeriod, now = new Date()): string {
     if (period === 'hourly') {
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1).toISOString();
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours())).toISOString();
     }
     if (period === 'daily') {
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
     }
-    return new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
+    if (period === 'weekly') {
+      // Weeks start on MONDAY in UTC — (getUTCDay() + 6) % 7 days back.
+      const daysSinceMonday = (now.getUTCDay() + 6) % 7;
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSinceMonday)).toISOString();
+    }
+    const rollingMs = ROLLING_PERIOD_MS[period];
+    if (rollingMs !== undefined) {
+      return new Date(now.getTime() - rollingMs).toISOString();
+    }
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  }
+
+  private getPeriodEnd(period: AllocationPeriod, now = new Date()): string | null {
+    if (period === 'hourly') {
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1)).toISOString();
+    }
+    if (period === 'daily') {
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+    }
+    if (period === 'weekly') {
+      const daysSinceMonday = (now.getUTCDay() + 6) % 7;
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSinceMonday + 7)).toISOString();
+    }
+    // Rolling windows have no upper bound: they track "the last N", and a
+    // usage row can never be newer than the read that follows it.
+    if (ROLLING_PERIOD_MS[period] !== undefined) return null;
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+  }
+
+  /**
+   * Period lookup that never throws inside admission: an unrecognized legacy
+   * period keeps its old monthly interpretation instead of failing closed on
+   * the request path.
+   */
+  private coerceAllocationPeriod(period: string | null | undefined): AllocationPeriod {
+    if (!period) return 'monthly';
+    try {
+      return this.normalizeAllocationPeriod(period);
+    } catch {
+      return 'monthly';
+    }
   }
 
   private readDurableUsage(
@@ -507,16 +957,32 @@ export class QuotaService {
     providerId: string | null,
     from: string,
     to: string | null,
+    allocationId?: string,
   ): { requests: number; tokens: number; costDollars: number } {
-    const conditions = ['tenant_id = ?', 'created_at >= ?'];
+    const conditions = ['tenant_id = ?', 'julianday(created_at) >= julianday(?)'];
     const params: unknown[] = [tenantId, from];
     if (providerId) {
       conditions.push('provider_id = ?');
       params.push(providerId);
     }
     if (to) {
-      conditions.push('created_at < ?');
+      conditions.push('julianday(created_at) < julianday(?)');
       params.push(to);
+    }
+    // A manual reset only re-bases one allocation's window. The ledger itself
+    // is append-only: rows before the cutoff are still there, they simply no
+    // longer count for THIS allocation. Reads without an allocation bound
+    // (provider budget caches) never see a marker.
+    const reset = allocationId ? this.readAllocationReset(db, allocationId) : null;
+    if (reset) {
+      if (reset.resetAt) {
+        conditions.push('julianday(created_at) >= julianday(?)');
+        params.push(reset.resetAt);
+      }
+      if (reset.afterRowid != null) {
+        conditions.push('rowid > ?');
+        params.push(reset.afterRowid);
+      }
     }
     const row = db.prepare(
       `SELECT COUNT(*) AS requests,
@@ -529,6 +995,30 @@ export class QuotaService {
       tokens: Number(row?.tokens ?? 0),
       costDollars: Number(row?.cost_cents ?? 0) / 100,
     };
+  }
+
+  /**
+   * Manual reset marker for one allocation (`quota_allocation_resets`, added by
+   * migration 088). Returns null when the marker table is not provisioned yet
+   * or this allocation has never been reset.
+   */
+  private readAllocationReset(
+    db: ReturnType<typeof getDb>,
+    allocationId: string,
+  ): { resetAt: string | null; afterRowid: number | null } | null {
+    try {
+      const table = db.prepare(
+        `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'quota_allocation_resets'`,
+      ).get();
+      if (!table) return null;
+      const row = db.prepare(
+        `SELECT reset_at, after_rowid FROM quota_allocation_resets WHERE allocation_id = ?`,
+      ).get(allocationId) as { reset_at: string | null; after_rowid: number | null } | undefined;
+      if (!row) return null;
+      return { resetAt: row.reset_at ?? null, afterRowid: row.after_rowid ?? null };
+    } catch {
+      return null;
+    }
   }
 
   private insertDurableUsage(
@@ -554,7 +1044,7 @@ export class QuotaService {
       inputTokens,
       tokens - inputTokens,
       tokens,
-      Math.round(costDollars * 100),
+      costDollars * 100,
       requestId,
       new Date().toISOString(),
     );
@@ -659,7 +1149,14 @@ export class QuotaService {
   }
 
   /**
-   * Record usage after a request
+   * Record usage after a request.
+   *
+   * The ledger rows and the paid credit debit commit together: `deductUsage`
+   * runs `persist` inside the SAME SQLite transaction as the balance decrement,
+   * so an insufficient balance rolls back both and this method rejects. Nothing
+   * is ever recorded without being paid for, and a succeeded debit can never be
+   * dropped. Costs stay in fractional cents (0.00008 dollars -> 0.008 cents);
+   * rounding them to whole cents would silently waive sub-cent spend.
    */
   async recordUsage(
     tenantId: string,
@@ -670,8 +1167,10 @@ export class QuotaService {
     const db = getDb();
     const normalizedTokens = Math.max(0, Math.floor(tokens));
     const normalizedCost = Math.max(0, cost);
-    this.incrementQuotaCache(tenantId, providerId, normalizedTokens, normalizedCost);
-    db.transaction(() => {
+    const requestId = crypto.randomUUID();
+    const costCents = normalizedCost * 100;
+
+    const persist = (): void => {
       this.insertDurableUsage(
         db,
         tenantId,
@@ -679,14 +1178,25 @@ export class QuotaService {
         providerId,
         normalizedTokens,
         normalizedCost,
-        null,
+        requestId,
       );
-    });
+    };
 
-    // Deduct from credit balance if cost > 0
-    if (normalizedCost > 0) {
-      creditService.deductUsage(tenantId, Math.round(normalizedCost * 100));
+    if (costCents > 0) {
+      const debited = creditService.deductUsage(tenantId, costCents, requestId, persist);
+      if (!debited) {
+        logger.warn(
+          { tenantId, providerId, costCents },
+          'Usage debit rejected — no usage or billing row recorded',
+        );
+        // Fail loudly: the caller must not believe this usage was accounted.
+        throw new QuotaExhaustedError();
+      }
+    } else {
+      db.transaction(persist);
     }
+
+    this.incrementQuotaCache(tenantId, providerId, normalizedTokens, normalizedCost);
 
     // Check budget alerts asynchronously (fire-and-forget)
     this.checkBudgetAlerts(tenantId, providerId).catch(() => {});
@@ -768,13 +1278,15 @@ export class QuotaService {
 
       const usage = await this.getUsage(tenantId, allocation);
 
-      if (allocation.maxRequests && usage.requests >= allocation.maxRequests) {
+      // `!= null` on purpose: a stored 0 is an explicit "none allowed", and a
+      // truthiness check would silently treat it as unlimited.
+      if (allocation.maxRequests != null && usage.requests >= allocation.maxRequests) {
         throw new QuotaExhaustedError();
       }
-      if (allocation.maxTokens && usage.tokens + estimatedTokens > allocation.maxTokens) {
+      if (allocation.maxTokens != null && (allocation.maxTokens === 0 || usage.tokens + estimatedTokens > allocation.maxTokens)) {
         throw new QuotaExhaustedError();
       }
-      if (allocation.maxCost && usage.cost + estimatedCost > allocation.maxCost) {
+      if (allocation.maxCost != null && (allocation.maxCost === 0 || usage.cost + estimatedCost > allocation.maxCost)) {
         throw new QuotaExhaustedError();
       }
     }
@@ -794,23 +1306,34 @@ export class QuotaService {
       providerId: row.provider_id,
       maxRequests: row.max_requests,
       maxTokens: row.max_tokens,
-      maxCost: row.max_cost ? parseFloat(row.max_cost) : undefined,
+      // `!= null`, not truthiness: a stored 0 cost limit means "no spend".
+      maxCost: row.max_cost != null ? parseFloat(String(row.max_cost)) : undefined,
       period: row.period,
     }));
   }
 
   private async getUsage(tenantId: string, allocation: QuotaAllocation): Promise<QuotaUsage> {
-    const key = `${tenantId}:${allocation.providerId || 'global'}`;
-
-    const requests = parseInt(quotaCache.hGet(key, 'requests') || '0');
-    const tokens = parseInt(quotaCache.hGet(key, 'tokens') || '0');
-    const cost = parseFloat(quotaCache.hGet(key, 'cost') || '0');
-
-    return { requests, tokens, cost };
+    // Same period vocabulary (and same legacy fallback) as reserveAgentRun, so
+    // admission and read-usage can never disagree about the window. A missing or
+    // unrecognized period reads as monthly instead of throwing: rejecting every
+    // request over a malformed label would turn a data problem into an outage.
+    const period = this.coerceAllocationPeriod(allocation.period);
+    const now = new Date();
+    // Allocation-bound: honors this allocation's manual reset cutoff.
+    const usage = this.readDurableUsage(getDb(), tenantId, allocation.providerId ?? null,
+      this.getPeriodStart(period, now), this.getPeriodEnd(period, now), allocation.id);
+    return { requests: usage.requests, tokens: usage.tokens, cost: usage.costDollars };
   }
 
   /**
-   * Reset quotas for a new period
+   * Reset quotas for a new period.
+   *
+   * Writes a durable per-allocation cutoff marker instead of deleting or
+   * rewriting ledger rows: `usage_records` stays append-only and every money
+   * claim (credit balance, credit transactions, settlements) is untouched.
+   * Outstanding holds are hold rows, not usage rows, so a pending hold keeps
+   * counting against the fresh window. Marker + cache clear commit in ONE
+   * transaction, so a partially applied reset cannot exist.
    */
   async resetQuotas(tenantId?: string): Promise<void> {
     const db = getDb();
@@ -820,10 +1343,36 @@ export class QuotaService {
       ? db.prepare('SELECT * FROM quota_allocations WHERE tenant_id = ?').all(tenantId) as any[]
       : db.prepare('SELECT * FROM quota_allocations').all() as any[];
 
-    for (const allocation of rows) {
-      const key = `${allocation.tenant_id}:${allocation.provider_id || 'global'}`;
-      quotaCache.del(key);
-    }
+    const resetAt = new Date().toISOString();
+
+    db.transaction(() => {
+      // Fallback provisioning for trees where migration 088 has not run yet.
+      // Byte-compatible with packages/db/src/migrations/088 (IF NOT EXISTS on
+      // both sides), so whichever lands first owns the same shape.
+      db.exec(`CREATE TABLE IF NOT EXISTS quota_allocation_resets (
+        allocation_id TEXT PRIMARY KEY REFERENCES quota_allocations(id) ON DELETE CASCADE,
+        reset_at TEXT NOT NULL,
+        after_rowid INTEGER NOT NULL
+      )`);
+
+      const cutoff = db.prepare(
+        `SELECT COALESCE(MAX(rowid), 0) AS rowid FROM usage_records`,
+      ).get() as { rowid: number };
+
+      const writeMarker = db.prepare(
+        `INSERT INTO quota_allocation_resets (allocation_id, reset_at, after_rowid)
+         VALUES (?, ?, ?)
+         ON CONFLICT(allocation_id) DO UPDATE SET
+           reset_at = excluded.reset_at,
+           after_rowid = excluded.after_rowid`,
+      );
+
+      for (const allocation of rows) {
+        writeMarker.run(allocation.id, resetAt, cutoff.rowid);
+        const key = `${allocation.tenant_id}:${allocation.provider_id || 'global'}`;
+        quotaCache.del(key);
+      }
+    });
 
     logger.info({ tenantId }, 'Reset quotas');
   }
@@ -853,7 +1402,8 @@ export class QuotaService {
       providerId: row.provider_id,
       maxRequests: row.max_requests,
       maxTokens: row.max_tokens,
-      maxCost: row.max_cost ? parseFloat(row.max_cost) : undefined,
+      // `!= null`, not truthiness: a stored 0 cost limit means "no spend".
+      maxCost: row.max_cost != null ? parseFloat(String(row.max_cost)) : undefined,
       period: row.period,
     };
   }

@@ -8,6 +8,25 @@ export { availabilityFilter } from './pipeline/availability-filter.js';
 export { costLatencyScorer } from './pipeline/cost-latency-scorer.js';
 export { finalSelector, type ThompsonSamplerLike } from './pipeline/final-selector.js';
 export { executeWithFallback, executeWithHedging, resetHedgeState, type AdapterExecutor } from './fallback/fallback-executor.js';
+// Authoritative inference-accounting seams (begin → execute → settle/release).
+export {
+  accountedLLMStream,
+  supportsInferenceAccounting,
+  isAccountedExecutor,
+  isLLMRequest,
+  isInferenceSettlementError,
+  isInferenceAdmissionError,
+  markTrustedExternalAccounting,
+  isTrustedExternalAccounting,
+  wrapAccountedExecutor,
+  InferenceSettlementError,
+  InferenceAdmissionError,
+  type AccountedStream,
+  type AccountedStreamOptions,
+  type InferenceAccountingBoundary,
+  type InferenceAttemptLease,
+  type InferenceAttemptOptions,
+} from './inference-accounting.js';
 export { TaskDecomposer, SpecialistRouter, CompositeExecutor, type SubTask, type DecomposedTask, type CompositeResult } from './decomposer/index.js';
 export { ThompsonSampler, calculateReward } from './bandit/thompson-sampler.js';
 export { loadBanditArms, saveBanditArms, startBanditPersistence, BANDIT_PERSIST_INTERVAL_MS } from './bandit/persistence.js';

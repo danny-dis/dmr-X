@@ -1,6 +1,6 @@
 import { ProviderUnavailableError } from '@dmr-x/core';
 import type { ToolCall, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
-import { isMetaModel } from '@dmr-x/router';
+import { isMetaModel, isInferenceSettlementError, isTrustedExternalAccounting, markTrustedExternalAccounting } from '@dmr-x/router';
 import type { Router } from '@dmr-x/router';
 import {
   updateState,
@@ -18,6 +18,7 @@ import { agentRegistryService } from '@dmr-x/agent-registry';
 
 import { executeToolCall } from './tools.routes.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
+import { markAdmittedAgentRequest } from '../lib/agent-admission.js';
 
 // ---------------------------------------------------------------------------
 // Tool call retry helper
@@ -260,6 +261,13 @@ interface RunAgentChatLoopArgs {
   /** Router quality target (from the X-Quality-Target header). Defaults to 'balanced'. */
   qualityTarget?: ReturnType<typeof parseQualityTarget>;
   /**
+   * Preflight holdId from reserveAgentRun. When present, the unified requests
+   * built in this loop are marked as trusted external accounting so the router's
+   * inference lease does not debit the tenant a second time (the hold already
+   * owns the tenant debit via settleAgentRun).
+   */
+  holdId?: string;
+  /**
    * True when admission was authorized only by zero-cost pricing or a
    * free-only alias resolution. Every model request in this loop inherits the
    * hard free-only router constraint when set.
@@ -293,8 +301,9 @@ function toUnifiedRequest(
   requestId: string,
   tenant?: { id: string; name: string },
   freeOnly = false,
+  holdId?: string,
 ): UnifiedRequest {
-  return {
+  const request: UnifiedRequest = {
     modality: 'llm',
     model: body.model,
     messages: body.messages,
@@ -308,6 +317,8 @@ function toUnifiedRequest(
       ...(freeOnly ? { freeTierStrategy: 'free_only' } : {}),
     },
   };
+  if (holdId) markAdmittedAgentRequest(request, holdId);
+  return request;
 }
 
 function resolveFreeOnlyPolicy(model: string, router: Router, requested: boolean | undefined): boolean {
@@ -409,8 +420,11 @@ async function runPlanPhase(args: {
   requestId: string;
   systemPrompt: string;
   firstUserMessage: string;
+  holdId?: string;
+  onUsage: (usage: UnifiedResponse['usage']) => void;
+  freeOnly: boolean;
 }): Promise<string | null> {
-  const { router, model, tenant, requestId, systemPrompt, firstUserMessage } = args;
+  const { router, model, tenant, requestId, systemPrompt, firstUserMessage, holdId } = args;
   try {
     const { response } = await router.route(
       toUnifiedRequest(
@@ -433,13 +447,17 @@ async function runPlanPhase(args: {
         },
         requestId,
         tenant,
+        args.freeOnly,
+        holdId,
       ),
       { path: '/v1/agents/plan' },
     );
+    args.onUsage(response.usage);
     const plan =
       typeof response.message?.content === 'string' ? response.message.content.trim() : '';
     return plan.length > 0 ? plan : null;
-  } catch {
+  } catch (error) {
+    if (isInferenceSettlementError(error)) throw error;
     return null;
   }
 }
@@ -456,8 +474,11 @@ async function summarizeHistory(args: {
   requestId: string;
   messages: any[];
   keepRecent: number;
+  holdId?: string;
+  onUsage: (usage: UnifiedResponse['usage']) => void;
+  freeOnly: boolean;
 }): Promise<{ messages: any[]; summary: string } | null> {
-  const { router, model, tenant, requestId, messages, keepRecent } = args;
+  const { router, model, tenant, requestId, messages, keepRecent, holdId } = args;
   // messages[0] is the live system prompt; we compact the user/assistant/tool
   // turns that precede the recent tail.
   const head = messages.slice(1, messages.length - keepRecent);
@@ -489,9 +510,12 @@ async function summarizeHistory(args: {
         },
         requestId,
         tenant,
+        args.freeOnly,
+        holdId,
       ),
       { path: '/v1/agents/compact' },
     );
+    args.onUsage(response.usage);
     const summary =
       typeof response.message?.content === 'string' ? response.message.content.trim() : '';
     if (!summary) return null;
@@ -500,7 +524,8 @@ async function summarizeHistory(args: {
       messages: [messages[0], { role: 'system', content: `PRIOR CONTEXT SUMMARY:\n${summary}` }, ...tail],
       summary,
     };
-  } catch {
+  } catch (error) {
+    if (isInferenceSettlementError(error)) throw error;
     return null;
   }
 }
@@ -577,12 +602,14 @@ async function completeAgentTurn(
   godmodeWrap: boolean,
   freeOnly: boolean,
 ): Promise<{ response: any }> {
+  const routedRequest = freeOnly
+    ? { ...unifiedRequest, metadata: { ...unifiedRequest.metadata, freeTierStrategy: 'free_only' } }
+    : unifiedRequest;
+  if (isTrustedExternalAccounting(unifiedRequest)) markTrustedExternalAccounting(routedRequest);
   if (!godmodeWrap) {
     return routeWithTimeout(
       router,
-      freeOnly
-        ? { ...unifiedRequest, metadata: { ...unifiedRequest.metadata, freeTierStrategy: 'free_only' } }
-        : unifiedRequest,
+      routedRequest,
       target,
     );
   }
@@ -614,9 +641,7 @@ async function completeAgentTurn(
   );
   return routeWithTimeout(
     router,
-    freeOnly
-      ? { ...unifiedRequest, metadata: { ...unifiedRequest.metadata, freeTierStrategy: 'free_only' } }
-      : unifiedRequest,
+    routedRequest,
     target,
   );
 }
@@ -801,6 +826,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     qualityTarget,
     godmodeWrap = false,
     freeOnly: requestedFreeOnly,
+    holdId,
   } = args;
 
   // conversationId is optional; fall back to the conversation's own id so
@@ -829,6 +855,18 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
 
   const messages = [...conversation.messages] as any[];
 
+  let totalTokensUsed = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
+  let totalCost = 0;
+  const recordAuxiliaryUsage = (usage: UnifiedResponse['usage']) => {
+    if (!usage) return;
+    totalTokensUsed += usage.total_tokens ?? 0;
+    totalPromptTokens += (usage as any).prompt_tokens ?? 0;
+    totalCompletionTokens += (usage as any).completion_tokens ?? 0;
+    totalCost += (usage as any).cost ?? (usage as any).total_cost ?? 0;
+  };
+
   // Opt-in plan-then-execute: produce a one-shot plan BEFORE the ReAct loop and
   // keep it in front of the model every turn. Off unless definition.planMode.
   const definition = context?.definition;
@@ -844,16 +882,15 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       requestId,
       systemPrompt: await buildSystemPrompt(0),
       firstUserMessage: firstUser,
+      holdId,
+      onUsage: recordAuxiliaryUsage,
+      freeOnly,
     });
     if (stream && planText) {
       onStreamEvent('plan', { resolvedConversationId, plan: planText });
     }
   }
   let lastResponseText = '';
-  let totalTokensUsed = 0;
-  let totalPromptTokens = 0;
-  let totalCompletionTokens = 0;
-  let totalCost = 0;
   let budgetExceeded = false;
   let awaitingApproval = false;
   let runTimedOut = false;
@@ -944,6 +981,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       requestId,
       tenant,
       freeOnly,
+      holdId,
     );
 
     let response: UnifiedResponse;
@@ -951,6 +989,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     try {
       ({ response } = await completeAgentTurn(router, unifiedRequest, target, requestId, godmodeWrap, freeOnly));
     } catch (error) {
+      if (isInferenceSettlementError(error)) throw error;
       // When every provider in the router's pool is rate-limited or down,
       // the router throws ProviderUnavailableError with a retryAfter hint.
       // The agent loop must respect that hint and back off — retrying
@@ -1003,7 +1042,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         requestId,
         tenant,
         freeOnly,
-        );
+        holdId,
+      );
 
       ({ response } = await completeAgentTurn(router, retryRequest, target, requestId, godmodeWrap, freeOnly));
     }
@@ -1336,7 +1376,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // AgentDefinition only carries the on/off `historyCompaction` flag.
     const { threshold, keepRecent } = resolveCompactionParams({});
     if (historyCompaction && messages.length > threshold) {
-      const compacted = await summarizeHistory({ router, model, tenant, requestId, messages, keepRecent });
+      const compacted = await summarizeHistory({ router, model, tenant, requestId, messages, keepRecent, holdId, onUsage: recordAuxiliaryUsage, freeOnly });
       if (compacted) {
         messages.length = 0;
         messages.push(...compacted.messages);
@@ -1387,7 +1427,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         requestId,
         tenant,
         freeOnly,
-        );
+        holdId,
+      );
       const { response: summaryResponse } = await completeAgentTurn(
         router,
         summaryRequest,
@@ -1396,6 +1437,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         godmodeWrap,
         freeOnly,
       );
+      recordAuxiliaryUsage(summaryResponse.usage);
+      if (summaryResponse.usage) finalUsage = summaryResponse.usage;
       let summaryText =
         typeof summaryResponse.message?.content === 'string' ? summaryResponse.message.content : '';
       summaryText = stripThoughtBlocks(summaryText);
@@ -1409,20 +1452,14 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           tool_calls: [],
           tool_results: [],
         });
-        if (summaryResponse.usage) {
-          totalTokensUsed += summaryResponse.usage.total_tokens ?? 0;
-          totalPromptTokens += (summaryResponse.usage as any).prompt_tokens ?? 0;
-          totalCompletionTokens += (summaryResponse.usage as any).completion_tokens ?? 0;
-          totalCost +=
-            (summaryResponse.usage as any).cost ?? (summaryResponse.usage as any).total_cost ?? 0;
-          finalUsage = summaryResponse.usage;
-        }
+
         commitConversationState(conversation, messages, 'completed');
         if (stream) {
           onStreamEvent('final_summary', { resolvedConversationId, content: summaryText });
         }
       }
     } catch (summaryError) {
+      if (isInferenceSettlementError(summaryError)) throw summaryError;
       logger.warn(
         { resolvedConversationId, error: summaryError },
         'final summarisation turn failed — falling back to synthesised text',
@@ -1468,7 +1505,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         requestId,
         tenant,
         freeOnly,
-        );
+        holdId,
+      );
       const { response: recoveryResponse } = await completeAgentTurn(
         router,
         recoveryRequest,
@@ -1522,6 +1560,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       }
       commitConversationState(conversation, messages, 'completed');
     } catch (recoveryError) {
+      if (isInferenceSettlementError(recoveryError)) throw recoveryError;
       logger.warn(
         { resolvedConversationId, error: recoveryError },
         'empty-reply recovery turn failed — falling back to gateway placeholder',

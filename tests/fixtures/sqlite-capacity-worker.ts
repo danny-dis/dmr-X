@@ -1,0 +1,17 @@
+import { writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+const [dataDir, barrierDir, id] = process.argv.slice(2);
+if (!dataDir || !barrierDir || !id) throw new Error('Missing fixture arguments');
+process.env.DMRX_DATA_DIR = dataDir;
+const { initDb, closeDb } = await import('@dmr-x/db');
+const { SQLiteCapacityStore } = await import('../../services/quota/src/capacity-store-distributed.js');
+await initDb();
+const store = new SQLiteCapacityStore();
+const scopeId = 'multiprocess-upstream';
+const admitted = await store.tryReserve([{ unit: 'concurrency', scopeId, amount: 1, currentRemaining: 3 }], id, 120000);
+writeFileSync(join(barrierDir, `${id}.ready.json`), JSON.stringify({ admitted: admitted !== null }));
+const deadline = Date.now() + 90000;
+while (!existsSync(join(barrierDir, 'release')) && Date.now() < deadline) await new Promise(resolve=>setTimeout(resolve,25));
+if (admitted) await store.release({id,candidateId:'fixture',dimensions:[{unit:'concurrency',scopeId,reserved:1}],expiresAt:deadline,status:'reserved',createdAt:Date.now()});
+writeFileSync(join(barrierDir, `${id}.finished.json`), JSON.stringify({ released: admitted !== null }));
+closeDb();

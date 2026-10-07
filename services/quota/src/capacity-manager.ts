@@ -60,6 +60,14 @@ export interface ReservationResult {
 // CapacityStore — pluggable backend for atomic reservations
 // ---------------------------------------------------------------------------
 
+export interface CapacityDimensionRequest {
+  unit: QuotaUnit;
+  scopeId: string;
+  amount: number;
+  currentRemaining: number | null;
+  observedAtMs?: number;
+}
+
 export interface CapacityStore {
   /**
    * Atomically attempt to reserve capacity across multiple dimensions.
@@ -68,7 +76,7 @@ export interface CapacityStore {
    * satisfy the request.
    */
   tryReserve(
-    dimensions: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }>,
+    dimensions: CapacityDimensionRequest[],
     reservationId?: string,
     leaseMs?: number,
   ): Promise<Array<{ unit: QuotaUnit; scopeId: string; newRemaining: number }> | null>;
@@ -88,6 +96,7 @@ export interface CapacityStore {
    * Expire reservations past their lease.
    */
   expireLeases(nowMs?: number): Promise<number>;
+  renew?(reservationId: string, leaseMs: number): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +339,19 @@ export class CapacityManager {
     return this.reservations.size;
   }
 
+  getVector(providerId: string, modelId: string, keyId: string): QuotaVector | undefined {
+    const vector = this.vectors.get(this.candidateKey(providerId, modelId, keyId));
+    return vector ? structuredClone(vector) : undefined;
+  }
+
+  async renew(reservationId: string): Promise<boolean> {
+    const reservation = this.reservations.get(reservationId);
+    if (!reservation || reservation.status !== 'reserved' || reservation.expiresAt <= Date.now()) return false;
+    if (this.store.renew && !await this.store.renew(reservationId, this.leaseMs)) return false;
+    reservation.expiresAt = Date.now() + this.leaseMs;
+    return true;
+  }
+
   /**
    * Get a reservation by id.
    */
@@ -348,8 +370,8 @@ export class CapacityManager {
   private buildReservationDimensions(
     vector: QuotaVector,
     demand: DemandVector,
-  ): Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }> {
-    const dims: Array<{ unit: QuotaUnit; scopeId: string; amount: number; currentRemaining: number | null }> = [];
+  ): CapacityDimensionRequest[] {
+    const dims: CapacityDimensionRequest[] = [];
 
     for (const dim of vector.dimensions) {
       const amount = estimateForUnit(demand, dim.unit);
@@ -363,6 +385,7 @@ export class CapacityManager {
           scopeId,
           amount,
           currentRemaining: dim.remaining,
+          observedAtMs: dim.observedAtMs,
         });
       }
     }

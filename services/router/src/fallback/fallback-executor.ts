@@ -2,6 +2,12 @@ import type { RoutingPlan, UnifiedRequest, UnifiedResponse, ModelBinding } from 
 import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, QuotaExhaustedError } from '@dmr-x/core';
 import type { RateLimitService, QuotaService, KeyRotationService } from '@dmr-x/quota';
 import { logger } from '@dmr-x/utils';
+import {
+  isAccountedExecutor,
+  isInferenceAdmissionError,
+  isInferenceSettlementError,
+  isLLMRequest,
+} from '../inference-accounting.js';
 import { getMetaModel } from '../meta-models.js';
 
 // Model error tracking: temporarily skip models that returned 404/410
@@ -99,6 +105,9 @@ export interface FallbackOptions {
   /** Internal absolute budget shared across hedged retries. */
   deadlineAt?: number;
 }
+
+/** A candidate was intentionally not dispatched, so it is not an upstream failure. */
+class LocalAdmissionError extends Error {}
 
 function isRateLimitError(error: unknown): boolean {
   if (error instanceof ProviderError) {
@@ -282,6 +291,7 @@ function isContentPolicyError(error: unknown): boolean {
  * Determine the error category for fallback routing.
  */
 function classifyError(error: unknown): 'rate_limit' | 'context_window' | 'content_policy' | 'quota' | 'model_not_found' | 'auth_error' | 'provider_overloaded' | 'insufficient_quota' | 'error' {
+  if (isInsufficientQuotaError(error)) return 'insufficient_quota';
   if (isRateLimitError(error)) return 'rate_limit';
   if (isContextWindowError(error)) return 'context_window';
   if (isContentPolicyError(error)) return 'content_policy';
@@ -289,7 +299,6 @@ function classifyError(error: unknown): 'rate_limit' | 'context_window' | 'conte
   if (isModelNotFoundError(error)) return 'model_not_found';
   if (isAuthError(error)) return 'auth_error';
   if (isProviderOverloadedError(error)) return 'provider_overloaded';
-  if (isInsufficientQuotaError(error)) return 'insufficient_quota';
   return 'error';
 }
 
@@ -464,10 +473,10 @@ export async function executeWithFallback(
   ).length;
   const primaryDead = isModelOnErrorCooldown(plan.primary.providerId, plan.primary.modelId) ? 1 : 0;
   const deadRatio = totalChainLength > 0 ? (primaryDead + deadChainMembers) / totalChainLength : 0;
-  if (deadRatio >= 0.8 && totalChainLength >= 2) {
+  if (primaryDead + deadChainMembers === totalChainLength && totalChainLength >= 2) {
     logger.warn(
       { requestId: options?.requestId, deadRatio, totalChainLength },
-      'Pool unhealthy: >80% candidates on cooldown — failing fast'
+      'Pool unhealthy: all candidates on cooldown — failing fast'
     );
     throw new ProviderUnavailableError(
       [plan.primary.providerId, ...plan.chain.map(s => s.provider.providerId)],
@@ -493,6 +502,22 @@ export async function executeWithFallback(
   let primaryErrorRaw: unknown = null;
   const requestId = options?.requestId || crypto.randomUUID();
 
+  // Canonical inference accounting (begin/settle inside the accounted executor)
+  // owns the tenant debit for LLM dispatches. The legacy `recordUsage(..., 0)` +
+  // `recordProviderBudgetUsage` below would debit the SAME tokens a second time.
+  // Unwrapped executors (legacy direct-executor unit tests, fake quota classes)
+  // and non-LLM modalities keep the legacy bookkeeping unchanged.
+  const tenantUsageAccounted = isAccountedExecutor(executor) && isLLMRequest(request);
+  // A lease that was settled (or refused) AFTER a dispatch already produced a
+  // result must abort the whole chain: re-dispatching would burn a second
+  // generation and mis-blame a healthy provider.
+  let settlementFailure: unknown = null;
+  function trackSettlement(error: unknown): boolean {
+    if (!isInferenceSettlementError(error)) return false;
+    if (settlementFailure === null) settlementFailure = error;
+    return true;
+  }
+
   // Helper: acquire concurrency slot for a provider, release on completion via finally
   async function withConcurrencySlot<T>(
     providerId: string,
@@ -513,19 +538,31 @@ export async function executeWithFallback(
 
   // Try primary
   try {
+    const hasReadyFallback = plan.chain.some(step =>
+      !isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)
+    );
+    if (hasReadyFallback && isModelOnErrorCooldown(plan.primary.providerId, plan.primary.modelId)) {
+      logger.info({ provider: plan.primary.providerId, model: plan.primary.modelId }, 'Skipping primary model on error cooldown');
+      throw new LocalAdmissionError('on cooldown');
+    }
     // Check rate limit before executing
     if (rls) {
       const limitCheck = rls.checkLimit(plan.primary.providerId, plan.primary.modelId, 0);
       if (!limitCheck.allowed) {
         logger.info({ provider: plan.primary.providerId, retryAfterMs: limitCheck.retryAfterMs }, 'Primary provider rate-limited, skipping');
         tried.push(plan.primary.providerId);
-        throw new Error(`Rate limited: ${limitCheck.reason}`);
+        throw new LocalAdmissionError(`Rate limited: ${limitCheck.reason}`);
       }
     }
 
     // Check quota before executing
     if (qs && tenantId) {
-      await withinDeadline(() => qs.checkQuota(tenantId, plan.primary.providerId, 0, 0));
+      try {
+        await withinDeadline(() => qs.checkQuota(tenantId, plan.primary.providerId, 0, 0));
+      } catch (error) {
+        if (error instanceof ProviderUnavailableError) throw error;
+        throw new LocalAdmissionError(error instanceof Error ? error.message : String(error));
+      }
     }
     tried.push(plan.primary.providerId);
     // Some upstreams intermittently reject a request they will accept on the
@@ -554,7 +591,7 @@ export async function executeWithFallback(
     try {
       await withinDeadline(async () => {
         if (rls) await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, response.usage?.total_tokens || 0);
-        if (qs && tenantId) {
+        if (qs && tenantId && !tenantUsageAccounted) {
           const tokens = response.usage?.total_tokens || 0;
           await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
           await qs.recordProviderBudgetUsage(tenantId, plan.primary.providerId, tokens);
@@ -566,10 +603,19 @@ export async function executeWithFallback(
     }
     return response;
   } catch (error) {
+    // Post-dispatch settlement failure: the result already exists upstream.
+    // Never fail over to another provider, never penalise this one.
+    if (trackSettlement(error)) throw error;
     if (globalDeadline && Date.now() >= globalDeadline) {
       throw new ProviderUnavailableError(tried, globalTimeoutMs);
     }
     primaryErrorRaw = error;
+    if (error instanceof LocalAdmissionError || isInferenceAdmissionError(error)) {
+      logger.info(
+        { provider: plan.primary.providerId, reason: error instanceof Error ? error.message : String(error) },
+        'Primary provider admission rejected, skipping',
+      );
+    } else {
     recordTriedError(plan.primary.providerId, error);
     // Record circuit breaker failure (wrapped in try/catch to prevent callback errors from breaking fallback chain)
     try { options?.onFailure?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onFailure callback error'); }
@@ -624,6 +670,7 @@ export async function executeWithFallback(
         'Provider overloaded — applying 5-minute cooldown'
       );
     }
+    }
   }
 
   // Same-provider key retry: if primary failed with rate limit, try next key on same provider
@@ -642,7 +689,7 @@ export async function executeWithFallback(
             const tokens = response.usage?.total_tokens || 0;
             await rls.recordUsage(plan.primary.providerId, plan.primary.modelId, tokens);
           }
-          if (qs && tenantId) {
+          if (qs && tenantId && !tenantUsageAccounted) {
             const tokens = response.usage?.total_tokens || 0;
             await qs.recordUsage(tenantId, plan.primary.providerId, tokens, 0);
             // The retry succeeded on a DIFFERENT key than the primary attempt —
@@ -665,6 +712,7 @@ export async function executeWithFallback(
         }
         return response;
       } catch (keyRetryError) {
+        if (trackSettlement(keyRetryError)) throw keyRetryError;
         if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
         logger.warn({ err: keyRetryError, provider: plan.primary.providerId }, 'Key retry also failed, falling through to cross-provider fallback');
         // The rotated key hit a limit too — learn from it like any other 429.
@@ -696,9 +744,10 @@ export async function executeWithFallback(
   // selectable, so the pre-selection filter kept re-picking it until its own
   // rate-limit penalty decayed. Note 429 is model-scoped, NOT provider-wide —
   // another model on the same provider may still answer.
-  if (errorCategory === 'model_not_found' || errorCategory === 'auth_error' ||
+  if (!(primaryErrorRaw instanceof LocalAdmissionError) && !isInferenceAdmissionError(primaryErrorRaw) &&
+      (errorCategory === 'model_not_found' || errorCategory === 'auth_error' ||
       errorCategory === 'provider_overloaded' || errorCategory === 'error' ||
-      errorCategory === 'rate_limit' || errorCategory === 'insufficient_quota') {
+      errorCategory === 'rate_limit' || errorCategory === 'insufficient_quota')) {
     trackModelError(plan.primary.providerId, plan.primary.modelId, errorCategory, retryAfterMs);
   }
 
@@ -743,14 +792,19 @@ export async function executeWithFallback(
     const probePromises = immediateSteps.map(step =>
       (async (): Promise<{ step: typeof immediateSteps[0]; response: UnifiedResponse }> => {
         if (isModelOnErrorCooldown(step.provider.providerId, step.provider.modelId)) {
-          throw new Error('on cooldown');
+          throw new LocalAdmissionError('on cooldown');
         }
         if (rls) {
           const limitCheck = rls.checkLimit(step.provider.providerId, step.provider.modelId, 0);
-          if (!limitCheck.allowed) throw new Error('rate-limited');
+          if (!limitCheck.allowed) throw new LocalAdmissionError('rate-limited');
         }
         if (qs && tenantId) {
-          await withinDeadline(() => qs.checkQuota(tenantId, step.provider.providerId, 0, 0));
+          try {
+            await withinDeadline(() => qs.checkQuota(tenantId, step.provider.providerId, 0, 0));
+          } catch (error) {
+            if (error instanceof ProviderUnavailableError) throw error;
+            throw new LocalAdmissionError(error instanceof Error ? error.message : String(error));
+          }
         }
         tried.push(step.provider.providerId);
         // Race each probe against the global deadline so a slow provider
@@ -767,6 +821,11 @@ export async function executeWithFallback(
       // Return the first success rather than waiting for every probe to settle.
       winner = await Promise.any(probePromises.map((probe, i) => probe.catch(async error => {
         const step = immediateSteps[i];
+        if (error instanceof LocalAdmissionError) throw error;
+        // A settled lease (or a refused reservation) is not a provider fault:
+        // no penalty, no cooldown, no mis-attributed root cause.
+        if (trackSettlement(error)) throw error;
+        if (isInferenceAdmissionError(error)) throw error;
         const category = classifyError(error);
         // Apply the same penalty/cooldown bookkeeping as the sequential loop:
         // a probed step that loses the race to a sibling must still be demoted
@@ -778,6 +837,9 @@ export async function executeWithFallback(
         throw error;
       })));
     } catch {
+      // Every probe rejected: a post-dispatch settlement failure aborts the
+      // chain outright instead of re-dispatching the same provider below.
+      if (settlementFailure !== null) throw settlementFailure;
       if (globalDeadline && Date.now() >= globalDeadline) {
         throw new ProviderUnavailableError(tried, globalTimeoutMs);
       }
@@ -788,7 +850,7 @@ export async function executeWithFallback(
       try {
         await withinDeadline(async () => {
           if (rls) await rls.recordUsage(winner.step.provider.providerId, winner.step.provider.modelId, winner.response.usage?.total_tokens || 0);
-          if (qs && tenantId) {
+          if (qs && tenantId && !tenantUsageAccounted) {
             const tokens = winner.response.usage?.total_tokens || 0;
             await qs.recordUsage(tenantId, winner.step.provider.providerId, tokens, 0);
             await qs.recordProviderBudgetUsage(tenantId, winner.step.provider.providerId, tokens);
@@ -850,7 +912,13 @@ export async function executeWithFallback(
 
       // Check quota before executing fallback
       if (qs && tenantId) {
-        await withinDeadline(() => qs.checkQuota(tenantId, step.provider.providerId, 0, 0));
+        try {
+          await withinDeadline(() => qs.checkQuota(tenantId, step.provider.providerId, 0, 0));
+        } catch (error) {
+          if (error instanceof ProviderUnavailableError) throw error;
+          logger.info({ provider: step.provider.providerId, err: error }, 'Fallback provider quota admission rejected, skipping');
+          continue;
+        }
       }
       tried.push(step.provider.providerId);
       const response = await withinDeadline(() => withConcurrencySlot(step.provider.providerId, () =>
@@ -862,7 +930,7 @@ export async function executeWithFallback(
       try {
         await withinDeadline(async () => {
           if (rls) await rls.recordUsage(step.provider.providerId, step.provider.modelId, response.usage?.total_tokens || 0);
-          if (qs && tenantId) {
+          if (qs && tenantId && !tenantUsageAccounted) {
             const tokens = response.usage?.total_tokens || 0;
             await qs.recordUsage(tenantId, step.provider.providerId, tokens, 0);
             await qs.recordProviderBudgetUsage(tenantId, step.provider.providerId, tokens);
@@ -888,6 +956,19 @@ export async function executeWithFallback(
       };
       return response;
     } catch (error) {
+      // A lease settled (or refused) after dispatch is not a provider failure:
+      // abort the chain rather than re-dispatching a model that already answered,
+      // and never book a penalty/cooldown against it.
+      if (trackSettlement(error)) {
+        throw error;
+      }
+      if (isInferenceAdmissionError(error)) {
+        logger.info(
+          { provider: step.provider.providerId, reason: error instanceof Error ? error.message : String(error) },
+          'Fallback reservation rejected, skipping candidate',
+        );
+        continue;
+      }
       // If this is a global timeout, re-throw immediately — do NOT continue
       // to the next provider. The timeout means we've exhausted our latency
       // budget and the client needs a timely error, not more attempts.
@@ -953,6 +1034,7 @@ export async function executeWithFallback(
       };
       return response;
     } catch (degradedErr) {
+      if (trackSettlement(degradedErr)) throw degradedErr;
       if (globalDeadline && Date.now() >= globalDeadline) throw new ProviderUnavailableError(tried, globalTimeoutMs);
       logger.warn({ requestId: options?.requestId, err: degradedErr }, 'Graceful degradation also failed');
     }
@@ -1052,6 +1134,10 @@ export async function executeWithHedging(
 ): Promise<UnifiedResponse> {
   const hedge = getHedgeConfig();
   const rls = options?.rateLimitService;
+  // Same canonical-accounting rule as executeWithFallback: the accounted
+  // executor already settled this dispatch, so the legacy tenant debit below
+  // would be a duplicate.
+  const tenantUsageAccounted = isAccountedExecutor(executor) && isLLMRequest(request);
   const budgetMs = options?.globalTimeoutMs ?? Math.min(plan.timeoutMs ?? 12_000, 30_000);
   const deadlineAt = options?.deadlineAt ?? (budgetMs > 0 ? Date.now() + budgetMs : 0);
   const sharedOptions = { ...options, deadlineAt };
@@ -1115,6 +1201,9 @@ export async function executeWithHedging(
     },
     (error): Outcome => {
       primarySettled = true;
+      // Post-dispatch settlement failure must not start the chain over: the
+      // provider already produced a result and its lease could not be settled.
+      if (isInferenceSettlementError(error)) throw error;
       return { kind: 'primary-failed', error };
     },
   );
@@ -1168,7 +1257,7 @@ export async function executeWithHedging(
         const tokens = winner.response.usage?.total_tokens || 0;
         await bounded(async () => { await rls.recordUsage(hedgeStep.providerId, hedgeStep.modelId, tokens); });
       }
-      if (options?.quotaService && options?.tenantId) {
+      if (options?.quotaService && options?.tenantId && !tenantUsageAccounted) {
         const tokens = winner.response.usage?.total_tokens || 0;
         await bounded(() => options.quotaService!.recordUsage(options.tenantId!, hedgeStep.providerId, tokens, 0));
         await bounded(() => options.quotaService!.recordProviderBudgetUsage(options.tenantId!, hedgeStep.providerId, tokens));
@@ -1193,7 +1282,9 @@ export async function executeWithHedging(
 
   // Hedge fired and failed: apply the standard failure bookkeeping so the
   // losing alternate is demoted like any other failed candidate, then let the
-  // (already-running) primary outcome decide.
+  // (already-running) primary outcome decide. A settled-but-unsettleable lease
+  // is not a failure of the alternate — surface it instead of demoting it.
+  if (isInferenceSettlementError(winner.error)) throw winner.error;
   await bounded(() => applyFailurePenalties(rls, hedgeStep.providerId, hedgeStep.modelId, winner.error));
   trackModelError(hedgeStep.providerId, hedgeStep.modelId, classifyError(winner.error), extractRetryAfterMs(winner.error));
   return bounded(() => primaryAttempt.then((outcome) => {
@@ -1245,6 +1336,9 @@ export async function executeWithMultiBindingFallback(
         },
       });
     } catch (error) {
+      // A post-dispatch settlement failure is terminal: trying the next binding
+      // would dispatch a second generation after one already succeeded.
+      if (isInferenceSettlementError(error)) throw error;
       logger.warn(
         { providerId: entry.providerId, modelId: entry.modelId },
         'Binding exhausted, trying next binding',

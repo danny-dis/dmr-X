@@ -11,7 +11,7 @@ import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js
 import { resolveServedProviderId } from '../utils/served-provider.js';
 import { compressionService } from '../services/compression.js';
 import { semanticCacheService } from '@dmr-x/cache';
-import { hashConversation, breakStickySession } from '@dmr-x/router';
+import { hashConversation, breakStickySession, accountedLLMStream, isInferenceSettlementError } from '@dmr-x/router';
 
 /**
  * Race a promise against a bounded timer. The timer is ALWAYS cleared on
@@ -729,10 +729,41 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               algorithm: compressionMetadata.algorithmUsed,
             } : undefined,
           };
-          const stream = adapter.executeStream(routedRequest, { signal: controller.signal });
           const streamStart = Date.now();
           const ttftMs = Number(process.env.DMRX_STREAM_TTFT_MS ?? 8000);
-          for await (const chunk of boundedProviderStream(stream, ttftMs, upstreamTimeoutMs, fallbackDeadline)) {
+          // Authoritative inference accounting for the streaming seam
+          // (`services/router/src/inference-accounting.ts`):
+          //   - `begin` runs BEFORE the factory opens, so a denied reservation
+          //     never opens an upstream stream;
+          //   - the lease is held across every chunk (including `done`) and
+          //     settled exactly once at EOF / early return, with the actual
+          //     measured usage;
+          //   - a pre-output failure releases instead of settling;
+          //   - a rejected `settle` surfaces as InferenceSettlementError from
+          //     the iterator (see the catch below) so we never fail over to a
+          //     second provider after one already answered.
+          // The deadline wrapper stays INSIDE the factory so finalisation runs
+          // in the accounted generator's own control flow instead of through
+          // a detached `iterator.return()`.
+          const accountedStream = accountedLLMStream({
+            boundary: qs,
+            request: routedRequest,
+            providerId: candidate.providerId,
+            modelId: candidate.modelId,
+            tenantId,
+            requestId,
+            signal: controller.signal,
+            factory: () => boundedProviderStream(
+              adapter.executeStream(routedRequest, { signal: controller.signal }),
+              ttftMs,
+              upstreamTimeoutMs,
+              fallbackDeadline,
+            ),
+          });
+          // `any` preserves the loop body's pre-existing loose access to
+          // `chunk.data` (each branch casts it itself).
+          const stream: AsyncIterable<any> = accountedStream;
+          for await (const chunk of stream) {
             if (controller.signal.aborted) break;
             // ROOT-CAUSE FIX (stream_error chunk.type): a degrading provider
             // can yield nullish frames; dereferencing chunk.type then threw
@@ -853,7 +884,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             if (rls) {
               await rls.recordUsage(candidate.providerId, candidate.modelId, streamPromptTokens + streamCompletionTokens);
             }
-            if (qs && tenantId) {
+            // Accounted streams already settled the canonical usage/cost at EOF:
+            // `recordUsage(..., 0)` here would be a second debit for the same
+            // tokens. Reliability (rls) bookkeeping is NOT money — always kept.
+            if (qs && tenantId && !accountedStream.accounted) {
               await qs.recordUsage(tenantId, candidate.providerId, streamPromptTokens + streamCompletionTokens, 0);
             }
           } catch (usageErr) {
@@ -884,6 +918,27 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           }
           break;
         } catch (streamError) {
+          // Inference-lease accounting failure: the upstream already ran (and
+          // may already have answered), so failing over would spend a SECOND
+          // generation on top of one that consumed capacity. The accounting
+          // system broke — not the provider — so stop the candidate walk here.
+          if (isInferenceSettlementError(streamError)) {
+            lastStreamError = streamError;
+            logger.error(
+              { err: streamError, requestId, provider: candidate.providerId },
+              'Inference lease settlement failed; closing stream without provider failover',
+            );
+            (request as any).metrics = (request as any).metrics || {};
+            (request as any).metrics.errorCode = 'inference_settlement_failed';
+            if (streamedAnyOutput) {
+              // The client already received the terminal frame: report success
+              // so no synthetic error frame is appended after `done`.
+              succeeded = true;
+            } else if (controller.signal.aborted) {
+              clientAborted = true;
+            }
+            break;
+          }
           if (controller.signal.aborted) {
             clientAborted = true;
             logger.debug({ requestId, provider: candidate.providerId }, 'Stream aborted by client disconnect');
