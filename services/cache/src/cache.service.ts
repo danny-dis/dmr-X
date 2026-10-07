@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isCacheableChatResponse } from './response-cache-policy.js';
 
 import { createNamespacedCache } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
@@ -80,7 +81,7 @@ function generateCacheKey(
 ): string {
   const cacheableBody = hashLargeFields(requestBody);
   delete cacheableBody.stream;
-  delete cacheableBody.user;
+  // User identity is part of the cache boundary, even inside one tenant.
 
   const bodyHash = createHash('sha256')
     .update(JSON.stringify(cacheableBody))
@@ -133,6 +134,10 @@ export function getCachedResponse(
 
   try {
     const entry = JSON.parse(cached) as CacheEntry;
+    if (requestType === 'chat' && !isCacheableChatResponse(entry.response)) {
+      cache.del(key);
+      return null;
+    }
     const accessKey = 'access:' + key;
     const count = cache.incrBy(accessKey, 1);
     cache.expire(accessKey, 3600);
@@ -165,6 +170,8 @@ export function setCachedResponse(
 
   if (requestBody.tools && Array.isArray(requestBody.tools) && requestBody.tools.length > 0) return;
 
+  // Never amplify empty, partial or stateful chat responses through replay.
+  if (requestType === 'chat' && !isCacheableChatResponse(response)) return;
   // Multi-provider tool call detection
   if (hasToolCalls(response)) return;
 

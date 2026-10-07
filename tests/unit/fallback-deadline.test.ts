@@ -18,6 +18,11 @@ const resultWithin = (promise: Promise<unknown>) => Promise.race([
   promise.then(() => 'resolved', error => (error as Error).name),
   new Promise<string>(resolve => setTimeout(() => resolve('stalled'), 150)),
 ]);
+const successfulResponse = (overrides: Record<string, unknown> = {}) => ({
+  modality: 'llm', requestId: 'test', providerId: 'test', modelId: 'test', latencyMs: 1,
+  message: { role: 'assistant', content: 'valid assistant output' },
+  ...overrides,
+});
 
 describe('fallback end-to-end deadline', () => {
   it('bounds a primary provider that never resolves', async () => {
@@ -73,7 +78,7 @@ describe('fallback end-to-end deadline', () => {
       execute: async (id) => {
         if (id === 'primary') throw new ProviderError('content policy blocked', 'primary', 400);
         if (id === 'stuck') return stalled;
-        return { modelId: 'quick', usage: { total_tokens: 1 } } as any;
+        return successfulResponse({ modelId: 'quick', usage: { total_tokens: 1 } }) as any;
       },
     }, { globalTimeoutMs: 35 });
     expect((await result).modelId).toBe('quick');
@@ -110,7 +115,7 @@ describe('fallback end-to-end deadline', () => {
           dispatched.push(id);
           if (id === 'primary') {
             await new Promise(resolve => setTimeout(resolve, 20));
-            return { modelId: 'primary' } as any;
+            return successfulResponse({ modelId: 'primary' }) as any;
           }
           return { modelId: 'fallback' } as any;
         },
@@ -128,7 +133,7 @@ describe('fallback end-to-end deadline', () => {
   });
   it('bounds stalled success bookkeeping', async () => {
     const result = executeWithFallback(plan(false), request, {
-      execute: async () => ({ usage: { total_tokens: 1 } }) as any,
+      execute: async () => successfulResponse({ usage: { total_tokens: 1 } }) as any,
     }, { globalTimeoutMs: 25, tenantId: 'test', quotaService: {
       checkQuota: async () => undefined,
       recordUsage: async () => stalled,
@@ -139,7 +144,7 @@ describe('fallback end-to-end deadline', () => {
     const result = executeWithFallback(plan(true), request, {
       execute: async (providerId) => {
         if (providerId === 'primary') throw new Error('down');
-        return { usage: { total_tokens: 1 } } as any;
+        return successfulResponse({ usage: { total_tokens: 1 } }) as any;
       },
     }, { globalTimeoutMs: 25, tenantId: 'test', quotaService: {
       checkQuota: async () => undefined,

@@ -1,6 +1,7 @@
 import type { RoutingPlan, UnifiedRequest, UnifiedResponse, ModelBinding } from '@dmr-x/core';
 import { AllProvidersFailedError, ProviderError, ProviderUnavailableError, QuotaExhaustedError } from '@dmr-x/core';
 import type { RateLimitService, QuotaService, KeyRotationService } from '@dmr-x/quota';
+import { assertValidOutput, validateOutputContract } from '../output-validation.js';
 import { logger } from '@dmr-x/utils';
 import {
   isAccountedExecutor,
@@ -426,12 +427,31 @@ export function isModelOnErrorCooldown(providerId: string, modelId: string): boo
   return true;
 }
 
+async function executeAndValidate(
+  executor: AdapterExecutor,
+  providerId: string,
+  modelId: string,
+  request: UnifiedRequest,
+): Promise<UnifiedResponse> {
+  const response = await executor.execute(providerId, modelId, request);
+  try {
+    assertValidOutput(request, response);
+  } catch {
+    // Deliberately discard provider output details; this is an upstream fault,
+    // eligible for normal bounded fallback recovery.
+    throw new ProviderError('Upstream returned invalid output', providerId, 502, true);
+  }
+  return response;
+}
+
 export async function executeWithFallback(
   plan: RoutingPlan,
   request: UnifiedRequest,
   executor: AdapterExecutor,
   options?: FallbackOptions
 ): Promise<UnifiedResponse> {
+  // Caller-supplied contracts are rejected before any provider dispatch.
+  validateOutputContract(request.metadata?.outputContract);
   const tried: string[] = [];
   const triedErrors: { provider: string; status?: number; message: string }[] = [];
 
@@ -575,14 +595,14 @@ export async function executeWithFallback(
     // without consuming a cross-provider fallback slot.
     const response = await withinDeadline(() => withConcurrencySlot(plan.primary.providerId, async () => {
       try {
-        return await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
+        return await executeAndValidate(executor, plan.primary.providerId, plan.primary.modelId, request);
       } catch (err) {
         if (!isAmbiguousTransientError(err, request.response_format?.type === 'json_object')) throw err;
         logger.warn(
           { provider: plan.primary.providerId, modelId: plan.primary.modelId, err },
           'Primary provider returned an ambiguous transient failure — retrying the same model once'
         );
-        return await executor.execute(plan.primary.providerId, plan.primary.modelId, request);
+        return await executeAndValidate(executor, plan.primary.providerId, plan.primary.modelId, request);
       }
     }));
     // Record circuit breaker success (wrapped in try/catch)
@@ -680,8 +700,8 @@ export async function executeWithFallback(
       try {
         logger.info({ provider: plan.primary.providerId }, 'Trying next key on same provider');
         const response = await withinDeadline(() => withConcurrencySlot(plan.primary.providerId, () =>
-          executor.execute(plan.primary.providerId, plan.primary.modelId, request)
-        ));
+                  executeAndValidate(executor, plan.primary.providerId, plan.primary.modelId, request)
+                ));
         try { options?.onSuccess?.(plan.primary.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
         try {
           await withinDeadline(async () => {
@@ -810,8 +830,8 @@ export async function executeWithFallback(
         // Race each probe against the global deadline so a slow provider
         // can't hold back the entire chain past the timeout.
         const response = await withinDeadline(() => withConcurrencySlot(step.provider.providerId, () =>
-          executor.execute(step.provider.providerId, step.provider.modelId, request)
-        ));
+                executeAndValidate(executor, step.provider.providerId, step.provider.modelId, request)
+              ));
         return { step, response };
       })()
     );
@@ -922,8 +942,8 @@ export async function executeWithFallback(
       }
       tried.push(step.provider.providerId);
       const response = await withinDeadline(() => withConcurrencySlot(step.provider.providerId, () =>
-        executor.execute(step.provider.providerId, step.provider.modelId, request)
-      ));
+              executeAndValidate(executor, step.provider.providerId, step.provider.modelId, request)
+            ));
       // Record circuit breaker success (wrapped in try/catch)
       try { options?.onSuccess?.(step.provider.providerId); } catch (cbErr) { logger.warn({ err: cbErr }, 'onSuccess callback error'); }
       // Usage failures are nonfatal, but a hung usage backend must respect the deadline.
@@ -1024,7 +1044,7 @@ export async function executeWithFallback(
         { requestId: options?.requestId, degradedModel, degradedProviderId, degradedModelId },
         'All providers failed — attempting graceful degradation'
       );
-      const response = await withinDeadline(() => executor.execute(degradedProviderId, degradedModelId, request));
+      const response = await withinDeadline(() => executeAndValidate(executor, degradedProviderId, degradedModelId, request));
       response.fallback = {
         fromProviderId: plan.primary.providerId,
         fromModelId: plan.primary.modelId,
@@ -1132,6 +1152,7 @@ export async function executeWithHedging(
   executor: AdapterExecutor,
   options?: FallbackOptions
 ): Promise<UnifiedResponse> {
+  validateOutputContract(request.metadata?.outputContract);
   const hedge = getHedgeConfig();
   const rls = options?.rateLimitService;
   // Same canonical-accounting rule as executeWithFallback: the accounted
@@ -1225,7 +1246,7 @@ export async function executeWithHedging(
       if (options?.quotaService && options?.tenantId) {
         await bounded(() => options.quotaService!.checkQuota(options.tenantId!, hedgeStep.providerId, 0, 0));
       }
-      const response = await bounded(() => executor.execute(hedgeStep.providerId, hedgeStep.modelId, request));
+      const response = await bounded(() => executeAndValidate(executor, hedgeStep.providerId, hedgeStep.modelId, request));
       return { kind: 'hedge', response };
     } catch (error) {
       return { kind: 'hedge-failed', error };

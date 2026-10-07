@@ -12,7 +12,9 @@ export interface CavemanResult {
 }
 
 export interface CavemanOptions {
-  /** Aggressiveness level: 1 (light) to 3 (heavy) (default: 2) */
+  /** Explicitly enable legacy, meaning-changing rewrites (default: false). */
+  allowLossy?: boolean;
+  /** Aggressiveness level for opt-in lossy mode: 1 to 3 (default: 2) */
   aggressiveness?: number;
   /** Keep technical terms untouched (default: true) */
   preserveTechnical?: boolean;
@@ -21,6 +23,7 @@ export interface CavemanOptions {
 }
 
 const DEFAULT_OPTIONS: Required<CavemanOptions> = {
+  allowLossy: false,
   aggressiveness: 2,
   preserveTechnical: true,
   maxLineLength: 200,
@@ -106,6 +109,14 @@ const ABBREVIATIONS: [RegExp, string][] = [
 export function compressCaveman(input: string, options?: CavemanOptions): CavemanResult {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const originalTokens = estimateTokens(input);
+
+  // Regex deletion cannot establish semantic equivalence. Preserve the prompt
+  // by default; legacy lossy compression requires an explicit opt-in. Even
+  // there, technical/literal content is protected before ALL rewrite stages.
+  if (!opts.allowLossy || (opts.preserveTechnical &&
+      /[`"']|~~~|^\s*[\[{]|^ {4}\S|\t|https?:\/\/|^\s*(?:import|export|const|let|var|function|class|def|fn)\s+/m.test(input))) {
+    return { compressed: input, originalTokens, compressedTokens: originalTokens, saved: 0 };
+  }
 
   let result = input;
 

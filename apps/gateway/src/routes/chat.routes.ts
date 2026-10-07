@@ -1,6 +1,6 @@
 import { ValidationError, ProviderUnavailableError, type UnifiedRequest } from '@dmr-x/core';
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
-import { getMetaModel, type Router } from '@dmr-x/router';
+import { getMetaModel, assertValidOutput, validateOutputContract, type Router } from '@dmr-x/router';
 import { generateRequestId, logger } from '@dmr-x/utils';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -10,6 +10,7 @@ import { parseQualityTarget } from '../utils/quality-target.js';
 import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
 import { resolveServedProviderId } from '../utils/served-provider.js';
 import { compressionService } from '../services/compression.js';
+import { parseCompressionHeader, compressionControlEnabled } from '../services/compression-control.js';
 import { semanticCacheService } from '@dmr-x/cache';
 import { hashConversation, breakStickySession, accountedLLMStream, isInferenceSettlementError } from '@dmr-x/router';
 
@@ -98,6 +99,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data;
+    // Cache on original input, not a potentially compressed upstream representation.
+    const originalCacheBody = structuredClone(body) as Record<string, unknown>;
+    const headerConfig = parseCompressionHeader(request.headers['x-compression']);
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
@@ -422,27 +426,21 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     // Apply compression if enabled
     let compressionMetadata = undefined;
     const tenantId = (request as any).tenant?.id;
-    const apiKeyId = (request as any).apiKeyId;
-    const compressionHeader = request.headers['x-compression'] as string;
+    const apiKeyId = (request as any).tenant?.apiKeyId ?? (request as any).apiKeyId;
 
-    if (tenantId || apiKeyId || compressionHeader) {
+    if (tenantId || apiKeyId || headerConfig) {
       try {
         const tenantConfig = tenantId ? compressionService.getTenantConfig(tenantId) : undefined;
         const apiKeyConfig = apiKeyId ? compressionService.getApiKeyConfig(apiKeyId) : undefined;
 
-        // Allow per-request engine override via header
-        const headerConfig = compressionHeader ? { enabled: true, engine: compressionHeader as any } : undefined;
-
-        if (tenantConfig?.enabled || apiKeyConfig?.enabled || headerConfig) {
-          const messagesForCompression = body.messages.map(m => ({
-            role: m.role,
-            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-          }));
+        if (compressionControlEnabled(compressionService.getGlobalConfig(), tenantConfig, apiKeyConfig, headerConfig)) {
+          const messagesForCompression = body.messages;
 
           const { compressed, metadata } = await compressionService.compressPrompt(
             messagesForCompression,
             tenantConfig,
-            apiKeyConfig ?? headerConfig
+            { ...apiKeyConfig, ...headerConfig },
+            tenantId ? { tenantId, apiKeyId } : undefined
           );
 
           // Convert back to original format
@@ -494,6 +492,27 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         ...(providerPreferences ? { providerPreferences } : {}),
       },
     };
+
+    const cacheRouter = router as unknown as {
+      getEffectiveFreeTierStrategy?: (override?: string) => string | undefined;
+      getEffectiveCostFilter?: (model: string, override?: 'free' | 'all') => string;
+    };
+    const strategyOverride = typeof unifiedRequest.metadata?.freeTierStrategy === 'string' ? unifiedRequest.metadata.freeTierStrategy : undefined;
+    const costOverride = unifiedRequest.metadata?.costFilter as 'free' | 'all' | undefined;
+    const cacheRequestBody: Record<string, unknown> = {
+      ...originalCacheBody,
+      metadata: {
+        ...(originalCacheBody.metadata && typeof originalCacheBody.metadata === 'object' ? originalCacheBody.metadata : {}),
+        __dmrxRoutingPolicy: {
+          version: 1,
+          qualityTarget,
+          freeTierStrategy: cacheRouter.getEffectiveFreeTierStrategy?.(strategyOverride) ?? strategyOverride,
+          costFilter: cacheRouter.getEffectiveCostFilter?.(body.model, costOverride) ?? costOverride,
+          providerPreferences: unifiedRequest.metadata?.providerPreferences,
+        },
+      },
+    };
+    if (!body.stream) validateOutputContract(unifiedRequest.metadata?.outputContract);
 
     if (body.stream) {
       if (unifiedRequest.metadata?.freeTierStrategy) {
@@ -913,7 +932,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             // to a request with different (or no) constraints.
             const useCache = !body.tools?.length && body.temperature === undefined && body.seed === undefined && !providerPreferences && body.decompose !== false;
             if (useCache) {
-              storeRouteCache('chat', tenantId, body as Record<string, unknown>, assembledResponse);
+              storeRouteCache('chat', tenantId, cacheRequestBody, assembledResponse);
             }
           }
           break;
@@ -1116,25 +1135,39 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       };
     };
 
+    const acceptsCachedOutput = (candidate: unknown): boolean => {
+      try {
+        const cached = candidate as any;
+        const output = Array.isArray(cached?.choices)
+          ? (cached.choices.length === 1 ? { ...cached, message: cached.choices[0]?.message, finishReason: cached.choices[0]?.finish_reason } : null)
+          : cached;
+        if (!output) return false;
+        assertValidOutput(unifiedRequest, output);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     if (useCache) {
-      // First check semantic cache
+      // Exact lookup is local and cheap: never spend an embedding budget on an exact hit.
+      const { checkRouteCache } = await import('@dmr-x/cache');
+      const cached = checkRouteCache('chat', tenantId, cacheRequestBody);
+      if (cached && acceptsCachedOutput(cached.response)) {
+        logger.debug({ requestId, model: body.model }, 'Exact cache hit for chat request');
+        reply.header('X-Cache', 'HIT');
+        return toOpenAIChatCompletion(cached.response);
+      }
+
+      // Semantic work is optional and only useful after an exact miss.
       if (semanticCacheService.isEnabled()) {
-        const semanticCached = await semanticCacheService.lookup('chat', tenantId, body as Record<string, unknown>);
-        if (semanticCached) {
+        const semanticCached = await semanticCacheService.lookup('chat', tenantId, cacheRequestBody);
+        if (semanticCached && acceptsCachedOutput(semanticCached.entry.response)) {
           logger.debug({ requestId, model: body.model, similarity: semanticCached.similarity }, 'Semantic cache hit for chat request');
           reply.header('X-Cache', 'HIT');
           reply.header('X-Semantic-Similarity', String(semanticCached.similarity));
           return toOpenAIChatCompletion(semanticCached.entry.response);
         }
-      }
-
-      // Then check exact-match cache
-      const { checkRouteCache } = await import('@dmr-x/cache');
-      const cached = checkRouteCache('chat', tenantId, body as Record<string, unknown>);
-      if (cached) {
-        logger.debug({ requestId, model: body.model }, 'Exact cache hit for chat request');
-        reply.header('X-Cache', 'HIT');
-        return toOpenAIChatCompletion(cached.response);
       }
     }
 
@@ -1173,12 +1206,12 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       ? response.message.content.trim().length > 0
       : response.message?.content != null)) {
       const { storeRouteCache } = await import('@dmr-x/cache');
-      storeRouteCache('chat', tenantId, body as Record<string, unknown>, response);
+      storeRouteCache('chat', tenantId, cacheRequestBody, response);
 
       // Also store in semantic cache
       if (semanticCacheService.isEnabled()) {
         const tokens = response.usage?.total_tokens ?? 0;
-        await semanticCacheService.store('chat', tenantId, body as Record<string, unknown>, response, tokens);
+        await semanticCacheService.store('chat', tenantId, cacheRequestBody, response, tokens);
       }
 
       reply.header('X-Cache', 'MISS');

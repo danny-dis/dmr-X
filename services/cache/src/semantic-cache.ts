@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { semanticCacheIdentity } from './semantic-cache-identity.js';
+import { isCacheableChatResponse } from './response-cache-policy.js';
 
 import { getDb } from '@dmr-x/db';
 import { logger } from '@dmr-x/utils';
@@ -72,6 +74,7 @@ export class SemanticCacheService {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   private usingRealEmbeddings: boolean;
+  private embeddingTimeoutMs: number;
 
   constructor() {
     this.embeddings = new EmbeddingsService();
@@ -79,8 +82,9 @@ export class SemanticCacheService {
     this.threshold = parseFloat(process.env.DMRX_SEMANTIC_CACHE_THRESHOLD || '0.95');
     this.maxEntries = parseInt(process.env.DMRX_SEMANTIC_CACHE_MAX_ENTRIES || '10000', 10);
     this.ttlSeconds = parseInt(process.env.DMRX_SEMANTIC_CACHE_TTL_SECONDS || '600', 10);
+    this.embeddingTimeoutMs = this.cacheEmbeddingTimeout();
 
-    // Detect if real embeddings are available (not hash fallback)
+    // Env presence only permits trying a real provider; runtime failures fail open.
     this.usingRealEmbeddings = !!(process.env.OPENAI_API_KEY || process.env.OLLAMA_BASE_URL);
     if (this.enabled && !this.usingRealEmbeddings) {
       logger.warn(
@@ -121,16 +125,18 @@ export class SemanticCacheService {
   ): Promise<SemanticCacheLookupResult | null> {
     if (!this.enabled) return null;
 
-    const promptText = this.extractPromptText(requestBody);
-    if (!promptText || promptText.length < 10) return null;
+    const identity = semanticCacheIdentity(requestType, requestBody);
+    if (!identity) return null;
+    const { prompt: promptText, scope } = identity;
 
     try {
-      const queryEmbedding = await this.embeddings.embed(promptText);
-      const queryVec = new Float32Array(queryEmbedding);
-      this.normalizeInPlace(queryVec);
+      const realEmbedding = await this.getRealEmbedding(promptText);
+      const queryVec = new Float32Array(realEmbedding.embedding);
+      if (!this.normalizeInPlace(queryVec)) return null;
+      const namespaceScope = `${realEmbedding.namespace}:${scope}`;
 
       // Phase 1: fetch lightweight candidates (no response payload)
-      const candidates = this.getCandidates(requestType, tenantId);
+      const candidates = this.getCandidates(namespaceScope, tenantId);
       if (candidates.length === 0) return null;
 
       let bestCandidate: SemanticCacheCandidate | null = null;
@@ -147,7 +153,7 @@ export class SemanticCacheService {
       if (bestCandidate && bestSimilarity >= this.threshold) {
         // Phase 2: fetch full response for the winning entry only
         const fullEntry = this.getEntryById(bestCandidate.id);
-        if (!fullEntry) return null;
+        if (!fullEntry || !isCacheableChatResponse(fullEntry.response)) return null;
 
         // Bump hit count (with error handling)
         this.incrementHitCount(bestCandidate.id);
@@ -193,15 +199,17 @@ export class SemanticCacheService {
     if (requestBody.stream) return;
 
     // Don't cache responses with tool calls (stateful) — multi-provider detection
-    if (this.hasToolCalls(response)) return;
+    if (this.hasToolCalls(response) || !isCacheableChatResponse(response)) return;
 
-    const promptText = this.extractPromptText(requestBody);
-    if (!promptText || promptText.length < 10) return;
+    const identity = semanticCacheIdentity(requestType, requestBody);
+    if (!identity) return;
+    const { prompt: promptText, scope } = identity;
 
     try {
-      const embedding = await this.embeddings.embed(promptText);
-      const normalized = new Float32Array(embedding);
-      this.normalizeInPlace(normalized);
+      const realEmbedding = await this.getRealEmbedding(promptText);
+      const normalized = new Float32Array(realEmbedding.embedding);
+      if (!this.normalizeInPlace(normalized)) return;
+      const namespaceScope = `${realEmbedding.namespace}:${scope}`;
 
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.ttlSeconds * 1000);
@@ -214,8 +222,8 @@ export class SemanticCacheService {
         WHERE request_type = ? AND prompt_text = ? AND
               (tenant_id = ? OR (tenant_id IS NULL AND ? IS NULL))
       `).get(
-        requestType,
-        promptText.slice(0, 2048),
+        namespaceScope,
+        promptText,
         tenantId || null,
         tenantId || null,
       ) as any;
@@ -246,8 +254,8 @@ export class SemanticCacheService {
         `).run(
           id,
           tenantId || null,
-          requestType,
-          promptText.slice(0, 2048),
+          namespaceScope,
+          promptText,
           Buffer.from(normalized.buffer),
           JSON.stringify(response),
           tokens,
@@ -290,7 +298,7 @@ export class SemanticCacheService {
     try {
       const db = getDb();
       const result = db.prepare(
-        "DELETE FROM semantic_cache_entries WHERE expires_at < datetime('now')",
+        "DELETE FROM semantic_cache_entries WHERE julianday(expires_at) <= julianday('now')",
       ).run();
       if (result.changes > 0) {
         logger.info({ deleted: result.changes }, 'Semantic cache cleanup');
@@ -379,18 +387,45 @@ export class SemanticCacheService {
   }
 
   /**
-   * Normalize vector in place to unit length.
+   * Normalize a finite, non-zero vector in place to unit length.
    */
-  private normalizeInPlace(vec: Float32Array): void {
+  private normalizeInPlace(vec: Float32Array): boolean {
+    if (vec.length === 0) return false;
     let norm = 0;
     for (let i = 0; i < vec.length; i++) {
+      if (!Number.isFinite(vec[i])) return false;
       norm += vec[i] * vec[i];
     }
     norm = Math.sqrt(norm);
-    if (norm > 0) {
-      for (let i = 0; i < vec.length; i++) {
-        vec[i] /= norm;
-      }
+    if (!Number.isFinite(norm) || norm === 0) return false;
+    for (let i = 0; i < vec.length; i++) {
+      vec[i] /= norm;
+    }
+    return true;
+  }
+
+  private cacheEmbeddingTimeout(): number {
+    const configured = Number(process.env.DMRX_SEMANTIC_CACHE_EMBEDDING_TIMEOUT_MS);
+    if (!Number.isFinite(configured) || configured <= 0) return 500;
+    return Math.min(10_000, Math.max(1, Math.floor(configured)));
+  }
+
+  private async getRealEmbedding(text: string) {
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort(new Error('Semantic cache embedding deadline exceeded'));
+        reject(new Error('Semantic cache embedding deadline exceeded'));
+      }, this.embeddingTimeoutMs);
+    });
+    try {
+      return await Promise.race([
+        this.embeddings.embedReal(text, { signal: controller.signal, timeoutMs: this.embeddingTimeoutMs }),
+        deadline,
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 
@@ -416,7 +451,7 @@ export class SemanticCacheService {
     const db = getDb();
     const whereClauses = [
       "request_type = ?",
-      "expires_at > datetime('now')",
+      "julianday(expires_at) > julianday('now')",
     ];
     const params: unknown[] = [requestType];
 
@@ -435,17 +470,29 @@ export class SemanticCacheService {
       LIMIT 500
     `).all(...params) as any[];
 
-    return rows.map((row) => ({
-      id: row.id,
-      tenantId: row.tenant_id,
-      requestType: row.request_type,
-      promptText: row.prompt_text,
-      embedding: new Float32Array(row.embedding.buffer),
-      tokens: row.tokens,
-      hitCount: row.hit_count,
-      createdAt: row.created_at,
-      expiresAt: row.expires_at,
-    }));
+    return rows.flatMap((row) => {
+      const embedding = this.readCandidateEmbedding(row.embedding);
+      if (!embedding) return [];
+      return [{
+        id: row.id,
+        tenantId: row.tenant_id,
+        requestType: row.request_type,
+        promptText: row.prompt_text,
+        embedding,
+        tokens: row.tokens,
+        hitCount: row.hit_count,
+        createdAt: row.created_at,
+        expiresAt: row.expires_at,
+      }];
+    });
+  }
+
+  private readCandidateEmbedding(value: unknown): Float32Array | null {
+    // node:sqlite exposes BLOBs as Uint8Array; better-sqlite3 uses Buffer.
+    if (!(value instanceof Uint8Array) || value.byteLength === 0 || value.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) return null;
+    const bytes = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    const vector = new Float32Array(bytes);
+    return this.normalizeInPlace(vector) ? vector : null;
   }
 
   /**
@@ -456,17 +503,19 @@ export class SemanticCacheService {
     const row = db.prepare(`
       SELECT id, tenant_id, request_type, prompt_text, embedding, response, tokens, hit_count, created_at, expires_at
       FROM semantic_cache_entries
-      WHERE id = ?
+      WHERE id = ? AND julianday(expires_at) > julianday('now')
     `).get(id) as any;
 
     if (!row) return null;
+    const embedding = this.readCandidateEmbedding(row.embedding);
+    if (!embedding) return null;
 
     return {
       id: row.id,
       tenantId: row.tenant_id,
       requestType: row.request_type,
       promptText: row.prompt_text,
-      embedding: new Float32Array(row.embedding.buffer),
+      embedding,
       response: JSON.parse(row.response),
       tokens: row.tokens,
       hitCount: row.hit_count,

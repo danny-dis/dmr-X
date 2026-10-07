@@ -30,6 +30,7 @@ function makeResponse(overrides: Record<string, any> = {}) {
     requestId: 'req-1',
     providerId: 'prov-a',
     modelId: 'model-a',
+    message: { role: 'assistant', content: 'valid assistant output' },
     usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
     ...overrides,
   };

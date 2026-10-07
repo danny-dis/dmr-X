@@ -15,6 +15,7 @@ import {
 } from '../lib/wire-errors.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
+import { parseCompressionHeader, compressionControlEnabled } from '../services/compression-control.js';
 
 // --- Zod schemas for Gemini wire format ---
 
@@ -93,6 +94,7 @@ async function handleGenerateContent(
     }
 
     const body = parsed.data;
+    const headerConfig = parseCompressionHeader(request.headers['x-compression']);
     if (opts.forceStream) body.stream = true;
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
@@ -101,31 +103,33 @@ async function handleGenerateContent(
     // Apply compression if enabled
     let compressionMetadata = undefined;
     const tenantId = (request as any).tenant?.id;
-    const apiKeyId = (request as any).apiKeyId;
+    const apiKeyId = (request as any).tenant?.apiKeyId ?? (request as any).apiKeyId;
 
-    if (tenantId || apiKeyId) {
+    if (tenantId || apiKeyId || headerConfig) {
       try {
         const tenantConfig = tenantId ? compressionService.getTenantConfig(tenantId) : undefined;
         const apiKeyConfig = apiKeyId ? compressionService.getApiKeyConfig(apiKeyId) : undefined;
 
-        if (tenantConfig?.enabled || apiKeyConfig?.enabled) {
+        if (compressionControlEnabled(compressionService.getGlobalConfig(), tenantConfig, apiKeyConfig, headerConfig)) {
           // Convert Gemini contents to standard format for compression
           const messagesForCompression = body.contents.map(c => ({
-            role: c.role === 'model' ? 'assistant' : 'user',
-            content: c.parts.map(p => ('text' in p ? p.text : '') || '').join(''),
+            role: c.role === 'model' ? 'assistant' : c.role === 'function' ? 'tool' : 'user',
+            // Keep non-text and multi-part frames opaque, including thoughts.
+            content: c.parts.length === 1 && 'text' in c.parts[0] && !c.parts[0].thought
+              ? c.parts[0].text : c.parts,
           }));
 
           const { compressed, metadata } = await compressionService.compressPrompt(
             messagesForCompression,
             tenantConfig,
-            apiKeyConfig
+            { ...apiKeyConfig, ...headerConfig },
+            tenantId ? { tenantId, apiKeyId } : undefined
           );
 
           // Convert back to Gemini format
-          body.contents = compressed.map((m, i) => ({
-            ...body.contents[i],
-            parts: [{ text: m.content }],
-          }));
+          body.contents = compressed.map((m, i) => typeof m.content === 'string'
+            ? { ...body.contents[i], parts: [{ ...body.contents[i].parts[0], text: m.content }] }
+            : body.contents[i]);
 
           compressionMetadata = metadata;
           logger.debug({ requestId, saved: metadata.saved }, 'Applied compression to Gemini request');

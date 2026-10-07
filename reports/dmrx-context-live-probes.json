@@ -1,0 +1,48 @@
+{
+  "results": [
+    {
+      "case": "literal",
+      "compression_requested": false,
+      "target": "existing live gateway; no restart performed",
+      "passed": false,
+      "error": "HTTPError: HTTP Error 503: Service Unavailable",
+      "seconds": 33.406
+    },
+    {
+      "case": "literal",
+      "compression_requested": true,
+      "target": "existing live gateway; no restart performed",
+      "status": 200,
+      "model": "gemini-3.5-flash-lite",
+      "provider": "google_native",
+      "content": "{\n  \"answer\": \"actually-do-not-change!!\"\n}",
+      "passed": true,
+      "seconds": 10.969
+    },
+    {
+      "case": "conditional",
+      "compression_requested": false,
+      "target": "existing live gateway; no restart performed",
+      "status": 200,
+      "model": "gemini-3.5-flash-lite",
+      "provider": "google_native",
+      "content": "{\n  \"deploy\": false\n}",
+      "passed": true,
+      "seconds": 4.312
+    },
+    {
+      "case": "conditional",
+      "compression_requested": true,
+      "target": "existing live gateway; no restart performed",
+      "status": 200,
+      "model": "ministral-14b-latest",
+      "provider": "mistral",
+      "content": "{\n  \"deploy\": false\n}",
+      "passed": true,
+      "seconds": 3.235
+    }
+  ],
+  "total": 4,
+  "passed": 3,
+  "note": "Small live baseline smoke probes, not a production benchmark and not deployment verification of edited code."
+}

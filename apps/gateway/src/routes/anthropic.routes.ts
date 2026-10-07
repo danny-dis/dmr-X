@@ -15,6 +15,7 @@ import {
 } from '../lib/wire-errors.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { compressionService } from '../services/compression.js';
+import { parseCompressionHeader, compressionControlEnabled } from '../services/compression-control.js';
 
 // `cache_control` (prompt caching) is accepted and preserved through parsing
 // on every block type that supports it below. It is NOT yet threaded through
@@ -170,6 +171,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data;
+    const headerConfig = parseCompressionHeader(request.headers['x-compression']);
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
@@ -346,24 +348,22 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     // Apply compression if enabled
     let compressionMetadata = undefined;
     const tenantId = (request as any).tenant?.id;
-    const apiKeyId = (request as any).apiKeyId;
+    const apiKeyId = (request as any).tenant?.apiKeyId ?? (request as any).apiKeyId;
 
-    if (tenantId || apiKeyId) {
+    if (tenantId || apiKeyId || headerConfig) {
       try {
         const tenantConfig = tenantId ? compressionService.getTenantConfig(tenantId) : undefined;
         const apiKeyConfig = apiKeyId ? compressionService.getApiKeyConfig(apiKeyId) : undefined;
 
-        if (tenantConfig?.enabled || apiKeyConfig?.enabled) {
+        if (compressionControlEnabled(compressionService.getGlobalConfig(), tenantConfig, apiKeyConfig, headerConfig)) {
           // Convert Anthropic messages to standard format for compression
-          const messagesForCompression = body.messages.map(m => ({
-            role: m.role,
-            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-          }));
+          const messagesForCompression = body.messages;
 
           const { compressed, metadata } = await compressionService.compressPrompt(
             messagesForCompression,
             tenantConfig,
-            apiKeyConfig
+            { ...apiKeyConfig, ...headerConfig },
+            tenantId ? { tenantId, apiKeyId } : undefined
           );
 
           // Convert back to Anthropic format

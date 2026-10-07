@@ -1,4 +1,5 @@
 export { Router, type RouterConfig } from './router.service.js';
+export { assertValidOutput, validateOutputContract, type OutputContract } from './output-validation.js';
 export { classifyTask, type ClassifyOptions } from './classifier/task-classifier.js';
 export { detectModality } from './classifier/modality-detector.js';
 export { extractCapabilities } from './classifier/capability-extractor.js';

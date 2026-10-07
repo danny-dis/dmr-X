@@ -135,7 +135,8 @@ export async function authMiddleware(server: FastifyInstance): Promise<void> {
     // Toggling local mode requires a gateway restart.
 
     // Admin routes: skip auth in local mode for UI access, block in managed mode
-    if (pathname.startsWith('/v1/admin')) {
+    if (pathname.startsWith('/v1/admin') || pathname === '/v1/compression/config' ||
+        pathname === '/v1/compression/cleanup') {
       if (DEPLOYMENT_MODE === 'managed') {
         throw new AuthenticationError('Admin API is not available in managed mode');
       }
