@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { TestClient } from './test-client.js';
+import { hasUsableProviders } from './provider-readiness.js';
 
 const describeE2E = process.env.DMRX_RUN_E2E === 'true' ? describe : describe.skip;
 
@@ -12,18 +13,16 @@ describeE2E('Agent Integration (Codex & Antigravity)', () => {
     client = new TestClient(baseUrl);
     try {
       const models = await client.getModels();
-      hasProviders = models.data && models.data.length > 0;
+      const health = await fetch(`${baseUrl}/healthz`);
+      hasProviders = hasUsableProviders(models, await health.json());
     } catch {
       hasProviders = false;
     }
   });
 
   describe('Codex Integration (OpenAI-compatible)', () => {
-    it('should accept Codex-format chat completions', async () => {
-      if (!hasProviders) {
-        console.log('Skipping Codex test — no providers registered');
-        return;
-      }
+    it('should accept Codex-format chat completions', async (context) => {
+      if (!hasProviders) context.skip('No available routing candidates; catalog discovery is not inference readiness');
       // Codex uses standard OpenAI /v1/chat/completions endpoint
       const response = await client.request('/v1/chat/completions', {
         model: 'auto-coding',
@@ -35,11 +34,8 @@ describeE2E('Agent Integration (Codex & Antigravity)', () => {
       expect(response.choices[0].message.content).toBeDefined();
     });
 
-    it('should return streaming for Codex requests', async () => {
-      if (!hasProviders) {
-        console.log('Skipping Codex streaming test — no providers registered');
-        return;
-      }
+    it('should return streaming for Codex requests', async (context) => {
+      if (!hasProviders) context.skip('No available routing candidates; catalog discovery is not inference readiness');
       const response = await fetch(`${client.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -54,10 +50,6 @@ describeE2E('Agent Integration (Codex & Antigravity)', () => {
     });
 
     it('should expose models for Codex discovery', async () => {
-      if (!hasProviders) {
-        console.log('Skipping Codex discovery test — no providers registered');
-        return;
-      }
       const models = await client.getModels();
       expect(models.data).toBeDefined();
       // Should have at least one model suitable for coding
@@ -69,11 +61,8 @@ describeE2E('Agent Integration (Codex & Antigravity)', () => {
   });
 
   describe('OpenCode Integration (OpenAI-compatible)', () => {
-    it('should accept OpenCode-format chat completions', async () => {
-      if (!hasProviders) {
-        console.log('Skipping OpenCode test — no providers registered');
-        return;
-      }
+    it('should accept OpenCode-format chat completions', async (context) => {
+      if (!hasProviders) context.skip('No available routing candidates; catalog discovery is not inference readiness');
       // OpenCode uses the standard OpenAI /v1/chat/completions endpoint
       const response = await client.request('/v1/chat/completions', {
         model: 'auto-coding',
@@ -85,11 +74,8 @@ describeE2E('Agent Integration (Codex & Antigravity)', () => {
       expect(response.choices[0].message.content).toBeDefined();
     });
 
-    it('should return streaming for OpenCode requests', async () => {
-      if (!hasProviders) {
-        console.log('Skipping OpenCode streaming test — no providers registered');
-        return;
-      }
+    it('should return streaming for OpenCode requests', async (context) => {
+      if (!hasProviders) context.skip('No available routing candidates; catalog discovery is not inference readiness');
       const response = await fetch(`${client.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

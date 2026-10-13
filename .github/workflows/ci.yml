@@ -82,7 +82,7 @@ jobs:
       - name: Run native MCP input validator tests
         # Same guardrail cases as the Vitest-quarantined file, with the real
         # implementation under Bun rather than the failing Vitest worker graph.
-        run: bun test tests/native/mcp-input-validator.test.ts
+        run: bun test tests/native
       - name: Run UI tests
         run: bun vitest run --project ui --coverage.enabled=false
       - name: Test release preflight guards
@@ -195,16 +195,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [typecheck, build]
-    # Kept non-blocking ON PURPOSE. We verify the gateway *starts* and serves
-    # /healthz + the conversation routes, then run the real `tests/e2e` suites
-    # with DMRX_RUN_E2E=true (they self-gate on that env) against the live
-    # gateway — which is genuinely more than the old healthz-only smoke test.
-    #
-    # But `tests/e2e/providers.test.ts` makes real upstream calls to Google
-    # Gemini and OpenRouter, and CI has no provider secrets, so those
-    # assertions fail here every run. Until those keys are added as CI
-    # secrets (or the key-dependent cases are gated on their presence), this
-    # job reports but must not gate the build.
+    # Required gate: startup and protocol smoke checks always run.
+    # Secret-free CI cannot verify paid-provider inference. Provider-dependent
+    # cases use real readiness, not nonempty catalog discovery.
+    # Real-provider verification is a separate release acceptance gate.
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
