@@ -83,6 +83,14 @@ export class AgentRuntimeService {
     if (!['ready', 'running'].includes(instance.lifecycleState)) {
       return null;
     }
+
+    // Validate the definition and run permission before mutating lifecycle.
+    // An orphan or revoked share must not wake an instance it cannot run.
+    const definition = await agentRegistryService.getDefinition(instance.agentDefinitionId);
+    if (!definition) return null;
+    if (definition.tenantId !== tenantId &&
+        !await agentRegistryService.canAccessDefinition(definition.id, tenantId, 'run')) return null;
+
     if (instance.lifecycleState === 'ready') {
       const running = await agentRegistryService.transitionInstanceLifecycle(
         instance.id,
@@ -96,12 +104,6 @@ export class AgentRuntimeService {
       const refreshed = await agentRegistryService.getInstance(instance.id);
       if (refreshed) instance = refreshed;
     }
-
-    const definition = await agentRegistryService.getDefinition(instance.agentDefinitionId);
-    if (!definition) return null;
-    // Re-check on every run/resume, including previously deployed shared agents.
-    if (definition.tenantId !== tenantId &&
-        !await agentRegistryService.canAccessDefinition(definition.id, tenantId, 'run')) return null;
 
     return {
       instanceId: instance.id,

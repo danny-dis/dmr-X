@@ -176,7 +176,7 @@ describe('Gemini native adapter — tool history round-trip', () => {
 
     expect(modelTurn.role).toBe('model');
     expect(modelTurn.parts).toEqual([
-      { functionCall: { name: 'bash', args: { command: ['ls'] } } },
+      { functionCall: { name: 'bash', args: { command: ['ls'] } }, thoughtSignature: 'skip_thought_signature_validator' },
     ]);
 
     // Gemini puts tool results in a user-role content block, exactly once.

@@ -311,20 +311,22 @@ export function buildAgentCard(
     supportedInterfaces: [primaryInterface, ...(config.additionalInterfaces ?? [])],
   };
 
-  // v1.0 security declaration. Credentials are never embedded in the public card.
-  if (process.env.DMRX_A2A_REQUIRE_AUTH !== 'false' && (process.env.NODE_ENV === 'production' || process.env.DMRX_A2A_API_KEY || process.env.DMRX_MCP_API_KEY)) {
-    card.securitySchemes = {
-      httpBearer: {
-        httpAuthSecurityScheme: {
-          scheme: 'bearer',
-          bearerFormat: 'API key',
-          description: 'Bearer credential obtained out-of-band',
-        },
+  // Task ownership requires a bearer-derived principal even in development
+  // with no configured key policy. Advertise the actual task contract, not
+  // an env-only approximation of the listener's authentication configuration.
+  // Credentials are always supplied out-of-band, never embedded in this card.
+  card.securitySchemes = {
+    httpBearer: {
+      httpAuthSecurityScheme: {
+        scheme: 'bearer',
+        bearerFormat: 'API key',
+        description: 'Bearer credential obtained out-of-band; required for task ownership',
       },
-      ...(card.securitySchemes || {}),
-    };
-    card.securityRequirements = [{ schemes: { httpBearer: { list: [] } } }];
-  }
+    },
+  };
+  card.securityRequirements = [{ schemes: { httpBearer: { list: [] } } }];
+  card.security = [{ httpBearer: [] }];
+  card.authentication = { schemes: ['Bearer'] };
   // Optional fields are omitted rather than emitted as `undefined`, so the
   // serialized card never carries keys a consumer must special-case.
   if (config.authentication) card.authentication = config.authentication;

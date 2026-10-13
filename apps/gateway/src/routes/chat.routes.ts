@@ -167,6 +167,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 // starts, attempts never retry (see catch below).
                 const AUTOFREE_TTFT_MS =
                   Number(process.env.DMRX_AUTOFREE_TTFT_MS ?? 12000);
+                const wrapDeadline = Date.now() + AUTOFREE_STREAM_TIMEOUT_MS;
                 // SSE keepalive comments while waiting pre-first-chunk so
                 // idle intermediaries don't reap the connection. 0 disables.
                 // Keepalives are transport comments, never semantic output:
@@ -176,8 +177,18 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                   Number(process.env.DMRX_AUTOFREE_KEEPALIVE_MS ?? 15000);
                 let godmodeClientAborted = false;
                 let wrapOutputStarted = false;
-                const onGodmodeClientClose = () => { godmodeClientAborted = true; };
-                request.raw.on('close', onGodmodeClientClose);
+                let activeAttemptController: AbortController | undefined;
+                const onGodmodeClientClose = () => {
+                  if (reply.raw.writableEnded) return;
+                  godmodeClientAborted = true;
+                  activeAttemptController?.abort(new Error('caller disconnected'));
+                };
+                const onGodmodeRequestAborted = () => {
+                  godmodeClientAborted = true;
+                  activeAttemptController?.abort(new Error('caller request aborted'));
+                };
+                reply.raw.on('close', onGodmodeClientClose);
+                request.raw.on('aborted', onGodmodeRequestAborted);
                 const drainWrapStream = async (): Promise<void> => {
                   let keepalive: ReturnType<typeof setInterval> | undefined;
                   const stopKeepalive = () => {
@@ -199,6 +210,11 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                     // observes them.
                     let sent = false;
                     let sawToolCalls = false;
+                    let hasUpstreamFinishReason = false;
+                    let upstreamFinishReason: string | null | undefined;
+                    let upstreamUsage: any;
+                    const attemptController = new AbortController();
+                    activeAttemptController = attemptController;
                   try {
                     // Manual iterator (not for-await) so a hung upstream
                     // next() can be abandoned on the TTFT bound. The done
@@ -213,7 +229,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                       top_p: body.top_p,
                       tools: (body as any).tools,
                       tool_choice: (body as any).tool_choice,
-                    });
+                    }, { signal: attemptController.signal, timeoutMs: Math.max(1, wrapDeadline - Date.now()) });
                     const it = (iterable as AsyncIterable<unknown>)[Symbol.asyncIterator]();
                     // TTFT is measured from attempt start to the first
                     // SEMANTIC chunk — empty keepalive-style deltas from the
@@ -221,12 +237,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                     // disables the per-model bound (total watchdog remains).
                     const attemptStart = Date.now();
                     const abortAttempt = () => {
-                      void Promise.resolve()
-                        .then(() => it.return?.() as unknown)
-                        .then(
-                          () => {},
-                          () => {},
-                        );
+                      if (!attemptController.signal.aborted) attemptController.abort(new Error(`auto-free wrap model ${wrapModel}: attempt abandoned`));
+                      void Promise.resolve().then(() => it.return?.() as unknown).then(() => {}, () => {});
                     };
                     while (true) {
                       if (godmodeClientAborted) return;
@@ -263,11 +275,17 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                       if (!delta || typeof delta !== 'object') continue;
                       const chunkDelta: any = {};
                       if (delta.content) chunkDelta.content = delta.content;
-                      if (delta.tool_calls) {
+                      if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
                         chunkDelta.tool_calls = delta.tool_calls;
                         sawToolCalls = true;
                       }
-                      if (delta.content || delta.tool_calls) {
+                      // Null is an in-progress delta, not a terminal finish reason.
+                      if (delta.finish_reason !== undefined && delta.finish_reason !== null) {
+                        hasUpstreamFinishReason = true;
+                        upstreamFinishReason = delta.finish_reason;
+                      }
+                      if (delta.usage !== undefined) upstreamUsage = delta.usage;
+                      if (delta.content || chunkDelta.tool_calls) {
                         reply.raw.write(
                           `data: ${JSON.stringify({
                             id: `gm-${requestId}`,
@@ -287,7 +305,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                           id: `gm-${requestId}`,
                           object: 'chat.completion.chunk',
                           model: wrapModel,
-                          choices: [{ index: 0, delta: {}, finish_reason: sawToolCalls ? 'tool_calls' : 'stop' }],
+                          choices: [{ index: 0, delta: {}, finish_reason: hasUpstreamFinishReason ? upstreamFinishReason : (sawToolCalls ? 'tool_calls' : 'stop') }],
+                          ...(upstreamUsage !== undefined ? { usage: upstreamUsage } : {}),
                         })}\n\n`,
                       );
                       reply.raw.write('data: [DONE]\n\n');
@@ -296,6 +315,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                     }
                     logger.info({ requestId, wrapModel }, 'auto-free godmode stream attempt empty; trying next picked model');
                   } catch (e) {
+                    if (!attemptController.signal.aborted) attemptController.abort(e);
+                    if (activeAttemptController === attemptController) activeAttemptController = undefined;
                     if (sent) {
                       // Output already began on this model: never retry or
                       // mix in another model's chunks — close terminally.
@@ -332,6 +353,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                   // operator permits an unwrapped answer. Never mix models.
                   const mayFallback = !wrapOutputStarted && !godmodeClientAborted && !isGodmodeStrict();
                   godmodeClientAborted = true; // stop any late watchdog drain
+                  activeAttemptController?.abort(e);
+                  activeAttemptController = undefined;
                   logger.warn({ requestId, err: e, mayFallback }, 'auto-free godmode stream failed');
                   if (!mayFallback) {
                     if (!reply.raw.writableEnded) {
@@ -343,7 +366,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                   }
                 } finally {
                   if (watchdog !== undefined) clearTimeout(watchdog);
-                  request.raw.off('close', onGodmodeClientClose);
+                  reply.raw.off('close', onGodmodeClientClose);
+                  request.raw.off('aborted', onGodmodeRequestAborted);
                 }
                 // Non-strict, pre-output failure falls through to the same
                 // free-only router path used when the proxy is unavailable.
@@ -419,6 +443,20 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           }
         }
       } catch (err) {
+        // Fail closed even if wrapper preparation/imports throw before the
+        // normal unavailable branch. Strict mode must never reach plain routing.
+        if (process.env.DMRX_GODMODE_STRICT === 'true') {
+          logger.error({ err, requestId }, 'auto-free godmode reroute failed in strict mode; refusing plain fallback');
+          const error = { message: 'auto-free godmode proxy unavailable (strict mode)', type: 'server_error', code: 'godmode_unavailable' };
+          if (reply.raw.headersSent) {
+            if (!reply.raw.writableEnded && !reply.raw.destroyed) {
+              reply.raw.write(`data: ${JSON.stringify({ error })}\n\n`);
+              reply.raw.end('data: [DONE]\n\n');
+            }
+            return;
+          }
+          return reply.status(503).send({ error });
+        }
         logger.error({ err, requestId }, 'auto-free godmode reroute failed; falling back to normal routing');
       }
     }

@@ -5168,9 +5168,13 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
         }
 
         const json = res.json ?? {};
-        const items: any[] = json.items ?? [];
+        // A missing joined definition is an orphan, not a callable agent.
+        // Keep its historical row intact; omit it only from discovery.
+        const items: any[] = (json.items ?? []).filter((i: any) =>
+          Boolean(i.definitionName || i.definitionHumanName),
+        );
         const result = {
-          total: json.total ?? items.length,
+          total: items.length,
           agents: items.map((i: any) => ({
             instanceId: i.id,
             status: i.status,
@@ -5250,6 +5254,15 @@ export function createDMRXMcpServer(config: DMRXMcpServerConfig = {}): {
           agentName: json.agentName,
           model: json.model,
           usage: json.usage,
+          // Preserve the gateway's execution evidence and whole-run totals.
+          // Explicitly select fields: never forward arbitrary upstream metadata.
+          status: json.status,
+          all_steps: json.all_steps,
+          steps_completed: json.steps_completed,
+          totalTokens: json.totalTokens,
+          costUsd: json.costUsd,
+          pending_tool_calls: json.pending_tool_calls,
+          budget_exceeded: json.budget_exceeded,
         };
 
         return {

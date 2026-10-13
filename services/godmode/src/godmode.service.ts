@@ -26,6 +26,8 @@ import type {
   TransformRequest,
   TransformResponse,
   GodmodeTierInfo,
+  GodmodeStreamDelta,
+  GodmodeStreamOptions,
 } from './types.js';
 
 export class GodmodeService {
@@ -153,7 +155,10 @@ export class GodmodeService {
    * ({ content?, tool_calls? }) so callers can round-trip tool calls
    * through the G0DM0D3 relay without losing function-call payloads.
    */
-  async *chatStreamFull(request: GodmodeChatRequest): AsyncIterable<{ content?: string; tool_calls?: any[] }> {
+  async *chatStreamFull(
+    request: GodmodeChatRequest,
+    options: GodmodeStreamOptions = {},
+  ): AsyncIterable<GodmodeStreamDelta> {
     this.assertInitialized();
 
     if (!request.model) {
@@ -167,56 +172,110 @@ export class GodmodeService {
       openrouter_api_key: this.config.openrouterApiKey,
       stream: true,
     };
+    const controller = new AbortController();
+    const timeoutMs = options.timeoutMs ?? 120000;
+    let timedOut = false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let abortReject: ((reason: unknown) => void) | undefined;
+    const abortPromise = new Promise<never>((_, reject) => { abortReject = reject; });
+    // Attach a rejection observer immediately; a pre-aborted caller can reject before the first race is installed.
+    void abortPromise.catch(() => {});
+    const abortWithReason = (reason: unknown) => {
+      if (!controller.signal.aborted) controller.abort(reason);
+      abortReject?.(reason instanceof Error ? reason : new Error('G0DM0D3 stream aborted'));
+    };
+    const onCallerAbort = () => abortWithReason(options.signal?.reason);
+    if (options.signal?.aborted) onCallerAbort();
+    else options.signal?.addEventListener('abort', onCallerAbort, { once: true });
+    const timeoutId = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          abortWithReason(new Error(`G0DM0D3 stream timed out after ${timeoutMs}ms`));
+        }, timeoutMs)
+      : undefined;
 
-    const response = await this.fetchWithTimeout(
-      `${this.config.baseUrl}/v1/chat/completions`,
-      {
+    try {
+      if (options.signal?.aborted) throw options.signal.reason ?? new Error('G0DM0D3 stream aborted');
+      const fetchPromise = fetch(`${this.config.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: this.getHeaders(),
         body: JSON.stringify(body),
-        timeoutMs: 120000,
+        signal: controller.signal,
+      });
+      const response = await Promise.race([fetchPromise, abortPromise]);
+      if (!response.ok) {
+        const errorText = await Promise.race([response.text().catch(() => response.statusText), abortPromise]);
+        throw new Error(`G0DM0D3 stream failed: ${response.status} ${errorText}`);
       }
-    );
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`G0DM0D3 stream failed: ${response.status} ${errorText}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') return;
-          let parsed: any;
-          try {
-            parsed = JSON.parse(data);
-          } catch {
-            // Ignore malformed transport frames, never upstream error frames.
-            continue;
-          }
-          if (parsed.error) {
-            throw new Error(`G0DM0D3 relay stream failed: ${parsed.error.message ?? JSON.stringify(parsed.error)}`);
-          }
-          const delta = parsed.choices?.[0]?.delta;
-          const out: { content?: string; tool_calls?: any[] } = {};
-          if (delta?.content) out.content = delta.content;
-          if (delta?.tool_calls) out.tool_calls = delta.tool_calls;
-          if (out.content !== undefined || out.tool_calls) yield out;
+      reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finished = false;
+      const emitFrame = (frame: string): GodmodeStreamDelta | undefined => {
+        const data = frame.split(/\r?\n/)
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).replace(/^ /, ''))
+          .join('\n');
+        if (!data) return undefined;
+        if (data.trim() === '[DONE]') {
+          finished = true;
+          return undefined;
         }
+        let parsed: any;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          // Malformed transport JSON is not an upstream API error frame.
+          return undefined;
+        }
+        if (parsed.error) {
+          throw new Error(`G0DM0D3 relay stream failed: ${parsed.error.message ?? JSON.stringify(parsed.error)}`);
+        }
+        const choice = parsed.choices?.[0];
+        const delta = choice?.delta;
+        const out: GodmodeStreamDelta = {};
+        if (delta?.content !== undefined) out.content = delta.content;
+        if (delta?.tool_calls !== undefined) out.tool_calls = delta.tool_calls;
+        if (choice && Object.prototype.hasOwnProperty.call(choice, 'finish_reason')) out.finish_reason = choice.finish_reason;
+        if (parsed.usage !== undefined) out.usage = parsed.usage;
+        return Object.keys(out).length ? out : undefined;
+      };
+
+      while (!finished) {
+        const readPromise = reader.read();
+        const { done, value } = await Promise.race([readPromise, abortPromise]);
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        while (!finished) {
+          const separator = /\r?\n\r?\n/.exec(buffer);
+          if (!separator) break;
+          const separatorIndex = separator.index ?? 0;
+          const frame = buffer.slice(0, separatorIndex);
+          buffer = buffer.slice(separatorIndex + separator[0].length);
+          const out = emitFrame(frame);
+          if (out) yield out;
+        }
+      }
+      if (!finished && buffer.trim()) {
+        const out = emitFrame(buffer);
+        if (out) yield out;
+      }
+    } catch (error) {
+      if (timedOut) throw new Error(`G0DM0D3 stream timed out after ${timeoutMs}ms`);
+      throw error;
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      options.signal?.removeEventListener('abort', onCallerAbort);
+      if (!controller.signal.aborted) controller.abort();
+      if (reader) {
+        // cancel() resolves a pending read; do not wait on an uncooperative source.
+        void reader.cancel().catch(() => {});
+        try { reader.releaseLock(); } catch { /* a pending implementation read may still own the lock */ }
       }
     }
   }

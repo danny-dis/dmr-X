@@ -1,0 +1,239 @@
+--- a/api/routes/chat.ts
++++ b/api/routes/chat.ts
+@@ -85,6 +85,14 @@
+   return String(content)
+ }
+ 
++// DMR-X full tool pipeline: transform prose while protecting coding payloads.
++export function transformCodingProse(content: string, transform: (text: string) => string): string {
++  // Structured JSON is data, not prose (including whole JSON strings/arrays).
++  try { JSON.parse(content); return content } catch {}
++  const protectedRegions = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`+[^`\n]*`+|(?:https?:\/\/|[A-Za-z]:[\\/]|\.{0,2}\/|\b[\w.-]+[\\/])[^\s<>]+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g
++  return content.split(protectedRegions).map((part, index) => index % 2 ? part : transform(part)).join('')
++}
++
+ /**
+  * Build the G0DM0D3 pipeline: resolve params, system prompt, parseltongue, etc.
+  * Returns everything needed to send to the LLM and build the response.
+@@ -115,20 +123,19 @@
+     frequency_penalty, presence_penalty, repetition_penalty,
+   } = opts
+ 
+-  // Normalize messages
+-  const normalizedMessages = messages.map((m: any) => ({
+-    role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+-    content: coerceContent(m.content),
+-    // Preserve assistant tool_calls so tool-calling loops survive the relay.
+-    ...(Array.isArray(m.tool_calls) ? { tool_calls: m.tool_calls } : {}),
+-    // DMR-X preserve tool-result identity through normalization.
+-    ...(m.tool_call_id !== undefined ? { tool_call_id: m.tool_call_id } : {}),
+-  }))
+-
+-  // Build system prompt
+-  const systemPrompt = godmode
++  // DMR-X preserve tool-result identity through normalization.
++  // Preserve raw protocol content, names, multimodal parts and tool identity.
++  // Coercion is for analysis only; it must never rewrite a structured payload.
++  const normalizedMessages = messages.map((m: any) => ({ ...m }))
++
++  // Retain caller coding rules before appending the full GODMODE persona.
++  const callerSystem = normalizedMessages.filter(m => m.role === 'system')
++    .map(m => coerceContent(m.content)).join('\n\n')
++  const personaPrompt = godmode
+     ? (custom_system_prompt || GODMODE_SYSTEM_PROMPT) + DEPTH_DIRECTIVE
+     : custom_system_prompt || ''
++  const toolContract = 'DMR-X coding contract: Preserve the caller coding instructions and exact requested code, paths and identifiers. Use the supplied tools when needed. Respect tool dependencies: wait for a successful write result before reading or executing that file; never issue dependent operations together in the same assistant turn. If a tool errors, recover and verify it before claiming success. Tool names, argument JSON and tool-result payloads are protocol data: do not restyle, obfuscate or reinterpret their bytes. Put tool invocations in tool_calls, not prose.'
++  const systemPrompt = [callerSystem, personaPrompt, godmode ? toolContract : ''].filter(Boolean).join('\n\n')
+ 
+   const allMessages = [
+     ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+@@ -137,10 +144,10 @@
+ 
+   // AutoTune
+   const lastUserMsg = [...normalizedMessages].reverse().find(m => m.role === 'user')
+-  const userContent = lastUserMsg?.content || ''
++  const userContent = coerceContent(lastUserMsg?.content)
+   const conversationHistory = normalizedMessages
+-    .filter(m => m.role !== 'system')
+-    .map(m => ({ role: m.role, content: m.content }))
++    .filter(m => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls?.length))
++    .map(m => ({ role: m.role, content: coerceContent(m.content) }))
+ 
+   let autotuneResult: any = null
+   let finalParams: Record<string, number | undefined> = {
+@@ -188,18 +195,20 @@
+       customTriggers: [],
+     }
+ 
++    const transformText = (text: string) => transformCodingProse(text, (prose) => {
++      const result = applyParseltongue(prose, ptConfig)
++      if (result.triggersFound.length > 0) {
++        if (!parseltongueResult) parseltongueResult = { triggers_found: [], technique_used: result.techniqueUsed, transformations_count: 0 }
++        parseltongueResult.triggers_found.push(...result.triggersFound)
++        parseltongueResult.transformations_count += result.transformations.length
++      }
++      return result.transformedText
++    })
+     processedMessages = allMessages.map(m => {
+-      if (m.role === 'user') {
+-        const result = applyParseltongue(m.content, ptConfig)
+-        if (!parseltongueResult && result.triggersFound.length > 0) {
+-          parseltongueResult = {
+-            triggers_found: result.triggersFound,
+-            technique_used: result.techniqueUsed,
+-            transformations_count: result.transformations.length,
+-          }
+-        }
+-        return { ...m, content: result.transformedText }
+-      }
++      if (m.role !== 'user') return m
++      if (typeof m.content === 'string') return { ...m, content: transformText(m.content) }
++      if (Array.isArray(m.content)) return { ...m, content: m.content.map((part: any) =>
++        part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: transformText(part.text) } : part) }
+       return m
+     })
+   }
+@@ -225,7 +234,7 @@
+     ...m,
+     enabled: stm_modules.includes(m.id),
+   }))
+-  const finalResponse = applySTMs(response, enabledModules)
++  const finalResponse = transformCodingProse(response, (prose) => applySTMs(prose, enabledModules))
+   return {
+     finalResponse,
+     stmResult: {
+@@ -253,17 +262,16 @@
+       tools,
+       tool_choice,
+       // G0DM0D3 pipeline options (optional — transparent to OpenAI SDK users)
+-      // Tool-calling requests default to a CLEAN pipeline: no persona
+-      // injection, no AutoTune, no Parseltongue (mangles JSON tool payloads),
+-      // no STM (rewrites tool outputs). Callers may override explicitly.
+-      godmode = !tools,
++      // DMR-X full pipeline stays enabled with tools; only structured data
++      // and exact code regions are protected from textual transformations.
++      godmode = true,
+       custom_system_prompt,
+-      autotune = !tools,
++      autotune = true,
+       strategy = 'adaptive',
+-      parseltongue = !tools,
++      parseltongue = true,
+       parseltongue_technique = 'leetspeak',
+       parseltongue_intensity = 'medium',
+-      stm_modules = tools ? [] : ['hedge_reducer', 'direct_mode'],
++      stm_modules = ['hedge_reducer', 'direct_mode'],
+       // Direct param overrides
+       temperature,
+       top_p,
+@@ -689,6 +697,28 @@
+       const created = Math.floor(Date.now() / 1000)
+       let fullContent = ''
+       let sawToolCalls = false
++      // Stream line-wise so STM reaches OpenAI clients without buffering the
++      // whole answer. Fence state protects code spanning many upstream chunks.
++      let pendingProse = ''
++      let streamFence = ''
++      let structuredText: boolean | undefined
++      const emitProse = (content = '', flush = false) => {
++        pendingProse += content
++        let end: number
++        while ((end = pendingProse.indexOf('\n')) >= 0 || (flush && pendingProse.length > 0)) {
++          const line = end >= 0 ? pendingProse.slice(0, end + 1) : pendingProse
++          pendingProse = end >= 0 ? pendingProse.slice(end + 1) : ''
++          if (structuredText === undefined && line.trim()) structuredText = /^[\s]*[\[{"]/.test(line)
++          const fence = line.match(/^\s*(`{3,}|~{3,})/)
++          const inCode = !!streamFence || !!fence || structuredText
++          if (fence) {
++            if (!streamFence) streamFence = fence[1][0]
++            else if (fence[1][0] === streamFence) streamFence = ''
++          }
++          const output = inCode ? line : applySTMPost(line, stm_modules).finalResponse
++          if (output) res.write(`data: ${JSON.stringify({ id: completionId, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { content: output }, finish_reason: null }] })}\n\n`)
++        }
++      }
+ 
+       try {
+         // Request streaming from OpenRouter
+@@ -767,7 +797,7 @@
+                   const json = JSON.parse(trailing.slice(6))
+                   const content = json.choices?.[0]?.delta?.content
+                   const toolCalls = json.choices?.[0]?.delta?.tool_calls
+-                  if (content) fullContent += content
++                  if (content) { fullContent += content; emitProse(content) }
+                   if (toolCalls) sawToolCalls = true
+                   if (content || toolCalls) {
+                     const chunk = {
+@@ -778,7 +808,6 @@
+                       choices: [{
+                         index: 0,
+                         delta: {
+-                          ...(content ? { content } : {}),
+                           ...(toolCalls ? { tool_calls: toolCalls } : {}),
+                         },
+                         finish_reason: null,
+@@ -800,45 +829,8 @@
+             const trimmed = line.trim()
+             if (!trimmed || trimmed === 'data: [DONE]') {
+               if (trimmed === 'data: [DONE]') {
+-                // Apply STM to full content before sending final chunk —
+-                // but NEVER post-process tool_calls responses (STM would
+-                // rewrite the function-arguments JSON).
+-                const { finalResponse } = sawToolCalls
+-                  ? { finalResponse: fullContent }
+-                  : applySTMPost(fullContent, stm_modules)
+-                // If STM changed the content, send a correction chunk
+-                if (finalResponse !== fullContent) {
+-                  const correctionChunk = {
+-                    id: completionId,
+-                    object: 'chat.completion.chunk',
+-                    created,
+-                    model,
+-                    choices: [{
+-                      index: 0,
+-                      delta: {},
+-                      finish_reason: sawToolCalls ? 'tool_calls' : 'stop',
+-                    }],
+-                    x_g0dm0d3: {
+-                      stm_applied: true,
+-                      final_content: finalResponse,
+-                    },
+-                  }
+-                  res.write(`data: ${JSON.stringify(correctionChunk)}\n\n`)
+-                } else {
+-                  // Send standard stop chunk
+-                  const stopChunk = {
+-                    id: completionId,
+-                    object: 'chat.completion.chunk',
+-                    created,
+-                    model,
+-                    choices: [{
+-                      index: 0,
+-                      delta: {},
+-                      finish_reason: sawToolCalls ? 'tool_calls' : 'stop',
+-                    }],
+-                  }
+-                  res.write(`data: ${JSON.stringify(stopChunk)}\n\n`)
+-                }
++                emitProse('', true)
++                res.write(`data: ${JSON.stringify({ id: completionId, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: sawToolCalls ? 'tool_calls' : 'stop' }] })}\n\n`)
+                 res.write('data: [DONE]\n\n')
+               }
+               continue
+@@ -857,7 +849,7 @@
+               }
+               const content = json.choices?.[0]?.delta?.content
+               const toolCalls = json.choices?.[0]?.delta?.tool_calls
+-              if (content) fullContent += content
++              if (content) { fullContent += content; emitProse(content) }
+               if (toolCalls) sawToolCalls = true
+               if (content || toolCalls) {
+                 // Re-emit in our standard format with our ID
+@@ -869,7 +861,6 @@
+                   choices: [{
+                     index: 0,
+                     delta: {
+-                      ...(content ? { content } : {}),
+                       ...(toolCalls ? { tool_calls: toolCalls } : {}),
+                     },
+                     finish_reason: null,

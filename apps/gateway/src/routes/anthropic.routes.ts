@@ -175,6 +175,12 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
     const qualityTarget = parseQualityTarget(request.headers['x-quality-target'] as string);
+    const godmodeRequest = convertAnthropicRequestToUnified(body, {
+      requestId,
+      tenant: (request as any).tenant,
+      apiFormat: 'anthropic',
+      costFilter: (request.headers['x-cost-filter'] as 'free' | 'all') || undefined,
+    });
 
     // ── auto-free → pick active model, then G0DM0D3 wrap ───────────────────
     // Loop-breaker: X-DMRX-Godmode-Proxy means this is a relay from godmode
@@ -195,10 +201,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
         if (!body.stream) {
           const result = await wrapAutoFreeViaGodmode({
             requestId,
-            messages: body.messages.map(m => ({
-              role: m.role,
-              content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-            })),
+            messages: godmodeRequest.messages ?? [],
             model: body.model,
             candidates,
             costFilter,
@@ -252,95 +255,126 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
         } else {
           const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
           const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
+          let completed = false;
+          let anySemanticOutput = false;
           if (proxyReady) {
             const { getGodmodeService } = await import('@dmr-x/godmode');
             const godmode = getGodmodeService();
             if (godmode.isInitialized()) {
-              reply.raw.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                Connection: 'keep-alive',
-              });
+              const streamService = godmode as unknown as {
+                chatStreamFull(request: Record<string, unknown>, options?: { signal?: AbortSignal; timeoutMs?: number }): AsyncIterable<{
+                  content?: string; tool_calls?: any[]; finish_reason?: string | null;
+                  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+                }>;
+              };
+              const chainTimeoutMs = Number(process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS) || 120000;
+              const firstOutputTimeoutMs = Number(process.env.DMRX_AUTOFREE_TTFT_MS) || 12000;
+              const chainDeadline = Date.now() + chainTimeoutMs;
 
               for (const wrapModel of wrapOrder) {
-                try {
-                  let sent = false;
-                  const toolIdx = new Map<number, string>();
-                  for await (const delta of godmode.chatStreamFull({
-                    messages: body.messages.map(m => ({
-                      role: m.role,
-                      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-                    })),
+                if (Date.now() >= chainDeadline || reply.raw.destroyed) break;
+                const controller = new AbortController();
+                const onDisconnect = () => controller.abort(new Error('Anthropic client disconnected'));
+                reply.raw.once('close', onDisconnect);
+                const startedAt = Date.now();
+                let emittedSemanticOutput = false;
+                let finishReason: string | null = null;
+                let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+                let index = 0;
+                const normalized = async function* () {
+                  const source = streamService.chatStreamFull({
+                    messages: godmodeRequest.messages ?? [],
                     model: wrapModel,
                     temperature: body.temperature,
                     max_tokens: body.max_tokens,
                     top_p: body.top_p,
-                    tools: body.tools ? anthropicToolsToOpenAi(body.tools) : undefined,
-                    tool_choice: body.tool_choice ? anthropicToolChoiceToOpenAi(body.tool_choice) : undefined,
-                  })) {
-                    if (delta.content) {
-                      const event = {
-                        type: 'content_block_delta',
-                        index: 0,
-                        delta: { type: 'text_delta', text: delta.content },
-                      };
-                      reply.raw.write(`event: content_block_delta\ndata: ${JSON.stringify(event)}\n\n`);
-                      sent = true;
-                    }
-                    if (Array.isArray(delta.tool_calls)) {
-                      for (const tc of delta.tool_calls) {
-                        const idx = tc.index ?? 0;
-                        if (!toolIdx.has(idx)) {
-                          toolIdx.set(idx, tc.id ?? `toolu_${requestId}`);
-                          reply.raw.write(`event: content_block_start\ndata: ${JSON.stringify({
-                            type: 'content_block_start',
-                            index: idx,
-                            content_block: {
-                              type: 'tool_use',
-                              id: toolIdx.get(idx),
-                              name: tc.function?.name ?? 'tool',
-                              input: {},
-                            },
-                          })}\n\n`);
-                        }
-                        if (tc.function?.arguments) {
-                          reply.raw.write(`event: content_block_delta\ndata: ${JSON.stringify({
-                            type: 'content_block_delta',
-                            index: idx,
-                            delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
-                          })}\n\n`);
-                        }
-                        sent = true;
+                    stop: body.stop_sequences,
+                    tools: godmodeRequest.tools,
+                    tool_choice: godmodeRequest.tool_choice,
+                  }, { signal: controller.signal, timeoutMs: Math.max(1, chainDeadline - Date.now()) });
+                  const iterator = source[Symbol.asyncIterator]();
+                  try {
+                    while (true) {
+                      const now = Date.now();
+                      const remaining = Math.min(
+                        chainDeadline - now,
+                        emittedSemanticOutput ? chainDeadline - now : firstOutputTimeoutMs - (now - startedAt),
+                      );
+                      if (remaining <= 0) throw new Error(emittedSemanticOutput ? 'GODMODE stream chain deadline exceeded' : 'GODMODE stream first-output deadline exceeded');
+                      let timer: ReturnType<typeof setTimeout> | undefined;
+                      let next: IteratorResult<any>;
+                      try {
+                        next = await Promise.race([
+                          iterator.next(),
+                          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(emittedSemanticOutput ? 'GODMODE stream chain deadline exceeded' : 'GODMODE stream first-output deadline exceeded')), remaining); }),
+                        ]);
+                      } finally { if (timer) clearTimeout(timer); }
+                      if (next.done) break;
+                      const delta = next.value;
+                      if (delta.finish_reason !== undefined && delta.finish_reason !== null) finishReason = delta.finish_reason;
+                      if (delta.usage) usage = delta.usage;
+                      const tokenData: any = {};
+                      if (typeof delta.content === 'string' && delta.content.length > 0) tokenData.content = delta.content;
+                      if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) tokenData.tool_calls = delta.tool_calls;
+                      if (tokenData.content !== undefined || tokenData.tool_calls) {
+                        emittedSemanticOutput = true;
+                        anySemanticOutput = true;
+                        yield { type: 'token', data: tokenData, index: index++ };
                       }
                     }
+                  } finally {
+                    // Abort before closing: return() cannot unblock a pending read
+                    // in an iterator that ignores cancellation. Never await it here.
+                    if (!controller.signal.aborted) controller.abort();
+                    void Promise.resolve().then(() => iterator.return?.()).catch(() => {});
                   }
-                  if (sent) {
-                    for (const idx of toolIdx.keys()) {
-                      reply.raw.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: idx })}\n\n`);
+                  if (!emittedSemanticOutput) throw new Error('GODMODE stream returned no semantic output');
+                  yield { type: 'done', data: {
+                    requestId, modelId: wrapModel, finishReason: finishReason ?? 'stop',
+                    ...(usage ? { usage: {
+                      ...(typeof usage.prompt_tokens === 'number' ? { prompt_tokens: usage.prompt_tokens } : {}),
+                      ...(typeof usage.completion_tokens === 'number' ? { completion_tokens: usage.completion_tokens } : {}),
+                      ...(typeof usage.total_tokens === 'number' ? { total_tokens: usage.total_tokens } : {}),
+                    } } : {}),
+                  }, index: index++ };
+                };
+                try {
+                  const events = createAnthropicSSEStream(normalized() as any, { model: wrapModel, requestId })[Symbol.asyncIterator]();
+                  let event = await events.next();
+                  if (event.done) throw new Error('GODMODE stream ended without an Anthropic message');
+                  reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+                  reply.raw.write(event.value);
+                  while (!(event = await events.next()).done) reply.raw.write(event.value);
+                  reply.raw.end();
+                  completed = true;
+                  return reply;
+                } catch (error) {
+                  controller.abort(error);
+                  if (reply.raw.headersSent) {
+                    if (!controller.signal.reason?.message?.includes('disconnected')) {
+                      reply.raw.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'GODMODE stream failed' } })}\n\n`);
                     }
-                    reply.raw.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
                     reply.raw.end();
                     return reply;
                   }
-                } catch (e) {
-                  logger.warn({ requestId, wrapModel, err: e }, 'auto-free godmode stream attempt failed; trying next picked model');
+                  logger.warn({ requestId, wrapModel, err: error }, 'auto-free Anthropic GODMODE attempt failed before output');
+                } finally {
+                  reply.raw.off('close', onDisconnect);
                 }
               }
-              reply.raw.end();
-              return reply;
             }
           }
-
-          if (isGodmodeStrict()) {
-            reply.raw.writeHead(503, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-            reply.raw.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'auto-free godmode proxy unavailable (strict mode)' } })}\n\n`);
-            reply.raw.end();
-            return reply;
+          if (!completed && isGodmodeStrict()) {
+            const failure = new ProviderUnavailableError([]);
+            const wire = anthropicWireError(failure, { exposeMessage: shouldExposeInternalError(), requestId });
+            return reply.status(wire.statusCode).send(wire.body);
           }
-          if (wrapOrder[0]) body.model = wrapOrder[0];
+          if (!anySemanticOutput && wrapOrder[0]) body.model = wrapOrder[0];
         }
       } catch (err) {
         if (err instanceof ProviderUnavailableError) throw err;
+        const { isGodmodeStrict } = await import('../lib/godmode-guard.js');
+        if (isGodmodeStrict()) throw new ProviderUnavailableError([]);
         logger.error({ err, requestId }, 'auto-free godmode reroute failed; falling back to normal routing');
       }
     }

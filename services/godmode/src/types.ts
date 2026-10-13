@@ -118,6 +118,24 @@ export interface RaceRanking {
   content_length: number;
 }
 
+export interface GodmodeStreamUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface GodmodeStreamDelta {
+  content?: string;
+  tool_calls?: any[];
+  finish_reason?: string | null;
+  usage?: GodmodeStreamUsage;
+}
+
+export interface GodmodeStreamOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 export interface GodmodeChatResponse {
   id: string;
   object: string;

@@ -47,7 +47,13 @@ export async function* createAnthropicSSEStream(
   ): string[] => {
     const out: string[] = [];
     for (const [, tc] of toolCallsByIndex) {
-      if (tc.name === undefined) continue; // incomplete streamed call, skip
+      if (!tc.name || !tc.id) throw new Error('Incomplete streamed tool call');
+      let args: unknown;
+      try { args = JSON.parse(tc.args); }
+      catch { throw new Error('Invalid streamed tool arguments'); }
+      if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+        throw new Error('Invalid streamed tool arguments');
+      }
       const index = state.nextIndex++;
       out.push(formatEvent('content_block_start', {
         type: 'content_block_start',
@@ -72,6 +78,8 @@ export async function* createAnthropicSSEStream(
   let blockStarted = false;
   let outputTokens = 0;
   let doneReceived = false;
+  let failed = false;
+  let sawToolCalls = false;
   const state = { nextIndex: 0 };
 
   // Accumulated tool calls, keyed by the OpenAI tool-call index.
@@ -110,17 +118,19 @@ export async function* createAnthropicSSEStream(
         function?: { name?: string; arguments?: string };
       }> }).tool_calls;
       if (toolCalls && toolCalls.length) {
+        sawToolCalls = true;
         for (const tc of toolCalls) {
           const idx = tc.index ?? 0;
           const existing = toolCallsByIndex.get(idx) ?? { args: '' };
-          if (tc.id !== undefined) existing.id = tc.id;
-          if (tc.function?.name !== undefined) existing.name = tc.function.name;
+          if (tc.id !== undefined) existing.id = (existing.id ?? '') + tc.id;
+          if (tc.function?.name !== undefined) existing.name = (existing.name ?? '') + tc.function.name;
           if (tc.function?.arguments !== undefined) existing.args += tc.function.arguments;
           toolCallsByIndex.set(idx, existing);
         }
-        continue; // tool-call chunks carry no text content
       }
 
+      // A delta can contain both text and tool calls; preserve both.
+      if (!data.content) continue;
       // --- Plain text delta ---
       if (!blockStarted) {
         blockStarted = true;
@@ -160,15 +170,22 @@ export async function* createAnthropicSSEStream(
       }
 
       // Map finish reason using shared mapping from anthropic-converter
-      const finishReason = data.finishReason ?? 'stop';
+      const finishReason = data.finishReason === 'length'
+        ? 'length'
+        : (sawToolCalls ? 'tool_calls' : (data.finishReason ?? 'stop'));
       const stopReason: ClaudeStopReason =
         (ANTHROPIC_STOP_REASON_MAP[finishReason] as ClaudeStopReason) ?? 'end_turn';
 
       // Emit message_delta with stop_reason and usage
+      const promptTokens = data.usage?.prompt_tokens;
+      const completionTokens = data.usage?.completion_tokens;
       yield formatEvent('message_delta', {
         type: 'message_delta',
         delta: { stop_reason: stopReason, stop_sequence: null },
-        usage: { output_tokens: outputTokens },
+        usage: {
+          ...(typeof promptTokens === 'number' ? { input_tokens: promptTokens } : {}),
+          output_tokens: typeof completionTokens === 'number' ? completionTokens : outputTokens,
+        },
       });
 
       // Emit message_stop
@@ -176,6 +193,7 @@ export async function* createAnthropicSSEStream(
         type: 'message_stop',
       });
     } else if (chunk.type === 'error') {
+      failed = true;
       const data = (chunk as ErrorStreamChunk).data;
 
       // Emit error in Anthropic format
@@ -186,8 +204,11 @@ export async function* createAnthropicSSEStream(
           message: data.message ?? 'Unknown error',
         },
       });
+      return; // An error is terminal; never serialize a later success/DONE.
     }
   }
+
+  if (failed) return;
 
   // If stream ended without a done chunk, close gracefully.
   if (started && !doneReceived) {
@@ -203,7 +224,7 @@ export async function* createAnthropicSSEStream(
     }
     yield formatEvent('message_delta', {
       type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      delta: { stop_reason: sawToolCalls ? 'tool_use' : 'end_turn', stop_sequence: null },
       usage: { output_tokens: outputTokens },
     });
     yield formatEvent('message_stop', {

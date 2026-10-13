@@ -12,19 +12,15 @@ vi.mock('../../apps/gateway/src/lib/godmode-guard.js', () => ({
   isGodmodeStrict: vi.fn(),
   wrapAutoFreeViaGodmode: vi.fn(),
 }));
-// NOTE: '@dmr-x/godmode' has no vitest alias and does not resolve by node
-// from tests/unit, so it is mocked by resolved file path — the same file the
-// route's dynamic `await import('@dmr-x/godmode')` resolves to through the
-// apps/gateway workspace symlink (services/godmode/src/index.ts). Mocking by
-// bare specifier here would create a second, route-invisible instance.
-vi.mock('../../services/godmode/src/index.ts', () => ({ getGodmodeService: vi.fn() }));
+vi.mock('@dmr-x/godmode', () => ({ getGodmodeService: vi.fn() }));
 
 import {
   buildGodmodeWrapOrder,
   ensureGodmodeProxy,
   isGodmodeStrict,
+  wrapAutoFreeViaGodmode,
 } from '../../apps/gateway/src/lib/godmode-guard.js';
-import { getGodmodeService } from '../../services/godmode/src/index.ts';
+import { getGodmodeService } from '@dmr-x/godmode';
 
 type Chunk = { type: string; data?: any };
 
@@ -105,6 +101,7 @@ const ENV_KEYS = [
   'DMRX_AUTOFREE_KEEPALIVE_MS',
   'DMRX_FALLBACK_TIMEOUT_MS',
   'DMRX_UPSTREAM_STREAM_TIMEOUT_MS',
+  'DMRX_GODMODE_STRICT',
   'DMRX_STREAM_TTFT_MS',
 ];
 let savedEnv: Record<string, string | undefined>;
@@ -129,6 +126,37 @@ afterEach(() => {
 });
 
 describe('chat stream meta regression (gateway zone only)', () => {
+  it.each([false, true])('strict mode fails closed on preparation exceptions (stream=%s)', async (stream) => {
+    process.env.DMRX_GODMODE_STRICT = 'true';
+    vi.mocked(isGodmodeStrict).mockReturnValue(true);
+    const { app, attempted } = await buildStreamApp({ adapters: {} });
+    vi.spyOn((app as any).router, 'getCandidates').mockImplementation(() => { throw new Error('controlled-wrap-preparation-failure'); });
+    const route = vi.spyOn((app as any).router, 'route');
+    try {
+      const response = await app.inject({ method: 'POST', url: '/chat/completions',
+        payload: { model: 'auto-free', messages: [{ role: 'user', content: 'hello' }], stream },
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json().error.code).toBe('godmode_unavailable');
+      expect(route).not.toHaveBeenCalled();
+      expect(attempted).toEqual([]);
+    } finally { await app.close(); }
+  });
+  it('strict non-streaming failure returns 503 without calling the plain provider router', async () => {
+    vi.mocked(isGodmodeStrict).mockReturnValue(true);
+    vi.mocked(wrapAutoFreeViaGodmode).mockResolvedValue({ status: 'unavailable', wrapOrder: ['test-unavailable'] });
+    const { app, attempted } = await buildStreamApp({ adapters: {} });
+    const route = vi.spyOn((app as any).router, 'route');
+    try {
+      const response = await app.inject({ method: 'POST', url: '/chat/completions',
+        payload: { model: 'auto-free', messages: [{ role: 'user', content: 'hello' }] },
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json().error.code).toBe('godmode_unavailable');
+      expect(route).not.toHaveBeenCalled();
+      expect(attempted).toEqual([]);
+    } finally { await app.close(); }
+  });
   it('abandons a hung provider before semantic output even when it ignores abort', { timeout: 2000 }, async () => {
     process.env.DMRX_STREAM_TTFT_MS = '80';
     process.env.DMRX_FALLBACK_TIMEOUT_MS = '2000';
@@ -649,4 +677,92 @@ describe('auto-free godmode stream bounds (gateway zone only)', () => {
       }
     },
   );
+});
+
+
+describe('GODMODE attempt cancellation contract', () => {
+  it('rejects empty tool-call arrays as zero semantic output in strict mode', async () => {
+    const routerModule = await import('@dmr-x/router');
+    vi.spyOn(routerModule, 'getMetaModel').mockReturnValue({ godmode: true } as any);
+    vi.mocked(buildGodmodeWrapOrder).mockReturnValue(['gm-empty-tools']);
+    vi.mocked(ensureGodmodeProxy).mockResolvedValue(true);
+    vi.mocked(isGodmodeStrict).mockReturnValue(true);
+    vi.mocked(getGodmodeService).mockReturnValue({
+      isInitialized: () => true,
+      chatStreamFull: () => (async function* () { yield { tool_calls: [] }; })(),
+    } as any);
+    const app = Fastify({ logger: false });
+    app.decorate('router', { getEffectiveCostFilter: () => 'all', getCandidates: () => [], route: vi.fn() });
+    app.decorate('getAdapter', () => undefined);
+    await app.register(chatRoutes);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/chat/completions', payload: {
+        model: 'auto-free', messages: [{ role: 'user', content: 'fixture' }], stream: true,
+      } });
+      expect(errorFrames(response.body)).not.toEqual([]);
+      expect(dataFrames(response.body).some(frame => frame.choices?.[0]?.finish_reason === 'tool_calls')).toBe(false);
+    } finally { await app.close(); }
+  });
+  it('uses a terminal fallback when upstream finish metadata is only non-terminal null', async () => {
+    const routerModule = await import('@dmr-x/router');
+    vi.spyOn(routerModule, 'getMetaModel').mockReturnValue({ godmode: true } as any);
+    vi.mocked(buildGodmodeWrapOrder).mockReturnValue(['gm-fixture']);
+    vi.mocked(ensureGodmodeProxy).mockResolvedValue(true);
+    vi.mocked(isGodmodeStrict).mockReturnValue(true);
+    vi.mocked(getGodmodeService).mockReturnValue({
+      isInitialized: () => true,
+      chatStreamFull: () => (async function* () { yield { content: 'complete text', finish_reason: null }; })(),
+    } as any);
+    const app = Fastify({ logger: false });
+    app.decorate('router', { getEffectiveCostFilter: () => 'all', getCandidates: () => [], route: vi.fn() });
+    app.decorate('getAdapter', () => undefined);
+    await app.register(chatRoutes);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/chat/completions', payload: {
+        model: 'auto-free', messages: [{ role: 'user', content: 'fixture' }], stream: true,
+      } });
+      const frames = response.body.split('\n').filter(x => x.startsWith('data: ') && !x.includes('[DONE]')).map(x => JSON.parse(x.slice(6)));
+      expect(frames.at(-1).choices[0].finish_reason).toBe('stop');
+    } finally { await app.close(); }
+  });
+  it('passes and aborts the active signal on TTFT abandonment without plain fallback in strict mode', { timeout: 4000 }, async () => {
+    process.env.DMRX_GODMODE_STRICT = 'true';
+    process.env.DMRX_AUTOFREE_TTFT_MS = '40';
+    process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS = '1000';
+    process.env.DMRX_AUTOFREE_KEEPALIVE_MS = '0';
+    const routerModule = await import('@dmr-x/router');
+    vi.spyOn(routerModule, 'getMetaModel').mockReturnValue({ godmode: true } as any);
+    vi.mocked(buildGodmodeWrapOrder).mockReturnValue(['gm-stalled']);
+    vi.mocked(ensureGodmodeProxy).mockResolvedValue(true);
+    vi.mocked(isGodmodeStrict).mockReturnValue(true);
+    let receivedSignal: AbortSignal | undefined;
+    vi.mocked(getGodmodeService).mockReturnValue({
+      isInitialized: () => true,
+      chatStreamFull: (_request: unknown, options?: { signal?: AbortSignal }) => {
+        receivedSignal = options?.signal;
+        return (async function* () {
+          await new Promise<void>((resolve) => receivedSignal?.addEventListener('abort', () => resolve(), { once: true }));
+          throw new Error('fixture observed attempt abort');
+        })();
+      },
+    } as any);
+    const app = Fastify({ logger: false });
+    app.decorate('router', {
+      getEffectiveCostFilter: () => 'all',
+      route: vi.fn(async () => ({ plan: { primary: { providerId: 'plain', modelId: 'plain' }, chain: [], timeoutMs: 1000, maxRetries: 0 } })),
+      getCandidates: () => [],
+    });
+    app.decorate('getAdapter', () => undefined);
+    await app.register(chatRoutes);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/chat/completions',
+        payload: { model: 'auto-free', messages: [{ role: 'user', content: 'fixture request' }], stream: true },
+      });
+      expect(vi.mocked(ensureGodmodeProxy)).toHaveBeenCalled();
+      expect(receivedSignal).toBeInstanceOf(AbortSignal);
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(errorFrames(response.body)[0]?.error.message).toContain('all godmode stream attempts failed');
+      expect((app as any).router.route).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
 });

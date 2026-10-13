@@ -12,6 +12,20 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); vi.clearAllMocks(); });
 
 describe('permanent godmode relay patches', () => {
+  it('upgrades an existing relay clone with the AutoTune fix and skips it once marked', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmrx-patches-autotune-'));
+    dirs.push(dir);
+    const file = path.join(dir, 'src', 'lib', 'autotune.ts');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'const CONTEXT_PATTERNS = { chaotic: [] };');
+    applyGodmodePatches(dir);
+    expect(vi.mocked(spawnSync).mock.calls.some((call) => String(call[1]?.[2]).endsWith('src_lib_autotune_zalgo.ts.patch'))).toBe(true);
+    vi.clearAllMocks();
+    fs.writeFileSync(file, '// DMR-X AutoTune: detect combining overlays, not plain letters');
+    const result = applyGodmodePatches(dir);
+    expect(result.skipped).toContain(path.join('src', 'lib', 'autotune.ts'));
+    expect(vi.mocked(spawnSync).mock.calls.some((call) => String(call[1]?.[2]).endsWith('src_lib_autotune_zalgo.ts.patch'))).toBe(false);
+  });
   it('applies missing tool passthrough patches even when base relay patches already exist', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmrx-patches-'));
     dirs.push(dir);

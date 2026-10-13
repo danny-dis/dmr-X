@@ -1,0 +1,12 @@
+diff --git a/src/lib/autotune.ts b/src/lib/autotune.ts
+--- a/src/lib/autotune.ts
++++ b/src/lib/autotune.ts
+@@ -127,6 +127,7 @@
+   chaotic: [
+     /\b(chaos|random|wild|crazy|absurd|surreal|glitch|corrupt|break|destroy|unleash|madness|void|entropy)\b/i,
+-    /[z̷a̸l̵g̶o̷]/,
++    // DMR-X AutoTune: detect combining overlays, not plain letters
++    /[\u0334-\u0338]/u,
+     /\b(gl1tch|h4ck|pwn|1337|l33t)\b/i,
+     /(!{3,}|\?{3,}|\.{4,})/  // Excessive punctuation
+   ]

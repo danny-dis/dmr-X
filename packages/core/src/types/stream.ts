@@ -1,3 +1,5 @@
+import type { ToolCall } from './request.js';
+
 export interface StreamChunk {
   type: "token" | "image_partial" | "video_partial" | "audio_chunk" | "audio_partial" | "done" | "error";
   data: unknown;
@@ -13,6 +15,7 @@ export interface TokenStreamChunk extends StreamChunk {
       id?: string;
       type?: "function";
       function?: { name?: string; arguments?: string };
+      extra_content?: ToolCall['extra_content'];
     }[];
     role?: string;
   };

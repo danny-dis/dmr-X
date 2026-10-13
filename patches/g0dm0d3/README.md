@@ -67,11 +67,13 @@ recreated by the server-manager — so re-apply after any re-clone.
 | File | Purpose |
 |------|---------|
 | `relay.ts` | New `api/lib/relay.ts`: resolves upstream URL, key, and headers from env. Copy into place. |
+| `src_lib_autotune_zalgo.ts.patch` | Fixes the AutoTune Zalgo character class: match combining overlays (`U+0334`–`U+0338`), not ordinary `a/l/g/o/z`. Registered in the automatic patcher; fresh clones and existing relay installs get the fix idempotently. The isolated verifier exercises real vendor AutoTune, normal accents, conversation history, genuine overlays, and explicit temperature overrides. |
 | `api_routes_chat.ts.patch` | Streaming path + key guard use the resolved upstream. |
 | `src_lib_openrouter.ts.patch` | Non-streaming `sendMessage`/`streamMessage` (the path DMR-X actually calls). |
 | `api_middleware_rateLimit.ts.patch` | Skip the limiter in relay mode; the host gateway owns quotas. |
 | `api_routes_research.ts.patch` | **Not relay-related.** On the pinned commit, `researchRoutes.get('/batch/*', ...)` uses an Express-4-style bare wildcard that `path-to-regexp` v6+ (Express 5.2.1, which G0DM0D3's own `package.json` pins) rejects at import time — the whole process crashes before it can bind to a port, independent of anything DMR-X sends it. Renames it to the named-wildcard form (`/batch/*splat`) and adjusts the param read accordingly. Filed as a real upstream bug; patched here so godmode isn't blocked waiting on it. |
-| `api_routes_chat_tools.ts.patch` | Tool-calling passthrough in the chat route: `tools`/`tool_choice` forwarded upstream, `tool_calls` re-emitted in stream + non-stream responses, pipeline defaults (persona/AutoTune/Parseltongue/STM) turn OFF when `tools` is present, and STM is never applied to `tool_calls` payloads. |
+| `api_routes_chat_tools.ts.patch` | Base tool-calling passthrough: preserves schemas, tool calls and tool-result history. The later full-tool-pipeline upgrade supersedes its clean-pipeline defaults. |
+| `api_routes_chat_full_tool_pipeline.ts.patch` | Enables persona, AutoTune, Parseltongue and semantic prose transformations with attached tools. Retains caller coding instructions and preserves code regions, paths, structured JSON, multimodal parts and tool protocol payloads; streamed transformed prose is delivered in actual content deltas. |
 | `src_lib_openrouter_tools.ts.patch` | New `sendMessageFull` (returns content + `tool_calls`); `tools`/`tool_choice` forwarded in `sendMessage`/`streamMessage`; Message type accepts `role: 'tool'` and `tool_calls`. |
 | `api_lib_ultraplinian.ts.patch` | **ULTRAPLINIAN / CONSORTIUM race engine.** Upstream hardcoded `PROVIDER_ENDPOINTS.openrouter` and raced OpenRouter *slugs*, so every relayed race failed — and the slugs are unresolvable through DMR-X's router even with a key. `queryModel` now routes through `chatCompletionsUrl()`/`upstreamHeaders()` in relay mode (loop-breaker included), and `getModelsForTier()` returns `DMRX_RACE_ALIASES` (meta-model aliases) instead of the slug tables. Upstream slug tables are left byte-identical so this patch keeps applying. |
 | `api_routes_ultraplinian.ts.patch` | The standalone `POST /v1/ultraplinian/completions` route had its own `caller_key \|\| process.env.OPENROUTER_API_KEY` gate that 400'd before the race ran; now uses `isRelayMode()`/`hasUsableUpstream()`. |
@@ -139,8 +141,14 @@ and previously patched clones.
 `auto-free` tries its ranked concrete models first, then retries the wider
 DMR-X free pool **through Godmode**. The relay's loop-breaker header prevents
 recursive wrapping and its free-only headers preserve the cost boundary.
-Tool requests deliberately use the clean pipeline so persona rewriting and
-AutoTune do not corrupt schemas, arguments, or tool results.
+Tool requests keep the full persona and prompt pipeline enabled. Transformations
+apply to prose, not tool schemas, arguments, results, quoted literals or code.
+Caller coding instructions are retained alongside the persona. Clients may
+explicitly override individual pipeline options on the companion endpoint.
+
+The PM2 gateway configuration sets `DMRX_GODMODE_STRICT=true`: failed
+`auto-free` wrapping returns an error rather than an unwrapped provider response.
+This governs `auto-free`; it does not force every other model alias through GODMODE.
 
 ## Verifying
 

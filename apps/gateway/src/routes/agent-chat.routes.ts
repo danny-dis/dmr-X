@@ -146,6 +146,9 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       return reply.code(404).send({ error: { message: 'Agent instance not found or inactive' } });
     }
 
+    // loadContext acquired a running instance. Cleanup must cover preflight
+    // returns as well as the loop's existing hold/lock cleanup below.
+    try {
     const definition = context.definition;
     const requestedConversationId =
       body.conversationId && body.conversationId.length > 0 ? body.conversationId : undefined;
@@ -477,12 +480,14 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
       // Belt-and-braces: the hold is already settled-or-released above; this
       // is a no-op in that case and plugs any early-return leak otherwise.
       await releaseAgentHold((server as any).quotaService, holdId);
+      releaseLock();
+    }
+    } finally {
       // Persistent instances park after a turn; their durable definition,
       // runtime state and conversation remain available for the next wake-up.
       await agentRuntimeService.markInstanceReady(context.instanceId, tenant.id).catch((err) => {
         logger.warn({ instanceId, err }, 'Failed to park hosted agent instance after chat');
       });
-      releaseLock();
     }
   });
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { ProviderError } from '@dmr-x/core';
 import type {
   Modality,
@@ -289,7 +290,7 @@ export class GeminiAPIAdapter extends BaseAdapter {
         content: text,
         ...(functionCalls.length > 0 ? {
           tool_calls: functionCalls.map((fc: any, i: number) => ({
-            id: `gemini_tc_${Date.now()}_${i}`,
+            id: `gemini_tc_${randomUUID()}_${i}`,
             type: 'function' as const,
             function: {
               name: fc.functionCall.name,
@@ -297,6 +298,9 @@ export class GeminiAPIAdapter extends BaseAdapter {
               // object would otherwise serialize as `undefined`.
               arguments: JSON.stringify(fc.functionCall.args ?? {}),
             },
+            ...(typeof fc.thoughtSignature === 'string' && fc.thoughtSignature.length > 0
+              ? { extra_content: { google: { thought_signature: fc.thoughtSignature } } }
+              : {}),
           })),
         } : {}),
       },
@@ -468,12 +472,15 @@ export class GeminiAPIAdapter extends BaseAdapter {
             if (args === null || typeof args !== 'object' || Array.isArray(args)) args = {};
             toolCalls.push({
               index: toolIndex++,
-              id: `gemini_tc_${toolIndex}`,
+              id: `gemini_tc_${randomUUID()}_${toolIndex}`,
               type: 'function',
               function: {
                 name: part.functionCall.name,
                 arguments: JSON.stringify(args),
               },
+              ...(typeof part.thoughtSignature === 'string' && part.thoughtSignature.length > 0
+                ? { extra_content: { google: { thought_signature: part.thoughtSignature } } }
+                : {}),
             });
           }
           // A functionCall with no name is not expressible as an OpenAI
@@ -549,7 +556,9 @@ export class GeminiAPIAdapter extends BaseAdapter {
 
   private getEndpoint(modelId: string, action: string): string {
     const base = 'https://generativelanguage.googleapis.com/v1beta';
-    return `${base}/models/${modelId}:${action}?key=${this.apiKey}`;
+    const endpoint = new URL(`${base}/models/${modelId}:${action}`);
+    endpoint.searchParams.set('key', this.apiKey);
+    return endpoint.toString();
   }
 
   private mapModelId(model: string): string {
@@ -653,6 +662,7 @@ export class GeminiAPIAdapter extends BaseAdapter {
       }
 
       if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+        let isFirstFunctionCall = true;
         for (const tc of msg.tool_calls) {
           // A functionCall without a name is not expressible on the Gemini wire
           // (and would 400); drop that call rather than the whole turn.
@@ -661,7 +671,19 @@ export class GeminiAPIAdapter extends BaseAdapter {
           try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
           // `functionCall.args` is also a Struct: only an object can be sent.
           if (args === null || typeof args !== 'object' || Array.isArray(args)) args = {};
-          parts.push({ functionCall: { name: tc.function.name, args } });
+          const functionCall: Record<string, unknown> = { name: tc.function.name, args };
+          const callPart: Record<string, unknown> = { functionCall };
+          const signature = tc.extra_content?.google?.thought_signature;
+          if (typeof signature === 'string' && signature.length > 0) {
+            callPart.thoughtSignature = signature;
+          } else if (isFirstFunctionCall) {
+            // Imported histories from other providers may lack Google's opaque
+            // state. This documented marker is only a last-resort first-call
+            // validator bypass; never replace a real signature or sibling state.
+            callPart.thoughtSignature = 'skip_thought_signature_validator';
+          }
+          parts.push(callPart);
+          isFirstFunctionCall = false;
         }
       }
 

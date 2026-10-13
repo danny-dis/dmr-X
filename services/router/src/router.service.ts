@@ -320,7 +320,13 @@ export class Router {
     // Opt-out: request.metadata.skipDecomposition === true (set by chat.routes
     // when the body carried decompose:false). Only an explicit true skips —
     // absent/false/any other value preserves the default decompose path.
-    const shouldDecompose = this.config.enableDecomposition !== false &&
+    const hasToolContext = !!request.tools?.length || (request.messages ?? []).some((message) =>
+      message.role === 'tool' ||
+      (message.role === 'assistant' && !!(message as { tool_calls?: unknown[] }).tool_calls?.length)
+    );
+    const shouldDecompose = !opts.planOnly &&
+      !hasToolContext &&
+      this.config.enableDecomposition !== false &&
       request.metadata?.skipDecomposition !== true &&
       this.isComplexPrompt(request) &&
       this.compositeExecutor;

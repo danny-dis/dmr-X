@@ -58,6 +58,7 @@ const backendAlias = {
   '@dmr-x/benchmark': resolve(__dirname, 'services/benchmark/src'),
   '@dmr-x/agent-registry': resolve(__dirname, 'services/agent-registry/src'),
   '@dmr-x/agent-runtime': resolve(__dirname, 'services/agent-runtime/src'),
+  '@dmr-x/godmode': resolve(__dirname, 'services/godmode/src'),
   '@dmr-x/quota': resolve(__dirname, 'services/quota/src'),
   '@dmr-x/workers': resolve(__dirname, 'services/workers/src'),
   '@dmr-x/mcp-client': resolve(__dirname, 'services/mcp-client/src'),
@@ -79,19 +80,12 @@ export default defineConfig({
     alias: backendAlias,
   },
   test: {
-    // Pool sizing (`maxForks`, `execArgv`) is a run-wide resource setting,
-    // not a per-project one — vitest's own types omit `poolOptions` from
-    // the per-project config and re-expose only `isolate`/`singleFork`
-    // there (see `ProjectConfig` in vitest's `dist/chunks/reporters.*.d.ts`).
-    // All projects below share this single fork, capped at an 8GB heap, so
-    // it must live here at the root rather than inside `projects[].test`.
+    // Vitest 4+ removed poolOptions. Bound concurrency with supported
+    // settings so a default run cannot saturate this 8GB host.
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        maxForks: 1,
-        execArgv: ['--max-old-space-size=8192'],
-      },
-    },
+    maxWorkers: 1,
+    fileParallelism: false,
+    execArgv: ['--max-old-space-size=2048'],
     coverage: {
       provider: 'v8',
       thresholds: {
@@ -135,17 +129,8 @@ export default defineConfig({
             'tests/unit/mcp-input-validator.test.ts',
             'tests/unit/mcp-policy-engine.test.ts',
           ],
-          // `maxForks`/`execArgv` live on the root `test.poolOptions` above
-          // (vitest's per-project config type only allows `singleFork`/
-          // `isolate` here — pool sizing is a run-wide resource, not a
-          // per-project one). `singleFork: true` restates the intent
-          // explicitly for this project.
+          // Worker count and heap are bounded by supported root settings.
           pool: 'forks',
-          poolOptions: {
-            forks: {
-              singleFork: true,
-            },
-          },
           retry: 1,
         },
       },
@@ -176,7 +161,6 @@ export default defineConfig({
           testTimeout: 30_000,
           hookTimeout: 30_000,
           pool: 'forks',
-          poolOptions: { forks: { singleFork: true } },
           bail: 1,
         },
       },
@@ -226,7 +210,6 @@ export default defineConfig({
           deps: { external: [/^bun:/] }, 
           exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
           pool: 'forks',
-          poolOptions: { forks: { singleFork: true } },
         },
       },
       {

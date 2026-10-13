@@ -56,6 +56,13 @@ const RELAY_LIB_DEST = path.join('api', 'lib', 'relay.ts');
 
 const STEPS: PatchStep[] = [
   {
+    // A literal Zalgo character class also matched plain a/l/g/o/z, making
+    // ordinary prompts falsely chaotic and selecting excessive temperature.
+    target: path.join('src', 'lib', 'autotune.ts'),
+    patchFile: 'src_lib_autotune_zalgo.ts.patch',
+    marker: 'DMR-X AutoTune: detect combining overlays, not plain letters',
+  },
+  {
     target: path.join('api', 'middleware', 'rateLimit.ts'),
     patchFile: 'api_middleware_rateLimit.ts.patch',
     marker: "GODMODE_RELAY === '1'",
@@ -97,6 +104,13 @@ const STEPS: PatchStep[] = [
     target: path.join('api', 'routes', 'chat.ts'),
     patchFile: 'api_routes_chat_tool_history.ts.patch',
     marker: 'DMR-X preserve tool-result identity through normalization',
+  },
+  {
+    // Keep the persona and prompt pipeline enabled for coding/tool requests,
+    // preserving caller instructions, code regions and protocol payloads.
+    target: path.join('api', 'routes', 'chat.ts'),
+    patchFile: 'api_routes_chat_full_tool_pipeline.ts.patch',
+    marker: 'DMR-X full tool pipeline: transform prose while protecting coding payloads',
   },
   {
     target: path.join('src', 'lib', 'openrouter.ts'),
