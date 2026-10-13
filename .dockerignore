@@ -10,6 +10,9 @@ node_modules
 *.js.map
 *.d.ts
 *.d.ts.map
+# The security-maintained local override is source, not generated output.
+!vendored/braces-safe/**/*.js
+!vendored/braces-safe/*.js
 
 # ─── Source control and IDE state ──────────────────────────────────────────
 .git

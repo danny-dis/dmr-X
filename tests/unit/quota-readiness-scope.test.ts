@@ -12,7 +12,7 @@ function limits() {
 }
 describe('account-quota readiness rather than model ban', () => {
   it('cools sibling models after a 403 insufficient_user_quota and serves the working fallback', async () => {
-    const executor = { execute: vi.fn().mockRejectedValueOnce(new ProviderError('insufficient_user_quota: remaining eligible quota $0.000000', 'tokenrouter', 403)).mockResolvedValue({ modality: 'llm', requestId: 'quota-scope', providerId: 'working-account', modelId: 'working-model', usage: { total_tokens: 1 } }) };
+    const executor = { execute: vi.fn().mockRejectedValueOnce(new ProviderError('insufficient_user_quota: remaining eligible quota $0.000000', 'tokenrouter', 403)).mockResolvedValue({ modality: 'llm', requestId: 'quota-scope', providerId: 'working-account', modelId: 'working-model', message: { role: 'assistant', content: 'OK' }, usage: { total_tokens: 1 } }) };
     const result = await executeWithFallback(plan(), request, executor);
     expect(result.providerId).toBe('working-account');
     expect(isModelOnErrorCooldown('empty-account', 'different-free-model')).toBe(true);
@@ -20,7 +20,7 @@ describe('account-quota readiness rather than model ban', () => {
   });
   it('does not apply a 24-hour model forbidden penalty to account-quota 403', async () => {
     const rls = limits();
-    const executor = { execute: vi.fn().mockRejectedValueOnce(new ProviderError('insufficient_user_quota: remaining eligible quota $0.000000', 'tokenrouter', 403)).mockResolvedValue({ modality: 'llm', requestId: 'quota-penalty', providerId: 'working-account', modelId: 'working-model', usage: { total_tokens: 1 } }) };
+    const executor = { execute: vi.fn().mockRejectedValueOnce(new ProviderError('insufficient_user_quota: remaining eligible quota $0.000000', 'tokenrouter', 403)).mockResolvedValue({ modality: 'llm', requestId: 'quota-penalty', providerId: 'working-account', modelId: 'working-model', message: { role: 'assistant', content: 'OK' }, usage: { total_tokens: 1 } }) };
     await executeWithFallback(plan(), request, executor, { rateLimitService: rls });
     expect(rls.setModelForbiddenCooldown).not.toHaveBeenCalled();
   });

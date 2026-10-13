@@ -1,0 +1,2 @@
+# The deterministic catalog generator emits LF and checks exact bytes.
+/packages/core/src/mcp-catalog.ts text eol=lf

@@ -66,6 +66,8 @@ export interface ToolCall {
     name: string;
     arguments: string;
   };
+  /** Opaque Google reasoning state; preserve it when replaying tool history. */
+  extra_content?: { google?: { thought_signature?: string } };
 }
 
 export interface UnifiedRequest {

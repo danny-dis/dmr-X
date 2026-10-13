@@ -6,7 +6,10 @@ const plan: RoutingPlan = {
   primary: { providerId: 'free', modelId: 'free-model', adapterType: 'openai', score: 1 },
   chain: [], timeoutMs: 500, maxRetries: 1,
 };
-const response = { providerId: 'paid', modelId: 'paid-model', choices: [] } as unknown as UnifiedResponse;
+const response = {
+  providerId: 'paid', modelId: 'paid-model',
+  message: { role: 'assistant', content: 'Degraded answer' },
+} as unknown as UnifiedResponse;
 
 function request(model: string, costFilter?: string): UnifiedRequest {
   return {

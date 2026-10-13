@@ -43,7 +43,7 @@ describe('automatic free-only JSON recovery', () => {
         if (providerId === 'google_native') {
           throw new ProviderError('Gemini chat: upstream returned invalid JSON object', providerId, 502);
         }
-        return { providerId } as any;
+        return { providerId, message: { role: 'assistant', content: '{"answer":7}' } } as any;
       },
     }, { globalTimeoutMs: 3000, freeOnly: true });
     expect(response.providerId).toBe('backup');
@@ -57,7 +57,7 @@ describe('automatic free-only JSON recovery', () => {
         if (providerId === 'google_native') {
           throw new ProviderError('Gemini chat: upstream returned invalid JSON object', providerId, 502);
         }
-        return { providerId } as any;
+        return { providerId, message: { role: 'assistant', content: '{"answer":7}' } } as any;
       },
     }, { globalTimeoutMs: 3000, freeOnly: true });
     expect(response.providerId).toBe('backup');

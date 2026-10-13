@@ -4,7 +4,8 @@ import { executeWithFallback, isModelOnErrorCooldown, resetModelErrorCache } fro
 
 const request = { modality: 'llm', messages: [{ role: 'user', content: 'OK' }] } as any;
 const response = (providerId: string, modelId: string) => ({
-  modality: 'llm', requestId: `${providerId}-${modelId}`, providerId, modelId, usage: { total_tokens: 1 },
+  modality: 'llm', requestId: `${providerId}-${modelId}`, providerId, modelId,
+  message: { role: 'assistant', content: 'OK' }, usage: { total_tokens: 1 },
 });
 const step = (providerId: string, modelId: string) => ({
   provider: { providerId, modelId, adapterType: 'test', score: 1 }, trigger: 'error', waitMs: 0,
@@ -101,5 +102,16 @@ describe('fallback readiness regressions', () => {
     expect(rls.setModelForbiddenCooldown).not.toHaveBeenCalled();
     expect(isModelOnErrorCooldown('limited', 'b')).toBe(false);
     expect(isModelOnErrorCooldown('quota-rejected', 'c')).toBe(false);
+  });
+
+  it('rejects a blank provider completion and recovers on the valid alternate', async () => {
+    const executor = { execute: vi.fn()
+      .mockResolvedValueOnce({ modality: 'llm', providerId: 'blank', modelId: 'a', message: { role: 'assistant', content: '' } })
+      .mockResolvedValueOnce(response('healthy', 'b')) };
+
+    const result = await executeWithFallback(plan('blank', 'a', [step('healthy', 'b')]), request, executor);
+
+    expect(result.providerId).toBe('healthy');
+    expect(executor.execute).toHaveBeenCalledTimes(2);
   });
 });

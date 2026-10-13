@@ -197,12 +197,12 @@ export class InputValidator {
   /**
    * Validate text input for injection attempts
    */
-  validateInput(text: string): InputValidationResult {
+  validateInput(text: string, maxLength = this.config.maxPromptLength): InputValidationResult {
     if (!this.config.enabled || !this.config.injectionDetection) {
       return { valid: true, detections: [] };
     }
 
-    const detections = this.detectInjections(text);
+    const detections = this.detectInjections(text, maxLength);
     const sanitized = this.config.detectionAction === 'sanitize'
       ? this.sanitizeInput(text, detections)
       : undefined;
@@ -262,7 +262,7 @@ export class InputValidator {
       }
 
       // Check for injection patterns
-      const result = this.validateInput(value);
+      const result = this.validateInput(value, maxLength);
       if (!result.valid) {
         return {
           block: true,
@@ -277,14 +277,27 @@ export class InputValidator {
   /**
    * Detect injection patterns in text
    */
-  private detectInjections(text: string): InjectionDetection[] {
+  private detectInjections(text: string, maxLength: number): InjectionDetection[] {
+    // Bound regexp input to the configured prompt length and record the excess.
     const detections: InjectionDetection[] = [];
+    const limit = Number.isSafeInteger(maxLength) && maxLength > 0 ? maxLength : 100_000;
+    const boundedText = text.slice(0, limit);
+    if (text.length > limit) {
+      detections.push({
+        patternName: 'length-limit', severity: 'high',
+        start: limit, end: text.length,
+        matched: text.slice(limit),
+        description: `Input exceeds maximum length of ${limit} characters`,
+      });
+    }
 
     for (const pattern of this.patterns) {
-      const regex = new RegExp(pattern.regex.source, pattern.regex.flags);
+      // exec() cannot advance a non-global pattern; matching one used to loop forever.
+      const flags = pattern.regex.flags;
+      const regex = new RegExp(pattern.regex.source, flags.includes('g') ? flags : `${flags}g`);
       let match: RegExpExecArray | null;
 
-      while ((match = regex.exec(text)) !== null) {
+      while ((match = regex.exec(boundedText)) !== null) {
         detections.push({
           patternName: pattern.name,
           severity: pattern.severity,
@@ -293,6 +306,12 @@ export class InputValidator {
           matched: match[0],
           description: pattern.description,
         });
+        // exec() also leaves lastIndex unchanged on zero-width global matches.
+        if (match[0].length === 0) {
+          const point = boundedText.codePointAt(regex.lastIndex);
+          const unicode = flags.includes('u') || flags.includes('v');
+          regex.lastIndex += unicode && point !== undefined && point > 0xffff ? 2 : 1;
+        }
       }
     }
 

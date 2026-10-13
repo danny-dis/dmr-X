@@ -167,9 +167,30 @@ export class GenericOpenAIAdapter extends BaseAdapter {
    * Together, and Groq keep working exactly as before.
    */
   private buildChatBody(request: UnifiedRequest, stream: boolean): Record<string, unknown> {
+    // Google validates signed function-call history even on its OpenAI mount.
+    // Other-provider/client-imported calls have no signature; use Google's
+    // documented compatibility marker only for an unsigned first call.
+    const isGoogle = this.providerId === 'google'
+      || /^https:\/\/generativelanguage\.googleapis\.com(?:\/|:443\/)/i.test(this.config.baseUrl ?? '');
+    const messages = isGoogle ? request.messages?.map(message => {
+      if (message.role !== 'assistant' || !message.tool_calls?.length) return message;
+      const first = message.tool_calls[0];
+      const signature = first.extra_content?.google?.thought_signature;
+      if (typeof signature === 'string' && signature.length > 0) return message;
+      return {
+        ...message,
+        tool_calls: [{
+          ...first,
+          extra_content: {
+            ...first.extra_content,
+            google: { ...first.extra_content?.google, thought_signature: 'skip_thought_signature_validator' },
+          },
+        }, ...message.tool_calls.slice(1)],
+      };
+    }) : request.messages;
     const body: Record<string, unknown> = {
       model: request.model,
-      messages: request.messages,
+      messages,
       stream,
     };
 

@@ -1,6 +1,6 @@
 {
   "name": "dmr-x",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "private": true,
   "type": "module",
   "description": "Universal AI routing and orchestration platform",
@@ -78,6 +78,9 @@
     "@hono/node-server": "^1.19.15",
     "fastify": "^5.12.2",
     "hono": "^4.13.5",
-    "qs": "^6.16.0"
+    "qs": "^6.16.0",
+    "proxy-addr": "2.0.8",
+    "source-map-js": "1.2.2",
+    "@modelcontextprotocol/client": "2.2.0"
   }
 }
