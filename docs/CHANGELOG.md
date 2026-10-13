@@ -8,6 +8,7 @@
 - Preserve Gemini's opaque tool-call thought signatures in both streaming and non-streaming responses and replay them without altering the supplied history.
 - Supply Google's documented compatibility marker only for the first unsigned tool call in imported Google history; leave other providers unchanged.
 - Give Gemini tool calls collision-resistant IDs and correctly encode credentials in native API URLs.
+- Advertise the working RPC endpoint in both legacy and current A2A card URLs, avoiding 404s for clients that follow the legacy preferred-transport URL.
 - Prevent MCP input validation from looping forever on non-global or zero-width custom regular expressions; enforce configured prompt length and preserve Unicode match progress.
 - Correct the four blocking lint errors without weakening compression's protection of structured data or code.
 
@@ -18,6 +19,7 @@
 ### Verification and releases
 - Restore the MCP input-validator suite previously quarantined for a hang; add native Bun coverage for regex progress, Unicode and prompt-length handling.
 - Bound test workers using supported Vitest settings and include UI and release-preflight tests in CI.
+- Distinguish catalog discovery from real provider readiness in E2E tests and report unavailable-provider cases as explicit skips.
 - Require a real version tag pointing to an exact successful main-branch CI run before building a release.
 - Package source commit/version metadata with all five archives; verify checksums and smoke-test the unpacked Linux binary and both containers.
 - Sign immutable container digests and produce an SBOM before creating a draft release. Final publication remains a separate verification step.

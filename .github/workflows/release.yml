@@ -102,6 +102,10 @@ jobs:
           RELEASE_REPOSITORY: ${{ github.repository }}
         run: python scripts/release-preflight.py
 
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to GitHub Container Registry
