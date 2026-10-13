@@ -52,6 +52,8 @@ jobs:
 
       - name: Compile and package five platforms
         env:
+          # Bun substitutes NODE_ENV while compiling; runtime env cannot repair it.
+          NODE_ENV: production
           RELEASE_TAG: ${{ steps.version.outputs.version }}
           RELEASE_SHA: ${{ steps.version.outputs.sha }}
         run: |

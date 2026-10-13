@@ -50,6 +50,8 @@ RUN bun run build:ui
 # For binary mode, compile the gateway into a single executable so the
 # runtime image doesn't need a Bun runtime at all.
 FROM builder AS binary-builder
+# Bun folds NODE_ENV into compiled code, before runtime ENV takes effect.
+ENV NODE_ENV=production
 ARG TARGETARCH=amd64
 WORKDIR /app/apps/gateway
 RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac \
