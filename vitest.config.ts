@@ -183,22 +183,10 @@ export default defineConfig({
         // shape as `unit`/`e2e`/`ui` above — is the fix: one config vitest
         // actually resolves `--project mcp` against.
         //
-        // `mcp-input-validator.test.ts` stays QUARANTINED from CI. Running it
-        // under vitest hangs and then dies with "Reached heap limit —
-        // JavaScript heap out of memory" (~8.9GB after ~16 min). A `vi.mock`
-        // stub of the `@dmr-x/utils` barrel (on the theory that transforming
-        // that graph in the fork worker blew the heap) was written and is
-        // still in the test file, but measurably does NOT fix it: the test
-        // still OOMs with the mock in place, still hangs >300s alone in its
-        // own fork capped at --max-old-space-size=2048 (so it isn't
-        // contention with mcp-policy-engine sharing a fork), and
-        // `InputValidator` itself isn't the culprit — importing it directly
-        // under bun with the real (unmocked) `@dmr-x/utils` and running every
-        // input the test uses completes in ~0ms. The blow-up is specific to
-        // vitest's worker; the actual cause is not yet identified.
-        // Re-adding this file to `include` will hang CI, not just fail it.
-        // `InputValidator` behavior remains covered by mcp-policy-engine and
-        // the broader unit suite.
+        // Both guardrail suites execute here. The previous validator hang
+        // reproduced under native Bun: custom non-global regexes never
+        // advanced exec(). The fixed implementation also advances zero-width
+        // matches by Unicode code points; native tests guard those cases.
         resolve: {
           alias: backendAlias,
         },
@@ -206,7 +194,7 @@ export default defineConfig({
           name: 'mcp',
           globals: true,
           environment: 'node',
-          include: ['tests/unit/mcp-policy-engine.test.ts'],
+          include: ['tests/unit/mcp-policy-engine.test.ts', 'tests/unit/mcp-input-validator.test.ts'],
           deps: { external: [/^bun:/] }, 
           exclude: ['node_modules', 'dist', '.turbo', '.claude', '.openclaude'],
           pool: 'forks',

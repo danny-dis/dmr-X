@@ -294,9 +294,9 @@ export function buildAgentCard(
     name: config.name || 'DMR-X Agent',
     description: config.description || 'DMR-X MCP Server with intelligent routing',
     version: config.version || '0.5.0',
-    // The legacy 0.3.0 flat `url` stays as the bare origin — legacy consumers
-    // treat it as the base, while only the v1.0 interface carries the RPC path.
-    url: resolvedUrl,
+    // A2A 0.3 requires `url` to serve the preferred transport, not just the
+    // origin. Both client generations must discover the actual RPC endpoint.
+    url: rpcUrl,
     preferredTransport: protocolBinding,
     capabilities: config.capabilities || {
       streaming: true,

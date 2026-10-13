@@ -114,7 +114,7 @@ export function compressCaveman(input: string, options?: CavemanOptions): Cavema
   // by default; legacy lossy compression requires an explicit opt-in. Even
   // there, technical/literal content is protected before ALL rewrite stages.
   if (!opts.allowLossy || (opts.preserveTechnical &&
-      /[`"']|~~~|^\s*[\[{]|^ {4}\S|\t|https?:\/\/|^\s*(?:import|export|const|let|var|function|class|def|fn)\s+/m.test(input))) {
+      /[`"']|~~~|^\s*[[{]|^ {4}\S|\t|https?:\/\/|^\s*(?:import|export|const|let|var|function|class|def|fn)\s+/m.test(input))) {
     return { compressed: input, originalTokens, compressedTokens: originalTokens, saved: 0 };
   }
 

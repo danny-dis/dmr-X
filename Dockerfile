@@ -29,6 +29,7 @@ WORKDIR /app
 
 # Copy lockfile + manifests first so this layer caches when only source changes.
 COPY package.json turbo.json bun.lock ./
+COPY vendored/braces-safe/ vendored/braces-safe/
 COPY packages/ packages/
 COPY services/ services/
 COPY apps/ apps/
@@ -49,14 +50,18 @@ RUN bun run build:ui
 # For binary mode, compile the gateway into a single executable so the
 # runtime image doesn't need a Bun runtime at all.
 FROM builder AS binary-builder
+# Bun folds NODE_ENV into compiled code, before runtime ENV takes effect.
+ENV NODE_ENV=production
 ARG TARGETARCH=amd64
 WORKDIR /app/apps/gateway
-RUN bun build --compile \
-      --target=bun-${TARGETARCH}-linux \
-      --outfile=/out/dmrx \
-      src/main.ts
-# Bundle the UI next to the binary so fastifyStatic can find it
-RUN mkdir -p /out/public && cp -r public/* /out/public/ 2>/dev/null || true
+RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac \
+ && bun build --compile --target="bun-linux-${arch}-musl" \
+      --outfile=/out/dmrx src/main.ts
+# Preserve the sql.js runtime asset paths without hardcoding a lockfile version.
+RUN mkdir -p /out/node_modules/.bun \
+ && cp -R /app/node_modules/.bun/sql.js@* /out/node_modules/.bun/
+# Missing UI assets must fail the image build rather than ship a broken console.
+RUN test -s public/index.html && mkdir -p /out/public && cp -R public/. /out/public/
 
 # ─── Production Stage (Node mode) ──────────────────────────────────────────
 FROM oven/bun:${BUN_VERSION}-alpine AS production-node
@@ -84,6 +89,7 @@ WORKDIR /app
 
 # Copy package manifests for production install
 COPY package.json bun.lock ./
+COPY vendored/braces-safe/ vendored/braces-safe/
 COPY packages/ packages/
 COPY services/ services/
 COPY apps/ apps/
@@ -146,11 +152,9 @@ LABEL org.opencontainers.image.title="DMR-X Gateway (binary)" \
 WORKDIR /app
 COPY --from=binary-builder --chown=nonroot:nonroot /out/dmrx /usr/local/bin/dmrx
 COPY --from=binary-builder --chown=nonroot:nonroot /out/public /app/public
-# bun-compiled binary resolves runtime assets (e.g. sql.js wasm) from
-# /app/node_modules/.bun/..., so the install cache must ship with it.
-# Copy only the sql.js package the binary actually asked for — not the
-# whole node_modules or .bun cache (both wedge the build under low RAM).
-COPY --from=builder --chown=nonroot:nonroot /app/node_modules/.bun/sql.js@1.14.1 /app/node_modules/.bun/sql.js@1.14.1
+# Preserve the sql.js asset layout recorded during compilation.
+COPY --from=binary-builder --chown=nonroot:nonroot /out/node_modules /app/node_modules
+RUN mkdir -p /app/data && chown nonroot:nonroot /app/data
 
 ENV NODE_ENV=production \
     PORT=3000 \

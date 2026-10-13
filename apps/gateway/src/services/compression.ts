@@ -20,7 +20,7 @@ function canCompressMessage(message: CompressionMessage, index: number, count: n
   return index < count - 1 && message.role === 'assistant' &&
     typeof message.content === 'string' && !message.tool_calls &&
     !message.function_call && !message.tool_call_id &&
-    !/```|~~~|`|^\s*[\[{]|^ {4}\S|\t|^\s*(?:import|export|const|let|var|function|class|def|fn)\s+/m.test(message.content);
+    !/```|~~~|`|^\s*[[{]|^ {4}\S|\t|^\s*(?:import|export|const|let|var|function|class|def|fn)\s+/m.test(message.content);
 }
 
 export type CompressionEngine = 'headroom' | 'rtk' | 'caveman' | 'comment-strip' | 'auto';

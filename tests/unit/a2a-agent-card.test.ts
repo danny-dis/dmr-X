@@ -94,11 +94,10 @@ describe('A2A agent card — interface URL must be the RPC endpoint', () => {
     expect(card.supportedInterfaces[0].url).toBe('https://gw.example/dmrx/rpc');
   });
 
-  it('leaves the legacy top-level url as the bare origin for 0.3.0 clients', () => {
-    // Legacy consumers treated `url` as the base; only the v1.0 interface
-    // carries the RPC path, so the two intentionally differ here.
+  it('advertises the RPC endpoint in the legacy 0.3.0 preferred transport URL', () => {
+    // Official 0.3.0 clients POST directly to card.url; a bare origin 404s.
     const card = buildAgentCard({ url: 'http://127.0.0.1:47114' }, TOOLS);
-    expect(card.url).toBe('http://127.0.0.1:47114');
+    expect(card.url).toBe('http://127.0.0.1:47114/a2a');
     expect(card.supportedInterfaces[0].url).toBe('http://127.0.0.1:47114/a2a');
   });
 });

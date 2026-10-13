@@ -2,160 +2,114 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 0.2.0)'
+        description: 'Existing release tag, e.g. v0.5.21 (must point to green main)'
         required: true
+        type: string
 
-# Releases can take a while (multi-arch builds). Set a 60-min budget.
 concurrency:
   group: release
   cancel-in-progress: false
 
 permissions:
   contents: write
+  actions: read
   packages: write
-  id-token: write  # for cosign keyless signing
+  id-token: write
 
 jobs:
   release:
-    name: Build binaries, container & release
+    name: Build binaries, container & draft release
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
 
+      - name: Verify immutable tag, version and green main CI
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: python scripts/release-preflight.py
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
       - name: Build all packages
         run: bun run build
-
       - name: Build UI
         run: bun run build:ui
 
-      # Linux x64
-      - name: Compile Linux x64
-        working-directory: apps/gateway
-        run: |
-          bun build --compile --target=bun-linux-x64 \
-            --outfile=dist/dmrx-linux-x64 src/main.ts
-          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
-          tar -czf dmrx-linux-x64.tar.gz -C dist dmrx-linux-x64 public
-          mv dmrx-linux-x64.tar.gz dist/
-
-      # Linux arm64
-      - name: Compile Linux arm64
-        working-directory: apps/gateway
-        run: |
-          bun build --compile --target=bun-linux-arm64 \
-            --outfile=dist/dmrx-linux-arm64 src/main.ts
-          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
-          tar -czf dmrx-linux-arm64.tar.gz -C dist dmrx-linux-arm64 public
-          mv dmrx-linux-arm64.tar.gz dist/
-
-      # macOS x64
-      - name: Compile macOS x64
-        working-directory: apps/gateway
-        run: |
-          bun build --compile --target=bun-darwin-x64 \
-            --outfile=dist/dmrx-darwin-x64 src/main.ts
-          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
-          tar -czf dmrx-darwin-x64.tar.gz -C dist dmrx-darwin-x64 public
-          mv dmrx-darwin-x64.tar.gz dist/
-
-      # macOS arm64 (Apple Silicon)
-      - name: Compile macOS arm64
-        working-directory: apps/gateway
-        run: |
-          bun build --compile --target=bun-darwin-arm64 \
-            --outfile=dist/dmrx-darwin-arm64 src/main.ts
-          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
-          tar -czf dmrx-darwin-arm64.tar.gz -C dist dmrx-darwin-arm64 public
-          mv dmrx-darwin-arm64.tar.gz dist/
-
-      # Windows x64
-      - name: Compile Windows x64
-        working-directory: apps/gateway
-        shell: bash
-        run: |
-          bun build --compile --target=bun-windows-x64 \
-            --outfile=dist/dmrx-windows-x64.exe src/main.ts
-          mkdir -p dist/public && cp -r public/* dist/public/ 2>/dev/null || true
-          cd dist && zip -r dmrx-windows-x64.zip dmrx-windows-x64.exe public/ && cd ..
-
-      - name: Compute checksums
-        working-directory: apps/gateway
-        run: |
-          for f in dist/*.tar.gz dist/*.zip; do
-            [ -f "$f" ] || continue
-            sha256sum "$f" | tee -a checksums.txt
-          done
-
-      - name: Extract version
-        id: version
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            VERSION="${{ github.ref_name }}"
-          else
-            VERSION="v${{ inputs.version }}"
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Read CHANGELOG
-        id: changelog
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          V="${VERSION#v}"
-          CHANGELOG=docs/CHANGELOG.md
-          if [ -f "$CHANGELOG" ]; then
-            awk -v ver="$V" '
-              /^## / {
-                if (in_section && found) exit
-                if ($0 ~ "## v?\" ver \" ") { in_section=1; found=1 }
-              }
-              in_section { print }
-            ' "$CHANGELOG" > release-notes.md || true
-          else
-            : > release-notes.md
-          fi
-          if [ ! -s release-notes.md ]; then
-            echo "## $VERSION" > release-notes.md
-            echo "" >> release-notes.md
-            echo "See [CHANGELOG.md](https://github.com/danny-dis/dmr-X/blob/$VERSION/docs/CHANGELOG.md) for the full list of changes." >> release-notes.md
-          fi
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: ${{ steps.version.outputs.version }}
-          body_path: release-notes.md
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-          files: |
-            apps/gateway/dist/dmrx-linux-x64.tar.gz
-            apps/gateway/dist/dmrx-linux-arm64.tar.gz
-            apps/gateway/dist/dmrx-darwin-x64.tar.gz
-            apps/gateway/dist/dmrx-darwin-arm64.tar.gz
-            apps/gateway/dist/dmrx-windows-x64.zip
-            apps/gateway/checksums.txt
+      - name: Compile and package five platforms
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Bun substitutes NODE_ENV while compiling; runtime env cannot repair it.
+          NODE_ENV: production
+          RELEASE_TAG: ${{ steps.version.outputs.version }}
+          RELEASE_SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test -s apps/gateway/public/index.html
+          mkdir -p apps/gateway/dist/release
+          bun -e 'console.log(JSON.stringify({version:process.env.RELEASE_TAG,commit:process.env.RELEASE_SHA},null,2))' > apps/gateway/dist/release/release.json
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 windows-x64; do
+            stage="apps/gateway/dist/release/$platform"
+            mkdir -p "$stage/public"
+            cp -R apps/gateway/public/. "$stage/public/"
+            cp apps/gateway/dist/release/release.json "$stage/release.json"
+            suffix=''
+            if [ "$platform" = windows-x64 ]; then suffix='.exe'; fi
+            bun build --compile --target="bun-$platform" --outfile="$stage/dmrx-$platform$suffix" apps/gateway/src/main.ts
+            if [ "$platform" = windows-x64 ]; then
+              (cd "$stage" && zip -qr "../dmrx-$platform.zip" "dmrx-$platform$suffix" public release.json)
+            else
+              tar -czf "apps/gateway/dist/release/dmrx-$platform.tar.gz" -C "$stage" "dmrx-$platform" public release.json
+            fi
+          done
+          (cd apps/gateway/dist/release && sha256sum dmrx-*.tar.gz dmrx-*.zip > checksums.txt && sha256sum -c checksums.txt)
 
-      # Container image build (has access to built artifacts from earlier steps)
+      - name: Smoke test unpacked Linux release
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)"
+          tar -xzf apps/gateway/dist/release/dmrx-linux-x64.tar.gz -C "$stage"
+          DMRX_LOCAL_MODE=true DMRX_MCP_AUTOSTART=false DMRX_GODMODE_AUTOSTART=false DMRX_DATA_DIR="$stage/data" DMRX_UI_DIR="$stage/public" PORT=47921 "$stage/dmrx-linux-x64" > "$stage/gateway.log" 2>&1 &
+          pid=$!
+          trap 'kill -TERM "$pid" 2>/dev/null || true; cat "$stage/gateway.log"' EXIT
+          ready=false
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:47921/livez > /dev/null; then ready=true; break; fi
+            kill -0 "$pid" || exit 1
+            sleep 1
+          done
+          test "$ready" = true
+          curl -fsS --max-time 10 http://127.0.0.1:47921/ > "$stage/index.html"
+          grep -q '<html' "$stage/index.html"
+          curl -sS --max-time 10 http://127.0.0.1:47921/healthz > "$stage/health.json"
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["checks"]["db_read"]["status"]=="ok"; assert d["checks"]["db_write"]["status"]=="ok"' "$stage/health.json"
+
+      - name: Recheck tag and draft state before registry writes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: python scripts/release-preflight.py
+
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -163,8 +117,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Multi-arch node image (Bun runtime + compiled JS)
-      - name: Build and push (node, multi-arch)
+      - name: Build and push node image
+        id: node_image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -175,48 +129,86 @@ jobs:
           tags: |
             ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
             ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}-node
-            ghcr.io/danny-dis/dmr-x:latest
           labels: |
-            org.opencontainers.image.title=DMR-X Gateway
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.sha }}
             org.opencontainers.image.source=https://github.com/danny-dis/dmr-X
-            org.opencontainers.image.licenses=GPL-2.0
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Single-arch binary image (linux/amd64 only — distroless static variant)
-      - name: Build and push (binary, amd64)
+      - name: Build and push binary image
+        id: binary_image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           platforms: linux/amd64
           target: production-binary
-          build-args: |
-            BUILD_MODE=binary
-            TARGETARCH=amd64
+          build-args: TARGETARCH=amd64
           push: true
-          tags: |
-            ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}-binary
+          tags: ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}-binary
+          labels: org.opencontainers.image.revision=${{ steps.version.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Sign the images with cosign keyless (uses OIDC token from GHA)
+      - name: Smoke test both container images
+        env:
+          NODE_IMAGE: ghcr.io/danny-dis/dmr-x@${{ steps.node_image.outputs.digest }}
+          BINARY_IMAGE: ghcr.io/danny-dis/dmr-x@${{ steps.binary_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for image in "$NODE_IMAGE" "$BINARY_IMAGE"; do
+            id=$(docker run -d -p 127.0.0.1:47922:3000 -e DMRX_LOCAL_MODE=true -e DMRX_MCP_AUTOSTART=false -e DMRX_GODMODE_AUTOSTART=false "$image")
+            trap 'docker logs "$id"; docker rm -f "$id"' EXIT
+            ready=false
+            for i in $(seq 1 60); do
+              if curl -fsS --max-time 2 http://127.0.0.1:47922/livez > /dev/null; then ready=true; break; fi
+              test "$(docker inspect -f '{{.State.Running}}' "$id")" = true
+              sleep 1
+            done
+            test "$ready" = true
+            curl -fsS --max-time 5 http://127.0.0.1:47922/ | grep -q '<html'
+            curl -sS --max-time 10 http://127.0.0.1:47922/healthz > container-health.json
+            python -c 'import json; d=json.load(open("container-health.json")); assert d["checks"]["db_read"]["status"]=="ok"; assert d["checks"]["db_write"]["status"]=="ok"'
+            docker rm -f "$id"
+            trap - EXIT
+          done
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
         with:
           cosign-release: 'v2.4.1'
-      - name: Sign node image
+      - name: Sign and verify both immutable image digests
+        env:
+          NODE_IMAGE: ghcr.io/danny-dis/dmr-x@${{ steps.node_image.outputs.digest }}
+          BINARY_IMAGE: ghcr.io/danny-dis/dmr-x@${{ steps.binary_image.outputs.digest }}
         run: |
-          # Request OIDC token from GitHub Actions
-          OIDC_TOKEN=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sigstore" | jq -r '.value')
-          cosign sign --identity-token "$OIDC_TOKEN" --yes \
-            ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+          set -euo pipefail
+          for image in "$NODE_IMAGE" "$BINARY_IMAGE"; do
+            cosign sign --yes "$image"
+            cosign verify --certificate-identity "https://github.com/${{ github.workflow_ref }}" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$image"
+          done
 
-      - name: Generate SBOM (CycloneDX)
+      - name: Generate SBOM
         uses: anchore/sbom-action@v0.17.9
         with:
-          image: ghcr.io/danny-dis/dmr-x:${{ steps.version.outputs.version }}
+          image: ghcr.io/danny-dis/dmr-x@${{ steps.node_image.outputs.digest }}
           format: cyclonedx-json
-          output-file: sbom.cdx.json
+          output-file: apps/gateway/dist/release/sbom.cdx.json
+          upload-release-assets: false
+
+      - name: Record container digests
+        env:
+          NODE_DIGEST: ${{ steps.node_image.outputs.digest }}
+          BINARY_DIGEST: ${{ steps.binary_image.outputs.digest }}
+        run: python -c 'import json,os; json.dump({"node":os.environ["NODE_DIGEST"],"binary":os.environ["BINARY_DIGEST"]},open("apps/gateway/dist/release/container-digests.json","w"),indent=2)'
+
+      - name: Create verified draft by exact release ID
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.version }}
+          RELEASE_SHA: ${{ steps.version.outputs.sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          python scripts/release-preflight.py
+          python scripts/release-draft.py

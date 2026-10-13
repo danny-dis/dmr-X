@@ -75,13 +75,21 @@ jobs:
       - name: Run unit tests
         run: bun run test:unit
       - name: Run MCP isolated tests
-        # `mcp-policy-engine` runs here (isolated fork, coverage off).
-        # `mcp-input-validator` is still QUARANTINED — a `vi.mock` fix for its
-        # heap blow-up was attempted and verified NOT to work (it still OOMs,
-        # and hangs >300s even alone at a 2GB cap). See the note on the `mcp`
-        # project in vitest.config.ts. Re-adding it hangs this job.
+        # Both guardrail suites execute; native Bun separately checks regex
+        # progress and Unicode cases, so runner failures cannot hide them.
         run: |
           bun vitest run --project mcp --coverage.enabled=false
+      - name: Run native MCP input validator tests
+        # Same guardrail cases as the Vitest-quarantined file, with the real
+        # implementation under Bun rather than the failing Vitest worker graph.
+        run: bun test tests/native
+      - name: Run UI tests
+        run: bun vitest run --project ui --coverage.enabled=false
+      - name: Test release preflight guards
+        run: |
+          python tests/release-preflight.test.py
+          python tests/release-remote-state.test.py
+          python tests/release-draft-orchestration.test.py
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -156,8 +164,8 @@ jobs:
           if grep -rEn 'AKIA[0-9A-Z]{16}' --include='*.ts' --include='*.tsx' --include='*.js' \
               apps/ packages/ services/ scripts/ 2>/dev/null; then hits=$((hits+1)); fi
           # Private key headers
-          if grep -rEn '-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----' \
-              --include='*.ts' --include='*.tsx' --include='*.js' --include='*.pem' \
+          if grep -rEn --include='*.ts' --include='*.tsx' --include='*.js' --include='*.pem' \
+              -- '-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----' \
               apps/ packages/ services/ scripts/ 2>/dev/null; then hits=$((hits+1)); fi
           # GitHub PATs
           if grep -rEn 'ghp_[a-zA-Z0-9]{36}' \
@@ -187,16 +195,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [typecheck, build]
-    # Kept non-blocking ON PURPOSE. We verify the gateway *starts* and serves
-    # /healthz + the conversation routes, then run the real `tests/e2e` suites
-    # with DMRX_RUN_E2E=true (they self-gate on that env) against the live
-    # gateway — which is genuinely more than the old healthz-only smoke test.
-    #
-    # But `tests/e2e/providers.test.ts` makes real upstream calls to Google
-    # Gemini and OpenRouter, and CI has no provider secrets, so those
-    # assertions fail here every run. Until those keys are added as CI
-    # secrets (or the key-dependent cases are gated on their presence), this
-    # job reports but must not gate the build.
+    # Required gate: startup and protocol smoke checks always run.
+    # Secret-free CI cannot verify paid-provider inference. Provider-dependent
+    # cases use real readiness, not nonempty catalog discovery.
+    # Real-provider verification is a separate release acceptance gate.
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

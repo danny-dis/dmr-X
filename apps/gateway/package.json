@@ -1,14 +1,14 @@
 {
   "name": "@dmr-x/gateway",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "private": true,
   "type": "module",
   "main": "./dist/main.js",
   "scripts": {
     "build": "tsc",
-    "build:exe": "bun build --compile src/main.ts --outfile dist/dmrx.exe && bun run copy-public",
-    "build:exe:linux": "bun build --compile --target=bun-linux-x64 src/main.ts --outfile dist/dmrx-linux && bun run copy-public",
-    "build:exe:macos": "bun build --compile --target=bun-darwin-x64 src/main.ts --outfile dist/dmrx-darwin && bun run copy-public",
+    "build:exe": "NODE_ENV=production bun build --compile src/main.ts --outfile dist/dmrx.exe && bun run copy-public",
+    "build:exe:linux": "NODE_ENV=production bun build --compile --target=bun-linux-x64 src/main.ts --outfile dist/dmrx-linux && bun run copy-public",
+    "build:exe:macos": "NODE_ENV=production bun build --compile --target=bun-darwin-x64 src/main.ts --outfile dist/dmrx-darwin && bun run copy-public",
     "build:exe:all": "bun run build:exe && bun run build:exe:linux && bun run build:exe:macos",
     "copy-public": "node -e \"const fs=require('fs'),p=require('path');function c(s,d){fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=p.join(s,e.name),dp=p.join(d,e.name);e.isDirectory()?c(sp,dp):fs.copyFileSync(sp,dp)}}c('public','dist/public')\"",
     "package": "bash ../../scripts/package-release.sh",
