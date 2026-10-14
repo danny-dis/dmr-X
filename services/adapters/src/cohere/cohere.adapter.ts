@@ -205,6 +205,7 @@ export class CohereAdapter extends BaseAdapter {
     const buildToolChunk = (idx: number): StreamChunk | null => {
       const tb = toolBuffers.get(idx);
       if (!tb) return null;
+      if (!tb.id || !tb.name) throw new Error('Incomplete Cohere tool-call identity');
       toolBuffers.delete(idx);
       return {
         type: 'token',
@@ -227,6 +228,7 @@ export class CohereAdapter extends BaseAdapter {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
+        buffer = buffer.replace(/\r\n/g, '\n');
         const events = buffer.split('\n\n');
         buffer = events.pop() || '';
         for (const evt of events) {
@@ -241,30 +243,41 @@ export class CohereAdapter extends BaseAdapter {
             const text = data.delta.message.content.text as string;
             completionText += text;
             yield { type: 'token', index: 0, data: { content: text } } as StreamChunk;
-          } else if (data.tool_call) {
-            const idx = nextToolIndex++;
-            toolBuffers.set(idx, { id: data.tool_call.id, name: data.tool_call.function?.name, args: '' });
-          } else if (data.tool_call_delta) {
-            const idx = data.tool_call_delta.index ?? 0;
-            const tb = toolBuffers.get(idx) || { args: '' };
-            if (data.tool_call_delta.function?.name && !tb.name) tb.name = data.tool_call_delta.function.name;
-            if (data.tool_call_delta.function?.arguments) tb.args += data.tool_call_delta.function.arguments;
-            toolBuffers.set(idx, tb);
-          } else if (data.event_type === 'tool-call-end' || evt.includes('tool-call-end')) {
-            // flush any buffered tool calls
-            for (const idx of Array.from(toolBuffers.keys())) {
+          }
+          const nativeCall = data.delta?.message?.tool_calls;
+          if (data.type === 'tool-call-start' || data.tool_call) {
+            const call = nativeCall ?? data.tool_call;
+            const idx = data.index ?? nextToolIndex;
+            if (!Number.isInteger(idx) || idx < 0 || toolBuffers.has(idx)) throw new Error('Invalid Cohere tool-call start index');
+            nextToolIndex = Math.max(nextToolIndex, idx + 1);
+            const args = call.function?.arguments ?? '';
+            if (typeof args !== 'string') throw new Error('Invalid Cohere tool-call arguments');
+            toolBuffers.set(idx, { id: call.id, name: call.function?.name, args });
+          } else if (data.type === 'tool-call-delta' || data.tool_call_delta) {
+            const delta = nativeCall ?? data.tool_call_delta;
+            const idx = data.index ?? data.tool_call_delta?.index ?? 0;
+            const tb = toolBuffers.get(idx);
+            if (!tb || !delta) throw new Error('Cohere tool-call delta without a start');
+            if (delta.id && !tb.id) tb.id = delta.id;
+            if (delta.function?.name && !tb.name) tb.name = delta.function.name;
+            if (delta.function?.arguments !== undefined) {
+              if (typeof delta.function.arguments !== 'string') throw new Error('Invalid Cohere tool-call argument delta');
+              tb.args += delta.function.arguments;
+            }
+          } else if (data.type === 'tool-call-end' || data.event_type === 'tool-call-end' || evt.includes('tool-call-end')) {
+            // Native end events finish one index, not every in-flight call.
+            const indexes = data.index === undefined ? Array.from(toolBuffers.keys()) : [data.index];
+            for (const idx of indexes) {
               const tc = buildToolChunk(idx);
               if (tc) yield tc;
             }
-          } else if (data.finish_reason) {
-            finishReason = data.finish_reason;
-          } else if (data.usage) {
-            usage = {
-              prompt_tokens: data.usage.tokens?.input ?? 0,
-              completion_tokens: data.usage.tokens?.output ?? 0,
-              total_tokens: (data.usage.tokens?.input ?? 0) + (data.usage.tokens?.output ?? 0),
-            };
           }
+          // A message-end event carries both fields in delta; neither may
+          // be discarded because another payload branch matched first.
+          const reason = data.delta?.finish_reason ?? data.finish_reason;
+          if (reason) finishReason = reason;
+          const measured = this.mapChatUsage(data.delta?.usage ?? data.usage);
+          if (measured) usage = measured;
         }
       }
     } finally {
@@ -388,6 +401,18 @@ export class CohereAdapter extends BaseAdapter {
     return parts.filter((p) => p.type === 'text').map((p) => (p as any).text).join('');
   }
 
+  /** Native V2 token counts are not the smaller billed/cache-discounted units. */
+  private mapChatUsage(reported: any): UnifiedResponse['usage'] {
+    const tokens = reported?.tokens;
+    if (!tokens) return undefined;
+    const input = tokens.input_tokens ?? tokens.input;
+    const output = tokens.output_tokens ?? tokens.output;
+    // Missing/malformed metrics are unknown, not invented zero usage.
+    if (typeof input !== 'number' || typeof output !== 'number' ||
+        !Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return undefined;
+    return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output };
+  }
+
   private async executeChat(request: UnifiedRequest, options?: ExecuteOptions): Promise<UnifiedResponse> {
     const start = Date.now();
     const body = this.buildCohereChatBody(request, false);
@@ -425,14 +450,7 @@ export class CohereAdapter extends BaseAdapter {
       },
     }));
 
-    const usageTokens = data.usage?.tokens;
-    const usage = usageTokens
-      ? {
-          prompt_tokens: usageTokens.input ?? 0,
-          completion_tokens: usageTokens.output ?? 0,
-          total_tokens: (usageTokens.input ?? 0) + (usageTokens.output ?? 0),
-        }
-      : undefined;
+    const usage = this.mapChatUsage(data.usage);
 
     return {
       modality: 'llm',

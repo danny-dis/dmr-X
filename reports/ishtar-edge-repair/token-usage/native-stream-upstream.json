@@ -1,0 +1,41 @@
+{
+  "provenance": "REAL native Cohere v2 response; not a synthetic fixture",
+  "url": "https://api.cohere.com/v2/chat",
+  "request": {
+    "model": "command-a-03-2025",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Unique harmless stream probe 2a131280-ce86-423f-bf6b-8055da88eade. Call report_probe exactly once with marker EDGE_STREAM. Do not answer with prose."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "report_probe",
+          "description": "Emit a harmless marker. No tool implementation will execute.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "marker": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "marker"
+            ]
+          }
+        }
+      }
+    ],
+    "max_tokens": 256,
+    "temperature": 0,
+    "stream": true
+  },
+  "http": 200,
+  "elapsedMs": 1652,
+  "body": {
+    "sse": "event: message-start\ndata: {\"id\":\"f0f75a77-0746-4844-9570-9c4837c507d8\",\"type\":\"message-start\",\"delta\":{\"message\":{\"role\":\"assistant\",\"content\":[],\"tool_plan\":\"\",\"tool_calls\":[],\"citations\":[]}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\"I\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" will\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" use\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" the\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" report\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\"_\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\"probe\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" tool\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" to\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" emit\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" a\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" harmless\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" marker\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" with\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" the\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" marker\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\" EDGE\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\"_\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\"STREAM\"}}}\n\nevent: tool-plan-delta\ndata: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\".\"}}}\n\nevent: tool-call-start\ndata: {\"type\":\"tool-call-start\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"id\":\"report_probe_b0n919bpht3n\",\"type\":\"function\",\"function\":{\"name\":\"report_probe\",\"arguments\":\"\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"{\\\"\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"marker\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"\\\":\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\" \\\"\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"EDGE\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"_\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"STREAM\"}}}}}\n\nevent: tool-call-delta\ndata: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"\\\"}\"}}}}}\n\nevent: tool-call-end\ndata: {\"type\":\"tool-call-end\",\"index\":0}\n\nevent: message-end\ndata: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"TOOL_CALL\",\"usage\":{\"billed_units\":{\"input_tokens\":87,\"output_tokens\":30},\"tokens\":{\"input_tokens\":1487,\"output_tokens\":60},\"cached_tokens\":128}}}\n\ndata: [DONE]\n\n"
+  }
+}

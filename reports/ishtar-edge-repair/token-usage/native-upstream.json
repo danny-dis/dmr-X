@@ -1,0 +1,42 @@
+{
+  "provenance": "REAL native Cohere v2 response; not a synthetic fixture",
+  "url": "https://api.cohere.com/v2/chat",
+  "request": {
+    "model": "command-a-03-2025",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Unique token usage probe 5056f157-add1-4d3f-9913-b332bec2d045. Reply only EDGE_PONG."
+      }
+    ],
+    "max_tokens": 24,
+    "temperature": 0,
+    "stream": false
+  },
+  "http": 200,
+  "elapsedMs": 9391,
+  "body": {
+    "id": "2e27b40a-480d-4126-a542-a0d136708238",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "EDGE_PONG"
+        }
+      ]
+    },
+    "finish_reason": "COMPLETE",
+    "usage": {
+      "billed_units": {
+        "input_tokens": 45,
+        "output_tokens": 4
+      },
+      "tokens": {
+        "input_tokens": 540,
+        "output_tokens": 8
+      },
+      "cached_tokens": 448
+    }
+  }
+}
