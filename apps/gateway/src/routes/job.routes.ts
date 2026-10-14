@@ -5,6 +5,10 @@ import { agentPermissions } from '../middleware/agent-rbac.middleware.js';
 import {
   jobStore,
   scoreAgentForTask,
+  requestVerification,
+  validateReceptionistRun,
+  deliverJob,
+  escalateToHuman,
   readBoard,
   type JobStatus,
   type ListJobsOptions,
@@ -208,7 +212,7 @@ export function registerJobRoutes(server: FastifyInstance): void {
     const result = await planJob(tenant.id, id, { model: body.model });
     if (!result.ok) {
       // 'already planned' is a conflict, not a server fault.
-      const code = /already planned/i.test(result.error) ? 409 : 422;
+      const code = /already plan(?:ned|ning)/i.test(result.error) ? 409 : 422;
       return reply.code(code).send({ error: { message: result.error } });
     }
 
@@ -230,7 +234,7 @@ export function registerJobRoutes(server: FastifyInstance): void {
   }, async (request, reply) => {
     const tenant = (request as any).tenant;
     const { id } = request.params as { id: string };
-    const body = (request.body ?? {}) as { coordinator?: string };
+    const body = (request.body ?? {}) as { coordinator?: string; receptionistRun?: boolean; staffingFingerprint?: string };
     const job = jobStore.getJob(tenant.id, id);
     if (!job) {
       return reply.code(404).send({ error: { message: 'Job not found' } });
@@ -251,6 +255,12 @@ export function registerJobRoutes(server: FastifyInstance): void {
       assignedCount = await staffJobWithReceptionist(tenant.id, id);
     }
 
+    if (body.receptionistRun === true) {
+      const eligible = await validateReceptionistRun({ tenantId: tenant.id }, id);
+      if (eligible.error || typeof body.staffingFingerprint !== 'string' || eligible.fingerprint !== body.staffingFingerprint) {
+        return reply.code(409).send({ error: { message: eligible.error ?? 'job staffing changed before enqueue' } });
+      }
+    }
     const enqueued = jobQueue.enqueue(tenant.id, id);
     if (!enqueued.accepted) {
       // Already queued or running is a conflict, not a failure: the caller's
@@ -346,8 +356,9 @@ export function registerJobRoutes(server: FastifyInstance): void {
     if (!job) {
       return reply.code(404).send({ error: { message: 'Job not found' } });
     }
-    const updated = jobStore.updateJobStatus(tenant.id, id, 'verifying');
-    return reply.send({ jobId: id, status: updated?.status ?? 'verifying' });
+    const result = await requestVerification({ tenantId: tenant.id }, { jobId: id }) as { error?: string };
+    if (result.error) return reply.code(['cancelled', 'delivered', 'failed'].includes(job.status) ? 409 : 422).send({ error: { message: result.error } });
+    return reply.send(result);
   });
 
   // ── Deliver job ─────────────────────────────────────────────────────────
@@ -362,9 +373,10 @@ export function registerJobRoutes(server: FastifyInstance): void {
     if (!job) {
       return reply.code(404).send({ error: { message: 'Job not found' } });
     }
-    const result = (request.body ?? {}) as Record<string, unknown>;
-    const updated = jobStore.updateJob(tenant.id, id, { status: 'delivered', result });
-    return reply.send({ jobId: id, status: updated?.status ?? 'delivered', result });
+    const verification = request.body ?? {};
+    const result = await deliverJob({ tenantId: tenant.id }, { jobId: id, verification }) as { error?: string };
+    if (result.error) return reply.code(['cancelled', 'delivered', 'failed'].includes(job.status) ? 409 : 422).send({ error: { message: result.error } });
+    return reply.send(result);
   });
 
   // ── Escalate job ────────────────────────────────────────────────────────
@@ -380,16 +392,9 @@ export function registerJobRoutes(server: FastifyInstance): void {
     if (!job) {
       return reply.code(404).send({ error: { message: 'Job not found' } });
     }
-    const escalationReason = reason ?? 'escalated by receptionist';
-    const updated = jobStore.updateJobStatus(tenant.id, id, 'blocked');
-    const log = Array.isArray(job.decisionLog) ? (job.decisionLog as unknown[]) : [];
-    jobStore.updateJob(tenant.id, id, {
-      decisionLog: [
-        ...log,
-        { at: new Date().toISOString(), by: '__receptionist', action: 'escalate_to_human', reason: escalationReason },
-      ],
-    });
-    return reply.send({ jobId: id, status: updated?.status ?? 'blocked', reason: escalationReason });
+    const result = await escalateToHuman({ tenantId: tenant.id }, { jobId: id, reason }) as { error?: string };
+    if (result.error) return reply.code(['cancelled', 'delivered', 'failed'].includes(job.status) ? 409 : 422).send({ error: { message: result.error } });
+    return reply.send(result);
   });
 
   // ── Job events (SSE) ───────────────────────────────────────────────────

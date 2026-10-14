@@ -105,7 +105,7 @@ const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set<JobStatus>([
 ]);
 
 const SCHEDULER_TO_JOB_STATUS: Record<string, JobStatus> = {
-  complete: 'delivered',
+  complete: 'verifying',
   failed: 'failed',
   blocked: 'blocked',
   running: 'running',
@@ -168,6 +168,9 @@ export async function runJobPass(
   // multi-task pass cannot overrun the cap.
   const current = jobStore.getJob(tenantId, jobId);
   if (!current) return { state: 'failed', ranTaskIds, reason: 'job disappeared mid-pass' };
+  if (TERMINAL_JOB_STATUSES.has(current.status)) {
+    return { state: current.status === 'delivered' ? 'complete' : 'failed', ranTaskIds, reason: `job is ${current.status}` };
+  }
 
   if (budgetExhausted(current)) {
     jobStore.updateJobStatus(tenantId, jobId, 'blocked');
@@ -187,6 +190,9 @@ export async function runJobPass(
       results.push({ ok: false, agentName: task.assignedInstanceId ?? 'unknown', summary: '', error: 'job disappeared mid-pass' });
       continue;
     }
+    if (TERMINAL_JOB_STATUSES.has(fresh.status)) {
+      return { state: fresh.status === 'delivered' ? 'complete' : 'failed', ranTaskIds, reason: `job is ${fresh.status}` };
+    }
     if (budgetExhausted(fresh)) {
       jobStore.updateJobStatus(tenantId, jobId, 'blocked');
       budgetBlocked = true;
@@ -198,6 +204,13 @@ export async function runJobPass(
     ranTaskIds.push(task.id);
     // A failed task still consumed tokens, so spend is recorded either way.
     jobStore.addSpend(tenantId, jobId, result.costUsd ?? 0, result.tokens ?? 0);
+    // The executor may have finished after cancellation. Charge only reported
+    // usage, but never schedule more work or publish a successful pass.
+    const latest = jobStore.getJob(tenantId, jobId);
+    if (!latest) return { state: 'failed', ranTaskIds, reason: 'job disappeared mid-pass' };
+    if (TERMINAL_JOB_STATUSES.has(latest.status)) {
+      return { state: latest.status === 'delivered' ? 'complete' : 'failed', ranTaskIds, reason: `job is ${latest.status}` };
+    }
   }
 
   if (budgetBlocked) {
@@ -206,7 +219,11 @@ export async function runJobPass(
 
   const after = schedulerState(jobStore.listTasks(tenantId, jobId));
   const status = SCHEDULER_TO_JOB_STATUS[after.state];
-  if (status) jobStore.updateJobStatus(tenantId, jobId, status);
+  const persisted = status
+    ? jobStore.updateJobStatus(tenantId, jobId, status)
+    : jobStore.getJob(tenantId, jobId);
+  if (!persisted) return { state: 'failed', ranTaskIds, reason: 'job disappeared mid-pass' };
+  if (persisted.status === 'cancelled') return { state: 'failed', ranTaskIds, reason: 'job is cancelled' };
 
   // Terminal states get the Receptionist's structural acceptance check written
   // into the job record (the automatic path previously left result null and a
@@ -215,7 +232,15 @@ export async function runJobPass(
     finalizeJobOutcome(tenantId, jobId, after.state);
   }
 
+  if (jobStore.getJob(tenantId, jobId)?.status === 'cancelled') {
+    return { state: 'failed', ranTaskIds, reason: 'job is cancelled' };
+  }
   emitJobEvent({ type: 'pass:completed', jobId, ranTaskIds, state: after.state });
+
+  // Event listeners can cancel synchronously too.
+  if (jobStore.getJob(tenantId, jobId)?.status === 'cancelled') {
+    return { state: 'failed', ranTaskIds, reason: 'job is cancelled' };
+  }
 
   if (after.state === 'complete') {
     emitJobEvent({ type: 'job:completed', jobId });
@@ -249,6 +274,11 @@ async function runTask(
 
   let result: TaskExecutionResult;
   try {
+    // task:started listeners may have cancelled before the executor begins.
+    if (jobStore.getJob(tenantId, jobId)?.status === 'cancelled') {
+      jobStore.updateTask(tenantId, task.id, { status: 'cancelled' });
+      return { ok: false, agentName: task.assignedInstanceId ?? 'unknown', summary: '', error: 'job is cancelled' };
+    }
     const boardContext = renderBoardForPrompt(readBoardFor(tenantId, jobId, task.id));
     result = await executor({ job, task, boardContext });
   } catch (error) {
@@ -258,6 +288,15 @@ async function runTask(
       summary: '',
       error: error instanceof Error ? error.message : String(error),
     };
+  }
+
+  // Cancellation is authoritative across the await, for both fulfilled and
+  // rejected executors. Do not turn late output into board/task success or a
+  // retry. The caller still accounts for any usage the executor reported.
+  const latest = jobStore.getJob(tenantId, jobId);
+  if (!latest || TERMINAL_JOB_STATUSES.has(latest.status)) {
+    if (latest?.status === 'cancelled') jobStore.updateTask(tenantId, task.id, { status: 'cancelled' });
+    return result;
   }
 
   if (result.ok) {
@@ -427,15 +466,18 @@ function budgetExhausted(job: Job): string | null {
 function finalizeJobOutcome(tenantId: string, jobId: string, state: 'complete' | 'failed'): void {
   try {
     const job = jobStore.getJob(tenantId, jobId);
-    if (!job) return;
+    if (!job || job.status === 'cancelled') return;
     const log = Array.isArray(job.decisionLog) ? (job.decisionLog as unknown[]) : [];
 
     if (state === 'complete') {
       const verification = verifyAcceptanceCriteria(job, jobStore.listTasks(tenantId, jobId));
-      jobStore.updateJob(tenantId, jobId, { result: verification });
+      // Execution completion is not evidence that semantic acceptance criteria passed.
+      // Keep the job awaiting an explicit evidence-bearing Receptionist verification.
+      jobStore.updateJob(tenantId, jobId, { status: verification.passed ? 'delivered' : 'verifying', result: verification });
     } else {
       const reason = 'escalated to human: job failed';
       jobStore.updateJob(tenantId, jobId, {
+        status: 'failed',
         decisionLog: [
           ...log,
           { at: new Date().toISOString(), by: '__receptionist', action: 'escalate_to_human', reason },

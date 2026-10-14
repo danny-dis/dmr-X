@@ -504,6 +504,11 @@ export function materializePlan(
   // recovery path; now the whole plan is written atomically or not at all.
   const db = getDb();
   return db.transaction(() => {
+    // Validate the tenant/state at commit, after the asynchronous model call.
+    const job = jobStore.getJob(tenantId, jobId);
+    if (!job) throw new Error('job not found in this tenant');
+    if (!['intake', 'planning', 'failed'].includes(job.status)) throw new Error(`job is ${job.status} and cannot be planned`);
+    if (jobStore.listTasks(tenantId, jobId).length > 0) throw new Error('job already planned');
     for (let index = 0; index < tasks.length; index++) {
       const task = tasks[index];
 

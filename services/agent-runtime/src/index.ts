@@ -116,6 +116,8 @@ export {
   RECEPTIONIST_TOOLS,
   getReceptionistToolHandlers,
   jobDecompose,
+  runJob,
+  validateReceptionistRun,
   findAgents,
   assignTask,
   readJobBoard,

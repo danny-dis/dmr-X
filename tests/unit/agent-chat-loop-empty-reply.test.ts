@@ -114,7 +114,7 @@ describe('agent-chat-loop: never return an empty reply after tool use', () => {
     await testDb.close();
   });
 
-  it('keeps earlier prose when the final turn is an empty tool-call turn', async () => {
+  it('keeps earlier prose as evidence, not final success, when tools hit the step cap', async () => {
     // Turn 0 says something useful, turn 1 emits tool calls with no content and
     // hits the step limit. The reply must not be blank.
     const route = vi
@@ -127,7 +127,10 @@ describe('agent-chat-loop: never return an empty reply after tool use', () => {
     );
 
     expect(result.lastResponseText.trim()).not.toBe('');
-    expect(result.lastResponseText).toContain('Analysing the failure now.');
+    expect(result.lastResponseText).toContain('not executed');
+    expect(result.allSteps[0].message.content).toContain('Analysing the failure now.');
+    expect(result.allSteps[1].tool_results).toEqual([]);
+    expect(route).toHaveBeenCalledTimes(2);
   });
 
   it('does not blank the reply when content is null on the tool-call turn', async () => {

@@ -11,6 +11,7 @@ import type { Router } from '@dmr-x/router';
 import { resolveMetaModel } from '@dmr-x/router';
 import { billingService } from '@dmr-x/billing';
 import { runAgentChatLoop } from './agent-chat-loop.js';
+import { agentExecutionTelemetry, agentResponseContract } from '../lib/agent-response-contract.js';
 import {
   resolveAgentModel,
   clampAgentTokens,
@@ -399,6 +400,7 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
       dispatchHoldId = undefined;
 
       try {
+        const telemetry = agentExecutionTelemetry(agentResponseContract(loopResult, conversation));
         await agentRuntimeService.createExecution(
           loopContext,
           body.task,
@@ -408,6 +410,8 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
           settled.promptTokens,
           settled.completionTokens,
           0,
+          telemetry.status,
+          telemetry.error,
         );
       } catch (recordError) {
         logger.warn({ instanceId: instance.id, error: recordError }, 'agent-dispatch: failed to record execution');
@@ -419,11 +423,16 @@ export async function agentDispatchRoutes(server: FastifyInstance): Promise<void
         category: definition.category,
         tags: definition.tags,
         confidence: lowConfidence ? 'low' : 'high',
+        ...agentResponseContract(loopResult, conversation),
         content: loopResult.lastResponseText,
         model,
         usage: loopResult.finalUsage,
         totalTokens: loopResult.totalTokensUsed,
+        costUsd: loopResult.totalCost,
+        // Correlation id only; dispatch does not persist a new resumable chat.
+        conversationId: conversation.id,
         steps_completed: loopResult.stepsCompleted,
+        all_steps: loopResult.allSteps,
         ...(loopResult.budgetExceeded ? { budget_exceeded: true, totalCost: loopResult.totalCost } : {}),
       });
     } catch (err) {

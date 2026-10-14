@@ -15,6 +15,7 @@ import crypto from 'crypto';
 
 import { billingService } from '@dmr-x/billing';
 import { writeSSE } from '../lib/sse.js';
+import { agentExecutionTelemetry, agentResponseContract } from '../lib/agent-response-contract.js';
 import {
   resolveAgentModel,
   clampAgentSteps,
@@ -297,19 +298,20 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         runtime: agentRuntimeService,
         conversationId: convId,
         onCheckpoint: (turn, conversation) => {
-          agentSessionStore.upsert({
+          const saved = agentSessionStore.upsert({
             tenantId: tenant.id,
             conversationId: convId,
             instanceId,
             agentDefinitionId: definition.id,
             state: conversation,
-            status: 'in_progress',
-            lastTurn: turn,
+            status: conversation.status,
+            lastTurn: turn < 0 ? (agentSessionStore.get(tenant.id, conversation.id)?.lastTurn ?? 0) : turn,
             metadata: {
               loadedSkillIds: JSON.stringify(loadedSkillIds),
               totalTokensUsed: 0,
             },
           });
+          if (!saved.updated) throw new Error('Agent checkpoint ownership lost');
         },
         stopWhen: body.stopWhen,
         approvalRequired: body.approvalRequired,
@@ -324,11 +326,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         instanceId,
         agentDefinitionId: definition.id,
         state: conversation,
-        status: result.awaitingApproval
-          ? 'awaiting_approval'
-          : result.budgetExceeded
-            ? 'interrupted'
-            : conversation.status,
+        status: agentResponseContract(result, conversation).status,
         metadata: {
           lastResponseText: result.lastResponseText,
           totalTokensUsed: result.totalTokensUsed,
@@ -366,6 +364,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         billingService,
       });
       holdId = undefined;
+      const telemetry = agentExecutionTelemetry(agentResponseContract(result, conversation));
       const executionRecord = await agentRuntimeService.createExecution(
         context,
         JSON.stringify(body.messages),
@@ -375,6 +374,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         settled.promptTokens,
         settled.completionTokens,
         Date.now() - startTime,
+        telemetry.status,
+        telemetry.error,
       );
       // Persist an evaluation record linked to this execution so the
       // /evaluations endpoint has data to serve.
@@ -398,8 +399,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
               inputTokens: settled.promptTokens,
               outputTokens: settled.completionTokens,
               durationMs: Date.now() - startTime,
-              status: result.budgetExceeded ? 'error' : 'success',
-              error: result.budgetExceeded ? 'budget_exceeded' : null,
+              status: telemetry.status,
+              error: telemetry.error ?? null,
             },
             result.allSteps,
             maxSteps,
@@ -412,15 +413,12 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
 
       if (body.stream) {
         writeSSE(reply, 'done', {
-          status: result.awaitingApproval ? 'awaiting_approval' : 'completed',
+          ...agentResponseContract(result, conversation),
           conversationId: conversation.id,
           durationMs: Date.now() - startTime,
           totalTokensUsed: result.totalTokensUsed,
           totalCost: result.totalCost,
           budget_exceeded: result.budgetExceeded,
-          ...(result.awaitingApproval
-            ? { pending_tool_calls: conversation.pendingToolCalls ?? [] }
-            : {}),
         });
         reply.raw.end();
         return reply;
@@ -430,6 +428,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         id: requestId,
         agentInstanceId: instanceId,
         agentName: definition.name,
+        ...agentResponseContract(result, conversation),
         content: result.lastResponseText,
         model,
         usage: result.finalUsage,
@@ -442,9 +441,6 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         steps_completed: result.stepsCompleted,
         all_steps: result.allSteps,
         durationMs: Date.now() - startTime,
-        ...(result.awaitingApproval
-          ? { status: 'awaiting_approval', pending_tool_calls: conversation.pendingToolCalls ?? [] }
-          : {}),
         ...(result.budgetExceeded
           ? { budget_exceeded: true, max_cost_budget: body.max_cost_budget, totalCost: result.totalCost }
           : {}),
@@ -642,19 +638,20 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         runtime: agentRuntimeService,
         conversationId,
         onCheckpoint: (turn, conversation) => {
-          agentSessionStore.upsert({
+          const saved = agentSessionStore.upsert({
             tenantId: tenant.id,
             conversationId,
             instanceId,
             agentDefinitionId: definition.id,
             state: conversation,
-            status: 'in_progress',
-            lastTurn: turn,
+            status: conversation.status,
+            lastTurn: turn < 0 ? (agentSessionStore.get(tenant.id, conversation.id)?.lastTurn ?? 0) : turn,
             metadata: {
               loadedSkillIds: JSON.stringify(loadedSkillIds),
               totalTokensUsed: 0,
             },
           });
+          if (!saved.updated) throw new Error('Agent checkpoint ownership lost');
         },
         stopWhen: body.stopWhen,
         approvalRequired: body.approvalRequired,
@@ -669,11 +666,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         instanceId,
         agentDefinitionId: definition.id,
         state: conversation,
-        status: result.awaitingApproval
-          ? 'awaiting_approval'
-          : result.budgetExceeded
-            ? 'interrupted'
-            : conversation.status,
+        status: agentResponseContract(result, conversation).status,
         metadata: {
           lastResponseText: result.lastResponseText,
           totalTokensUsed: result.totalTokensUsed,
@@ -732,6 +725,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           tenantId: tenant.id,
           requestId,
         } as any;
+        const telemetry = agentExecutionTelemetry(agentResponseContract(result, conversation));
         const executionRecord = await agentRuntimeService.createExecution(
           resumeContext,
           JSON.stringify(body.messages),
@@ -741,6 +735,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
           resumeSettled.promptTokens,
           resumeSettled.completionTokens,
           Date.now() - startTime,
+          telemetry.status,
+          telemetry.error,
         );
         const resumeEvalId =
           executionRecord?.id ??
@@ -758,8 +754,8 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
                 inputTokens: resumeSettled.promptTokens,
                 outputTokens: resumeSettled.completionTokens,
                 durationMs: Date.now() - startTime,
-                status: result.budgetExceeded ? 'error' : 'success',
-                error: result.budgetExceeded ? 'budget_exceeded' : null,
+                status: telemetry.status,
+                error: telemetry.error ?? null,
               },
               result.allSteps,
               maxSteps,
@@ -776,6 +772,7 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         id: requestId,
         agentInstanceId: instanceId,
         agentName: definition.name,
+        ...agentResponseContract(result, conversation),
         content: result.lastResponseText,
         model,
         usage: result.finalUsage,
@@ -783,12 +780,10 @@ export async function agentChatRoutes(server: FastifyInstance): Promise<void> {
         costUsd: result.totalCost,
         conversationId,
         steps_completed: result.stepsCompleted,
+        all_steps: result.allSteps,
         durationMs: Date.now() - startTime,
         loadedSkills: loadedSkillIds,
         resumed: true,
-        ...(result.awaitingApproval
-          ? { status: 'awaiting_approval', pending_tool_calls: conversation.pendingToolCalls ?? [] }
-          : {}),
       });
     } finally {
       await releaseAgentHold((server as any).quotaService, resumeHoldId);

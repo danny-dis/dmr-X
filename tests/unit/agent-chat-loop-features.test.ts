@@ -217,7 +217,7 @@ describe('agent-chat-loop feature ports (remediation #13)', () => {
     const persisted = agentSessionStore.get(TENANT.id, convId);
     expect(persisted).not.toBeNull();
     expect((persisted!.state as any).messages.length).toBeGreaterThan(checkpoints[0].messageCount);
-    expect((persisted!.state as any).status).toBe('in_progress');
+    expect((persisted!.state as any).status).toBe('completed');
     expect(result.stepsCompleted).toBe(2);
   });
 
@@ -316,7 +316,7 @@ describe('agent-chat-loop feature ports (remediation #13)', () => {
     expect(call1).toBeDefined();
     expect(JSON.parse((call1 as any).content)).toHaveProperty('error');
     expect(call2).toBeDefined();
-    expect(JSON.parse((call2 as any).content)).toEqual({ error: 'Tool call rejected by user' });
+    expect(JSON.parse((call2 as any).content)).toEqual({ executed: false, error: 'Tool call rejected by user' });
   });
 
   it('routeWithTimeout aborts a hung router.route call', async () => {

@@ -1,0 +1,7 @@
+import { expect, test } from 'bun:test';
+import { buildReceptionistReceipt } from '../../apps/gateway/src/lib/receptionist-receipt.ts';
+function step(name:string,result:any,args:any={},id=name){return {tool_calls:[{id,function:{name,arguments:JSON.stringify(args)}}],tool_results:[{tool_call_id:id,tool_name:name,result}]};}
+test('failed planning cannot become a successful coordination claim',()=>{const r=buildReceptionistReceipt([step('job_decompose',{error:'empty JSON'},{jobId:'j'}),step('read_job_board',{jobId:'j',status:'intake',taskCount:0})]);expect(r?.failed).toBe(true);expect(r?.content).toContain('job_decompose: failed');expect(r?.content).toContain('0 tasks');expect(r?.content).not.toContain('successfully assigned');});
+test('a later success resolves only the same operation target',()=>{const r=buildReceptionistReceipt([step('job_decompose',{error:'bad'},{jobId:'a'},'1'),step('job_decompose',{jobId:'b',taskCount:2},{jobId:'b'},'2')]);expect(r?.failed).toBe(true);const ok=buildReceptionistReceipt([step('job_decompose',{error:'bad'},{jobId:'a'},'1'),step('job_decompose',{jobId:'a',taskCount:2},{jobId:'a'},'2')]);expect(ok?.failed).toBe(false);});
+test('queued is never described as completed',()=>{const r=buildReceptionistReceipt([step('run_job',{jobId:'j',status:'queued'},{jobId:'j'})]);expect(r?.content).toContain('queued');expect(r?.content).toContain('not proof of completed work');});
+test('no tool evidence produces no receipt',()=>expect(buildReceptionistReceipt([])).toBeNull());

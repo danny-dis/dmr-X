@@ -1,0 +1,4 @@
+import { defineConfig } from 'vitest/config';
+import { resolve } from 'node:path';
+const root=resolve(process.cwd());
+export default defineConfig({resolve:{alias:[{find:'zod/v4',replacement:resolve(root,'node_modules/.bun/zod@4.4.3/node_modules/zod/v4')},{find:'zod',replacement:resolve(root,'node_modules/.bun/zod@3.23.0/node_modules/zod')},{find:'@dmr-x/utils',replacement:resolve(root,'packages/utils/src/index.ts')},{find:'@dmr-x/router',replacement:resolve(root,'services/router/src/index.ts')},{find:'@dmr-x/core',replacement:resolve(root,'packages/core/src/index.ts')},{find:'@dmr-x/agent-registry',replacement:resolve(root,'services/agent-registry/src/index.ts')}]},test:{include:['reports/ishtar-edge-repair/review/adversarial.test.ts'],environment:'node',pool:'forks',maxWorkers:1,fileParallelism:false,execArgv:['--max-old-space-size=384'],testTimeout:10000,hookTimeout:10000}});

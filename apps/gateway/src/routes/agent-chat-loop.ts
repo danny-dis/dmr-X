@@ -1,3 +1,4 @@
+import { buildReceptionistReceipt } from '../lib/receptionist-receipt.js';
 import { ProviderUnavailableError } from '@dmr-x/core';
 import type { ToolCall, UnifiedRequest, UnifiedResponse } from '@dmr-x/core';
 import { isMetaModel, isInferenceSettlementError, isTrustedExternalAccounting, markTrustedExternalAccounting } from '@dmr-x/router';
@@ -481,8 +482,11 @@ async function summarizeHistory(args: {
   const { router, model, tenant, requestId, messages, keepRecent, holdId } = args;
   // messages[0] is the live system prompt; we compact the user/assistant/tool
   // turns that precede the recent tail.
-  const head = messages.slice(1, messages.length - keepRecent);
-  const tail = messages.slice(messages.length - keepRecent);
+  let tailStart = Math.max(1, messages.length - keepRecent);
+  // Never retain a tool reply while compacting away its requesting assistant.
+  while (tailStart > 1 && messages[tailStart]?.role === 'tool') tailStart--;
+  const head = messages.slice(1, tailStart);
+  const tail = messages.slice(tailStart);
   if (head.length < keepRecent) return null;
 
   const transcript = head
@@ -692,76 +696,54 @@ export function buildStopConditions(
  * returns the conversation to in_progress. No-op unless the conversation is
  * awaiting approval with pending calls.
  */
+interface ApprovalJournalState extends ConversationState { approvalExecutionIntents?: string[] }
+const approvalExecutionsInFlight = new WeakSet<ConversationState>();
+
 export async function processApprovalDecisions(
   conversation: ConversationState,
   approvalDecisions: Array<{ tool_call_id: string; approved: boolean; result?: unknown }>,
-  context: {
-    requestId: string;
-    tenant?: { id: string; name: string };
-    agentDefinition?: RunAgentChatLoopArgs['agentDefinition'];
-    router?: Router;
-    loadedSkills?: string[];
-    conversationId?: string;
-  },
+  context: { requestId: string; tenant?: { id: string; name: string }; agentDefinition?: RunAgentChatLoopArgs['agentDefinition']; router?: Router; loadedSkills?: string[]; conversationId?: string; onCheckpoint?: () => void },
 ): Promise<{ processed: boolean }> {
-  if (
-    !approvalDecisions ||
-    approvalDecisions.length === 0 ||
-    conversation.status !== 'awaiting_approval' ||
-    !conversation.pendingToolCalls
-  ) {
-    return { processed: false };
-  }
-
-  const approvedCalls: typeof conversation.pendingToolCalls = [];
-  const rejectedCalls: typeof conversation.pendingToolCalls = [];
-
-  for (const decision of approvalDecisions) {
-    const pending = conversation.pendingToolCalls.find((tc) => tc.id === decision.tool_call_id);
-    if (pending) {
-      if (decision.approved) approvedCalls.push(pending);
-      else rejectedCalls.push(pending);
+  if (!approvalDecisions?.length || conversation.status !== 'awaiting_approval' || !conversation.pendingToolCalls || approvalExecutionsInFlight.has(conversation)) return { processed: false };
+  approvalExecutionsInFlight.add(conversation);
+  try {
+    const journal = conversation as ApprovalJournalState;
+    const decisions = new Map<string, boolean>();
+    for (const d of approvalDecisions) decisions.set(d.tool_call_id, decisions.get(d.tool_call_id) === false ? false : d.approved);
+    let processed = false;
+    for (const tc of [...conversation.pendingToolCalls]) {
+      const approved = decisions.get(tc.id);
+      if (approved === undefined) continue;
+      let content: string;
+      let rejected: unknown;
+      if (!approved) content = JSON.stringify({ executed: false, error: 'Tool call rejected by user' });
+      else if (journal.approvalExecutionIntents?.includes(tc.id)) {
+        content = JSON.stringify({ error: 'Previous approval execution outcome is unknown; no automatic replay.' });
+        rejected = new Error('Previous approval execution outcome is unknown');
+      } else {
+        // Persist intent before the side effect. A crash after dispatch but
+        // before result persistence must fail closed on approval redelivery.
+        journal.approvalExecutionIntents = [...(journal.approvalExecutionIntents ?? []), tc.id];
+        context.onCheckpoint?.();
+        const call: ToolCall = { id: tc.id, type: 'function', function: { name: tc.name, arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments) } };
+        try {
+          const result = await executeToolCall(call, context);
+          content = result.error ? JSON.stringify({ error: result.error.message }) : JSON.stringify(result.result) ?? 'null';
+        } catch (error) {
+          content = JSON.stringify({ error: 'Tool execution outcome is unknown; no automatic replay.' });
+          rejected = error;
+        }
+      }
+      conversation.messages.push({ role: 'tool', tool_call_id: tc.id, content });
+      const remaining = conversation.pendingToolCalls!.filter(call => call.id !== tc.id);
+      journal.approvalExecutionIntents = journal.approvalExecutionIntents?.filter(id => id !== tc.id);
+      Object.assign(conversation, updateState(conversation, { pendingToolCalls: remaining.length ? remaining : undefined, status: rejected ? 'interrupted' : remaining.length ? 'awaiting_approval' : 'in_progress' }));
+      processed = true;
+      context.onCheckpoint?.();
+      if (rejected) throw rejected;
     }
-  }
-
-  for (const tc of approvedCalls) {
-    const args = typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments);
-    const mockToolCall: ToolCall = {
-      id: tc.id,
-      type: 'function',
-      function: { name: tc.name, arguments: args },
-    };
-    const result = await executeToolCall(mockToolCall, {
-      requestId: context.requestId,
-      tenant: context.tenant,
-      agentDefinition: context.agentDefinition,
-      router: context.router,
-      loadedSkills: context.loadedSkills,
-      conversationId: context.conversationId,
-    });
-    conversation.messages.push({
-      role: 'tool',
-      tool_call_id: tc.id,
-      content: result.error
-        ? JSON.stringify({ error: result.error.message })
-        : JSON.stringify(result.result),
-    });
-  }
-
-  for (const tc of rejectedCalls) {
-    conversation.messages.push({
-      role: 'tool',
-      tool_call_id: tc.id,
-      content: JSON.stringify({ error: 'Tool call rejected by user' }),
-    });
-  }
-
-  Object.assign(
-    conversation,
-    updateState(conversation, { pendingToolCalls: undefined, status: 'in_progress' }),
-  );
-
-  return { processed: true };
+    return { processed };
+  } finally { approvalExecutionsInFlight.delete(conversation); }
 }
 
 /**
@@ -850,6 +832,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       router,
       loadedSkills: loadedSkillIds,
       conversationId: resolvedConversationId,
+      onCheckpoint: () => onCheckpoint?.(-1, conversation),
     });
   }
 
@@ -873,7 +856,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   const planMode = definition?.planMode === true;
   const historyCompaction = definition?.historyCompaction === true;
   let planText: string | null = null;
-  if (planMode) {
+  if (planMode && conversation.status !== 'awaiting_approval') {
     const firstUser = messages.find((m: any) => m.role === 'user')?.content ?? '';
     planText = await runPlanPhase({
       router,
@@ -892,19 +875,34 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   }
   let lastResponseText = '';
   let budgetExceeded = false;
-  let awaitingApproval = false;
+  let awaitingApproval = conversation.status === 'awaiting_approval';
   let runTimedOut = false;
+  let responseTruncated = false;
   // Set when the loop exits on the step limit while the model was still asking
-  // for tools — the signal that the agent did work but was never given a turn
-  // to report it. Drives the FINAL SUMMARY turn after the loop.
+  // for tools. The final pending calls did not execute; the runtime-owned
+  // receipt reports this interruption without asking the model for findings.
   let stepLimitedWithPendingTools = false;
+  let stopConditionWithPendingTools = false;
   // Set when the loop exits on a terminal turn with NO tool calls (a normal
   // stop / stop-condition exit). Used to detect a thought-only terminal reply
   // that stripped to empty prose and needs ONE recovery completion.
   let terminalNoToolStop = false;
+  let providerFailure = false;
   let finalUsage: any;
   const allSteps: AgentChatLoopResult['allSteps'] = [];
   const allStepResults: StepResult[] = [];
+
+  // A failed follow-up cannot erase completed coordinator side effects. Keep
+  // the real rows/accounting and exit through runtime-owned reporting instead
+  // of the route catch, which lacks this run's accumulated evidence.
+  const retainReceptionistProviderFailure = (error: unknown): boolean => {
+    if (isInferenceSettlementError(error)) return false;
+    if (agentDefinition?.name !== '__receptionist' || !buildReceptionistReceipt(allSteps)) return false;
+    providerFailure = true;
+    commitConversationState(conversation, messages, 'interrupted');
+    logger.warn({ requestId, resolvedConversationId }, 'receptionist_provider_followup_failed_with_recorded_actions');
+    return true;
+  };
 
   // Run-scoped tool-result cache for CROSS-TURN repeat detection, keyed on
   // (tool name + normalized arguments). Populated only with results that were
@@ -914,6 +912,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   const toolResultCache = new Map<string, ToolExecResult>();
   const toolDedupeEnabled = isToolDedupeEnabled();
   let dedupedCallCount = 0;
+  let stalledTurnNudged = false;
 
   const sdkStopConditions = buildStopConditions(
     stopConditions,
@@ -933,7 +932,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
   }
 
   const runStartedAt = Date.now();
-  for (let turn = 0; turn < maxSteps; turn++) {
+  for (let turn = 0; turn < maxSteps && !awaitingApproval; turn++) {
     // Global wall-clock deadline: stop BEFORE making another model call.
     const elapsedMs = Date.now() - runStartedAt;
     if (elapsedMs > RUN_TIMEOUT_MS) {
@@ -1014,6 +1013,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       const decision = resolveFallbackForError(runtime, error, context.definition, model);
 
       if (!decision.retry) {
+        if (retainReceptionistProviderFailure(error)) break;
         throw error;
       }
 
@@ -1045,7 +1045,12 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         holdId,
       );
 
-      ({ response } = await completeAgentTurn(router, retryRequest, target, requestId, godmodeWrap, freeOnly));
+      try {
+        ({ response } = await completeAgentTurn(router, retryRequest, target, requestId, godmodeWrap, freeOnly));
+      } catch (retryError) {
+        if (retainReceptionistProviderFailure(retryError)) break;
+        throw retryError;
+      }
     }
 
     const toolCalls = response.message?.tool_calls ?? [];
@@ -1077,7 +1082,9 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // Stop if cost budget exceeded
     if (body.max_cost_budget && totalCost >= body.max_cost_budget) {
       if (sanitizedMessage) messages.push(sanitizedMessage);
-      commitConversationState(conversation, messages, 'completed');
+      for (const tc of toolCalls) messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ executed: false, error: 'Tool call withheld by cost budget.' }) });
+      allSteps.push({ turn, message: sanitizedMessage, tool_calls: toolCalls, tool_results: [] });
+      commitConversationState(conversation, messages, 'interrupted');
       budgetExceeded = true;
       if (stream) {
         onStreamEvent('budget_exceeded', {
@@ -1086,7 +1093,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           totalCost,
         });
       }
-      onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
+      onCheckpoint?.(turn, conversation);
       break;
     }
 
@@ -1111,33 +1118,36 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
 
     // Stop if no tool calls, at step limit, or a stop condition is met.
     //
-    // NOTE ON THE STEP LIMIT: reaching `maxSteps - 1` with tool calls pending
-    // means this turn's tool calls are DISCARDED (tool_results is empty below)
-    // and the model never gets a turn to speak about them. That is why a
-    // maxSteps=2 fleet run produced only synthesised "reached the step limit"
-    // text for every tool-using agent: turn 0 called tools, turn 1 called tools
-    // again, and the loop exited with no prose ever generated. A final
-    // summarisation turn is issued after this loop (see FINAL SUMMARY below)
-    // so a step-limited run still returns the agent's own words.
-    const hitStepLimit = turn === maxSteps - 1 && toolCalls.length > 0;
+    // NOTE ON THE STEP LIMIT: pending calls are retained but NOT executed.
+    // Their tool_results stay empty. After this loop, the deterministic runtime
+    // receipt replaces final prose and protocol-only executed:false rejections
+    // pair the pending IDs in durable messages; neither is a provider step or
+    // evidence of tool execution. Raw assistant prose remains in the transcript.
+
+    responseTruncated = response.finishReason === 'length';
     if (
+      responseTruncated ||
       toolCalls.length === 0 ||
       turn === maxSteps - 1 ||
       (await isStopConditionMet({ stopConditions: sdkStopConditions, steps: allStepResults }))
     ) {
       if (sanitizedMessage) messages.push(sanitizedMessage);
-      commitConversationState(conversation, messages, 'completed');
+      commitConversationState(conversation, messages, toolCalls.length > 0 || responseTruncated ? 'interrupted' : 'completed');
       allSteps.push({
         turn,
         message: sanitizedMessage,
         tool_calls: toolCalls,
         tool_results: [],
       });
-      if (hitStepLimit) stepLimitedWithPendingTools = true;
+      if (toolCalls.length > 0 && !responseTruncated) {
+        stepLimitedWithPendingTools = true;
+        stopConditionWithPendingTools = turn < maxSteps - 1;
+      }
+      for (const tc of toolCalls) messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ executed: false, error: responseTruncated ? 'Tool call withheld because provider response was truncated.' : stopConditionWithPendingTools ? 'Tool call withheld by configured stop condition.' : 'Tool call was not executed because the run reached its step limit.' }) });
       // A pure no-tool exit (final stop turn, or a stop condition firing on a
       // text-only turn) is the path where a thought-only reply strips to ''.
       if (toolCalls.length === 0) terminalNoToolStop = true;
-      onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
+      onCheckpoint?.(turn, conversation);
       break;
     }
 
@@ -1181,6 +1191,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
         arguments: JSON.parse(tc.function.arguments || '{}'),
       }));
       if (sanitizedMessage) messages.push(sanitizedMessage);
+      for (const tc of blockedCalls) messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ executed: false, error: 'Tool call blocked: not in agent allowedTools.' }) });
       Object.assign(
         conversation,
         updateState(conversation, {
@@ -1209,6 +1220,11 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       awaitingApproval = true;
       break;
     }
+
+    // The next provider needs the requesting assistant message immediately
+    // before its tool replies. Without it strict providers cannot resolve the
+    // function name from tool_call_id and reject an otherwise valid request.
+    if (sanitizedMessage) messages.push(sanitizedMessage);
 
     // Execute tool calls with automatic retry for transient failures.
     // A tool call can fail for transient reasons (network timeout, provider
@@ -1278,7 +1294,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       if (!row) continue; // rejected promise — no result to fan out or cache
       const key = toolCallDedupeKey(tc);
       executedByKey.set(key, row);
-      if (toolDedupeEnabled && !toolResultCache.has(key)) toolResultCache.set(key, row);
+      if (toolDedupeEnabled && tc.function.name !== 'read_job_board' && !toolResultCache.has(key)) toolResultCache.set(key, row);
     }
 
     // TRANSCRIPT INTEGRITY: the OpenAI protocol demands one tool message per
@@ -1312,9 +1328,14 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     for (const r of [...executedResults, ...dedupedRows]) {
       if (r?.tool_call_id) resultById.set(r.tool_call_id, r);
     }
-    const stepResults = allowedCalls
-      .map((tc: ToolCall) => resultById.get(tc.id))
-      .filter((r): r is ToolExecResult => r != null);
+    const stepResults: ToolExecResult[] = allowedCalls.map((tc: ToolCall) =>
+      resultById.get(tc.id) ?? {
+        tool_call_id: tc.id,
+        tool_name: tc.function.name,
+        result: null,
+        error: { message: 'Tool execution did not return a result. Outcome is unknown; do not claim success.' },
+      },
+    );
 
     if (stream) {
       onStreamEvent('tool_results', { turn, results: stepResults });
@@ -1327,15 +1348,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // deduped copy of an already-reported failure would repeat the same
     // reflection prompt every turn.
     const failedResults = stepResults.filter((tr) => tr.error && !tr.deduped);
-    if (failedResults.length > 0) {
-      const errorSummary = failedResults.map((tr) =>
-        `Tool call ${tr.tool_call_id} failed: ${tr.error?.message ?? 'unknown error'}`
-      ).join('\n');
-      messages.push({
-        role: 'system',
-        content: `⚠️ TOOL EXECUTION ERROR(S):\n${errorSummary}\n\nReview the above error(s) and correct your approach. If a file was written with incorrect content, rewrite it. If a command failed, fix the syntax and retry.`,
-      });
-    }
+    // Reflection is appended after the contiguous assistant/tool exchange.
 
     allSteps.push({
       turn,
@@ -1347,7 +1360,18 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     // Add tool results to messages. Every tool_call_id gets exactly one tool
     // message — including deduped ids — or the provider rejects the transcript.
     // Repeats carry a short note so the model can see it already asked this.
-    for (const tr of stepResults) {
+    for (const tc of toolCalls) {
+      const tr = stepResults.find(result => result.tool_call_id === tc.id);
+      if (!tr) {
+        const blocked = blockedCalls.some(call => call.id === tc.id);
+        messages.push({
+          role: 'tool', tool_call_id: tc.id,
+          content: JSON.stringify(blocked
+            ? { executed: false, error: 'Tool call blocked: not in agent allowedTools.' }
+            : { error: 'Tool execution did not return a result. Outcome is unknown; do not claim success.' }),
+        });
+        continue;
+      }
       let content: string;
       if (tr.deduped) {
         const note =
@@ -1367,7 +1391,32 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       });
     }
 
-    onCheckpoint?.(turn, updateState(conversation, { messages, status: 'in_progress' }));
+    if (failedResults.length > 0) {
+      const errorSummary = failedResults.map(tr =>
+        `Tool call ${tr.tool_call_id} failed: ${tr.error?.message ?? 'unknown error'}`,
+      ).join('\n');
+      messages.push({
+        role: 'system',
+        content: `⚠️ TOOL EXECUTION ERROR(S):\n${errorSummary}\n\nReview the above error(s) and correct your approach. If a file was written with incorrect content, rewrite it. If a command failed, fix the syntax and retry.`,
+      });
+    }
+
+    // One nudge per consecutive all-replayed streak, AFTER protocol-required
+    // tool messages. No extra inference or executions; real progress resets it.
+    const allReplayed = stepResults.length > 0 &&
+      stepResults.length === allowedCalls.length && stepResults.every((tr) => tr.deduped);
+    if (allReplayed && !stalledTurnNudged) {
+      messages.push({
+        role: 'system',
+        content: 'No new tool execution occurred this turn: identical calls already executed ' +
+          'and their cached results are above. Continue the remaining task using the next ' +
+          'necessary actions instead of repeating identical calls. Report only evidenced ' +
+          'outcomes and clearly identify unfinished steps.',
+      });
+    }
+    stalledTurnNudged = allReplayed;
+
+    onCheckpoint?.(turn, conversation);
 
     // Opt-in history compaction: once the transcript is large, fold the early
     // tool-activity turns into a single rolling summary. Non-fatal — on any
@@ -1387,86 +1436,29 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     }
   }
 
-  // ------------------------------------------------------------------ FINAL
-  // FINAL SUMMARY TURN
-  //
-  // The ReAct loop exits the instant `turn === maxSteps - 1`, even when that
-  // turn was a pure tool-call turn. The model therefore never gets to speak
-  // about what it just did, and the caller receives no prose at all.
-  //
-  // Measured on the DMR-X agent fleet (24 agents, maxSteps=2): all 10
-  // tool-using agents returned only a synthesised placeholder, while the 7
-  // agents that answered directly (no tools) returned 972-7479 characters.
-  // "0 empty replies" was true only because a placeholder was standing in for
-  // the agent's actual answer.
-  //
-  // So: ask the model ONE more time, with the tool results already in the
-  // transcript and tools withheld, to state its findings. This costs one extra
-  // completion on step-limited runs only, and is what makes the reply real
-  // rather than fabricated by the gateway. Failures here are non-fatal — the
-  // placeholder below still guards the empty-string case.
-  if (stepLimitedWithPendingTools && !budgetExceeded && !awaitingApproval && !lastResponseText.trim()) {
-    try {
-      messages.push({
-        role: 'user',
-        content:
-          'You have reached your tool-use step limit. Do not request any more tools. ' +
-          'Using only what you already know from this conversation, give your final ' +
-          'answer to the original request now.',
-      });
-      const summaryRequest = toUnifiedRequest(
-        {
-          model,
-          messages,
-          // No `tools` — withholding them forces prose instead of another
-          // tool-call turn, which is the failure we are correcting.
-          temperature: body.temperature,
-          max_tokens: body.maxTokens,
-          stream: false,
-        },
-        requestId,
-        tenant,
-        freeOnly,
-        holdId,
-      );
-      const { response: summaryResponse } = await completeAgentTurn(
-        router,
-        summaryRequest,
-        target,
-        requestId,
-        godmodeWrap,
-        freeOnly,
-      );
-      recordAuxiliaryUsage(summaryResponse.usage);
-      if (summaryResponse.usage) finalUsage = summaryResponse.usage;
-      let summaryText =
-        typeof summaryResponse.message?.content === 'string' ? summaryResponse.message.content : '';
-      summaryText = stripThoughtBlocks(summaryText);
-      if (summaryText) {
-        lastResponseText = summaryText;
-        const sanitizedSummary = sanitizedAssistantMessage(summaryResponse.message, summaryText);
-        if (sanitizedSummary) messages.push(sanitizedSummary);
-        allSteps.push({
-          turn: allSteps.length,
-          message: sanitizedSummary,
-          tool_calls: [],
-          tool_results: [],
-        });
-
-        commitConversationState(conversation, messages, 'completed');
-        if (stream) {
-          onStreamEvent('final_summary', { resolvedConversationId, content: summaryText });
-        }
-      }
-    } catch (summaryError) {
-      if (isInferenceSettlementError(summaryError)) throw summaryError;
-      logger.warn(
-        { resolvedConversationId, error: summaryError },
-        'final summarisation turn failed — falling back to synthesised text',
-      );
-    }
+  // The final model/tool turn can itself cross the wall-clock deadline. Check
+  // again before auxiliary inference, preserving intentional budget/approval exits.
+  if (!budgetExceeded && !awaitingApproval && !runTimedOut && Date.now() - runStartedAt > RUN_TIMEOUT_MS) {
+    runTimedOut = true;
+    commitConversationState(conversation, messages, 'interrupted');
+    if (stream) onStreamEvent('run_timeout', { resolvedConversationId, elapsedMs: Date.now() - runStartedAt });
   }
 
+  // ------------------------------------------------------- INTERRUPTED RECEIPT
+  // Runtime-owned reporting: another inference cannot certify unexecuted calls.
+  // Preserve provider evidence; protocol rejections are not execution results.
+  if (stepLimitedWithPendingTools && !budgetExceeded && !awaitingApproval && !runTimedOut && !responseTruncated) {
+    lastResponseText = stopConditionWithPendingTools ? '[dmr-x] Run interrupted by configured stop condition. The pending tool calls were not executed; evidence remains in all_steps.' : '[dmr-x] Run interrupted: the tool-use step limit was reached. The final requested tool calls were not executed. Earlier model output and actual tool results remain in all_steps; pending calls are not proof of completed work.';
+    commitConversationState(conversation, messages, 'interrupted');
+    if (stream) {
+      onStreamEvent('final_summary', { resolvedConversationId, content: lastResponseText });
+    }
+  }
+  if (budgetExceeded) {
+    lastResponseText = '[dmr-x] Run interrupted: cost budget reached. Pending tool calls were not executed. Actual model output and prior results remain in all_steps; no completion is certified.';
+    commitConversationState(conversation, messages, 'interrupted');
+    if (stream) onStreamEvent('final_summary', { resolvedConversationId, content: lastResponseText, runtimeOwned: true });
+  }
   // ---------------------------------------------------------------- RECOVERY
   // Thought-only terminal reply recovery.
   //
@@ -1483,6 +1475,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     !budgetExceeded &&
     !awaitingApproval &&
     !runTimedOut &&
+    !responseTruncated &&
     !stepLimitedWithPendingTools &&
     !lastResponseText.trim()
   ) {
@@ -1517,6 +1510,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       );
       let recoveryText =
         typeof recoveryResponse.message?.content === 'string' ? recoveryResponse.message.content : '';
+      responseTruncated = recoveryResponse.finishReason === 'length';
       recoveryText = stripThoughtBlocks(recoveryText);
       const sanitizedRecovery = sanitizedAssistantMessage(recoveryResponse.message, recoveryText);
       if (sanitizedRecovery) messages.push(sanitizedRecovery);
@@ -1558,7 +1552,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           });
         }
       }
-      commitConversationState(conversation, messages, 'completed');
+      commitConversationState(conversation, messages, responseTruncated ? 'interrupted' : 'completed');
     } catch (recoveryError) {
       if (isInferenceSettlementError(recoveryError)) throw recoveryError;
       logger.warn(
@@ -1586,6 +1580,26 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     }
   }
 
+  const receptionistReceipt = agentDefinition?.name === '__receptionist'
+    && !budgetExceeded && !awaitingApproval && (!runTimedOut || providerFailure) && !stepLimitedWithPendingTools && !responseTruncated
+    ? buildReceptionistReceipt(allSteps) : null;
+  if (receptionistReceipt) {
+    lastResponseText = providerFailure
+      ? `[dmr-x Receptionist] Run interrupted: ${runTimedOut ? 'run timed out after a failed model/provider request' : 'a model/provider request failed'} after recorded coordination actions. No further work was executed by the failed model turn.\n` + receptionistReceipt.content
+      : receptionistReceipt.content;
+    messages.push({ role: 'assistant', content: lastResponseText });
+    commitConversationState(conversation, messages, receptionistReceipt.failed || conversation.status === 'interrupted' ? 'interrupted' : 'completed');
+    if (stream) onStreamEvent('final_summary', { resolvedConversationId, content: lastResponseText, runtimeOwned: true });
+  }
+
+  const executionError = budgetExceeded ? 'budget_exceeded'
+    : awaitingApproval ? 'awaiting_approval'
+    : runTimedOut ? 'run_timeout'
+    : stepLimitedWithPendingTools ? (stopConditionWithPendingTools ? 'stop_condition' : 'step_limit')
+    : responseTruncated ? 'response_truncated'
+    : providerFailure ? 'provider_failure'
+    : receptionistReceipt?.failed ? 'receptionist_tool_failure'
+    : conversation.status === 'interrupted' ? 'interrupted' : null;
   try {
     if (executionId && context) {
       try {
@@ -1596,8 +1610,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
           inputTokens: totalTokensUsed,
           outputTokens: totalTokensUsed,
           durationMs: Date.now(),
-          status: budgetExceeded ? 'error' : 'success',
-          error: budgetExceeded ? 'budget_exceeded' : null,
+          status: executionError ? 'error' : 'success',
+          error: executionError,
         }, allSteps, maxSteps);
         // Persist the evaluation so it appears in the evaluations endpoint.
         if (evaluation) {
@@ -1609,7 +1623,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
             turnEfficiency: evaluation.turnEfficiency,
             score: evaluation.score,
             breakdown: evaluation.breakdown,
-            status: budgetExceeded ? 'error' : 'success',
+            status: executionError ? 'error' : 'success',
           });
         }
       } catch (evaluationError) {
@@ -1642,6 +1656,8 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
       lastResponseText = RUN_TIMEOUT_PLACEHOLDER;
     } else if (budgetExceeded) {
       lastResponseText = '[dmr-x] No agent output produced: cost budget exceeded before a reply.';
+    } else if (responseTruncated) {
+      lastResponseText = '[dmr-x] No agent output produced: the model reply was truncated.';
     } else if (namesUsed.length > 0) {
       lastResponseText =
         `[dmr-x] No agent output produced. The ${maxSteps}-step limit was reached after calling: ` +
@@ -1673,7 +1689,7 @@ export async function runAgentChatLoop(args: RunAgentChatLoopArgs): Promise<Agen
     totalPromptTokens,
     totalCompletionTokens,
     totalCost,
-    stepsCompleted: allSteps.length || maxSteps,
+    stepsCompleted: allSteps.length,
     budgetExceeded,
     awaitingApproval,
     runTimedOut,

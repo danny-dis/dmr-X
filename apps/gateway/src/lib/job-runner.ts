@@ -272,12 +272,33 @@ export function createTaskExecutor(opts: GatewayCallOptions = {}): TaskExecutor 
         return failure(`agent call failed: ${chat.status} ${JSON.stringify(chat.body)}`, instanceId);
       }
 
+      // HTTP success only confirms transport. Explicit operation states must
+      // be completed; status-absent responses retain legacy compatibility.
+      const status = chat.body?.status;
+      let operationError = status !== undefined && (typeof status !== 'string' || status !== 'completed')
+        ? `agent operation did not complete: ${typeof status === 'string' ? status : JSON.stringify(status)}`
+        : undefined;
+      // Only the legacy top-level result operation envelope is supported here.
+      // Historical tool results and artifact metadata can contain recovered errors.
+      const resultEnvelope = chat.body?.result;
+      const resultError = resultEnvelope !== null && typeof resultEnvelope === 'object' && !Array.isArray(resultEnvelope)
+        ? resultEnvelope.error
+        : undefined;
+      const responseError = chat.body?.error ?? resultError;
+      if (responseError != null) {
+        // HTTP-decoded JSON cannot contain cycles or functions. Serialize any
+        // non-string diagnostic, rather than coercing objects with a toString key.
+        const message = responseError.message ?? responseError;
+        const detail = typeof message === 'string' ? message : JSON.stringify(message);
+        operationError = `${operationError ?? 'agent operation failed'}: ${detail}`;
+      }
       const usage = chat.body?.usage ?? {};
       // Prefer the run totals the chat route reports. `usage` is the final
       // step only, so billing a multi-step run from it undercounts everything
-      // before the last turn.
+      // before the last turn. Keep partial text and measured spend on failures.
       return {
-        ok: true,
+        ok: operationError === undefined,
+        ...(operationError === undefined ? {} : { error: operationError }),
         agentName: chat.body?.agentName ?? instanceId,
         summary: extractText(chat.body),
         artifacts: [],
@@ -315,6 +336,18 @@ export async function planJob(
     return { ok: false, error: 'job already planned' };
   }
 
+  if (job.status === 'planning') return { ok: false, error: 'job already planning' };
+  if (!['intake', 'failed'].includes(job.status)) return { ok: false, error: `job is ${job.status} and cannot be planned` };
+  // Claim before the first async gap. The single gateway JS thread cannot
+  // admit another planner for this job while fetching roster/model data.
+  const claimed = jobStore.updateJobStatus(tenantId, jobId, 'planning');
+  if (!claimed || claimed.status !== 'planning') return { ok: false, error: 'job planning was not admitted' };
+  const failPlanning = () => {
+    if (jobStore.getJob(tenantId, jobId)?.status === 'planning' && jobStore.listTasks(tenantId, jobId).length === 0) {
+      jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    }
+  };
+
   // Cap the roster. Every agent listed here is serialised into the planning
   // prompt, so an unbounded tenant (a bulk import can create hundreds) would
   // send a vast prompt on every plan and pay for it in tokens each time.
@@ -339,8 +372,6 @@ export async function planJob(
       'job-runner: agent roster truncated for planning prompt',
     );
   }
-
-  jobStore.updateJobStatus(tenantId, jobId, 'planning');
 
   const prompt = buildPlanPrompt(job, agents);
 
@@ -420,7 +451,7 @@ export async function planJob(
   }
 
   if (!plan) {
-    jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    failPlanning();
     return { ok: false, error: lastError };
   }
 
@@ -428,10 +459,10 @@ export async function planJob(
 
   try {
     const created = materializePlan(tenantId, jobId, parsed.tasks);
-    jobStore.updateJobStatus(tenantId, jobId, 'running');
+    // A materialized draft is not running: only explicit enqueue may start it.
     return { ok: true, taskCount: created.length };
   } catch (error) {
-    jobStore.updateJobStatus(tenantId, jobId, 'failed');
+    failPlanning();
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }

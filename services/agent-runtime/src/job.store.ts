@@ -252,13 +252,14 @@ export class JobStore {
     return rows.map(rowToJob);
   }
 
-  /** Update just the status of a job (tenant-scoped). Bumps updated_at. */
+  /** Update status (tenant-scoped). Cancelled rows are unchanged and returned. */
   updateJobStatus(tenantId: string, jobId: string, status: JobStatus): Job | null {
     const db = getDb();
     const now = new Date().toISOString();
 
     db.prepare(
-      `UPDATE jobs SET status = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
+      `UPDATE jobs SET status = ?, updated_at = ?
+       WHERE id = ? AND tenant_id = ? AND status <> 'cancelled'`,
     ).run(status, now, jobId, tenantId);
 
     return this.getJob(tenantId, jobId);
@@ -269,6 +270,8 @@ export class JobStore {
    * `patch` are updated; builds a parameterized `SET` list, never
    * interpolates values into the SQL string. Returns null if the job does
    * not exist / is not owned by the tenant, or if the patch is empty.
+   * A status-bearing patch against persisted cancellation is a no-op and
+   * returns the current cancelled row, including its original metadata.
    */
   updateJob(tenantId: string, jobId: string, patch: JobPatch): Job | null {
     const db = getDb();
@@ -327,7 +330,10 @@ export class JobStore {
     params.push(new Date().toISOString());
     params.push(jobId, tenantId);
 
-    db.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE id = ? AND tenant_id = ?`).run(...params);
+    // Guard the entire status-bearing patch in SQLite, not a stale JS snapshot:
+    // a late delivery must not overwrite cancellation or its outcome metadata.
+    const statusGuard = patch.status !== undefined ? " AND status <> 'cancelled'" : '';
+    db.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE id = ? AND tenant_id = ?${statusGuard}`).run(...params);
     return this.getJob(tenantId, jobId);
   }
 

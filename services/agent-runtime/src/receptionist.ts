@@ -151,38 +151,42 @@ export function normalizeCriteria(criteria: unknown): string[] {
  * verdict with the Receptionist's own reasoned verification (see the
  * `deliver_job` tool), which is stored alongside this structural record.
  */
+/** Outputs must contain content, not only executor/board bookkeeping. */
+function hasSubstantiveOutput(output: unknown, depth = 0): boolean {
+  if (depth > 12) return false;
+  if (typeof output === 'string') return output.trim().length > 0;
+  if (Array.isArray(output)) return output.some(value => hasSubstantiveOutput(value, depth + 1));
+  if (!output || typeof output !== 'object') return false;
+  const metadata = new Set(['agent', 'agentName', 'taskId', 'taskTitle', 'status', 'error', 'retried', 'openQuestions', 'forNext']);
+  return Object.entries(output).some(([key, value]) => !metadata.has(key) && hasSubstantiveOutput(value, depth + 1));
+}
+
 export function verifyAcceptanceCriteria(job: Job, tasks: JobTask[]): AcceptanceVerification {
   const criteria = normalizeCriteria(job.acceptanceCriteria);
-  const allTasksCompleted = tasks.length > 0 && tasks.every((t) => t.status === 'completed');
-  const missingDeliverables = tasks
-    .filter((t) => t.status !== 'completed')
-    .map((t) => t.title);
-
-  const verdicts: CriterionVerdict[] = criteria.map((text) => {
-    if (!allTasksCompleted) {
-      return { text, status: 'unverified', evidence: 'not all tasks completed' };
-    }
-    const completedWithOutput = tasks.filter(
-      (t) => t.status === 'completed' && t.output !== null && t.output !== undefined,
-    );
-    if (completedWithOutput.length === 0) {
-      return { text, status: 'unmet', evidence: 'no task produced output' };
-    }
-    // No criterion failed explicitly; deliverables exist for every completed task.
-    return { text, status: 'met', evidence: `${completedWithOutput.length} task(s) delivered output` };
-  });
-
-  const passed = criteria.length > 0
-    ? allTasksCompleted && verdicts.every((v) => v.status === 'met')
-    : allTasksCompleted;
-
+  const allTasksCompleted = tasks.length > 0 && tasks.every(t => t.status === 'completed');
+  const missingDeliverables = tasks.filter(t => t.status !== 'completed' || !hasSubstantiveOutput(t.output)).map(t => t.title);
   return {
-    criteria: verdicts,
-    allTasksCompleted,
-    missingDeliverables,
-    passed,
+    criteria: criteria.map(text => ({ text, status: 'unverified', evidence: 'requires explicit criterion-specific verification evidence' })),
+    allTasksCompleted, missingDeliverables,
+    passed: allTasksCompleted && missingDeliverables.length === 0 && criteria.length === 0,
     verifiedAt: new Date().toISOString(),
   };
+}
+
+function validateVerdict(expected: string[], supplied: unknown): CriterionVerdict[] | null {
+  if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) return null;
+  const verdict = supplied as Record<string, unknown>;
+  if (verdict.passed !== true || !Array.isArray(verdict.criteria) || verdict.criteria.length !== expected.length) return null;
+  const remaining = new Set(expected.map(text => text.trim()));
+  if (remaining.size !== expected.length) return null;
+  const criteria: CriterionVerdict[] = [];
+  for (const item of verdict.criteria) {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.text !== 'string'
+      || item.status !== 'met' || typeof item.evidence !== 'string' || !item.evidence.trim()
+      || !remaining.delete(item.text.trim())) return null;
+    criteria.push({ text: item.text.trim(), status: 'met', evidence: item.evidence.trim() });
+  }
+  return remaining.size === 0 ? criteria : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +302,7 @@ export async function jobDecompose(
 
   const job = jobStore.getJob(ctx.tenantId, jobId);
   if (!job) return { error: `job ${jobId} not found in tenant ${ctx.tenantId}` };
+  if (['cancelled', 'delivered', 'failed'].includes(job.status)) return { error: `job is ${job.status}`, jobId };
 
   // Already planned: nothing to do, report the plan.
   const existingTasks = jobStore.listTasks(ctx.tenantId, jobId);
@@ -307,7 +312,7 @@ export async function jobDecompose(
 
   const gw = resolveGateway();
   const model = typeof args.model === 'string' ? args.model : undefined;
-  const result = await callGateway(gw, 'POST', `/v1/jobs/${encodeURIComponent(jobId)}/plan`, model ? { model } : undefined);
+  const result = await callGateway(gw, 'POST', `/v1/jobs/${encodeURIComponent(jobId)}/plan`, model ? { model } : {});
 
   if (!result.ok) {
     const message = result.body?.error?.message ?? `plan request failed with status ${result.status}`;
@@ -331,6 +336,41 @@ export async function jobDecompose(
  * category/tags/description/name). Excludes system-owned (`__`-prefixed)
  * definitions — the Receptionist coordinates, it never assigns itself.
  */
+/** Validate the exact durable staffing snapshot, including after registry awaits. */
+export async function validateReceptionistRun(ctx: ReceptionistToolContext, jobId: string): Promise<{ error?: string; fingerprint?: string }> {
+  const job = jobStore.getJob(ctx.tenantId, jobId);
+  if (!job) return { error: 'job not found in this tenant' };
+  if (!['intake', 'planning', 'running', 'blocked'].includes(job.status)) return { error: `job is ${job.status}` };
+  const tasks = jobStore.listTasks(ctx.tenantId, jobId);
+  if (tasks.length === 0) return { error: 'job has no tasks' };
+  const fingerprint = JSON.stringify({ status: job.status, tasks });
+  for (const task of tasks) {
+    if (task.status === 'completed') continue;
+    if (task.status !== 'pending' || !task.assignedAgentDefId || !task.assignedInstanceId) return { error: 'tasks must have runnable pinned assignments before enqueueing' };
+    const definition = await agentRegistryService.getDefinition(task.assignedAgentDefId);
+    const instance = await agentRegistryService.getInstance(task.assignedInstanceId);
+    if (!definition || definition.tenantId !== ctx.tenantId || isSystemAgentName(definition.name)
+      || !instance || instance.tenantId !== ctx.tenantId || instance.agentDefinitionId !== definition.id
+      || instance.status !== 'active' || instance.lifecycleState !== 'ready') return { error: 'assigned agent is not eligible' };
+  }
+  const current = jobStore.getJob(ctx.tenantId, jobId);
+  if (!current || JSON.stringify({ status: current.status, tasks: jobStore.listTasks(ctx.tenantId, jobId) }) !== fingerprint) return { error: 'job staffing or state changed during eligibility checks' };
+  return { fingerprint };
+}
+
+/** Explicitly enqueue a verified staffing snapshot; HTTP revalidates at enqueue. */
+export async function runJob(ctx: ReceptionistToolContext, args: { jobId?: unknown }): Promise<unknown> {
+  const jobId = typeof args.jobId === 'string' ? args.jobId : '';
+  if (!jobId) return { error: 'jobId is required' };
+  const eligible = await validateReceptionistRun(ctx, jobId);
+  if (eligible.error) return { error: eligible.error, jobId };
+  const response = await callGateway(resolveGateway(), 'POST', `/v1/jobs/${encodeURIComponent(jobId)}/run`, { receptionistRun: true, staffingFingerprint: eligible.fingerprint });
+  if (!response.ok) return { error: response.body?.error?.message ?? `run request failed with status ${response.status}`, jobId };
+  if (response.body?.jobId !== jobId || response.body?.status !== 'queued') return { error: 'gateway did not confirm the requested job was queued', jobId };
+  appendDecisionLog(ctx.tenantId, jobId, { at: new Date().toISOString(), by: RECEPTIONIST_AGENT_NAME, action: 'run_job' });
+  return response.body;
+}
+
 export async function findAgents(
   ctx: ReceptionistToolContext,
   args: { task?: unknown; language?: unknown; limit?: unknown },
@@ -338,19 +378,24 @@ export async function findAgents(
   const task = typeof args.task === 'string' ? args.task.trim() : '';
   if (!task) return { error: 'task is required' };
   const language = typeof args.language === 'string' ? args.language : undefined;
-  const limit = Math.min(
-    Math.max(typeof args.limit === 'number' ? Math.floor(args.limit) : DEFAULT_AGENT_LIMIT, 1),
-    MAX_AGENT_POOL,
-  );
-
-  const { items } = await agentRegistryService.listInstances(ctx.tenantId, {
-    status: 'active',
-    limit: MAX_AGENT_POOL,
-  });
+  const limit = Math.min(Math.max(typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : DEFAULT_AGENT_LIMIT, 1), MAX_AGENT_POOL);
+  const items: Awaited<ReturnType<typeof agentRegistryService.listInstances>>['items'] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await agentRegistryService.listInstances(ctx.tenantId, { status: 'active', limit: MAX_AGENT_POOL, offset });
+    items.push(...page.items);
+    offset += page.items.length;
+    if (offset >= page.total) break;
+    if (page.items.length === 0 || offset >= 10000) return { error: 'agent pool enumeration was incomplete' };
+  }
+  const definitions = new Map<string, Awaited<ReturnType<typeof agentRegistryService.getDefinition>>>();
 
   const matches: AgentMatch[] = [];
   for (const instance of items) {
-    if (isSystemAgentName(instance.definitionName)) continue;
+    if (isSystemAgentName(instance.definitionName) || instance.lifecycleState !== 'ready') continue;
+    if (!definitions.has(instance.agentDefinitionId)) definitions.set(instance.agentDefinitionId, await agentRegistryService.getDefinition(instance.agentDefinitionId));
+    const definition = definitions.get(instance.agentDefinitionId);
+    if (!definition || definition.tenantId !== ctx.tenantId || isSystemAgentName(definition.name)) continue;
     const { score, matchedOn } = scoreAgentForTask(instance, task, language);
     if (score > 0) {
       matches.push({
@@ -380,7 +425,7 @@ export async function findAgents(
 /**
  * Assign an agent to a task. The agent is identified by its definition id
  * (from find_agents) and optionally a deployed instance id; the task moves
- * from pending to assigned so the job runner can pick it up.
+ * keeps pending work runnable so the job runner can pick it up.
  */
 export async function assignTask(
   ctx: ReceptionistToolContext,
@@ -394,11 +439,31 @@ export async function assignTask(
   const task = jobStore.getTask(ctx.tenantId, taskId);
   if (!task) return { error: `task ${taskId} not found in tenant ${ctx.tenantId}` };
 
-  const updated = jobStore.assignTask(ctx.tenantId, taskId, {
+  const job = jobStore.getJob(ctx.tenantId, task.jobId);
+  if (!job || !['intake', 'planning', 'running', 'blocked'].includes(job.status)) return { error: 'job is not assignable' };
+  if (!['pending', 'assigned'].includes(task.status)) return { error: 'task is not assignable' };
+  const definition = await agentRegistryService.getDefinition(agentDefinitionId);
+  if (!definition || definition.tenantId !== ctx.tenantId || isSystemAgentName(definition.name)
+    || !(await agentRegistryService.canAccessDefinition(agentDefinitionId, ctx.tenantId, 'run'))) {
+    return { error: 'agent definition is not eligible for this tenant' };
+  }
+  const instanceId = typeof args.instanceId === 'string' ? args.instanceId : undefined;
+  if (instanceId) {
+    const instance = await agentRegistryService.getInstance(instanceId);
+    if (!instance || instance.tenantId !== ctx.tenantId || instance.agentDefinitionId !== agentDefinitionId
+      || instance.status !== 'active' || instance.lifecycleState !== 'ready') return { error: 'agent instance is not eligible' };
+  }
+  // Registry reads await: recheck durable state before any write.
+  const currentJob = jobStore.getJob(ctx.tenantId, task.jobId);
+  const currentTask = jobStore.getTask(ctx.tenantId, taskId);
+  if (!currentJob || !['intake', 'planning', 'running', 'blocked'].includes(currentJob.status)
+    || !currentTask || !['pending', 'assigned'].includes(currentTask.status)) return { error: 'assignment state changed' };
+  const updated = jobStore.updateTask(ctx.tenantId, taskId, {
+    status: 'pending',
     assignedAgentDefId: agentDefinitionId,
-    assignedAgentVersion: typeof args.agentVersion === 'string' ? args.agentVersion : undefined,
-    assignedInstanceId: typeof args.instanceId === 'string' ? args.instanceId : undefined,
-    assignedModel: typeof args.model === 'string' ? args.model : undefined,
+    assignedAgentVersion: typeof args.agentVersion === 'string' ? args.agentVersion : definition.version,
+    assignedInstanceId: instanceId ?? null,
+    assignedModel: typeof args.model === 'string' ? args.model : null,
   });
   if (!updated) return { error: `failed to assign task ${taskId}` };
 
@@ -433,6 +498,8 @@ export async function readJobBoard(
     jobId,
     status: job.status,
     taskCount: jobStore.listTasks(ctx.tenantId, jobId).length,
+    tasks: jobStore.listTasks(ctx.tenantId, jobId),
+    acceptanceCriteria: normalizeCriteria(job.acceptanceCriteria),
     board,
   };
 }
@@ -451,7 +518,10 @@ export async function requestVerification(
 
   const job = jobStore.getJob(ctx.tenantId, jobId);
   if (!job) return { error: `job ${jobId} not found in tenant ${ctx.tenantId}` };
+  if (['cancelled', 'delivered', 'failed'].includes(job.status)) return { error: `job is ${job.status}`, jobId };
 
+  const structural = verifyAcceptanceCriteria(job, jobStore.listTasks(ctx.tenantId, jobId));
+  if (!structural.allTasksCompleted || structural.missingDeliverables.length > 0) return { error: 'job has incomplete tasks or missing substantive outputs', jobId, structural };
   const note = typeof args.note === 'string' ? args.note : undefined;
   const updated = jobStore.updateJobStatus(ctx.tenantId, jobId, 'verifying');
   appendDecisionLog(ctx.tenantId, jobId, {
@@ -461,7 +531,8 @@ export async function requestVerification(
     note: note ?? null,
   });
 
-  return { jobId, status: updated?.status ?? 'verifying' };
+  if (!updated || updated.status !== 'verifying') return { error: 'verification transition was not persisted', jobId, status: updated?.status ?? null };
+  return { jobId, status: updated.status };
 }
 
 /**
@@ -485,31 +556,24 @@ export async function deliverJob(
   const tasks = jobStore.listTasks(ctx.tenantId, jobId);
   const structural = verifyAcceptanceCriteria(job, tasks);
 
-  // Merge an agent-supplied reasoned verdict over the structural record.
-  const verification =
-    args.verification && typeof args.verification === 'object'
-      ? { ...structural, ...(args.verification as Record<string, unknown>) }
-      : structural;
-
-  const result = {
-    criteria: verification.criteria ?? structural.criteria,
-    passed: verification.passed ?? structural.passed,
-    allTasksCompleted: structural.allTasksCompleted,
-    missingDeliverables: structural.missingDeliverables,
-    verifiedAt: new Date().toISOString(),
-    deliveredBy: RECEPTIONIST_AGENT_NAME,
-  };
-
-  const updated = jobStore.updateJob(ctx.tenantId, jobId, { status: 'delivered', result });
-  appendDecisionLog(ctx.tenantId, jobId, {
-    at: new Date().toISOString(),
-    by: RECEPTIONIST_AGENT_NAME,
-    action: 'deliver_job',
-    passed: result.passed,
-    criteriaCount: result.criteria.length,
+  if (['delivered', 'cancelled', 'failed'].includes(job.status)) return { error: `job is ${job.status}`, jobId };
+  if (!structural.allTasksCompleted || structural.missingDeliverables.length > 0) return { error: 'job has incomplete tasks or missing substantive outputs', jobId, structural };
+  const expected = normalizeCriteria(job.acceptanceCriteria);
+  let criteria: CriterionVerdict[] = [];
+  if (expected.length > 0 || args.verification !== undefined) {
+    const validated = validateVerdict(expected, args.verification);
+    if (!validated) return { error: 'verification must pass with exact criterion coverage and nonempty evidence', jobId };
+    criteria = validated;
+  }
+  const result = { ...structural, criteria, passed: true, deliveredBy: RECEPTIONIST_AGENT_NAME };
+  const log = Array.isArray(job.decisionLog) ? job.decisionLog : [];
+  const updated = jobStore.updateJob(ctx.tenantId, jobId, {
+    status: 'delivered', result,
+    decisionLog: [...log, { at: new Date().toISOString(), by: RECEPTIONIST_AGENT_NAME, action: 'deliver_job', passed: true, criteriaCount: criteria.length }],
   });
+  if (!updated || updated.status !== 'delivered') return { error: 'job delivery was not persisted', jobId, status: updated?.status ?? null };
+  return { jobId, status: updated.status, result: updated.result };
 
-  return { jobId, status: updated?.status ?? 'delivered', result };
 }
 
 /**
@@ -526,6 +590,7 @@ export async function escalateToHuman(
 
   const job = jobStore.getJob(ctx.tenantId, jobId);
   if (!job) return { error: `job ${jobId} not found in tenant ${ctx.tenantId}` };
+  if (['cancelled', 'delivered', 'failed'].includes(job.status)) return { error: `job is ${job.status}`, jobId };
 
   const updated = jobStore.updateJobStatus(ctx.tenantId, jobId, 'blocked');
   appendDecisionLog(ctx.tenantId, jobId, {
@@ -535,7 +600,8 @@ export async function escalateToHuman(
     reason,
   });
 
-  return { jobId, status: updated?.status ?? 'blocked', reason };
+  if (!updated || updated.status !== 'blocked') return { error: 'escalation transition was not persisted', jobId, status: updated?.status ?? null };
+  return { jobId, status: updated.status, reason };
 }
 
 // ---------------------------------------------------------------------------
@@ -549,6 +615,11 @@ export interface ReceptionistToolDefinition {
 }
 
 export const RECEPTIONIST_TOOLS: ReceptionistToolDefinition[] = [
+  {
+    name: 'run_job',
+    description: 'Enqueue this job for real worker execution, only when the user has requested execution and all pending tasks have eligible pinned assignments. Returns queued, not completed. Poll read_job_board in later turns; never invent completion.',
+    parameters: { type: 'object', properties: { jobId: { type: 'string' } }, required: ['jobId'] },
+  },
   {
     name: 'job_decompose',
     description:
@@ -579,7 +650,7 @@ export const RECEPTIONIST_TOOLS: ReceptionistToolDefinition[] = [
   {
     name: 'assign_task',
     description:
-      'Assign an agent to a task, moving the task from pending to assigned so the job runner can pick it up. Use the agentDefinitionId returned by find_agents.',
+      'Assign an agent to a task, pinning the worker while keeping the task pending and runnable. Use the agentDefinitionId returned by find_agents.',
     parameters: {
       type: 'object',
       properties: {
@@ -627,7 +698,7 @@ export const RECEPTIONIST_TOOLS: ReceptionistToolDefinition[] = [
         jobId: { type: 'string', description: 'The job id to deliver.' },
         verification: {
           type: 'object',
-          description: 'Optional reasoned verification record to merge over the structural check.',
+          description: 'Required for semantic criteria: passed:true and one met verdict with nonempty evidence for every expected criterion. Cannot override structural completion/output gates.',
         },
       },
       required: ['jobId'],
@@ -651,6 +722,7 @@ export const RECEPTIONIST_TOOLS: ReceptionistToolDefinition[] = [
 /** Map tool name -> handler, used by the gateway glue. */
 export function getReceptionistToolHandlers(): Record<string, (ctx: ReceptionistToolContext, args: Record<string, unknown>) => Promise<unknown>> {
   return {
+    run_job: (ctx, args) => runJob(ctx, args),
     job_decompose: (ctx, args) => jobDecompose(ctx, args as { jobId?: unknown; model?: unknown }),
     find_agents: (ctx, args) => findAgents(ctx, args as { task?: unknown; language?: unknown; limit?: unknown }),
     assign_task: (ctx, args) => assignTask(ctx, args as { taskId?: unknown; agentDefinitionId?: unknown; agentVersion?: unknown; instanceId?: unknown; model?: unknown }),
