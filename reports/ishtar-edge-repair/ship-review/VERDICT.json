@@ -1,0 +1,141 @@
+{
+  "verdict": "APPROVE",
+  "scope": "Final narrow source/test review: exact provider-step accounting repair and Cohere V2 native usage/tool-stream repair. Not a deployment or full-build certification.",
+  "reviewed_at_utc": "2026-10-14T15:31:00.849360+00:00",
+  "required_changes": [],
+  "prior_checkpoint_blocker_closed": true,
+  "exact_loop_delta_verified": {
+    "file": "apps/gateway/src/routes/agent-chat-loop.ts",
+    "line": 1692,
+    "previous": "stepsCompleted: allSteps.length || maxSteps,",
+    "current": "stepsCompleted: allSteps.length,",
+    "reconstructed_previous_sha256": "fe8d69cb4ddee5b3aa08c7cd8cfc19c50e69408e165c6344abc2937fdb10c5cd",
+    "matches_prior_reviewer_sha256": true
+  },
+  "tests": [
+    {
+      "file": "checkpoint-review/checkpoint.test.ts",
+      "command": [
+        "C:/Users/pc/.bun/bin/bun.exe",
+        "test",
+        "C:\\Users\\pc\\Documents\\projects\\DMR-X\\reports\\ishtar-edge-repair\\checkpoint-review\\checkpoint.test.ts"
+      ],
+      "passed": 26,
+      "failed": 0,
+      "exit_code": 0,
+      "duration_seconds": 3.828
+    },
+    {
+      "file": "token-usage/native-usage.test.ts",
+      "command": [
+        "C:/Users/pc/.bun/bin/bun.exe",
+        "test",
+        "C:\\Users\\pc\\Documents\\projects\\DMR-X\\reports\\ishtar-edge-repair\\token-usage\\native-usage.test.ts"
+      ],
+      "passed": 7,
+      "failed": 0,
+      "exit_code": 0,
+      "duration_seconds": 2.953
+    },
+    {
+      "file": "ship-review/adversarial.test.ts",
+      "command": [
+        "C:/Users/pc/.bun/bin/bun.exe",
+        "test",
+        "C:\\Users\\pc\\Documents\\projects\\DMR-X\\reports\\ishtar-edge-repair\\ship-review\\adversarial.test.ts"
+      ],
+      "passed": 6,
+      "failed": 0,
+      "exit_code": 0,
+      "duration_seconds": 0.75
+    }
+  ],
+  "passing_test_total": 39,
+  "mutation_tests": [
+    {
+      "file": "ship-review/count-mutant.test.ts",
+      "command": [
+        "C:/Users/pc/.bun/bin/bun.exe",
+        "test",
+        "C:\\Users\\pc\\Documents\\projects\\DMR-X\\reports\\ishtar-edge-repair\\ship-review\\count-mutant.test.ts"
+      ],
+      "passed": 22,
+      "failed": 4,
+      "exit_code": 1,
+      "duration_seconds": 3.375
+    },
+    {
+      "file": "ship-review/usage-mutant.test.ts",
+      "command": [
+        "C:/Users/pc/.bun/bin/bun.exe",
+        "test",
+        "C:\\Users\\pc\\Documents\\projects\\DMR-X\\reports\\ishtar-edge-repair\\ship-review\\usage-mutant.test.ts"
+      ],
+      "passed": 4,
+      "failed": 3,
+      "exit_code": 1,
+      "duration_seconds": 3.375
+    }
+  ],
+  "verified": [
+    "Both real hosted callback bodies and actual AgentSessionStore execute against isolated Bun SQLite; all 26 cases pass.",
+    "Approval-only partial approval and denial report providerCalls=0, stepsCompleted=0, allSteps=[], actual zero token usage; negative checkpoints retain prior last_turn.",
+    "SQL/JSON conversation.status agree; false upsert.updated and SQL trigger failure reject before tools/provider effects.",
+    "Captured native HTTP200 reply retains actual input/output counts 540/8; native stream retains actual counts 1487/60, captured tool id/name/arguments, and TOOL_CALL finish.",
+    "Missing/billed-only usage remains unknown; explicit zero remains zero; malformed/missing/string/negative/NaN/infinite counts are not invented.",
+    "Interleaved tool indexes flush individually; one-byte fragmented CRLF parses; identity/orphan/argument guard cases pass.",
+    "Regressing the step count in scratch kills exactly four approval-only cases; inverting native usage guard kills three captured/metadata cases. No application edits used for mutation testing.",
+    "All earlier reviewer-hashed files except exact loop accounting delta remain byte-identical; Cohere delta confined to native SSE/usage parsing and validation.",
+    "No credentials, provider/default configuration, base adapter, key rotation or quota policy edits in reviewed delta."
+  ],
+  "sha256": {
+    "apps/gateway/src/routes/agent-chat-loop.ts": "61142bd5a7ae82941db0d2f5028155496cb5d0c0c82071307a153e37cb3e7ec5",
+    "apps/gateway/src/lib/job-runner.ts": "8972f6cfd39fe8ae6fc679cfa74dce363d6e6abe3ef2ec6288016140fce295b0",
+    "services/agent-runtime/src/job-planner.ts": "23d1da636bd7e27a5ea52e765ee0e59837ab87430119e1a9ad0b6a98b09b3c43",
+    "apps/gateway/src/routes/job.routes.ts": "a969cfb623ad5e1f58767076366925785ba9b1d3e72afd219b37e1369c27fa37",
+    "tsconfig.json": "98352062b60fc57f15f06bac5104fe19c6292c053777f6902f97f47e269e0515",
+    "packages/utils/src/conversation-state.ts": "e97d86276a789683515e67d9f2e441e5b95a76738e3ad28e43f53199589e2f36",
+    "apps/gateway/src/routes/agent-chat.routes.ts": "23546aa506771a137d14504d8dda3bec96ab1e3ef262f6c34086d124888abea1",
+    "services/agent-runtime/src/agent-session.store.ts": "5210dfae30a65c5cf8f1cba1eaee4bda46c5b39e0541c2b09ef51f00b8785411",
+    "services/adapters/src/cohere/cohere.adapter.ts": "6b744ae4e63fb4052af1d5750dd93bc7dc97b50dcb64ceacb2c6a613e9a32950"
+  },
+  "unchanged_from_checkpoint_review": {
+    "apps/gateway/src/routes/agent-chat-loop.ts": false,
+    "apps/gateway/src/lib/job-runner.ts": true,
+    "services/agent-runtime/src/job-planner.ts": true,
+    "apps/gateway/src/routes/job.routes.ts": true,
+    "tsconfig.json": true,
+    "packages/utils/src/conversation-state.ts": true,
+    "apps/gateway/src/routes/agent-chat.routes.ts": true,
+    "services/agent-runtime/src/agent-session.store.ts": true
+  },
+  "source_stable_during_review": true,
+  "source_modified_by_reviewer": false,
+  "not_certified": [
+    "Compiled installation / process restart / live repaired job / actual provider tool execution",
+    "Full monorepo semantic/build certification (root typecheck timeout remains outside scope)",
+    "Pending provider quota-load scenario and base/key rotation behavior; those were not changed or exercised by transport-isolated adapter tests"
+  ],
+  "side_effects": [
+    "Only new ship-review scratch artifacts created by reviewer.",
+    "Requested existing native-usage test itself rewrote token-usage/extraction-receipt.json using actual repaired adapter output."
+  ],
+  "created_files": [
+    "adversarial.log",
+    "adversarial.test.ts",
+    "checkpoint-review-native.log",
+    "cohere-source.diff",
+    "count-mutant.test.log",
+    "count-mutant.test.ts",
+    "count-mutant.ts",
+    "mutant-extraction-receipt.json",
+    "scoped-git.diff",
+    "source-hashes.json",
+    "token-usage-native.log",
+    "usage-mutant.test.log",
+    "usage-mutant.test.ts",
+    "usage-mutant.ts",
+    "VERDICT.json",
+    "VERDICT.md"
+  ]
+}

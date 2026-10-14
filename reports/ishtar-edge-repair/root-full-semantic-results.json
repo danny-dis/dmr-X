@@ -1,0 +1,26 @@
+{
+  "exitCode": 2,
+  "timedOut": false,
+  "seconds": 229.59,
+  "diagnostics": 233,
+  "sourceChangedDuringCheck": false,
+  "sourceHashesBefore": {
+    "apps/gateway/src/routes/agent-chat-loop.ts": "61142bd5a7ae82941db0d2f5028155496cb5d0c0c82071307a153e37cb3e7ec5",
+    "apps/gateway/src/routes/agent-chat.routes.ts": "23546aa506771a137d14504d8dda3bec96ab1e3ef262f6c34086d124888abea1",
+    "apps/gateway/src/routes/job.routes.ts": "a969cfb623ad5e1f58767076366925785ba9b1d3e72afd219b37e1369c27fa37",
+    "apps/gateway/src/lib/job-runner.ts": "8972f6cfd39fe8ae6fc679cfa74dce363d6e6abe3ef2ec6288016140fce295b0",
+    "services/agent-runtime/src/job-planner.ts": "23d1da636bd7e27a5ea52e765ee0e59837ab87430119e1a9ad0b6a98b09b3c43",
+    "services/adapters/src/cohere/cohere.adapter.ts": "6b744ae4e63fb4052af1d5750dd93bc7dc97b50dcb64ceacb2c6a613e9a32950",
+    "tsconfig.json": "98352062b60fc57f15f06bac5104fe19c6292c053777f6902f97f47e269e0515"
+  },
+  "sourceHashesAfter": {
+    "apps/gateway/src/routes/agent-chat-loop.ts": "61142bd5a7ae82941db0d2f5028155496cb5d0c0c82071307a153e37cb3e7ec5",
+    "apps/gateway/src/routes/agent-chat.routes.ts": "23546aa506771a137d14504d8dda3bec96ab1e3ef262f6c34086d124888abea1",
+    "apps/gateway/src/routes/job.routes.ts": "a969cfb623ad5e1f58767076366925785ba9b1d3e72afd219b37e1369c27fa37",
+    "apps/gateway/src/lib/job-runner.ts": "8972f6cfd39fe8ae6fc679cfa74dce363d6e6abe3ef2ec6288016140fce295b0",
+    "services/agent-runtime/src/job-planner.ts": "23d1da636bd7e27a5ea52e765ee0e59837ab87430119e1a9ad0b6a98b09b3c43",
+    "services/adapters/src/cohere/cohere.adapter.ts": "6b744ae4e63fb4052af1d5750dd93bc7dc97b50dcb64ceacb2c6a613e9a32950",
+    "tsconfig.json": "98352062b60fc57f15f06bac5104fe19c6292c053777f6902f97f47e269e0515"
+  },
+  "log": "C:\\Users\\pc\\Documents\\projects\\DMR-X\\reports\\ishtar-edge-repair\\root-full-semantic.log"
+}

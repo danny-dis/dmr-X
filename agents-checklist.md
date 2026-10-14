@@ -23,6 +23,28 @@
 
 | ISHTAR-STUDY-20261013 | Read-only gateway/router/native-runtime/contracts assessment | Ishtar execution worker + source-review subagent | ⛔ Partial checkpoint | Delegated early dossier preserved, not final: gateway/authorization/native hosted execution/contracts and worktree comparison remain unfinished. No implementation/services/providers/tests/cleanup or external publishing; existing tasks untouched. No source worker remains assigned. |
 
+## Ishtar live agent delegation verification — 2026-10-13
+
+| ISHTAR-DMRX-LIVE-20261013 | Varied live MCP/gateway delegation, execution, tools and conversation checks; record failures; isolated regression fixes and independent rechecks | Ishtar + scoped subagents | 🔄 In Progress | Preserve all existing dirty work and other agents' ownership. Test artifacts only until concrete repro/impact/isolated patch gates pass. No destructive tests, provider changes, commit/push or daily-service restart without explicit scope. |
+
+## Ishtar daily agent runtime repair — 2026-10-14
+
+| ISHTAR-DMRX-DAILY-20261014 | Finish audited status/lifecycle/error-contract fixes; review, integrate and verify daily-use runtime | Ishtar + isolated workers/reviewers | ✅ Scoped repairs deployed and live-verified; full CI uncertified | Cancellation survives real successful late execution and retains2321 tokens; unfinished/error replies fail job execution; deterministic hard-step receipts no longer invent writes; explicit execution/evaluation outcomes.155 focused checks pass, independent spec/quality gates passed, actual tool/run/read/approval/resume/JSON/SSE/MCP/normal-job and cancellation readbacks verified. Only DMR-X gateway/owned MCP restarted; test-only instances paused;1563 protected tracked/env hashes unchanged. Semantic typecheck90s timeout; provider/model quality remains variable. No deletes/resets/installs/commits/pushes. Evidence: reports/ishtar-daily-finish/REPORT.md and verification-summary.json. |
+
+## Ishtar Receptionist evaluation and repair
+
+ | ISHTAR-RECEPTIONIST-20261014 | Give internal Receptionist bounded real work; observe, reproduce failures, repair and retest | Ishtar | ⛔ Scoped repairs deployed/tested; unattended HOLD | Main text-only job delivered with exact outputs; planning partial-success/error contract remains. Full typechecks time out. Report:reports/ishtar-receptionist/REPORT.md. No default/UI/provider/source changes in restart session. |
+
+ | ISHTAR-RECEPTIONIST-LIVE-20261014 | Controlled daily gateway/owned MCP restart; real bounded Receptionist coordination, delivery, escalation and cancellation verification | Ishtar live-verification subagent | ✅ Scoped restart/live verification complete; readiness caveats recorded | Replacement subagent restarted gateway/owned MCP and delivered two-worker test; parent independently verified state/output, empty rejection, escalation and paused owned instances. Queue0/0. Staged recovery required after planner500 with saved tasks; unattended readiness not certified. |
+
+ | ISHTAR-RECEPTIONIST-UX-20261014 | Read-only Playground/Agentic/Agents architecture assessment | Parent Ishtar | ✅ Read-only assessment complete | Receptionist recommended as delegated-work front door, not universal model/API replacement; retain Playground testing and Agents management. No default/UI changes. |
+
+| ISHTAR-RECEPTIONIST-PLAN-20261014 | Trace and repair partial-success planner/provider failure; regression and live rechecks | Ishtar + diagnostic/review workers | ✅ Specific failure repaired/deployed/live-verified; full CI uncertified | Corrected diagnosis: planner200, orphan tool replies caused follow-up400/fallback exhaustion. Paired transcript and interrupted receipts fixed. Independent39pass; broader63pass/1 baseline failure. Bundle2269 modules. Fresh two-worker job delivered, six durable pairs, negatives verified. Keys/defaults unchanged; queue0/0. Report:reports/ishtar-receptionist-followup/REPORT.md. |
+
+| ISHTAR-EDGE-REPAIR-20261014 | Broad runtime/job/provider edge-case checks, reproduced fixes, semantic/build gates and live rechecks | Ishtar + isolated diagnostic/test workers | ✅ Scoped repairs reviewed, deployed and live-tested; full-project HOLD | Planning admission/cancellation/draft safety, durable approval/terminal checkpoints, fresh board/compaction and Cohere native usage/tool stream repaired. Final narrow review approved; root semantic gate failed with233 diagnostics. Full suite and test-instance cleanup remain unfinished. User authorised local commit; no push/provider/default changes. |
+
+| ISHTAR-EDGE-COMMIT-20261014 | Commit only reviewed Ishtar runtime/Receptionist/provider repairs and regression evidence | Ishtar | ✅ Repair save points committed and verified; no push | Runtime5aad91f and Coherea5182c1; exact selected diffs/worktree hashes checked and five pre-staged research documents preserved. Runtime commit finalized pre-existing merge parents without adding unrelated staged content. Fresh combined76/adversarial20/native gates pass. GitNexus refresh90s and staged-core45s timeout; stale all-scope critical/staged-adapter medium risk recorded. Root233 diagnostics remain. |
+
 ## Status Legend
 - ☐ Pending
 - 🔄 In Progress
