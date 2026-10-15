@@ -355,11 +355,15 @@ export class CohereAdapter extends BaseAdapter {
         function: { name: t.function.name, description: t.function.description, parameters: t.function.parameters },
       }));
       body.tools = tools;
-      if (request.tool_choice === 'required') body.force_single_step = true;
+      // V2 uses tool_choice; force_single_step belongs to the legacy API
+      // and is rejected as an unknown field by /v2/chat.
+      if (request.tool_choice === 'required') body.tool_choice = 'REQUIRED';
+      else if (request.tool_choice === 'none') body.tool_choice = 'NONE';
       else if (typeof request.tool_choice === 'object' && request.tool_choice.type === 'function') {
         const chosen = (request.tool_choice as { type: 'function'; function: { name: string } }).function.name;
         const found = tools.find((t: any) => t.function?.name === chosen);
         body.tools = found ? [found] : tools;
+        body.tool_choice = 'REQUIRED';
       }
     }
     return body;
