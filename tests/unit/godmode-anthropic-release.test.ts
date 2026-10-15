@@ -8,11 +8,11 @@ vi.mock('../../apps/gateway/src/lib/godmode-guard.js', () => ({
 }));
 vi.mock('@dmr-x/godmode', () => ({ getGodmodeService: vi.fn() }));
 import { getGodmodeService } from '@dmr-x/godmode';
-import { buildGodmodeWrapOrder } from '../../apps/gateway/src/lib/godmode-guard.js';
+import { buildGodmodeWrapOrder, ensureGodmodeProxy } from '../../apps/gateway/src/lib/godmode-guard.js';
 const body = { model: 'auto-free', max_tokens: 100, stream: true, messages: [{ role: 'user', content: 'Inspect literal a+b.ts.' }] };
 const envKeys = ['DMRX_AUTOFREE_STREAM_TIMEOUT_MS', 'DMRX_AUTOFREE_TTFT_MS'];
 let saved: Record<string, string | undefined>;
-beforeEach(() => { vi.clearAllMocks(); saved = Object.fromEntries(envKeys.map(k => [k, process.env[k]])); vi.mocked(buildGodmodeWrapOrder).mockReturnValue(['fixture']); });
+beforeEach(() => { vi.clearAllMocks(); saved = Object.fromEntries(envKeys.map(k => [k, process.env[k]])); vi.mocked(buildGodmodeWrapOrder).mockReturnValue(['fixture']); vi.mocked(ensureGodmodeProxy).mockResolvedValue(true); });
 afterEach(() => { vi.useRealTimers(); for (const k of envKeys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
 async function appFor(stream: (...args: any[]) => AsyncIterable<any>) {
   vi.mocked(getGodmodeService).mockReturnValue({ isInitialized: () => true, chatStreamFull: stream } as any);
@@ -59,6 +59,23 @@ describe('Anthropic GODMODE release gates', () => {
       tool_calls: [{ index: 0, id: 'call_exact', function: { name: 'read_file', arguments: '{}' } }],
     } }) as any, { model: 'fixture', requestId: 'fixture' })) wire += event;
     expect(frames(wire).find(x => x.type === 'message_delta').delta.stop_reason).toBe('tool_use');
+  });
+
+  it('bounds readiness before the streaming attempt starts', { timeout: 2000 }, async () => {
+    process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS = '40';
+    let releaseReady!: (ready: boolean) => void;
+    const pendingReady = new Promise<boolean>(resolve => { releaseReady = resolve; });
+    const app = await appFor(() => deltas({ content: 'must not run' }));
+    vi.mocked(ensureGodmodeProxy).mockReturnValue(pendingReady);
+    const response = app.inject({ method: 'POST', url: '/v1/messages', payload: body });
+    try {
+      const bounded = await Promise.race([
+        response,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('readiness exceeded caller budget')), 300)),
+      ]);
+      expect(bounded.statusCode).toBe(503);
+      expect((app as any).router.route).not.toHaveBeenCalled();
+    } finally { releaseReady(false); await response; await app.close(); }
   });
 
   it('fails an empty wrapped stream with native 503 and never invokes plain routing', async () => {
@@ -146,7 +163,7 @@ describe('Anthropic GODMODE release gates', () => {
     const seen: number[] = [];
     const app = await appFor((r, opts) => {
       seen.push(opts.timeoutMs);
-      if (r.model === 'empty') return (async function* () { now += spent; })();
+      if (r.model === 'empty') return (async function* () { now += spent; yield* []; })();
       return deltas({ content: 'ok' }, { finish_reason: 'stop' });
     });
     try {
@@ -167,4 +184,40 @@ describe('Anthropic GODMODE release gates', () => {
       expect(r.statusCode).toBe(503); expect(signal?.aborted).toBe(true);
     } finally { await app.close(); }
   });
+  it('releases a pending cancellation-ignoring iterator when the caller disconnects', async () => {
+    process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS = '10000';
+    process.env.DMRX_AUTOFREE_TTFT_MS = '10000';
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let release!: (result: IteratorResult<any>) => void;
+    const pending = new Promise<IteratorResult<any>>(resolve => { release = resolve; });
+    let cleaned = false;
+    let onCleaned!: () => void;
+    const cleanup = new Promise<void>(resolve => { onCleaned = resolve; });
+    vi.mocked(getGodmodeService).mockReturnValue({ isInitialized: () => true, chatStreamFull: () => ({ [Symbol.asyncIterator]() { return {
+      next: () => { entered(); return pending; },
+      return: async () => { cleaned = true; onCleaned(); return { done: true, value: undefined }; },
+    }; } }) } as any);
+    const app = Fastify({ logger: false });
+    app.decorate('router', { getCandidates: () => [], route: vi.fn() });
+    app.decorate('getAdapter', () => undefined);
+    let socket!: import('node:http').ServerResponse;
+    app.addHook('onRequest', async (_request, reply) => { socket = reply.raw; });
+    await app.register(anthropicRoutes, { prefix: '/v1' });
+    const response = app.inject({ method: 'POST', url: '/v1/messages', payload: body }).catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await started;
+      socket.emit('close');
+      await Promise.race([cleanup, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('handler retained disconnected iterator')), 500); })]);
+      await Promise.resolve();
+      expect(cleaned).toBe(true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      release({ done: true, value: undefined });
+      await response;
+      await app.close();
+    }
+  });
+
 });

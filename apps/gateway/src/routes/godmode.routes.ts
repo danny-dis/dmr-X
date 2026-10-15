@@ -18,11 +18,13 @@ import { z } from 'zod';
 import { ValidationError } from '@dmr-x/core';
 import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 import { getGodmodeService, setGodmodeConfig } from '@dmr-x/godmode';
+import { chatRoutes } from './chat.routes.js';
+import { anthropicRoutes } from './anthropic.routes.js';
 import { serverManager, getGodmodeRepoInfo, getInstalledGodmodeRef } from '@dmr-x/server-manager';
 import { checkGodmodeUpstream } from '../lib/godmode-upstream.js';
 import { validateBaseUrlForSSRF, type ValidatedURL } from './admin-ssrf.js';
 import type {
-  GodmodeChatRequest,
+
   UltraplinianRequest,
   ConsortiumRequest,
   AutotuneAnalyzeRequest,
@@ -38,25 +40,7 @@ const ChatMessageSchema = z.object({
   content: z.string(),
 });
 
-const GodmodeChatSchema = z.object({
-  messages: z.array(ChatMessageSchema).min(1),
-  model: z.string().optional(),
-  stream: z.boolean().optional().default(false),
-  max_tokens: z.number().positive().optional(),
-  temperature: z.number().min(0).max(2).optional(),
-  top_p: z.number().min(0).max(1).optional(),
-  frequency_penalty: z.number().min(-2).max(2).optional(),
-  presence_penalty: z.number().min(-2).max(2).optional(),
-  godmode: z.boolean().optional().default(true),
-  custom_system_prompt: z.string().optional(),
-  autotune: z.boolean().optional().default(true),
-  autotune_strategy: z.enum(['adaptive', 'precise', 'balanced', 'creative', 'chaotic']).optional(),
-  parseltongue: z.boolean().optional().default(true),
-  parseltongue_technique: z.enum(['leetspeak', 'unicode', 'zwj', 'mixedcase', 'phonetic', 'random']).optional(),
-  parseltongue_intensity: z.enum(['light', 'medium', 'heavy']).optional(),
-  stm_modules: z.array(z.enum(['hedge_reducer', 'direct_mode', 'curiosity_bias', 'casual_mode'])).optional(),
-  contribute_to_dataset: z.boolean().optional().default(false),
-});
+
 
 const UltraplinianSchema = z.object({
   messages: z.array(ChatMessageSchema).min(1),
@@ -156,106 +140,9 @@ export async function godmodeRoutes(server: FastifyInstance): Promise<void> {
     }
   });
 
-  // Chat
-  server.post('/godmode/chat', async (request, reply) => {
-    const parsed = GodmodeChatSchema.safeParse(request.body);
-    if (!parsed.success) {
-      throw new ValidationError('Invalid request', { errors: parsed.error.errors });
-    }
-
-    const body = parsed.data as GodmodeChatRequest;
-
-    // Self-heal: ensure the sidecar is up before touching it (chat relays
-    // inference through the gateway vault, so a down sidecar must restart).
-    if (!(await ensureGodmodeProxyReady())) {
-      return proxyUnavailableReply(reply);
-    }
-
-    // Model resolution + fallback (pick-then-wrap). When no model is supplied,
-    // rank the live vault candidates with the same picker the `auto-free` flow
-    // uses. Either way, build an ORDERED candidate list and try each in turn:
-    // a single pick can 403 (quota) or answer with an empty completion, and
-    // dying on the first attempt is what produced the 500s the UI saw.
-    const { buildGodmodeWrapOrder, buildWrapOrderForModel, isEmptyCompletion } =
-      await import('../lib/godmode-guard.js');
-    const router = (server as any).router as { getCandidates?: () => any };
-    const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
-    const candidates = router?.getCandidates?.() ?? [];
-    const wrapOrder = body.model
-      ? buildWrapOrderForModel(body.model, candidates, costFilter)
-      : buildGodmodeWrapOrder(candidates, costFilter);
-    if (wrapOrder.length === 0) {
-      throw new ValidationError(
-        'No model available for godmode wrap — add provider candidates or pass model explicitly',
-        {},
-      );
-    }
-    logger.info({ wrapOrder }, 'godmode chat: resolved model order via DMR-X router');
-
-    if (body.stream) {
-      // Streaming response. A picked model can fail before its first delta
-      // (upstream 403/500 surfaces as a throw from chatStream), so retry the
-      // next pick until one actually produces output — nothing is written to
-      // the wire until the first successful chunk.
-      reply.header('Content-Type', 'text/event-stream');
-      reply.header('Cache-Control', 'no-cache');
-      reply.header('Connection', 'keep-alive');
-
-      let committed = false;
-      let streamErr: unknown;
-      for (const wrapModel of wrapOrder) {
-        try {
-          let yielded = false;
-          for await (const chunk of service.chatStream({ ...body, model: wrapModel })) {
-            yielded = true;
-            committed = true;
-            const data = JSON.stringify({
-              choices: [{ delta: { content: chunk } }],
-            });
-            reply.raw.write(`data: ${data}\n\n`);
-          }
-          if (committed) {
-            streamErr = undefined;
-            break;
-          }
-          streamErr = new Error(`godmode stream for ${wrapModel} produced no content`);
-        } catch (err) {
-          streamErr = err;
-          // Once bytes are on the wire we cannot switch models mid-stream.
-          if (committed) break;
-          logger.warn({ wrapModel, err }, 'godmode chat stream attempt failed; trying next picked model');
-        }
-      }
-      if (!committed && streamErr) {
-        const data = JSON.stringify({
-          error: { message: (streamErr as Error).message ?? 'godmode stream failed' },
-        });
-        reply.raw.write(`data: ${data}\n\n`);
-      }
-      reply.raw.write('data: [DONE]\n\n');
-      reply.raw.end();
-      return reply;
-    }
-
-    let chatErr: unknown;
-    for (const wrapModel of wrapOrder) {
-      try {
-        const attempt = await service.chat({ ...body, model: wrapModel });
-        // A 200 with no content and no tool calls does NOT throw — treat it as
-        // a failed attempt and try the next pick instead of returning it.
-        if (isEmptyCompletion(attempt)) {
-          chatErr = new Error(`godmode chat for ${wrapModel} returned empty content`);
-          logger.warn({ wrapModel }, 'godmode chat attempt returned empty content; trying next picked model');
-          continue;
-        }
-        return attempt;
-      } catch (err) {
-        chatErr = err;
-        logger.warn({ wrapModel, err }, 'godmode chat attempt failed; trying next picked model');
-      }
-    }
-    throw chatErr ?? new Error('godmode chat failed for every picked model');
-  });
+  // The legacy URL uses the same full OpenAI handler as coding clients.
+  await server.register(chatRoutes, { prefix: '/godmode', godmodeOnly: true, paths: ['/chat', '/chat/completions'] });
+  await server.register(anthropicRoutes, { prefix: '/godmode', godmodeOnly: true, paths: ['/messages', '/v1/messages'] });
 
   // ULTRAPLINIAN
   server.post('/godmode/ultraplinian', async (request, reply) => {

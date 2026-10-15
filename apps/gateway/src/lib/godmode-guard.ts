@@ -10,6 +10,7 @@
  * Used by OpenAI /v1/chat/completions and Anthropic /v1/messages.
  */
 import type { CandidateSet } from '@dmr-x/core';
+import type { GodmodeChatRequest } from '@dmr-x/godmode';
 import { isMetaModel, resolveMetaModel } from '@dmr-x/router';
 import { logger, resolveGatewayUrl } from '@dmr-x/utils';
 
@@ -242,6 +243,8 @@ export interface GodmodeWrapArgs {
   /** OpenAI-format tool definitions to round-trip through the wrap. */
   tools?: any[];
   tool_choice?: any;
+  /** Allowlisted pipeline controls for explicit GODMODE endpoints. */
+  requestOptions?: Partial<GodmodeChatRequest>;
 }
 
 export interface GodmodeWrapResult {
@@ -300,6 +303,7 @@ export async function wrapViaGodmode(
   for (const wrapModel of wrapOrder) {
     try {
       const attempt = await godmode.chat({
+        ...args.requestOptions,
         messages,
         model: wrapModel,
         temperature,

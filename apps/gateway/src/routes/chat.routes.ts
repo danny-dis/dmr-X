@@ -2,12 +2,14 @@ import { ValidationError, ProviderUnavailableError, type UnifiedRequest } from '
 import type { RateLimitService, QuotaService } from '@dmr-x/quota';
 import { getMetaModel, assertValidOutput, validateOutputContract, type Router } from '@dmr-x/router';
 import { generateRequestId, logger } from '@dmr-x/utils';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, RouteHandlerMethod } from 'fastify';
 import { z } from 'zod';
 
 import { ChatMessageSchema, ToolSchema } from './shared-schemas.js';
+import { GodmodeControlsSchema, godmodeRequestOptions, type GodmodeRouteOptions } from './godmode-options.js';
 import { parseQualityTarget } from '../utils/quality-target.js';
 import { parseProviderPreferencesHeader } from '../utils/provider-preferences.js';
+import { writeStreamingFrame } from '../lib/streaming-lifecycle.js';
 import { resolveServedProviderId } from '../utils/served-provider.js';
 import { compressionService } from '../services/compression.js';
 import { parseCompressionHeader, compressionControlEnabled } from '../services/compression-control.js';
@@ -91,14 +93,28 @@ const ChatRequestSchema = z.object({  model: z.string(),
   decompose: z.boolean().optional(),
 });
 
-export async function chatRoutes(server: FastifyInstance): Promise<void> {
-  server.post('/chat/completions', async (request, reply) => {
-    const parsed = ChatRequestSchema.safeParse(request.body);
+export async function chatRoutes(server: FastifyInstance, options: GodmodeRouteOptions = {}): Promise<void> {
+  const godmodeOnly = options.godmodeOnly === true;
+  const schema = godmodeOnly ? ChatRequestSchema.extend({
+    ...GodmodeControlsSchema.shape,
+    model: z.string().min(1).optional().default('auto-free'),
+    messages: z.array(ChatMessageSchema).min(1).max(100),
+    max_completion_tokens: z.number().int().positive().optional(),
+  }) : ChatRequestSchema;
+  const handler: RouteHandlerMethod = async (request, reply) => {
+    const parsed = schema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request', { errors: parsed.error.errors });
     }
 
     const body = parsed.data;
+    if (godmodeOnly && body.max_tokens === undefined && 'max_completion_tokens' in body && typeof body.max_completion_tokens === 'number') {
+      body.max_tokens = body.max_completion_tokens;
+    }
+    const requestOptions = godmodeOnly ? godmodeRequestOptions(body) : undefined;
+    if (godmodeOnly && request.headers['x-dmrx-godmode-proxy'] !== undefined) {
+      throw new ValidationError('Relay requests must use the standard inference endpoint');
+    }
     // Cache on original input, not a potentially compressed upstream representation.
     const originalCacheBody = structuredClone(body) as Record<string, unknown>;
     const headerConfig = parseCompressionHeader(request.headers['x-compression']);
@@ -112,22 +128,23 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     // package. Relay calls carry X-DMRX-Godmode-Proxy and fall through here
     // to normal routing with that sticky model (no re-wrap / no recursion).
     const isGodmodeProxyRelay = request.headers['x-dmrx-godmode-proxy'] === '1';
-    if (body.model === 'auto-free' && !isGodmodeProxyRelay) {
+    if ((godmodeOnly || body.model === 'auto-free') && !isGodmodeProxyRelay) {
       try {
         const { getMetaModel } = await import('@dmr-x/router');
         const meta = getMetaModel('auto-free');
-        if (meta?.godmode) {
+        if (godmodeOnly || meta?.godmode) {
+          const guard = await import('../lib/godmode-guard.js');
           const {
             wrapAutoFreeViaGodmode,
             isGodmodeStrict,
             ensureGodmodeProxy,
             buildGodmodeWrapOrder,
-          } = await import('../lib/godmode-guard.js');
-          const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || body.costFilter;
+          } = guard;
+          const costFilter = godmodeOnly ? 'free' : (request.headers['x-cost-filter'] as 'free' | 'all') || body.costFilter;
           const candidates = router.getCandidates();
 
           if (body.stream) {
-            const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
+            const wrapOrder = godmodeOnly ? guard.buildWrapOrderForModel(body.model, candidates, costFilter) : buildGodmodeWrapOrder(candidates, costFilter);
             // Bound the sidecar readiness wait (health probe + serialized
             // restart + initialize share one budget): a slow spawn must not
             // stall past the client's patience before headers are even sent.
@@ -222,6 +239,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                     // skipped, never thrown — genuine errors still throw and
                     // take the per-attempt catch path below.
                     const iterable = godmode.chatStreamFull({
+                      ...requestOptions,
                       messages: body.messages as any,
                       model: wrapModel,
                       temperature: body.temperature,
@@ -286,13 +304,13 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                       }
                       if (delta.usage !== undefined) upstreamUsage = delta.usage;
                       if (delta.content || chunkDelta.tool_calls) {
-                        reply.raw.write(
+                        await writeStreamingFrame(reply.raw,
                           `data: ${JSON.stringify({
                             id: `gm-${requestId}`,
                             object: 'chat.completion.chunk',
                             model: wrapModel,
                             choices: [{ index: 0, delta: { role: 'assistant', ...chunkDelta }, finish_reason: null }],
-                          })}\n\n`,
+                          })}\n\n`, wrapDeadline, attemptController.signal,
                         );
                         sent = true;
                         wrapOutputStarted = true;
@@ -300,16 +318,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                       }
                     }
                     if (sent) {
-                      reply.raw.write(
+                      await writeStreamingFrame(reply.raw,
                         `data: ${JSON.stringify({
                           id: `gm-${requestId}`,
                           object: 'chat.completion.chunk',
                           model: wrapModel,
                           choices: [{ index: 0, delta: {}, finish_reason: hasUpstreamFinishReason ? upstreamFinishReason : (sawToolCalls ? 'tool_calls' : 'stop') }],
                           ...(upstreamUsage !== undefined ? { usage: upstreamUsage } : {}),
-                        })}\n\n`,
+                        })}\n\n`, wrapDeadline, attemptController.signal,
                       );
-                      reply.raw.write('data: [DONE]\n\n');
+                      await writeStreamingFrame(reply.raw, 'data: [DONE]\n\n', wrapDeadline, attemptController.signal);
                       reply.raw.end();
                       return;
                     }
@@ -351,7 +369,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 } catch (e) {
                   // Fail over only before semantic output, and only when the
                   // operator permits an unwrapped answer. Never mix models.
-                  const mayFallback = !wrapOutputStarted && !godmodeClientAborted && !isGodmodeStrict();
+                  const mayFallback = !wrapOutputStarted && !godmodeClientAborted && !godmodeOnly && !isGodmodeStrict();
                   godmodeClientAborted = true; // stop any late watchdog drain
                   activeAttemptController?.abort(e);
                   activeAttemptController = undefined;
@@ -373,7 +391,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 // free-only router path used when the proxy is unavailable.
               }
             }
-            if (isGodmodeStrict()) {
+            if (godmodeOnly || isGodmodeStrict()) {
               reply.header('Content-Type', 'text/event-stream');
               reply.raw.writeHead(503);
               reply.raw.write(`data: ${JSON.stringify({ error: { message: `auto-free godmode proxy unavailable within ${AUTOFREE_PROXY_READY_MS}ms (strict mode): sidecar not reachable, failing without fallback` } })}\n\n`);
@@ -387,7 +405,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               'auto-free fallback → router free-candidate chain (no godmode)',
             );
           } else {
-            const result = await wrapAutoFreeViaGodmode({
+            const result = await (godmodeOnly ? guard.wrapViaGodmode : wrapAutoFreeViaGodmode)({
               requestId,
               messages: body.messages as any,
               model: body.model,
@@ -398,6 +416,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               topP: body.top_p,
               tools: (body as any).tools,
               tool_choice: (body as any).tool_choice,
+              ...(requestOptions ? { requestOptions } : {}),
             });
             if (result.status === 'wrapped' && result.completion) {
               const gm = result.completion;
@@ -407,12 +426,13 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               return reply.send({
                 id: `gm-${requestId}`,
                 object: 'chat.completion',
+                created: gm.created ?? Math.floor(Date.now() / 1000),
                 model: result.wrapModel ?? gm.model ?? 'auto-free',
                 choices: [{
                   index: 0,
                   message: {
                     role: 'assistant',
-                    content: gmContent,
+                    content: godmodeOnly ? (gmMessage?.content ?? null) : gmContent,
                     ...(gmToolCalls ? { tool_calls: gmToolCalls } : {}),
                   },
                   finish_reason: gmToolCalls ? 'tool_calls' : (gm.choices?.[0]?.finish_reason ?? 'stop'),
@@ -421,7 +441,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
                 ...(gm.x_g0dm0d3 ? { x_g0dm0d3: gm.x_g0dm0d3 } : {}),
               });
             }
-            if (isGodmodeStrict()) {
+            if (godmodeOnly || isGodmodeStrict()) {
               return reply.status(503).send({
                 error: {
                   message: 'auto-free godmode proxy unavailable (strict mode)',
@@ -445,7 +465,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       } catch (err) {
         // Fail closed even if wrapper preparation/imports throw before the
         // normal unavailable branch. Strict mode must never reach plain routing.
-        if (process.env.DMRX_GODMODE_STRICT === 'true') {
+        if (godmodeOnly || process.env.DMRX_GODMODE_STRICT === 'true') {
           logger.error({ err, requestId }, 'auto-free godmode reroute failed in strict mode; refusing plain fallback');
           const error = { message: 'auto-free godmode proxy unavailable (strict mode)', type: 'server_error', code: 'godmode_unavailable' };
           if (reply.raw.headersSent) {
@@ -1289,5 +1309,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     };
 
     return toOpenAIChatCompletion(response);
-  });
+  };
+  for (const path of options.paths ?? ['/chat/completions']) server.post(path, handler);
 }

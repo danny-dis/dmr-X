@@ -44,6 +44,8 @@ export interface GodmodeChatRequest {
     role: string;
     content: string | Array<unknown> | null;
     tool_calls?: any[];
+    tool_call_id?: string;
+    name?: string;
   }>;
   model?: string;
   stream?: boolean;
@@ -62,6 +64,8 @@ export interface GodmodeChatRequest {
   /** Enable AutoTune parameter optimization */
   autotune?: boolean;
   autotune_strategy?: AutotuneStrategy;
+  /** Companion wire name for the AutoTune strategy. */
+  strategy?: AutotuneStrategy;
   /** Enable Parseltongue trigger word obfuscation */
   parseltongue?: boolean;
   parseltongue_technique?: ParseltongueTechnique;

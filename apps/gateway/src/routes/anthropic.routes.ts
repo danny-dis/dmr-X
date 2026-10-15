@@ -1,7 +1,7 @@
 import { ValidationError, ProviderUnavailableError } from '@dmr-x/core';
 import type { Router } from '@dmr-x/router';
 import { generateRequestId, logger } from '@dmr-x/utils';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, RouteHandlerMethod } from 'fastify';
 import { z } from 'zod';
 
 import {
@@ -9,6 +9,7 @@ import {
   convertUnifiedResponseToAnthropic,
 } from '../converters/anthropic-converter.js';
 import { createAnthropicSSEStream } from '../converters/anthropic-stream-serializer.js';
+import { waitForStreamingWork, writeStreamingFrame } from '../lib/streaming-lifecycle.js';
 import {
   anthropicWireError,
   shouldExposeInternalError,
@@ -146,7 +147,13 @@ function safeJsonParse(raw: unknown): unknown {
   }
 }
 
-export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
+export async function anthropicRoutes(server: FastifyInstance, options: import('./godmode-options.js').GodmodeRouteOptions = {}): Promise<void> {
+  const godmodeOnly = options.godmodeOnly === true;
+  const { GodmodeControlsSchema, godmodeRequestOptions } = await import('./godmode-options.js');
+  const schema = godmodeOnly ? AnthropicMessagesRequestSchema.extend({
+    ...GodmodeControlsSchema.shape,
+    model: z.string().min(1).optional().default('auto-free'),
+  }) : AnthropicMessagesRequestSchema;
   // Encapsulated error handler: this plugin only registers `/messages`, so
   // non-streaming failures are serialized in the Anthropic wire format the
   // official SDKs parse (`{ type: 'error', error: { type, message } }`)
@@ -162,8 +169,8 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     return reply.status(statusCode).send(body);
   });
 
-  server.post('/messages', async (request, reply) => {
-    const parsed = AnthropicMessagesRequestSchema.safeParse(request.body);
+  const handler: RouteHandlerMethod = async (request, reply) => {
+    const parsed = schema.safeParse(request.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid Anthropic request', {
         errors: parsed.error.errors,
@@ -171,6 +178,10 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     }
 
     const body = parsed.data;
+    const requestOptions = godmodeOnly ? godmodeRequestOptions(body) : undefined;
+    if (godmodeOnly && request.headers['x-dmrx-godmode-proxy'] !== undefined) {
+      throw new ValidationError('Relay requests must use the standard inference endpoint');
+    }
     const headerConfig = parseCompressionHeader(request.headers['x-compression']);
     const requestId = generateRequestId();
     const router = (server as any).router as Router;
@@ -187,19 +198,20 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
     // back into the gateway — fall through to normal routing (sticky concrete
     // model already chosen on the outbound wrap).
     const isGodmodeProxyRelay = request.headers['x-dmrx-godmode-proxy'] === '1';
-    if (body.model === 'auto-free' && !isGodmodeProxyRelay) {
+    if ((godmodeOnly || body.model === 'auto-free') && !isGodmodeProxyRelay) {
       try {
+        const guard = await import('../lib/godmode-guard.js');
         const {
           wrapAutoFreeViaGodmode,
           isGodmodeStrict,
           ensureGodmodeProxy,
           buildGodmodeWrapOrder,
-        } = await import('../lib/godmode-guard.js');
-        const costFilter = (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
+        } = guard;
+        const costFilter = godmodeOnly ? 'free' : (request.headers['x-cost-filter'] as 'free' | 'all') || undefined;
         const candidates = router.getCandidates();
 
         if (!body.stream) {
-          const result = await wrapAutoFreeViaGodmode({
+          const result = await (godmodeOnly ? guard.wrapViaGodmode : wrapAutoFreeViaGodmode)({
             requestId,
             messages: godmodeRequest.messages ?? [],
             model: body.model,
@@ -210,6 +222,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
             topP: body.top_p,
             tools: body.tools ? anthropicToolsToOpenAi(body.tools) : undefined,
             tool_choice: body.tool_choice ? anthropicToolChoiceToOpenAi(body.tool_choice) : undefined,
+            ...(requestOptions ? { requestOptions } : {}),
           });
 
           if (result.status === 'wrapped' && result.completion) {
@@ -246,15 +259,33 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
             };
           }
 
-          if (isGodmodeStrict()) {
+          if (godmodeOnly || isGodmodeStrict()) {
             throw new ProviderUnavailableError([]);
           }
           // Non-strict: fall through — resolve to top concrete for normal routing
           const wrapOrder = result.wrapOrder ?? buildGodmodeWrapOrder(candidates, costFilter);
           if (wrapOrder[0]) body.model = wrapOrder[0];
         } else {
-          const wrapOrder = buildGodmodeWrapOrder(candidates, costFilter);
-          const proxyReady = await ensureGodmodeProxy(requestId).catch(() => false);
+          const wrapOrder = godmodeOnly ? guard.buildWrapOrderForModel(body.model, candidates, costFilter) : buildGodmodeWrapOrder(candidates, costFilter);
+          const chainTimeoutMs = Number(process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS) || 120000;
+          const chainDeadline = Date.now() + chainTimeoutMs;
+          const readyMs = Number(process.env.DMRX_AUTOFREE_PROXY_READY_MS) || 15000;
+          const preflight = new AbortController();
+          const onPreflightDisconnect = () => preflight.abort(new Error('Anthropic client disconnected'));
+          reply.raw.once('close', onPreflightDisconnect);
+          request.raw.once('aborted', onPreflightDisconnect);
+          let proxyReady = false;
+          try {
+            proxyReady = await waitForStreamingWork(
+              ensureGodmodeProxy(requestId).catch(() => false),
+              Math.min(chainDeadline, Date.now() + Math.max(1, readyMs)),
+              preflight.signal,
+            ).catch(() => false);
+          } finally {
+            reply.raw.off('close', onPreflightDisconnect);
+            request.raw.off('aborted', onPreflightDisconnect);
+          }
+          if (preflight.signal.aborted || reply.raw.destroyed || request.raw.aborted) return reply;
           let completed = false;
           let anySemanticOutput = false;
           if (proxyReady) {
@@ -267,9 +298,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
                 }>;
               };
-              const chainTimeoutMs = Number(process.env.DMRX_AUTOFREE_STREAM_TIMEOUT_MS) || 120000;
               const firstOutputTimeoutMs = Number(process.env.DMRX_AUTOFREE_TTFT_MS) || 12000;
-              const chainDeadline = Date.now() + chainTimeoutMs;
 
               for (const wrapModel of wrapOrder) {
                 if (Date.now() >= chainDeadline || reply.raw.destroyed) break;
@@ -283,6 +312,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                 let index = 0;
                 const normalized = async function* () {
                   const source = streamService.chatStreamFull({
+                    ...requestOptions,
                     messages: godmodeRequest.messages ?? [],
                     model: wrapModel,
                     temperature: body.temperature,
@@ -293,6 +323,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                     tool_choice: godmodeRequest.tool_choice,
                   }, { signal: controller.signal, timeoutMs: Math.max(1, chainDeadline - Date.now()) });
                   const iterator = source[Symbol.asyncIterator]();
+                  let sourceEnded = false;
                   try {
                     while (true) {
                       const now = Date.now();
@@ -301,15 +332,8 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                         emittedSemanticOutput ? chainDeadline - now : firstOutputTimeoutMs - (now - startedAt),
                       );
                       if (remaining <= 0) throw new Error(emittedSemanticOutput ? 'GODMODE stream chain deadline exceeded' : 'GODMODE stream first-output deadline exceeded');
-                      let timer: ReturnType<typeof setTimeout> | undefined;
-                      let next: IteratorResult<any>;
-                      try {
-                        next = await Promise.race([
-                          iterator.next(),
-                          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(emittedSemanticOutput ? 'GODMODE stream chain deadline exceeded' : 'GODMODE stream first-output deadline exceeded')), remaining); }),
-                        ]);
-                      } finally { if (timer) clearTimeout(timer); }
-                      if (next.done) break;
+                      const next = await waitForStreamingWork(iterator.next(), now + remaining, controller.signal);
+                      if (next.done) { sourceEnded = true; break; }
                       const delta = next.value;
                       if (delta.finish_reason !== undefined && delta.finish_reason !== null) finishReason = delta.finish_reason;
                       if (delta.usage) usage = delta.usage;
@@ -325,7 +349,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                   } finally {
                     // Abort before closing: return() cannot unblock a pending read
                     // in an iterator that ignores cancellation. Never await it here.
-                    if (!controller.signal.aborted) controller.abort();
+                    if (!sourceEnded && !controller.signal.aborted) controller.abort();
                     void Promise.resolve().then(() => iterator.return?.()).catch(() => {});
                   }
                   if (!emittedSemanticOutput) throw new Error('GODMODE stream returned no semantic output');
@@ -343,8 +367,8 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                   let event = await events.next();
                   if (event.done) throw new Error('GODMODE stream ended without an Anthropic message');
                   reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-                  reply.raw.write(event.value);
-                  while (!(event = await events.next()).done) reply.raw.write(event.value);
+                  await writeStreamingFrame(reply.raw, event.value, chainDeadline, controller.signal);
+                  while (!(event = await events.next()).done) await writeStreamingFrame(reply.raw, event.value, chainDeadline, controller.signal);
                   reply.raw.end();
                   completed = true;
                   return reply;
@@ -360,11 +384,12 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
                   logger.warn({ requestId, wrapModel, err: error }, 'auto-free Anthropic GODMODE attempt failed before output');
                 } finally {
                   reply.raw.off('close', onDisconnect);
+                  if (!controller.signal.aborted) controller.abort();
                 }
               }
             }
           }
-          if (!completed && isGodmodeStrict()) {
+          if (!completed && (godmodeOnly || isGodmodeStrict())) {
             const failure = new ProviderUnavailableError([]);
             const wire = anthropicWireError(failure, { exposeMessage: shouldExposeInternalError(), requestId });
             return reply.status(wire.statusCode).send(wire.body);
@@ -374,7 +399,7 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
       } catch (err) {
         if (err instanceof ProviderUnavailableError) throw err;
         const { isGodmodeStrict } = await import('../lib/godmode-guard.js');
-        if (isGodmodeStrict()) throw new ProviderUnavailableError([]);
+        if (godmodeOnly || isGodmodeStrict()) throw new ProviderUnavailableError([]);
         logger.error({ err, requestId }, 'auto-free godmode reroute failed; falling back to normal routing');
       }
     }
@@ -511,5 +536,6 @@ export async function anthropicRoutes(server: FastifyInstance): Promise<void> {
       }
 
       return convertUnifiedResponseToAnthropic(response);
-  });
+  };
+  for (const path of options.paths ?? ['/messages']) server.post(path, handler);
 }
